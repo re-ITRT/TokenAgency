@@ -67,6 +67,7 @@
 | **[docs/10-interface-spec.md](docs/10-interface-spec.md)** | ★ **接口文档（一）对外契约**：网关 HTTP API（含全透传 4 处例外、SSE、错误信封）、Tauri IPC 命令与事件全清单、管理 API、契约变更流程 |
 | **[docs/11-internal-contracts.md](docs/11-internal-contracts.md)** | ★ **接口文档（二）内部契约**：crate 之间的 Rust trait、内核接口（生成的配置模板 + REST 端点）、订阅契约、存储契约、**错误码总表**、usage 归一化规格 |
 | **[docs/12-work-breakdown.md](docs/12-work-breakdown.md)** | ★ **工作分解**：W0–W5 波次、每个工作包的文件所有权与完成定义、派发铁律 |
+| **[docs/13-team-and-delivery.md](docs/13-team-and-delivery.md)** | ★ **团队与交付流程**：RACI 权责矩阵、员工入职材料清单、四层评审协议、培养机制、PM 验收标准与范围纪律 |
 | **[docs/09-architecture-design.md](docs/09-architecture-design.md)** | ★ **软件架构设计（架构基线）**：把全部结论收敛成一份可施工的整体设计——C4 视图、crate 分层与依赖规则、运行时时序、数据视图、质量属性与验收场景、ADR 索引、演进路线、术语表 |
 | [docs/01-architecture.md](docs/01-architecture.md) | 总体架构专题：技术选型、进程与端口模型、请求管线 12 步、协议适配层、ADR 详述 |
 | [docs/02-config-and-data-model.md](docs/02-config-and-data-model.md) | 领域模型（Provider/Credential/Lane/Model/Channel/ChannelGroup/Policy）、SQLite 表结构、配置 schema、[config.example.yaml](config.example.yaml) |
