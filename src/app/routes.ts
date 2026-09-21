@@ -67,7 +67,9 @@ export const ROUTES: readonly AppRoute[] = [
     icon: DashboardOutlinedIcon,
     owner: "F2",
     nav: true,
-    pages: ["dashboard"],
+    // 两个候选都列出：文件夹形式（`dashboard/index.tsx`）与单文件形式（`dashboard.tsx`）都能自动接线 ——
+    // 与 providers/models 等条目保持一致（`pageRegistry` 的约定是"候选路径见本表"）
+    pages: ["dashboard", "dashboard/index"],
     docRef: "07 §1 首页看板",
   },
   {

@@ -78,6 +78,23 @@ export const en: Record<I18nKey, string> = {
   "common.owner": "Owner",
   "common.notImplemented": "Not implemented",
 
+  // ---------------------------------------------------------------- dashboard (07 §1)
+  "dashboard.readiness": "Health",
+  "dashboard.gateway": "Gateway",
+  "dashboard.providerCheck": "Provider load check",
+  "dashboard.providerCheck.hint":
+    "No check result yet — this is not inferred as OK. A healthy kernel process does not prove providers loaded.",
+  "dashboard.kernel.restarts": "restarted {{count}}×",
+  "dashboard.uptime": "Up",
+  "dashboard.card.requests": "Requests today",
+  "dashboard.card.tokens": "Tokens today",
+  "dashboard.card.tokensUnit": "tok",
+  "dashboard.card.cost": "Spend today",
+  "dashboard.card.successRate": "Success rate",
+  "dashboard.unpriced": "{{count}} models unpriced: cost is incomplete",
+  "dashboard.quota": "Plan quotas",
+  "dashboard.cache": "Cache hit {{rate}} · saved {{saved}}",
+
   // ---------------------------------------------------------------- shared components
   "component.numberCard.hintExact": "Exact {{value}}",
   "component.sparkline.label": "Last 24 hours",
