@@ -28,6 +28,7 @@ fn default_one() -> f64 {
 
 // ================================================================ 根配置
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigDoc {
     #[serde(default = "default_version")]
@@ -59,6 +60,7 @@ pub struct ConfigDoc {
     #[serde(default)]
     pub system_integration: SystemIntegration,
     /// 保留未知字段，前向兼容
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -91,6 +93,7 @@ impl Default for ConfigDoc {
 
 // ================================================================ 网关
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GatewayConfig {
     #[serde(default = "default_listen")]
@@ -116,6 +119,7 @@ pub struct GatewayConfig {
     pub retry: RetryConfig,
     #[serde(default)]
     pub metering: MeteringConfig,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -148,6 +152,7 @@ impl Default for GatewayConfig {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PassthroughConfig {
     /// **默认且推荐 `Pass`**：客户端头整体转发，只做 4 处必须的修改
@@ -163,6 +168,7 @@ pub struct PassthroughConfig {
     /// 跨协议转换出现字段损失时的行为
     #[serde(default)]
     pub on_loss: OnLoss,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -180,6 +186,7 @@ impl Default for PassthroughConfig {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HeaderMode {
@@ -189,6 +196,7 @@ pub enum HeaderMode {
     Allowlist,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BodyMode {
@@ -197,6 +205,7 @@ pub enum BodyMode {
     Strip,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OnLoss {
@@ -205,6 +214,7 @@ pub enum OnLoss {
     Warn,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RetryConfig {
     #[serde(default = "default_max_attempts")]
@@ -219,6 +229,7 @@ pub struct RetryConfig {
     pub cooldown_s: u32,
     #[serde(default)]
     pub backoff: Backoff,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -246,6 +257,7 @@ impl Default for RetryConfig {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Backoff {
@@ -254,11 +266,13 @@ pub enum Backoff {
     Exponential,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MeteringConfig {
     /// ⚠️ 开启会**修改客户端请求**（注入 `stream_options.include_usage`），默认关闭
     #[serde(default)]
     pub inject_stream_usage: bool,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -271,6 +285,7 @@ impl Default for MeteringConfig {
 
 // ================================================================ 请求日志
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RequestLogConfig {
     #[serde(default)]
@@ -285,6 +300,7 @@ pub struct RequestLogConfig {
     pub sample_rate: f64,
     #[serde(default)]
     pub image_handling: ImageHandling,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -297,6 +313,7 @@ fn default_max_size_mb() -> u64 {
 }
 
 /// `Retention` 的默认值是 30d，单独包一层以便 `Default`
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RetentionDefault {
@@ -321,6 +338,7 @@ impl From<RetentionDefault> for Retention {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageHandling {
@@ -346,6 +364,7 @@ impl Default for RequestLogConfig {
 
 // ================================================================ 网络
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NetConfig {
     #[serde(default)]
@@ -363,6 +382,7 @@ pub struct NetConfig {
     pub system_proxy: bool,
     #[serde(default)]
     pub tun: bool,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -382,6 +402,7 @@ impl Default for NetConfig {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DialerKind {
@@ -390,6 +411,7 @@ pub enum DialerKind {
     Builtin,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct KernelConfig {
     #[serde(default)]
@@ -404,6 +426,7 @@ pub struct KernelConfig {
     /// 订阅数据来源：`kernel` 让内核自己拉（默认，避免双份请求）；`app` 由我们拉后落盘
     #[serde(default)]
     pub subscription_source: SubscriptionSource,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -415,6 +438,7 @@ fn default_lane_range() -> [u16; 2] {
     [39100, 39299]
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum KernelProvider {
@@ -424,6 +448,7 @@ pub enum KernelProvider {
     Bundled,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SubscriptionSource {
@@ -445,6 +470,7 @@ impl Default for KernelConfig {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DnsConfig {
     #[serde(default = "default_enhanced_mode")]
@@ -456,6 +482,7 @@ pub struct DnsConfig {
     pub proxy_server_nameserver: Vec<String>,
     #[serde(default = "default_default_ns")]
     pub default_nameserver: Vec<String>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -482,6 +509,7 @@ impl Default for DnsConfig {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HealthConfig {
     #[serde(default = "default_health_interval")]
@@ -491,6 +519,7 @@ pub struct HealthConfig {
     pub url_by_provider: bool,
     #[serde(default)]
     pub probe_url: Option<String>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -507,6 +536,7 @@ impl Default for HealthConfig {
 
 // ================================================================ 订阅
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Subscription {
     pub id: SubscriptionId,
@@ -531,6 +561,7 @@ pub struct Subscription {
     /// 内核里的 provider key（由 id 派生，稳定）
     #[serde(default)]
     pub provider_key: Option<String>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -545,6 +576,7 @@ fn default_keep_versions() -> u32 {
     3
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SubscriptionFormat {
@@ -557,16 +589,19 @@ pub enum SubscriptionFormat {
     ConvertLinks,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SubscriptionFilter {
     #[serde(default)]
     pub include: Option<String>,
     #[serde(default)]
     pub exclude: Option<String>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SubscriptionHealthCheck {
     #[serde(default = "default_true")]
@@ -577,6 +612,7 @@ pub struct SubscriptionHealthCheck {
     pub interval_s: u32,
     #[serde(default = "default_tolerance")]
     pub tolerance_ms: u32,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -593,6 +629,7 @@ impl Default for SubscriptionHealthCheck {
 
 // ================================================================ 线路
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Lane {
     pub id: LaneId,
@@ -617,10 +654,12 @@ pub struct Lane {
     /// 省略 = 启用：**被列进配置就等价于"我要用它"**，停用必须显式写 `false`。
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LaneKind {
@@ -636,6 +675,7 @@ pub enum LaneKind {
     Filter,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum GroupType {
@@ -647,6 +687,7 @@ pub enum GroupType {
 
 // ================================================================ 服务商
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Provider {
     pub id: ProviderId,
@@ -675,10 +716,12 @@ pub struct Provider {
     /// 省略 = 启用：**被列进配置就等价于"我要用它"**，停用必须显式写 `false`。
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AuthConfig {
     #[serde(default)]
@@ -688,6 +731,7 @@ pub struct AuthConfig {
     pub header: Option<String>,
     #[serde(default)]
     pub prefix: Option<String>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -698,6 +742,7 @@ impl Default for AuthConfig {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthScheme {
@@ -708,6 +753,7 @@ pub enum AuthScheme {
     None,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HeaderConflict {
@@ -716,12 +762,14 @@ pub enum HeaderConflict {
     Override,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderPassthrough {
     #[serde(default)]
     pub header_mode: Option<HeaderMode>,
     #[serde(default)]
     pub body: Option<BodyMode>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -732,6 +780,7 @@ impl Default for ProviderPassthrough {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TimeoutConfig {
     #[serde(default = "default_connect_timeout")]
@@ -740,6 +789,7 @@ pub struct TimeoutConfig {
     pub read_s: u32,
     #[serde(default)]
     pub total_s: Option<u32>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -757,6 +807,7 @@ impl Default for TimeoutConfig {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct TlsConfig {
     #[serde(default)]
@@ -765,12 +816,14 @@ pub struct TlsConfig {
     pub extra_ca_pem: Option<String>,
     #[serde(default)]
     pub min_version: Option<String>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
 // ================================================================ 凭据
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Credential {
     pub id: CredentialId,
@@ -790,10 +843,12 @@ pub struct Credential {
     /// 省略 = 启用：**被列进配置就等价于"我要用它"**，停用必须显式写 `false`。
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct QuotaConfig {
     #[serde(default)]
@@ -812,6 +867,7 @@ pub struct QuotaConfig {
     pub hard_limit: f64,
     #[serde(default)]
     pub reserve: f64,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -829,6 +885,7 @@ fn default_hard_limit() -> f64 {
     1.0
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaMetric {
@@ -839,6 +896,7 @@ pub enum QuotaMetric {
     Cost,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaWindow {
@@ -865,6 +923,7 @@ impl Default for QuotaConfig {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GuardConfig {
     #[serde(default)]
@@ -875,10 +934,12 @@ pub struct GuardConfig {
     pub max_input_tokens: Option<u64>,
     #[serde(default)]
     pub on_exceed: OnExceed,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OnExceed {
@@ -901,6 +962,7 @@ impl Default for GuardConfig {
 
 // ================================================================ 模型 / 通道
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Model {
     /// 对外暴露的逻辑模型名
@@ -911,20 +973,24 @@ pub struct Model {
     pub display: DisplayConfig,
     #[serde(default = "default_true")]
     pub expose: bool,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct DisplayConfig {
     #[serde(default)]
     pub group: Option<String>,
     #[serde(default)]
     pub order: i32,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Channel {
     pub id: ChannelId,
@@ -951,6 +1017,7 @@ pub struct Channel {
     /// 省略 = 启用：**被列进配置就等价于"我要用它"**，停用必须显式写 `false`。
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -962,6 +1029,7 @@ fn default_weight() -> u32 {
     10
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Transform {
     #[serde(default)]
@@ -975,12 +1043,14 @@ pub struct Transform {
     /// 定点 body patch（如强制 `stream_options.include_usage=true`）
     #[serde(default)]
     pub body_patch: Map<String, Value>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
 // ================================================================ 通道组
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ChannelGroup {
     pub id: ChannelGroupId,
@@ -992,10 +1062,12 @@ pub struct ChannelGroup {
     pub sticky: StickyConfig,
     #[serde(default)]
     pub release_on: Vec<ReleaseReason>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Selector {
@@ -1010,6 +1082,7 @@ pub enum Selector {
     RoundRobin,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StickyConfig {
     #[serde(default = "default_true")]
@@ -1019,6 +1092,7 @@ pub struct StickyConfig {
     /// key 派生顺序，取值如 `header:x-session-id` / `metadata.user_id` / `body_hash`
     #[serde(default = "default_sticky_keys")]
     pub key: Vec<String>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -1046,6 +1120,7 @@ impl Default for StickyConfig {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseReason {
@@ -1058,6 +1133,7 @@ pub enum ReleaseReason {
 
 // ================================================================ 策略
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Policy {
     pub id: PolicyId,
@@ -1071,6 +1147,7 @@ pub struct Policy {
     pub r#match: PolicyMatch,
     #[serde(default)]
     pub action: PolicyAction,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -1079,6 +1156,7 @@ fn default_policy_priority() -> i32 {
     1000
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PolicyMatch {
     #[serde(default)]
@@ -1108,10 +1186,12 @@ pub struct PolicyMatch {
     pub time_window: Option<String>,
     #[serde(default)]
     pub provider_in: Vec<ProviderId>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PolicyAction {
     #[serde(default)]
@@ -1137,10 +1217,12 @@ pub struct PolicyAction {
     /// 一键全切线路（最高优先级）
     #[serde(default)]
     pub use_lane: Option<LaneId>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FailoverPolicy {
     #[serde(default = "default_failover_on")]
@@ -1151,6 +1233,7 @@ pub struct FailoverPolicy {
     pub cooldown_s: u32,
     #[serde(default)]
     pub backoff: Backoff,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -1167,6 +1250,7 @@ fn default_failover_on() -> Vec<FailoverTrigger> {
     ]
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FailoverTrigger {
@@ -1180,6 +1264,7 @@ pub enum FailoverTrigger {
     CapabilityMismatch,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NoCandidateAction {
@@ -1191,6 +1276,7 @@ pub enum NoCandidateAction {
 
 // ================================================================ 定价
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PricingConfig {
     #[serde(default = "default_pricing_currency")]
@@ -1201,6 +1287,7 @@ pub struct PricingConfig {
     pub usd_to_cny: Option<f64>,
     #[serde(default)]
     pub entries: Vec<PriceEntry>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
@@ -1209,6 +1296,7 @@ fn default_pricing_currency() -> String {
     "USD".into()
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PriceUnit {
@@ -1233,6 +1321,7 @@ impl Default for PricingConfig {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PriceEntry {
     #[serde(default)]
@@ -1249,10 +1338,12 @@ pub struct PriceEntry {
     pub source: PriceSource,
     #[serde(default)]
     pub effective_from: Option<String>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PriceMatch {
     #[serde(default)]
@@ -1261,20 +1352,24 @@ pub struct PriceMatch {
     pub provider: Option<ProviderId>,
     #[serde(default)]
     pub credential: Option<CredentialId>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PlanFee {
     pub amount: f64,
     pub currency: String,
     #[serde(default)]
     pub window: QuotaWindow,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PriceSource {
@@ -1287,6 +1382,7 @@ pub enum PriceSource {
 // ================================================================ 系统集成
 
 /// 开机自启动后的行为（见 [02 §2.10]）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AutostartMode {
@@ -1304,6 +1400,7 @@ pub enum AutostartMode {
 /// - **会写操作系统状态的开关一律默认关**：`autostart` / `enable_tun` / `enable_system_proxy`；
 /// - **"实体启用"语义的开关默认开**：见 `Provider.enabled` 等（列出来就是要用）；
 /// - **无损 / 自检类默认开**：`tray_show_latency`。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SystemIntegration {
     /// **例外：默认关**（同 `autostart`：会写 OS 状态的开关一律默认关，[09 §1.2] E1）。
@@ -1342,6 +1439,7 @@ pub struct SystemIntegration {
     pub file_watch_mode: bool,
     #[serde(default)]
     pub file_watch_path: Option<String>,
+    #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
 }

@@ -17,6 +17,7 @@ use ta_core::types::{ChannelGroupId, ChannelId, StickyKey};
 
 use crate::util::StoreResultExt;
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StickyEntry {
     pub key: String,

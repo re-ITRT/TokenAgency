@@ -40,6 +40,7 @@ const SEARCH_SCAN_ROWS: u32 = 2_000;
 
 // ================================================================ DTO
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceAttempt {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -56,6 +57,7 @@ pub struct TraceAttempt {
 }
 
 /// 一条请求的日志记录。头/体由调用方原样给出，**落库前 store 统一脱敏 + 压缩**。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone)]
 pub struct TraceRecord {
     pub request_id: RequestId,
@@ -111,6 +113,7 @@ impl TraceRecord {
 }
 
 /// 日志列表行（`log_query` 的 `rows`）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceRow {
     pub request_id: String,
@@ -143,6 +146,7 @@ pub struct TraceRow {
 }
 
 /// 单条详情（`log_get_trace`）：尝试链 + 耗时 + header_diff + body 结构/原文。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceDetail {
     pub row: TraceRow,
@@ -161,6 +165,7 @@ pub struct TraceDetail {
     pub response_body: Option<serde_json::Value>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LogQuery {
     #[serde(default)]
@@ -191,6 +196,7 @@ pub struct LogQuery {
     pub cursor: Option<String>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogPage {
     pub rows: Vec<TraceRow>,
@@ -200,6 +206,7 @@ pub struct LogPage {
     pub has_more: bool,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorageStats {
     /// trace 行数
@@ -214,6 +221,7 @@ pub struct StorageStats {
     pub newest_ts: Option<i64>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClearMode {
@@ -222,6 +230,7 @@ pub enum ClearMode {
 }
 
 /// trace 的保留策略（07 §2.1 的 `request_log`）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceLimits {
     pub retention: Retention,

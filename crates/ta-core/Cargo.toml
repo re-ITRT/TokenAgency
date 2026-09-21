@@ -17,6 +17,13 @@ sha2.workspace = true
 once_cell.workspace = true
 chrono.workspace = true
 tracing.workspace = true
+# T1：给领域类型加 `#[cfg_attr(feature = "specta", derive(specta::Type))]`，
+# 让 IPC 的 TS 类型直接从领域类型生成（领域类型是唯一真相源）。
+# **可选依赖**：默认构建（含生产/单测）不带 specta，领域层不被 Web 框架污染。
+specta = { workspace = true, optional = true }
+
+[features]
+specta = ["dep:specta"]
 
 [dev-dependencies]
 pretty_assertions.workspace = true

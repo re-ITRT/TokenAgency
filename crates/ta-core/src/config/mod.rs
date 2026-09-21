@@ -34,6 +34,7 @@ pub fn default_doc() -> ConfigDoc {
 }
 
 /// 校验结果。`ok == errors.is_empty()`；警告不阻断。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ValidationReport {
     pub ok: bool,

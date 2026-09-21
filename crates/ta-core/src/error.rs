@@ -7,6 +7,7 @@ use thiserror::Error;
 
 pub type Result<T, E = TaError> = std::result::Result<T, E>;
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Error)]
 pub enum TaError {
     // ---- 请求层 ----
@@ -62,6 +63,7 @@ pub enum TaError {
     Internal(String),
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct FieldError {
     /// 字段路径，如 `channels[2].credential`

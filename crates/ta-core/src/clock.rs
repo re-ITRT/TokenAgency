@@ -8,6 +8,7 @@ pub trait Clock: Send + Sync {
     fn local_offset_minutes(&self) -> i32;
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemClock;
 
@@ -22,6 +23,7 @@ impl Clock for SystemClock {
 }
 
 /// 测试用固定时钟。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy)]
 pub struct FixedClock {
     pub ms: i64,
@@ -44,6 +46,7 @@ impl Clock for FixedClock {
 }
 
 /// 一个可推进的测试时钟（用于额度窗口滚动、冷却退出这类测试）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug)]
 pub struct ManualClock {
     inner: std::sync::Mutex<FixedClock>,
@@ -69,6 +72,7 @@ impl Clock for ManualClock {
 }
 
 /// 时间范围（查询用）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeRange {

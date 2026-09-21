@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 macro_rules! string_id {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
+        #[cfg_attr(feature = "specta", derive(specta::Type))]
         #[derive(
             Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord,
             Serialize, Deserialize, schemars::JsonSchema,
@@ -65,6 +66,7 @@ string_id!(/// 客户端（从 UA 推断）
 
 // ---------------------------------------------------------------- 协议
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Protocol {
@@ -91,6 +93,12 @@ impl Protocol {
 // ---------------------------------------------------------------- Token 类型
 
 /// 归一化后的 token 类型。**契约见 `docs/11-internal-contracts.md` §6。**
+///
+/// specta 的类型由下方**手写 `impl Type`** 提供（不用 derive）：它是开放集合，
+/// 线上形态是一个**普通字符串**（`"input"` / `"input_cached"` / 上游新类型原样），
+/// 而且会作为 JSON **对象键**出现在 `TokenUsage` 里 —— 键只能是字符串。
+/// derive 会生成 `"Input" | "InputCached" | { Other: string }` 这种与线上形态
+/// 不符的联合类型，前端照着写会直接构造错误的数据。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, schemars::JsonSchema)]
 #[schemars(with = "String")]
 pub enum TokenKind {
@@ -188,7 +196,16 @@ impl std::fmt::Display for TokenKind {
     }
 }
 
+/// 手写 specta 类型：线上形态是字符串（见 `TokenKind` 的注释）。
+#[cfg(feature = "specta")]
+impl specta::Type for TokenKind {
+    fn definition(_types: &mut specta::Types) -> specta::datatype::DataType {
+        specta::datatype::DataType::Primitive(specta::datatype::Primitive::str)
+    }
+}
+
 /// 一次请求的 token 用量。**未出现的类型就是 0，不写进 map。**
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct TokenUsage(pub BTreeMap<TokenKind, u64>);
@@ -236,6 +253,7 @@ impl TokenUsage {
 
 // ---------------------------------------------------------------- 金额
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Money {
     pub amount: f64,
@@ -258,6 +276,7 @@ impl Money {
 // ---------------------------------------------------------------- 用量来源
 
 /// usage 数据从哪来——**绝不用估算值冒充真实值**。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageSource {
@@ -270,6 +289,7 @@ pub enum UsageSource {
 }
 
 /// 一次请求的用量记录（写账本用）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageRecord {
     pub request_id: RequestId,
@@ -297,6 +317,7 @@ pub struct UsageRecord {
 
 // ---------------------------------------------------------------- 日志模式
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -324,6 +345,7 @@ impl LogMode {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Retention {
@@ -349,6 +371,7 @@ impl Retention {
 
 // ---------------------------------------------------------------- 请求摘要（事件/实时流）
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct RequestSummary {
     pub request_id: RequestId,

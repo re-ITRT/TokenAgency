@@ -46,6 +46,7 @@ pub const DEFAULT_LIMIT: u32 = 1000;
 // ================================================================ 查询 DTO
 
 /// 分组维度（`docs/10-interface-spec.md` §2.2 的 `UsageQuery.group_by`）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GroupDim {
@@ -103,6 +104,9 @@ impl GroupDim {
 }
 
 /// 指标。内置指标 + **任意 `TokenKind`**（开放集合）。
+///
+/// specta 类型由下方**手写 `impl Type`** 提供：线上形态是一个普通字符串
+/// （`"requests"` / `"input_cached"` / …），derive 会生成与线上不符的变体联合类型。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Metric {
     Requests,
@@ -110,6 +114,14 @@ pub enum Metric {
     CacheHitRate,
     AvgLatency,
     Tokens(TokenKind),
+}
+
+/// 手写 specta 类型：线上形态是字符串（见 `Metric` 的注释）。
+#[cfg(feature = "specta")]
+impl specta::Type for Metric {
+    fn definition(_types: &mut specta::Types) -> specta::datatype::DataType {
+        specta::datatype::DataType::Primitive(specta::datatype::Primitive::str)
+    }
 }
 
 impl Metric {
@@ -138,6 +150,7 @@ impl Metric {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageFormat {
@@ -148,6 +161,7 @@ pub enum UsageFormat {
 }
 
 /// 状态过滤（`ok` | `retried` | `failed`）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageStatus {
@@ -156,6 +170,7 @@ pub enum UsageStatus {
     Failed,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UsageFilters {
     #[serde(default)]
@@ -171,6 +186,7 @@ pub struct UsageFilters {
     pub status: Vec<UsageStatus>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageQuery {
     pub range: TimeRange,
@@ -203,6 +219,7 @@ impl Default for UsageQuery {
 }
 
 /// 结果表的一行。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UsageRow {
     /// 时间维度的 bucket 起点（真实 unix ms，本地对齐）；无时间维度时 `None`
@@ -224,6 +241,7 @@ impl UsageRow {
 }
 
 /// 任意 chart 用的三元组（stacked_bar / area 直接吃这个）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageSeriesPoint {
     pub bucket_start_ms: i64,
@@ -231,6 +249,7 @@ pub struct UsageSeriesPoint {
     pub value: f64,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageTable {
     pub format: UsageFormat,
@@ -265,6 +284,7 @@ impl UsageTable {
 
 // ================================================================ 看板 DTO（10 §2.4）
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Num {
     pub value: f64,
@@ -281,12 +301,14 @@ impl Num {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NamedRef {
     pub id: String,
     pub name: String,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneRef {
     pub id: String,
@@ -298,6 +320,7 @@ pub struct LaneRef {
 }
 
 /// 顶部状态条。`gateway` 由 Tauri 层按真实运行态覆盖（store 无从得知进程状态）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusBar {
     /// `running` | `paused`
@@ -308,6 +331,7 @@ pub struct StatusBar {
     pub lane: Option<LaneRef>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DashboardCards {
     pub requests: Num,
@@ -316,6 +340,7 @@ pub struct DashboardCards {
     pub success_rate: f64,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Sparklines {
     pub requests: Vec<f64>,
@@ -324,6 +349,7 @@ pub struct Sparklines {
     pub success_rate: Vec<f64>,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrendPoint {
     pub bucket_ts: i64,
@@ -333,6 +359,7 @@ pub struct TrendPoint {
     pub cost: f64,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuotaBar {
     pub credential_id: String,
@@ -344,6 +371,7 @@ pub struct QuotaBar {
     pub detail: String,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneHealthItem {
     pub lane_id: String,
@@ -354,6 +382,7 @@ pub struct LaneHealthItem {
     pub ok: bool,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopModel {
     pub model: String,
@@ -361,6 +390,7 @@ pub struct TopModel {
     pub cost: f64,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheStat {
     /// `input_cached / (input + input_cached)`
@@ -370,6 +400,7 @@ pub struct CacheStat {
     pub currency: String,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DashboardData {
     pub status_bar: StatusBar,
@@ -386,6 +417,7 @@ pub struct DashboardData {
 
 // ================================================================ 额度状态 DTO
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QuotaStateRow {
     pub credential_id: String,
@@ -409,6 +441,7 @@ pub struct QuotaStateRow {
     pub updated_at: i64,
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ApiKeyUsageRow {
     pub key_id: String,
@@ -1208,6 +1241,7 @@ impl Plan {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone)]
 struct Agg {
     bucket_key: Option<i64>,

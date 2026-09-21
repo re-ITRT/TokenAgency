@@ -19,6 +19,7 @@ use ta_core::error::{Result, TaError};
 use crate::util::{from_json, to_json, StoreResultExt};
 
 /// 快照 ID（`snap_<时间戳ms>_<序号>`，不依赖 uuid 依赖）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -38,6 +39,7 @@ impl std::fmt::Display for SnapshotId {
 }
 
 /// 快照元数据（`config_history_list` 返回）。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotMeta {
     pub snapshot_id: SnapshotId,

@@ -20,6 +20,12 @@ zstd.workspace = true
 sha2.workspace = true
 base64.workspace = true
 dirs.workspace = true
+# T1：IPC 的 TS 类型直接由这些 DTO 生成（Store 是唯一真相源，不另写一份 DTO）。
+# 可选依赖：默认构建不带 specta；打开时同时打开 ta-core 的 specta（DTO 里含 ta-core 类型）。
+specta = { workspace = true, optional = true }
+
+[features]
+specta = ["dep:specta", "ta-core/specta"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -18,6 +18,7 @@ use crate::util::StoreResultExt;
 /// 健康样本保留 24h（02 §3 的保留策略）。
 pub const HEALTH_RETENTION_MS: i64 = 24 * timebucket::MS_HOUR;
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HealthSample {
     pub ts_ms: i64,
@@ -37,6 +38,7 @@ impl HealthSample {
     }
 }
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SecretMeta {
     pub name: String,

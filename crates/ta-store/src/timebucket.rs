@@ -20,6 +20,7 @@ use ta_core::clock::TimeRange;
 pub const MS_HOUR: i64 = 3_600_000;
 pub const MS_DAY: i64 = 86_400_000;
 
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TimeBucket {
