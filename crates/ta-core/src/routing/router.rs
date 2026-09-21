@@ -32,6 +32,10 @@ pub struct RouterOptions {
     /// 注入式时钟。**只用于粘性 TTL**（[`Router::new`] 造内部粘性表时用）。
     /// 冷却判定**不经过它** —— 那读的是 `RouteContext.channel_state`（由调用方填）。
     /// 外部注入 sticky（[`Router::with_sticky`]）时本字段不参与装配：那份解析器自带时钟。
+    ///
+    /// **什么时候该拆这个 `opts`**（评审 E1 提的"一个参数在一条路径上没被用"的味道）：
+    /// 目前只有一个字段这样，代价小于"与 `new` 不同形"带来的调用点复杂度；
+    /// **等出现第二个"只在某一路径生效"的字段时再拆 options**，一个字段不值得拆。
     pub clock: Arc<dyn Clock>,
     /// 可选定价引擎（`cheapest` 选择器需要它；缺失时退化为配置顺序）
     pub pricing: Option<Arc<dyn PricingEngine>>,
@@ -309,35 +313,80 @@ policies:
 
     /// **两条路径合一**：`Router::new` 必须就是 `with_sticky` + 自造解析器的特例。
     ///
-    /// 比较方式：`Debug` 输出逐字段比较（结构体自己的投影 —— 将来新增字段自动纳入，
-    /// 手写字段清单会漏）。再显式钉两个关键字段，让断言读得懂。
+    /// 比较方式分两层，**缺一不可**：
+    /// 1. `Debug` 投影比较（辅助证据）—— 结构体自己的投影，将来新增字段自动纳入，
+    ///    手写字段清单会漏。**但它不是契约**：哪天有人给这些类型手写/精简 `Debug`
+    ///    （例如为了日志只打摘要），两个**不同**的值会比出相等，这条断言就会**静默失效**。
+    /// 2. 显式字段断言（主证据）—— 把对用户可见的语义钉死，牙齿不依赖 `Debug` 的实现。
+    ///
+    /// **选项必须是非默认值**（评审 E1 之后补的红-绿教训）：全用 `default()` 时，
+    /// "某条路径漏注入一个部件"根本看不出来 —— 漏掉 `.with_options` 会悄悄退回
+    /// `sticky_write = true`，而默认值恰好也是 `true`。夹具因此显式设
+    /// `sticky_write = false` 并**每会话跑两轮**：第二轮"不命中"就是这条漏注入的探针。
     #[test]
     fn new_is_the_self_resolver_special_case_of_with_sticky() {
         let d = doc();
-        let a = Router::new(&d, RouterOptions::default());
+        let opts = || RouterOptions {
+            selector: SelectorOptions { default_ttl_ms: 7 * 3_600_000, sticky_write: false },
+            ..RouterOptions::default()
+        };
+        let a = Router::new(&d, opts());
         let b = Router::with_sticky(
             &d,
-            RouterOptions::default(),
+            opts(),
             Arc::new(MemoryStickyResolver::with_clock(Arc::new(SystemClock))),
         );
         for session in ["s-1", "s-2", "s-3"] {
-            let (da, sa) = a.route(&hints(session), &ctx());
-            let (db, sb) = b.route(&hints(session), &ctx());
-            assert_eq!(
-                format!("{da:?}"),
-                format!("{db:?}"),
-                "两次装配的 decide 必须逐字段相同（session={session}）"
-            );
-            assert_eq!(
-                sa.map(|s| format!("{s:?}")),
-                sb.map(|s| format!("{s:?}")),
-                "两次装配的 select 必须逐字段相同（session={session}）"
-            );
-            assert_eq!(da.candidates, db.candidates);
-            assert_eq!(
-                da.matched_policy.as_ref().map(|p| p.as_str()),
-                db.matched_policy.as_ref().map(|p| p.as_str())
-            );
+            for round in 1..=2 {
+                let (da, sa) = a.route(&hints(session), &ctx());
+                let (db, sb) = b.route(&hints(session), &ctx());
+                // ---- 先自检夹具前提：`sticky_write = false` 时同会话第二轮不该命中。
+                // 谁漏了这个选项，这里会先红，并直接指出原因（比"投影不同"可读）。
+                assert_eq!(
+                    sa.as_ref().map(|s| s.sticky_hit),
+                    Some(false),
+                    "第 {round} 轮：sticky_write=false 时不该命中粘性（session={session}）"
+                );
+
+                // ---- 辅助：整体投影
+                assert_eq!(
+                    format!("{da:?}"),
+                    format!("{db:?}"),
+                    "两次装配的 decide 投影必须相同（session={session} round={round}）"
+                );
+                assert_eq!(
+                    sa.as_ref().map(|s| format!("{s:?}")),
+                    sb.as_ref().map(|s| format!("{s:?}")),
+                    "两次装配的 select 投影必须相同（session={session} round={round}）"
+                );
+
+                // ---- 主证据：显式字段（不依赖 Debug 实现）
+                assert_eq!(da.candidates, db.candidates, "候选集不同（session={session}）");
+                assert_eq!(
+                    da.matched_policy.as_ref().map(|p| p.as_str()),
+                    db.matched_policy.as_ref().map(|p| p.as_str()),
+                    "命中的策略不同（session={session}）"
+                );
+                assert_eq!(da.eliminated, db.eliminated, "淘汰集与原因不同（session={session}）");
+                assert_eq!(da.pinned, db.pinned, "pin 不同（session={session}）");
+                assert_eq!(da.lane_override, db.lane_override, "线路覆盖不同（session={session}）");
+                assert_eq!(da.error_code, db.error_code, "兜底状态码不同（session={session}）");
+
+                assert_eq!(
+                    sa.is_some(),
+                    sb.is_some(),
+                    "一次选出来了、另一次没有（session={session}）"
+                );
+                if let (Some(sa), Some(sb)) = (&sa, &sb) {
+                    assert_eq!(sa.channel, sb.channel, "选中通道不同（session={session}）");
+                    assert_eq!(
+                        sa.sticky_hit, sb.sticky_hit,
+                        "粘性命中判定不同（session={session}）"
+                    );
+                    assert_eq!(sa.sticky_key, sb.sticky_key, "粘性键不同（session={session}）");
+                    assert_eq!(sa.chain, sb.chain, "失败转移链不同（session={session}）");
+                }
+            }
         }
     }
 
