@@ -98,6 +98,19 @@ impl RuntimeParts {
         self.ingress = ingress;
         self
     }
+
+    /// 接上 trace 表（[docs/12 §4 G4] ①）：sink 变成"**日志 + trace 表**"两份
+    /// （已通过 [`RuntimeParts::with_sink`] 注入的 sink 也保留，排在前面）。
+    ///
+    /// 不接的话只写日志 —— 那样"拿一个 `request_id` 筛出完整轨迹"就只剩应用日志这一路，
+    /// 前端日志页与 `ta trace` 都查不到。所以生产装配应当接上。
+    pub fn with_trace_store(mut self, store: Arc<dyn ta_store::TraceStore>) -> Self {
+        use crate::trace::{TeeAttemptSink, TraceStoreSink};
+        let trace: Arc<dyn AttemptSink> = Arc::new(TraceStoreSink::new(store));
+        // `self.sink` 默认就是日志 sink（`RuntimeParts::new`），所以组合后 = 日志 + trace 表
+        self.sink = Arc::new(TeeAttemptSink::new(vec![self.sink, trace]));
+        self
+    }
 }
 
 // ================================================================ 路由计划器
@@ -300,6 +313,9 @@ pub struct GatewayRuntime {
     pub router: Arc<LiveRouter>,
     pub pipeline: Arc<Pipeline>,
     pub state: Arc<IngressState>,
+    /// 暂停/恢复闸门（`app_pause_gateway` / `app_resume_gateway` 的接缝）。
+    /// 与 `state.gate` 是**同一个 `Arc`** —— 不要在别处再造一个。
+    pub gate: Arc<crate::ingress::GatewayGate>,
 }
 
 impl GatewayRuntime {
@@ -333,17 +349,21 @@ pub fn build_runtime(deps: &Arc<GatewayDeps>, parts: RuntimeParts) -> GatewayRun
         meter: parts.meter,
     })));
 
-    let state = Arc::new(IngressState::new(
-        deps.config.clone(),
-        deps.clock.clone(),
-        parts.passthrough,
-        parts.secrets,
-        pipeline.clone(),
-        parts.kernel,
-        parts.ingress,
-    ));
+    let gate = Arc::new(crate::ingress::GatewayGate::new());
+    let state = Arc::new(
+        IngressState::new(
+            deps.config.clone(),
+            deps.clock.clone(),
+            parts.passthrough,
+            parts.secrets,
+            pipeline.clone(),
+            parts.kernel,
+            parts.ingress,
+        )
+        .with_gate(gate.clone()),
+    );
 
-    GatewayRuntime { deps: deps.clone(), router, pipeline, state }
+    GatewayRuntime { deps: deps.clone(), router, pipeline, state, gate }
 }
 
 /// 由内核 lane 端口表造出站拨号器。
