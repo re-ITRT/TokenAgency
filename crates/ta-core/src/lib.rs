@@ -15,6 +15,7 @@ pub mod pricing;
 pub mod quota;
 pub mod routing;
 pub mod sticky;
+pub mod trace;
 pub mod types;
 
 pub use clock::{Clock, SystemClock};

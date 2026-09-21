@@ -14,6 +14,9 @@ dist/
 # 生成物（由 tauri-specta / schemars 产出，禁止手改）
 src/shared/bindings.ts
 src/shared/schema/config.schema.json
+# `gen-bindings.ps1` 在覆盖前自动备份的上一版（它**有价值**：见 docs/06 §11.2 ——
+# 生成物比手写契约窄时，`.bak` 就是唯一能还原的东西。但它是本地产物，不入库。）
+src/shared/bindings.ts.bak
 
 # 运行时数据（绝不入库）
 *.sqlite

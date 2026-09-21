@@ -31,6 +31,17 @@ pub struct IpcError {
     /// 于是每个返回 `IpcResult<T>` 的命令都会触发 clippy 的 `result_large_err`（34 处）。
     /// 装箱后 `Err` 变体降到 ~80 字节，**而线上 JSON 形态一字不变**（`Box<Value>` 序列化与 `Value` 相同）。
     /// 这比加 `#[allow]` 好：一个是真把类型变小了，一个是让检查闭嘴。
+    ///
+    /// **`#[specta(type = Any)]` 也是必需的**：`serde_json::Value` 是**递归类型**
+    /// （`Value -> Vec<Value> -> Value`），specta 展开它会产生一个**无限的 TS 类型** ——
+    /// 导出直接失败，报 `Found infinitely recursive inline named reference ... at
+    /// "IpcError_Deserialize.details.Array.0"`。
+    /// 它就是任意 JSON（配置校验时是 `FieldError[]`），给不出具体类型。
+    ///
+    /// ⚠️ 这里**不加 `cfg_attr(feature = "specta", ...)`**：`tokenagency` 没有 `specta` 这个
+    /// feature（`specta`/`tauri-specta` 是常开依赖），加了会得到
+    /// `unexpected cfg condition value`，而属性**根本不会生效**（本轮真踩到过）。
+    #[specta(type = specta_typescript::Any)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<Box<serde_json::Value>>,
 }
@@ -97,8 +108,35 @@ pub type IpcResult<T> = std::result::Result<T, IpcError>;
 ///
 /// 用 `tauri_specta::collect_commands!` —— 新增命令忘记登记会在下面的测试里被抓住
 /// （绑定文件缺命令 = 前端调用直接失败，是必须拦住的一类错）。
+///
+/// ## ★ 为什么必须调 `dangerously_cast_bigints_to_number()`
+///
+/// `specta-typescript 0.0.12`（**当前 crates.io 上的最新版**）在 `primitives.rs` 里
+/// **硬编码**拒绝导出 `i64/u64/usize/isize/i128/u128`：
+///
+/// ```text
+/// usize | isize | i64 | u64 | i128 | u128 | f128 => return Err(Error::bigint_forbidden(...))
+/// ```
+///
+/// 而我们的 DTO 里到处都是这些类型 —— **Unix 毫秒时间戳**（`i64`）、**token 计数**（`u64`）、
+/// **耗时**（`u64`）。不处理的话，绑定导出**整体失败**（连一条命令都导不出来），
+/// 而不是某个字段难看一点。
+///
+/// `tauri-specta` 为这件事留了唯一的开关就是这个方法（它自己的文档里写明了
+/// "we do not recommend it"，但要先看清代价）：
+///
+/// **代价**：TS 的 `number` 是 f64，安全整数上限 `2^53 ≈ 9.0e15`。
+/// **我们的实际取值**：
+/// - Unix 毫秒时间戳 ≈ `1.8e12`（当前）—— 差 3 个数量级
+/// - 单次请求 token 数、耗时毫秒 —— 远小于它
+///
+/// **所以在本项目里它不会丢精度。** 但这是一条**有前提的豁免**，前提是
+/// "导出到 TS 的整数字段都远小于 2^53"。**将来若新增一个可能超过它的字段**
+/// （例如以纳秒计的绝对时间戳、或累计字节数），**这个前提就破了** ——
+/// 那时该字段要单独用 `#[specta(type = String)]` 之类的方式处理，而不是继续吃这个全局开关。
 pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
     tauri_specta::Builder::<tauri::Wry>::new()
+        .dangerously_cast_bigints_to_number()
         .commands(tauri_specta::collect_commands![
             app::app_status,
             app::app_open_dir,

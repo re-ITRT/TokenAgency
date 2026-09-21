@@ -24,18 +24,13 @@ use ta_core::domain::{
 use ta_core::error::{Result, TaError};
 
 /// 客户端头 vs 上游收到的头的差异。**非空 = 网关有 bug**（自检，不是策略）。
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct HeaderDiff {
-    pub added: Vec<String>,
-    pub removed: Vec<String>,
-    pub changed: Vec<(String, String, String)>,
-}
-
-impl HeaderDiff {
-    pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
-    }
-}
+///
+/// **定义已移到 `ta_core::trace`**：它是 `ta-gateway`（生产）与 `ta-store`（落库 + 导出成 TS）
+/// 之间的共享形态。留在本 crate 会让 store 只能重复定义一份 —— 而那种重复不会报错，
+/// 只会在某天让"网关写进去的"和"store 读出来的"悄悄不一致。
+///
+/// 这里**重导出**而不是重新定义，所以 `crate::passthrough::HeaderDiff` 这个路径继续可用。
+pub use ta_core::trace::HeaderDiff;
 
 pub trait PassthroughPolicy: Send + Sync {
     /// 整体转发 + 定点修改

@@ -104,6 +104,14 @@ tauri-plugin-log = "2"
 #    权威核对：`cargo info specta@2.0.0-rc.25` / `cargo info tauri-specta@2.0.0-rc.25`。
 specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json"] }
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+# TS 导出的**类型覆盖标记**（`Any` / `Unknown` / `Number` / `BigInt`）。
+#
+# 必须显式引它，而不是只依赖 tauri-specta 的传递依赖：我们要在 **DTO 定义处**
+# （`ta-store`）写 `#[specta(type = Any)]`，那需要它是一个**直接依赖**。
+#
+# 用途只有一个：`serde_json::Value` 这类**真正任意的 JSON** 字段。
+# specta 会拒绝导出 `Value` 里的 `i64`（BigInt 禁令），而这类字段又不可能给出具体类型。
+specta-typescript = { version = "=0.0.12", features = ["serde"] }
 
 # --- 测试 ---
 insta = { version = "1", features = ["json", "yaml"] }

@@ -44,7 +44,7 @@ chrono.workspace = true
 specta = { workspace = true }
 tauri-specta = { workspace = true }
 # tauri-specta 的 TS 导出实现体（它自己只 re-export 了 Builder/Event，没有 re-export 这个类型）
-specta-typescript = "0.0.12"
+specta-typescript = { workspace = true }
 
 tauri-plugin-shell.workspace = true
 tauri-plugin-single-instance.workspace = true

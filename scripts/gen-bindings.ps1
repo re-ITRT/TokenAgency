@@ -52,6 +52,55 @@ if (Test-Path $out) {
     $len = (Get-Item $out).Length
     if ($len -gt 0) {
         Write-Host "已生成 $out ($len bytes)" -ForegroundColor Green
+
+        # ★ 契约覆盖护栏（第 10 轮新增）
+        #
+        # 背景：绑定通道打通之前，`$out` 里是**手写的 95 条命令契约**（F1 的占位），
+        # 而 T1 只注册了一部分命令。生成物会**直接覆盖**它 —— 前端 `src/shared/api/**`
+        # 依赖旧契约里的类型名，覆盖后 `npm run build` 会报一堆 TS2305（实测过）。
+        #
+        # 这里做一次**名字差集**：拿生成物的命令名去比对手写参考里的命令名，
+        # 少的那批**逐条列出来**。这不只是护栏 —— 它同时就是 T1b 要补的清单。
+        #
+        # 注意别用"文件大小"或"某个函数的出现次数"当指标：两者的 TS 形态完全不同
+        # （生成物是 `__TAURI_INVOKE("name")`，手写是 `CommandMap` 的键），
+        # 拿同一个模式去数两边只会得到 0（第 10 轮真踩到过）。
+        $refPath = Join-Path $root 'docs/contracts/bindings-handwritten-reference.ts.txt'
+        if (Test-Path $refPath) {
+            # ⚠️ 不要在 `"` 后面要求 `)`：带参数的命令长这样
+            #    `__TAURI_INVOKE("app_open_dir", { kind })`
+            # 加上 `\)` 只会匹配到**无参数**的命令，把 31 数成 14（第 10 轮真踩到过）。
+            $genNames = [regex]::Matches(
+                [System.IO.File]::ReadAllText($out), '__TAURI_INVOKE\("([a-z][a-z0-9_]*)"'
+            ) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+
+            $refText = [System.IO.File]::ReadAllText($refPath)
+            $refBlock = [regex]::Match($refText, 'export type CommandMap = \{(.*?)\n\};', 'Singleline')
+            $refNames = @()
+            if ($refBlock.Success) {
+                $refNames = [regex]::Matches(
+                    $refBlock.Groups[1].Value, '(?m)^\s{2}([a-z][a-z0-9_]*)\s*:'
+                ) | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+            }
+
+            if ($refNames.Count -gt 0) {
+                $missing = $refNames | Where-Object { $genNames -notcontains $_ }
+                Write-Host ""
+                Write-Host "命令数：生成 $($genNames.Count) / 手写契约 $($refNames.Count)" -ForegroundColor $(if ($missing.Count -gt 0) { 'Yellow' } else { 'Green' })
+                if ($missing.Count -gt 0) {
+                    Write-Host "⚠ 生成物缺少 $($missing.Count) 条命令 —— 直接覆盖会让前端 import 失败：" -ForegroundColor Yellow
+                    $shown = $missing | Select-Object -First 20
+                    Write-Host ("    " + ($shown -join '、')) -ForegroundColor Yellow
+                    if ($missing.Count -gt $shown.Count) {
+                        Write-Host "    …… 还有 $($missing.Count - $shown.Count) 条" -ForegroundColor DarkGray
+                    }
+                    Write-Host ""
+                    Write-Host "  处置：T1 补齐命令面**之后**再让生成物覆盖 $out。" -ForegroundColor DarkGray
+                    Write-Host "  上一版已备份在 $bak —— 现在要还原的话：Copy-Item $bak $out -Force" -ForegroundColor DarkGray
+                    Write-Host "  完整差集清单见 docs/contracts/bindings-handwritten-reference.ts.txt。" -ForegroundColor DarkGray
+                }
+            }
+        }
     }
     else {
         Write-Host "生成的 $out 是空文件 —— 视为失败。" -ForegroundColor Red

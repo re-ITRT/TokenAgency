@@ -23,9 +23,19 @@ dirs.workspace = true
 # T1：IPC 的 TS 类型直接由这些 DTO 生成（Store 是唯一真相源，不另写一份 DTO）。
 # 可选依赖：默认构建不带 specta；打开时同时打开 ta-core 的 specta（DTO 里含 ta-core 类型）。
 specta = { workspace = true, optional = true }
+# `specta_typescript::Any`：给**真正任意的 JSON** 字段做类型覆盖。
+#
+# 为什么必须有它：`serde_json::Value` 里含 `i64`，而 specta-typescript **禁止导出 BigInt 类类型**
+# （怕 JS 精度丢失）→ 只要 DTO 里有 `Value` 字段，绑定导出就整体失败。
+# 而请求/响应原文这类字段**不可能**给出具体类型 —— `Any` 是这个 crate 文档里为
+# `serde_json::Value` 明确准备的逃生口（见 `specta_typescript::Any` 的文档注释）。
+#
+# ⚠️ **有已知形状的字段不要用它**（例如 `header_diff` 已类型化为 `ta_core::trace::HeaderDiff`）。
+# `Any` 的含义是"这里真的是任意 JSON"，不是"懒得想类型"。
+specta-typescript = { workspace = true, optional = true }
 
 [features]
-specta = ["dep:specta", "ta-core/specta"]
+specta = ["dep:specta", "dep:specta-typescript", "ta-core/specta"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

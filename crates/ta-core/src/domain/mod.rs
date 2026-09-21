@@ -1054,6 +1054,11 @@ pub struct Transform {
     #[serde(default)]
     pub headers_override: BTreeMap<String, String>,
     /// 定点 body patch（如强制 `stream_options.include_usage=true`）
+    ///
+    /// `#[specta(type = Any)]`：用户手写的**任意 JSON 补丁**，形状由用户决定；
+    /// 而 `serde_json::Value` 是递归类型，specta 展开它会产出无限的 TS 类型
+    /// （导出会报 `Found infinitely recursive inline named reference`）。
+    #[cfg_attr(feature = "specta", specta(type = specta_typescript::Any))]
     #[serde(default)]
     pub body_patch: Map<String, Value>,
     #[cfg_attr(feature = "specta", specta(skip))]

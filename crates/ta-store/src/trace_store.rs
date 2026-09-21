@@ -22,6 +22,7 @@ use sqlx::{Row, SqlitePool};
 
 use ta_core::clock::{Clock, SystemClock};
 use ta_core::error::Result;
+use ta_core::trace::HeaderDiff;
 use ta_core::types::{
     ChannelGroupId, ChannelId, ClientId, LogMode, PolicyId, Protocol, RequestId, Retention,
 };
@@ -71,8 +72,12 @@ pub struct TraceRecord {
     pub group_id: Option<ChannelGroupId>,
     pub chosen_channel: Option<ChannelId>,
     pub attempts: Vec<TraceAttempt>,
-    /// 客户端头 vs 上游头的差异（**正常应恒为空**，非空说明网关有 bug）
-    pub header_diff: Option<serde_json::Value>,
+    /// 客户端头 vs 上游头的差异（**正常应恒为空**，非空说明网关有 bug）。
+    ///
+    /// 类型是 [`HeaderDiff`] 而不是 `serde_json::Value`：它的形状是**已知的**，
+    /// 类型化之后前端能直接渲染成"谁多了/谁少了/谁被改了"；
+    /// 顺带也避开了 specta 对 `serde_json::Value` 里 `i64` 的 BigInt 禁令。
+    pub header_diff: Option<HeaderDiff>,
     pub tokens: u64,
     pub status: u16,
     pub total_ms: u32,
@@ -80,7 +85,14 @@ pub struct TraceRecord {
     pub error: Option<String>,
     pub request_headers: Vec<(String, String)>,
     pub response_headers: Vec<(String, String)>,
+    /// ⚠️ **任意 JSON**：请求体原文（已脱敏）。
+    ///
+    /// 用 `Any` 覆盖导出类型是**有意的**：它没有固定形状（用户的请求长什么样它就是什么样），
+    /// 给不出具体类型；而 specta 又会拒绝导出 `serde_json::Value` 里的 `i64`。
+    /// **这是"这里真的是任意 JSON"，不是"懒得想类型"。**
+    #[cfg_attr(feature = "specta", specta(type = specta_typescript::Any))]
     pub request_body: Option<serde_json::Value>,
+    #[cfg_attr(feature = "specta", specta(type = specta_typescript::Any))]
     pub response_body: Option<serde_json::Value>,
 }
 
@@ -151,16 +163,23 @@ pub struct TraceRow {
 pub struct TraceDetail {
     pub row: TraceRow,
     pub attempts: Vec<TraceAttempt>,
+    /// 见 [`TraceRecord::header_diff`]：**有已知形状**，所以用具体类型而不是 `any`。
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub header_diff: Option<serde_json::Value>,
+    pub header_diff: Option<HeaderDiff>,
+    /// ⚠️ **任意 JSON**（body 的字段结构摘要），只能用 `Any`。理由同 [`TraceRecord::request_body`]。
+    #[cfg_attr(feature = "specta", specta(type = specta_typescript::Any))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body_shape: Option<serde_json::Value>,
+    #[cfg_attr(feature = "specta", specta(type = specta_typescript::Any))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_headers: Option<serde_json::Value>,
+    #[cfg_attr(feature = "specta", specta(type = specta_typescript::Any))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_headers: Option<serde_json::Value>,
+    #[cfg_attr(feature = "specta", specta(type = specta_typescript::Any))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_body: Option<serde_json::Value>,
+    #[cfg_attr(feature = "specta", specta(type = specta_typescript::Any))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_body: Option<serde_json::Value>,
 }
@@ -564,11 +583,14 @@ impl TraceStore for SqliteTraceStore {
             .flatten()
             .map(|s| from_json_or_default(&s))
             .unwrap_or_default();
+        // `header_diff` 是**有类型的**（[`HeaderDiff`]），所以这里解析成它而不是 `Value`。
+        // 老行若形态对不上，`from_json_or_default` 会退化成默认值（空差异）——
+        // 对"自检字段"来说这是安全的降级方向：**宁可看起来没有差异，也不要让整条详情读不出来**。
         let header_diff = r
             .try_get::<Option<String>, _>("header_diff")
             .ok()
             .flatten()
-            .map(|s| parse_json_or_null(&s));
+            .map(|s| from_json_or_default::<HeaderDiff>(&s));
         let body_shape = r
             .try_get::<Option<String>, _>("body_shape")
             .ok()

@@ -4923,6 +4923,7 @@ version = "0.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "639404ee95557f2f8b7e4cb773ffefd45304c7ab8ba21ac83b69051595e083c0"
 dependencies = [
+ "serde",
  "specta",
 ]
 
@@ -5297,6 +5298,7 @@ dependencies = [
  "serde_yaml_ng",
  "sha2",
  "specta",
+ "specta-typescript",
  "thiserror 2.0.20",
  "tracing",
 ]
@@ -5397,6 +5399,7 @@ dependencies = [
  "serde_yaml_ng",
  "sha2",
  "specta",
+ "specta-typescript",
  "sqlx",
  "ta-core",
  "tempfile",

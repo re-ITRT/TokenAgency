@@ -21,9 +21,19 @@ tracing.workspace = true
 # 让 IPC 的 TS 类型直接从领域类型生成（领域类型是唯一真相源）。
 # **可选依赖**：默认构建（含生产/单测）不带 specta，领域层不被 Web 框架污染。
 specta = { workspace = true, optional = true }
+# `specta_typescript::Any`：给 `Transform.body_patch` 做类型覆盖。
+#
+# 为什么需要：`serde_json::Value` 是**递归类型**（`Value -> Vec<Value> -> Value`），
+# specta 展开它会产出**无限的 TS 类型**，导出直接失败。
+# `body_patch` 是用户手写的**任意 JSON 定点补丁**（如 `stream_options.include_usage=true`），
+# 形状由用户决定 —— 给不出具体类型，`Any` 是诚实的表达。
+#
+# 注意 `extra` 那几十个 `Map<String, Value>` **不需要它**：它们已经 `specta(skip)` 了，
+# 根本不参与导出。
+specta-typescript = { workspace = true, optional = true }
 
 [features]
-specta = ["dep:specta"]
+specta = ["dep:specta", "dep:specta-typescript"]
 
 [dev-dependencies]
 pretty_assertions.workspace = true
