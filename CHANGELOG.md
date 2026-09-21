@@ -61,13 +61,44 @@
 
 ### 归档：那份手写契约
 
-`docs/contracts/bindings-handwritten-reference.ts.txt` —— F1 当年手写的 **95 条命令契约**。
+`docs/contracts/bindings-handwritten-reference.ts.txt` —— F1 当年手写的 **105 条命令契约**。
 它一直躺在 `src/shared/bindings.ts` 里，而**那个路径被 `.gitignore` 忽略、从未进版本控制**；
 生成绑定一旦跑通就会覆盖它，**而当前 T1 只注册了 31 条命令** ——
-直接覆盖会把契约从 95 缩到 31，砸掉 F2/F3/F4 的 import。
+直接覆盖会把契约从 105 缩到 31，砸掉 F2/F3/F4 的 import。
 
-存档的用途是做"95 vs 31"的差集对照。**后缀是 `.ts.txt` 而不是 `.ts`**：
+存档的用途是做"105 vs 31"的差集对照。**后缀是 `.ts.txt` 而不是 `.ts`**：
 否则 `tsc` 会把它当源码一起编译，把前端类型检查搞红（这一点本轮真踩到了）。
+
+### ✅ 绑定导出打通了（本轮最后解决的一件事）
+
+**症状**：`gen-bindings.ps1` 一直失败，连一条命令都导不出来。两个连着的原因：
+
+1. `specta-typescript 0.0.12`（**crates.io 上的最新版**）在 `primitives.rs` 里**硬编码**拒绝
+   `i64/u64/usize/isize` —— 而我们的 DTO 里满是 Unix 毫秒时间戳与 token 计数。
+   **没有任何配置项能放行**（我把源码读了：`primitive_dt(p, location)` 拿不到 exporter）。
+2. 修完 1 之后紧接着：`serde_json::Value` 是**递归类型**，specta 展开它会产出**无限的 TS 类型**。
+
+**解法（两处，缺一不可）**：
+
+- **`Builder::dangerously_cast_bigints_to_number()`** —— `tauri-specta` 为这件事留的唯一开关。
+  名字带 "dangerously" 是因为 TS 的 `number` 是 f64（安全整数上限 `2^53`）；
+  **我们的取值是 Unix 毫秒 ≈ 1.8e12，差 3 个数量级，不会丢精度**。
+  但这是**有前提的豁免**，前提已写进代码注释：将来若出现可能超过 `2^53` 的整数字段，必须单独处理。
+- 给**真正任意的 JSON** 字段加 `#[specta(type = specta_typescript::Any)]`（只有 4 处）。
+
+**顺带做对的一件事**：`header_diff` 原本是 `serde_json::Value`，但**它的形状是已知的** →
+移到 `ta_core::trace::HeaderDiff`，让 `ta-gateway`（生产）与 `ta-store`（落库/导出）**共用一份定义**。
+TS 侧因此拿到 `header_diff?: HeaderDiff | null`，而不是 `any`。
+
+**验证**：`gen-bindings.ps1` 产出 **44717 字节**的 `bindings.ts`，`header_diff?: HeaderDiff | null`。
+
+**护栏**：生成物会直接覆盖那份手写契约 → 脚本现在会做**名字差集**并逐条列出缺哪 75 条
+（实测输出：`命令数：生成 31 / 手写契约 105`）。
+
+> **还没做的是前端迁移**（T1b）：生成的绑定换了形态（camelCase 调用 + 领域类型直出），
+> 而 `src/shared/api/**` 仍按手写契约的 `CommandMap` 写。所以**现在运行生成会让
+> `npm run build` 报一堆 TS2305** —— 这是预期内的，T1 补齐命令面之后一并迁移。
+> 本轮已在生成后还原手写契约，保证门禁是绿的。
 
 ### 修掉的真实缺陷
 
@@ -90,7 +121,7 @@
 | 1 | **T1 命令面**：已注册 31 条，契约要 95 条 | 缺 64 条 |
 | 2 | **事件桥接**：`TaEvent` 10 个变体，前端一个都收不到 | 未接线 |
 | 3 | **启动编排**：`BootOrchestrator::run` 从未被调用 → 内核不会被拉起 | 未接线 |
-| 4 | **绑定导出的第二个冲突**：`TraceDetail.header_diff: serde_json::Value` 里的 `i64` 触发 specta 的 BigInt 禁令 | 见 [docs/06 §11](docs/06-roadmap-and-risks.md) |
+| 4 | ~~绑定导出的第二个冲突~~ | ✅ **已解决**（见下） |
 | 5 | **`tokenagency` 的 lib 测试目标无法运行**（`STATUS_ENTRYPOINT_NOT_FOUND`） | 见 [docs/06 §11](docs/06-roadmap-and-risks.md) |
 | 6 | 前端 F1 视觉重做（按 [docs/15](docs/15-visual-design.md)） | 未开始 |
 | 7 | W5 打包与三条不变量验收 | 未开始 |

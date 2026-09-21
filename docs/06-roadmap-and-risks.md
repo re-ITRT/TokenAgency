@@ -496,9 +496,56 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 **不要**用 `[lib] test = false` 把它藏起来 —— 那会让上面那些测试**静默地永不运行**，
 比一个已知会红的门禁更危险。
 
-## 11.2 绑定导出的第二个冲突：`serde_json::Value` 里的 BigInt
+## 11.2 ✅ 已解决：绑定导出被 specta 的两条限制拦住
 
-**症状**：`Channel` 改名之后，`scripts/gen-bindings.ps1` 报：
+> **第 10 轮收口时已修复并端到端验证**（`gen-bindings.ps1` 成功产出 44717 字节的 `bindings.ts`）。
+> 下面是**根因与解法**，留着是因为这两条限制很反直觉，后来者一定会再撞上。
+
+**当时的两条错误（同一类问题的两个面）**：
+
+1. `Attempted to export "…i64.0" but Specta forbids exporting BigInt-style types`
+   —— `specta-typescript 0.0.12`（**crates.io 上的最新版**）在 `primitives.rs` 里
+   **硬编码**拒绝 `i64/u64/usize/isize/i128/u128`，**没有任何配置项能放行**。
+   而我们的 DTO 里满是 Unix 毫秒时间戳（`i64`）与 token 计数（`u64`）。
+2. 修完 1 之后紧接着：`Found infinitely recursive inline named reference …
+   serde_json::Value -> Vec<Value> -> Value`
+   —— `serde_json::Value` 是**递归类型**，specta 展开它会产出无限的 TS 类型。
+
+**解法（两处，缺一不可）**：
+
+| # | 做法 | 位置 |
+|---|---|---|
+| 1 | **`Builder::dangerously_cast_bigints_to_number()`** —— `tauri-specta` 为这件事留的唯一开关 | `src-tauri/src/commands/mod.rs` 的 `specta_builder()` |
+| 2 | 给**真正任意的 JSON** 字段加 **`#[specta(type = specta_typescript::Any)]`** | `IpcError.details`、`Transform.body_patch`、`TraceDetail` 的 body/header 字段、`TraceRecord` 的 body 字段 |
+
+**为什么第 1 条可以接受**（它名字里带 "dangerously"）：
+TS 的 `number` 是 f64，安全整数上限 `2^53 ≈ 9.0e15`；而我们的取值是
+**Unix 毫秒 ≈ 1.8e12**（差 3 个数量级）、单次请求 token 数与耗时毫秒 —— **都不会丢精度**。
+但这是**有前提的豁免**：将来若新增可能超过 `2^53` 的整数字段（纳秒时间戳、累计字节数），
+**该字段必须单独处理**，而不是继续吃这个全局开关。已写进 `specta_builder()` 的文档注释。
+
+**顺带做对的两件事**：
+
+- `header_diff` 原本是 `Option<serde_json::Value>`，**它的形状是已知的** →
+  移到 `ta_core::trace::HeaderDiff`（`ta-gateway` 生产、`ta-store` 落库/导出**共用一份定义**，
+  避免两个 crate 各写一份而静默漂移）。TS 侧因此拿到 `header_diff?: HeaderDiff | null` 而不是 `any`。
+- `extra: Map<String, Value>` 那几十个字段**早就有 `specta(skip)`**（E1 的设计），
+  所以它们不参与导出、不需要 `Any`。**真正需要 `Any` 的只有 4 处任意 JSON 字段。**
+
+**"契约缩水"护栏**：生成物会**直接覆盖** `src/shared/bindings.ts`，而那里是 F1 手写的
+**105 条**命令契约，T1 目前只注册了 **31 条** —— 直接覆盖会让前端 `npm run build`
+报一堆 TS2305（实测过）。`gen-bindings.ps1` 现在会做**名字差集**并逐条列出缺哪 75 条，
+同时把上一版备份到 `.bak`。
+
+> **踩过的三个坑，值得记**：
+> ① 用"文件里某个函数的出现次数"当计数指标是**无效**的 —— 生成物是 `__TAURI_INVOKE("name")`、
+>    手写是 `CommandMap` 的键，同一个模式数两边只会得到 0；
+> ② 在 `"` 后面要求 `)` 只会匹配到**无参数**的命令（31 被数成 14）；
+> ③ `src-tauri` **没有 `specta` 这个 feature**（依赖是常开的），
+>    所以 `#[cfg_attr(feature = "specta", specta(...))]` 那条属性**根本不会生效**，
+>    还会附赠一个 `unexpected cfg condition value` 警告。
+
+**当时报的第一条错误（留档）**：
 
 ```
 export bindings: Attempted to export "header_diff.Number.0.i64.0" but Specta forbids
@@ -507,30 +554,15 @@ While inlining: -> ta_store::trace_store::TraceDetail_Serialize
   header_diff -> serde_json::Value
 ```
 
-**根因**：`ta-store::trace_store::TraceDetail.header_diff` 是 `serde_json::Value`，
-而 `specta-typescript 0.0.12` **禁止导出 BigInt 类类型**（怕 JS 精度丢失）。
+**当时试过但走不通的路（别重走）**：`specta-typescript 0.0.12` 的 `Typescript` 构建器
+**没有** bigint 配置方法（只有 `new/header/layout/branded_type_impl/export/export_to`）——
+所以"把 bigint 行为设成 Number"这条路**在 `specta-typescript` 这一层**不存在。
+真正的开关在**上一层**：`tauri_specta::Builder::dangerously_cast_bigints_to_number()`。
 
-**已排除**：`specta-typescript 0.0.12` 的 `Typescript` 构建器**没有** bigint 配置方法
-（只有 `new/header/layout/branded_type_impl/export/export_to`）——
-所以"把 bigint 行为设成 Number"这条路在这个版本上不存在。
-
-**三条候选方案**（**需要你这个决策者来定，因为它涉及契约**）：
-
-1. **把 `header_diff` 换成具体类型**（最佳，但是契约变更）：
-   它本来就是个结构化的 diff（`added` / `removed` / `changed`），
-   `ta-gateway::HeaderDiff` 就是那个形状。让 `ta-store` 定义一个自己的等价类型即可。
-   **好处**：前端拿到的是有类型的对象，不再是 `unknown`。
-2. **前端侧用 `unknown`**：在 `ta-store` 里造一个 `JsonValue` newtype 并手写 `impl specta::Type`
-   映射到 `unknown`。代价：`ta-store` 要在 `specta` feature 下依赖 `specta-typescript`。
-3. **换成 JSON 字符串**：`header_diff: Option<String>`，前端 `JSON.parse`。
-   最小改动，但**改了线上形态**，且让前端多一步解析。
-
-**推荐 1** —— 它与 [docs/11 §5] "错误/结构要有类型"的一贯做法一致；
-2 让数据层依赖 TS 导出器，方向不对；3 是拿契约换省事。
-
-**在此之前**：`src/shared/bindings.ts` 是**手写的 95 条占位契约**
-（文件头自称 `GENERATED REPLACEMENT PENDING`）。注意它**被 `.gitignore` 忽略、从未提交** ——
-即"生成绑定前一定要先备份，否则那份手写契约会永久丢失"。`gen-bindings.ps1` 已经会备份到 `.bak`。
+**`src/shared/bindings.ts` 的两个性质**（接手的人必须知道）：
+它**被 `.gitignore` 忽略、从未进版本控制**，而且当前内容是**手写的 105 条命令契约**。
+所以"生成绑定前一定要先备份" —— `gen-bindings.ps1` 现在会自动备份到 `.bak`，
+并且会做**名字差集**告诉你缺了哪 75 条（见下一段的护栏）。
 
 **已存档一份**：`docs/contracts/bindings-handwritten-reference.ts.txt`
 （**后缀是 `.ts.txt` 不是 `.ts`** —— 否则 `tsc` 会把它当源码一起编译，把前端类型检查搞红）。
