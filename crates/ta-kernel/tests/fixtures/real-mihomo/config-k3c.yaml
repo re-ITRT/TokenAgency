@@ -1,0 +1,23 @@
+mixed-port: 0
+external-controller: 127.0.0.1:39090
+secret: ""
+log-level: info
+mode: rule
+proxy-providers:
+  ta-lane-provider:
+    type: file
+    path: ./providers/lane.yaml
+proxy-groups:
+  - name: "G-nomatch-reject"
+    type: select
+    use: [ta-lane-provider]
+    filter: "(?i)^zzz-never-matches"
+    empty-fallback: REJECT
+listeners:
+  - name: ta-lane-reject
+    type: mixed
+    listen: 127.0.0.1
+    port: 39105
+    proxy: "G-nomatch-reject"
+rules:
+  - MATCH,G-nomatch-reject

@@ -1,0 +1,19 @@
+mixed-port: 0
+external-controller: 127.0.0.1:39090
+secret: ""
+log-level: info
+mode: rule
+proxy-providers:
+  empty-provider:
+    type: file
+    path: ./providers/EMPTY.yaml
+proxy-groups:
+  - name: "G-use-empty"
+    type: select
+    use: [empty-provider]
+  - name: "G-use-empty-reject"
+    type: select
+    use: [empty-provider]
+    empty-fallback: REJECT
+rules:
+  - MATCH,G-use-empty

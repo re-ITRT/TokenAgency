@@ -14,8 +14,13 @@
 //! `tun.enable: false`、`ipv6: false`、`mode: rule`、`profile.store-fake-ip: false`。
 //! 这里绝不生成任何系统级网络设置（不写系统代理、不改路由表、不装 TUN、不开 53 端口）。
 //!
-//! 生成前**一定**校验 `listeners[].proxy` 引用的组名/节点名，否则内核起不来
+//! 生成前**一定**校验 `listeners[].proxy` 引用的组名/节点名
 //! （引用校验失败 → `TaError::ConfigInvalid`，带 `lanes[i].group` 这类字段路径）。
+//!
+//! ⚠️ **校验的理由不是"否则内核起不来"** —— 那句话已被实测证伪（[docs/06 §1.6] K4(d)，
+//! mihomo v1.19.31）：指向一个**不存在的名字**时 listener **照样绑定成功、启动零报错**，
+//! 只在**请求真的到达时**才在内核日志里报 `[Metadata] parse failed: proxy … not found`
+//! （客户端 502）。**内核不校验，所以生成期校验是我们唯一的防线**（详见 `docs/11 §2.2` 的更正）。
 //!
 //! 关于 `enabled`：领域模型里 `enabled` 的语义是"省略 = 启用，停用必须显式写 `false`"。
 //! 所以默认**遵循**它：`enabled: false` 的 lane 不生成 listener，`enabled: false` 的订阅
@@ -402,7 +407,10 @@ impl MhConfigGen {
         }
     }
 
-    /// ★ 校验"这个组名/节点名在订阅里确实存在"，否则内核启动会失败。
+    /// ★ 校验"这个组名/节点名在订阅里确实存在"。
+    ///
+    /// **不是"否则内核会启动失败"**（K4(d) 实测证伪）：内核不校验引用，指向不存在的名字也照样
+    /// 绑定成功，只在请求到达时报 502。所以这里是**唯一**能提前拦住它的地方。
     fn check_known(
         &self,
         provider_key: &str,
@@ -427,7 +435,8 @@ impl MhConfigGen {
                         "unknown_reference",
                         format!(
                             "订阅 `{provider_key}` 里没有这个{what}：{name:?}；\
-                             listeners[].proxy 指向不存在的名字会让内核启动失败"
+                             listeners[].proxy 指向不存在的名字时**内核不会报错**（照样绑定成功），\
+                             只会在请求到达时返回 502 —— 所以在这里拦住"
                         ),
                     ));
                 }

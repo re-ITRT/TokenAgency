@@ -33,3 +33,7 @@ windows-sys = { version = "0.59", features = [
 wiremock.workspace = true
 insta.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# 只为 `tests/child_log_tracing.rs`：捕获 tracing 输出以证明内核输出真的被转发了。
+# 用真的 tracing_subscriber（而不是自己写个 Subscriber）是因为**这个测试要证的就是
+# "在我们实际用的订阅者下能被看见"** —— 生产路径也是它。
+tracing-subscriber.workspace = true

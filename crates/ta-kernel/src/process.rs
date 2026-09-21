@@ -29,6 +29,9 @@ use ta_core::domain::{ConfigDoc, KernelProvider};
 use ta_core::error::{FieldError, Result, TaError};
 use ta_core::types::LaneId;
 
+use crate::childlog::{
+    pump_reader, ChildLogSink, ChildLogSinkFactory, ChildStream, DefaultChildLogSinks,
+};
 use crate::config_gen::KernelConfigSource;
 use crate::rest::{normalize_controller, KernelRest};
 use crate::{KernelController, KernelState, KernelStatus, ProvidersSnapshot};
@@ -189,12 +192,77 @@ pub trait ProcessSpawner: Send + Sync {
     fn is_alive(&self, pid: u32) -> bool;
     /// 先 TERM（等 `grace`），还活着就强杀
     async fn terminate(&self, pid: u32, grace: Duration) -> Result<()>;
+
+    /// 等这次 spawn 的日志读取线程把管道读到 EOF（**带超时**）。返回是否全部读完。
+    ///
+    /// 为什么需要：读取线程是 detach 的。进程刚死时，**崩溃现场的最后几行可能还在管道里**
+    /// —— 而 B4 的全部意义就是那几行。所以关停路径必须能**有界地**等它们落完；
+    /// 早先"直接丢句柄"的写法让最后几行有机会丢在缓冲区里。
+    ///
+    /// 没读完（超时）返回 `false`：剩下的线程会在 EOF 后自行结束，**不 join**
+    /// （孙进程握着管道时 join 会无限阻塞，那会让 stop 卡死）。
+    /// 默认实现返回 `true`：假 spawner 没有读线程。
+    fn drain_logs(&self, _pid: u32, _timeout: Duration) -> bool {
+        true
+    }
+}
+
+/// 日志读取线程的**落盘宽限**：进程确认已死之后，最多等这么久把残留读出来。
+/// 管道已 EOF 时线程会立刻结束，所以正常路径下这个等待是**微秒级**的。
+const LOG_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// 一个 pid 的读线程 + 它们的完成信号（用于"有界地等读完"）。
+struct PumpGroup {
+    handles: Vec<std::thread::JoinHandle<()>>,
+    progress: Arc<PumpProgress>,
+}
+
+/// 读线程的存活计数：归零 = 全部把管道读到了 EOF。
+#[derive(Default)]
+struct PumpProgress {
+    live: Mutex<usize>,
+    done: std::sync::Condvar,
+}
+
+impl PumpProgress {
+    /// 开一个读线程**之前**先加一（否则线程可能先结束、计数变负）。
+    fn add(&self) {
+        *self.live.lock().expect("读线程计数锁被毒化") += 1;
+    }
+
+    fn finish(&self) {
+        let mut live = self.live.lock().expect("读线程计数锁被毒化");
+        *live = live.saturating_sub(1);
+        self.done.notify_all();
+    }
+
+    fn count(&self) -> usize {
+        *self.live.lock().expect("读线程计数锁被毒化")
+    }
 }
 
 /// 用 `std::process::Child` 真拉进程；Windows 上绑 Job Object。
-#[derive(Default)]
+///
+/// **stdout/stderr 不走 `Stdio::from(file)`**：那样内核的输出只落文件，一行都到不了我们的
+/// `tracing` —— 于是"内核自己在 `level=error` 说了原因，而我们的日志里什么都没有"
+/// （[docs/06 §1.6] B4；真夹具 `emptya.log` / `emptyb.log` 就是这个场景）。
+/// 现在两条管道由 [`crate::childlog`] 的读取线程逐行接管，再交给可注入的 sink。
 pub struct SystemSpawner {
     children: Mutex<BTreeMap<u32, ManagedChild>>,
+    /// 内核输出的去向。生产默认是"落 `kernel.log` + 转发进 tracing"两份都要。
+    log_sinks: Arc<dyn ChildLogSinkFactory>,
+    /// 每个 pid 的读线程与完成信号（见 [`SystemSpawner::drain_logs`] 的语义）。
+    log_pumps: Mutex<BTreeMap<u32, PumpGroup>>,
+}
+
+impl Default for SystemSpawner {
+    fn default() -> Self {
+        Self {
+            children: Mutex::new(BTreeMap::new()),
+            log_sinks: Arc::new(DefaultChildLogSinks),
+            log_pumps: Mutex::new(BTreeMap::new()),
+        }
+    }
 }
 
 struct ManagedChild {
@@ -213,6 +281,67 @@ impl std::fmt::Debug for SystemSpawner {
 impl SystemSpawner {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 注入内核输出的去向（测试用；默认 = `kernel.log` + `tracing` 两份）。
+    pub fn with_log_sinks(mut self, log_sinks: Arc<dyn ChildLogSinkFactory>) -> Self {
+        self.log_sinks = log_sinks;
+        self
+    }
+
+    /// 还有多少条读线程没读完（测试 / 诊断用）。
+    pub fn pump_count(&self) -> usize {
+        self.log_pumps.lock().expect("spawner 锁被毒化").values().map(|g| g.progress.count()).sum()
+    }
+
+    /// 关停路径用：把所有 pid 的日志读完（每个最多等 `timeout`），返回**没读完的 pid 数**。
+    ///
+    /// 应用退出前该调它（或在 `stop()` 路径上依赖 `terminate` 的自动 drain）——
+    /// 否则"内核崩溃现场的最后几行"可能还在管道里。
+    pub fn shutdown_logs(&self, timeout: Duration) -> usize {
+        let pids: Vec<u32> =
+            self.log_pumps.lock().expect("spawner 锁被毒化").keys().copied().collect();
+        pids.into_iter().filter(|pid| !self.drain_logs(*pid, timeout)).count()
+    }
+
+    /// 起一个专用线程逐行转发一条管道。
+    ///
+    /// `pump_reader` 是阻塞 IO，绝不能挂在 tokio 的工作线程上（会把整个异步运行时拖住）。
+    ///
+    /// 线程创建失败**不 panic**：那时读端随闭包一起被丢掉（等于关掉我们这一端），
+    /// 内核写它会拿到 EPIPE，而不是被堵死。相比"日志线程没起来就把内核卡住"，这是更小的问题。
+    fn spawn_log_pump<R>(
+        &self,
+        pid: u32,
+        reader: R,
+        stream: ChildStream,
+        sink: Arc<dyn ChildLogSink>,
+        progress: Arc<PumpProgress>,
+    ) -> Option<std::thread::JoinHandle<()>>
+    where
+        R: std::io::Read + Send + 'static,
+    {
+        progress.add();
+        // 线程里用一份克隆：`Err` 分支还要用 `progress` 把计数还回去
+        let in_thread = progress.clone();
+        match std::thread::Builder::new()
+            .name(format!("ta-kernel-log-{pid}-{}", stream.as_str()))
+            .spawn(move || {
+                pump_reader(reader, stream, sink.as_ref());
+                // 读到 EOF（或出错）才算完 —— 这是 drain_logs 唯一等的信号
+                in_thread.finish();
+            }) {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                // 线程没起来就不会有人 finish，手动把计数还回去，否则 drain_logs 会白等超时
+                progress.finish();
+                tracing::warn!(
+                    pid,
+                    "起内核日志读取线程失败，这条流的输出不会被转发（内核仍可运行）：{e}"
+                );
+                None
+            }
+        }
     }
 
     /// 被管进程数（测试 / 诊断用）
@@ -245,18 +374,17 @@ impl ProcessSpawner for SystemSpawner {
     async fn spawn(&self, cfg: &KernelProcessConfig) -> Result<u32> {
         cfg.validate()?;
         std::fs::create_dir_all(&cfg.work_dir)?;
-        if let Some(dir) = cfg.log_path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let log = std::fs::OpenOptions::new().create(true).append(true).open(&cfg.log_path)?;
-        let err_log = log.try_clone()?;
+        // 每次 spawn 按当前 log_path 造 sink（默认会把 kernel.log 建出来 —— [docs/14 C1] 的落点）。
+        // **打不开就失败**：不能静默退化成"只有 tracing"（那样 log_tail 的空串会同时表示
+        // "没有日志文件"和"内核没输出"，[14] 明确禁止这种混淆）。
+        let sink = self.log_sinks.sink_for(&cfg.log_path)?;
 
         let mut cmd = Command::new(&cfg.program);
         cmd.args(&cfg.args)
             .current_dir(&cfg.work_dir)
             .stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(err_log));
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         // 不给子进程继承我们的环境代理设置（内核自己管出站）
         cmd.env_remove("HTTP_PROXY")
             .env_remove("HTTPS_PROXY")
@@ -265,10 +393,35 @@ impl ProcessSpawner for SystemSpawner {
             .env_remove("https_proxy")
             .env_remove("all_proxy");
 
-        let child = cmd.spawn().map_err(|e| {
+        let mut child = cmd.spawn().map_err(|e| {
             TaError::Kernel(format!("拉起内核失败（{}）：{e}", cfg.program.display()))
         })?;
         let pid = child.id();
+
+        // 两条管道各起一个专用线程逐行转发。放在 Job Object 绑定之前也要放在
+        // `children` 插入之前 —— 越早开始读，越不容易在内核猛刷日志时把管道塞满。
+        let progress = Arc::new(PumpProgress::default());
+        let mut handles: Vec<std::thread::JoinHandle<()>> = Vec::new();
+        if let Some(out) = child.stdout.take() {
+            if let Some(handle) =
+                self.spawn_log_pump(pid, out, ChildStream::Stdout, sink.clone(), progress.clone())
+            {
+                handles.push(handle);
+            }
+        }
+        if let Some(err) = child.stderr.take() {
+            if let Some(handle) =
+                self.spawn_log_pump(pid, err, ChildStream::Stderr, sink, progress.clone())
+            {
+                handles.push(handle);
+            }
+        }
+        if !handles.is_empty() {
+            self.log_pumps
+                .lock()
+                .expect("spawner 锁被毒化")
+                .insert(pid, PumpGroup { handles, progress });
+        }
 
         #[cfg(windows)]
         let job = {
@@ -299,23 +452,65 @@ impl ProcessSpawner for SystemSpawner {
     }
 
     fn is_alive(&self, pid: u32) -> bool {
-        let mut map = self.children.lock().expect("spawner 锁被毒化");
-        match map.get_mut(&pid) {
-            Some(mc) => match mc.child.try_wait() {
-                Ok(None) => true,
-                Ok(Some(status)) => {
-                    tracing::info!(pid, ?status, "内核进程已退出");
-                    map.remove(&pid);
-                    false
-                }
-                Err(e) => {
-                    tracing::warn!(pid, error = %e, "查询内核进程状态失败，按已退出处理");
-                    map.remove(&pid);
-                    false
-                }
-            },
-            None => false,
+        // 先只动 `children` 的锁；`log_pumps` 在锁外回收 ——
+        // 两把锁的获取顺序必须与 `spawn` 一致，否则并发时会死锁。
+        let exited = {
+            let mut map = self.children.lock().expect("spawner 锁被毒化");
+            match map.get_mut(&pid) {
+                Some(mc) => match mc.child.try_wait() {
+                    Ok(None) => false,
+                    Ok(Some(status)) => {
+                        tracing::info!(pid, ?status, "内核进程已退出");
+                        map.remove(&pid);
+                        true
+                    }
+                    Err(e) => {
+                        tracing::warn!(pid, error = %e, "查询内核进程状态失败，按已退出处理");
+                        map.remove(&pid);
+                        true
+                    }
+                },
+                None => return false,
+            }
+        };
+        if exited {
+            // 进程没了 → 管道 EOF → 读线程很快结束。有界等它们读完，
+            // 否则"内核退出前最后那几行"可能还在管道缓冲里（B4 的意义正是那几行）。
+            self.drain_logs(pid, LOG_DRAIN_TIMEOUT);
         }
+        !exited
+    }
+
+    /// 有界地等某个 pid 的读线程读完（见 trait 文档）。
+    fn drain_logs(&self, pid: u32, timeout: Duration) -> bool {
+        let group = match self.log_pumps.lock().expect("spawner 锁被毒化").remove(&pid) {
+            Some(group) => group,
+            None => return true, // 没有读线程（或已经 drain 过）→ 当作已完成
+        };
+        let deadline = Instant::now() + timeout;
+        {
+            let mut live = group.progress.live.lock().expect("读线程计数锁被毒化");
+            while *live > 0 {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                let (guard, _) = group
+                    .progress
+                    .done
+                    .wait_timeout(live, deadline - now)
+                    .expect("读线程计数锁被毒化");
+                live = guard;
+            }
+        }
+        let all_done = group.progress.count() == 0;
+        if all_done {
+            // 已经结束 → join 立刻返回；**只在确认结束时 join**，否则会无限阻塞
+            for handle in group.handles {
+                let _ = handle.join();
+            }
+        }
+        all_done
     }
 
     async fn terminate(&self, pid: u32, grace: Duration) -> Result<()> {
@@ -328,6 +523,8 @@ impl ProcessSpawner for SystemSpawner {
                 graceful_signal(pid);
                 wait_gone(pid, grace).await;
                 force_kill_pid(pid);
+                // 进程没了就有界地把它的输出读完（见 drain_logs）
+                self.drain_logs(pid, LOG_DRAIN_TIMEOUT);
                 return Ok(());
             }
         };
@@ -340,6 +537,7 @@ impl ProcessSpawner for SystemSpawner {
             match mc.child.try_wait() {
                 Ok(Some(_)) => {
                     tracing::info!(pid, "内核进程已优雅退出");
+                    self.drain_logs(pid, LOG_DRAIN_TIMEOUT);
                     return Ok(());
                 }
                 Err(e) => {
@@ -358,6 +556,8 @@ impl ProcessSpawner for SystemSpawner {
         force_kill_pid(pid);
         let _ = mc.child.kill();
         let _ = mc.child.wait();
+        // 进程已确认死亡 → 有界地把它的输出读完（B4 的意义就是那最后几行）
+        self.drain_logs(pid, LOG_DRAIN_TIMEOUT);
         Ok(())
     }
 }
@@ -1016,6 +1216,9 @@ impl KernelController for KernelSupervisor {
         };
         if let Some(pid) = pid {
             self.spawner.terminate(pid, self.cfg.terminate_grace).await?;
+            // terminate 内部已经 drain 过一次；这里显式再收一次，让"关停 = 日志读完"这条
+            // 语义在 stop 这个入口上也看得见（幂等：读线程已结束时会立刻返回）
+            self.spawner.drain_logs(pid, LOG_DRAIN_TIMEOUT);
         }
         let mut i = self.lock();
         i.state = KernelState::Stopped;
@@ -1142,11 +1345,30 @@ fn tail_file(path: &Path, lines: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::childlog::{ChildLogLine, FixedChildLogSink};
     use crate::config_gen::KernelConfigSource;
     use crate::testutil::TempDir;
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    /// 记录内核输出行的 sink（B3 的断言用）。
+    #[derive(Default)]
+    struct RecordingChildSink {
+        lines: Mutex<Vec<String>>,
+    }
+
+    impl RecordingChildSink {
+        fn taken(&self) -> Vec<String> {
+            self.lines.lock().unwrap().clone()
+        }
+    }
+
+    impl crate::childlog::ChildLogSink for RecordingChildSink {
+        fn emit(&self, line: &ChildLogLine) {
+            self.lines.lock().unwrap().push(line.raw.clone());
+        }
+    }
 
     // ------------------------------------------------------------ 假 spawner
 
@@ -1882,6 +2104,63 @@ net:
         {
             (PathBuf::from("sleep"), vec!["60".to_string()])
         }
+    }
+
+    /// 把两行文字写进文件，再让一个真进程把它打到 stdout（跨平台）。
+    /// 用文件而不是 `echo "a & echo b"`：命令行引号在 `cmd.exe` 下不可靠。
+    fn printer_command(body: &str, dir: &TempDir) -> (PathBuf, Vec<String>) {
+        let file = dir.join("child.log");
+        std::fs::write(&file, body).expect("写子进程输出夹具");
+        let p = file.to_string_lossy().to_string();
+        #[cfg(windows)]
+        {
+            // 命令与路径分两个参数（`cmd.exe` 不认 `\"` 转义）
+            (PathBuf::from("cmd"), vec!["/c".to_string(), "type".to_string(), p])
+        }
+        #[cfg(not(windows))]
+        {
+            (PathBuf::from("sh"), vec!["-c".to_string(), format!("cat '{p}'")])
+        }
+    }
+
+    /// B3（同行评审）：关停路径必须**有界地**把内核最后几行读完。
+    ///
+    /// 读线程是 detach 的，早先的写法直接丢句柄 → 进程刚死时管道缓冲里那几行有机会丢，
+    /// 而"崩溃现场的最后一行"正是 B4 存在的全部理由。现在 `is_alive` / `terminate`
+    /// 都会调 `drain_logs`（带超时）；这里用真进程 + 真管道断言**最后一行没丢**。
+    #[tokio::test]
+    async fn child_output_is_drained_before_the_spawner_lets_go() {
+        let dir = TempDir::new("drain");
+        let sink = Arc::new(RecordingChildSink::default());
+        let spawner =
+            SystemSpawner::new().with_log_sinks(Arc::new(FixedChildLogSink(sink.clone())));
+
+        // 故意让最后一行**没有尾随换行**：EOF 残留也必须交出来
+        let (program, args) = printer_command("first-line\nlast-line-before-exit", &dir);
+        let cfg = KernelProcessConfig::new(program, dir.path(), dir.path(), "127.0.0.1:1", "s")
+            .with_args(args);
+        let pid = spawner.spawn(&cfg).await.expect("拉起假内核");
+
+        // 等它自己退出（`is_alive` 检测到退出时会 drain）
+        let mut exited = false;
+        for _ in 0..200 {
+            if !spawner.is_alive(pid) {
+                exited = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(exited, "子进程应当自己退出");
+
+        assert!(spawner.drain_logs(pid, Duration::from_secs(5)), "不该超时");
+        assert_eq!(spawner.pump_count(), 0, "读线程必须已全部结束");
+        let lines = sink.taken();
+        assert_eq!(
+            lines,
+            vec!["first-line".to_string(), "last-line-before-exit".to_string()],
+            "两行都要在，尤其最后那行"
+        );
+        assert_eq!(spawner.shutdown_logs(Duration::from_millis(50)), 0, "没有未读完的 pid");
     }
 
     #[tokio::test]
