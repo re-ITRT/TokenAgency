@@ -383,8 +383,14 @@ fn usage_is_absent(protocol: Protocol, raw: &Value) -> bool {
 ///
 /// 只用于"整包里没走到任何协议路径"的兜底判断，所以它宁可**保守**：
 /// 认不出来就当"没有数据"，走估算（诚实），而不是当成"上游说 0"（冒充）。
+///
+/// **必须有"数值证据"，光有键名不算**（评审 E1 的收紧建议）：一个整包里碰巧带
+/// `token_budget: null` / `token_limit: "1000"` 这类键，既不是 usage 数据，
+/// 判成"上游给了"又会回到"静默少记 0"那条老路。有键无数 → 当作没有证据。
 fn looks_like_usage_container(v: &Value) -> bool {
-    v.as_object().is_some_and(|m| m.keys().any(|k| k.to_ascii_lowercase().contains("token")))
+    v.as_object().is_some_and(|m| {
+        m.iter().any(|(k, val)| k.to_ascii_lowercase().contains("token") && val.is_number())
+    })
 }
 
 // ---------------------------------------------------------------- 测试
@@ -1098,5 +1104,28 @@ mod tests {
         let m = metered_usage_for(Protocol::Openai, Some(&json!({"usage": {}})), &body);
         assert_eq!(m.source, UsageSource::UpstreamPartial, "显式的空 usage 对象 = 上游说 0");
         assert_eq!(m.usage.total(), 0);
+    }
+
+    /// 评审 E1 的收紧建议：兜底识别要有**数值证据**，光有 `token` 字样的键名不算。
+    ///
+    /// 否则一个整包里碰巧带 `token_budget: null` 就会被当成"上游给了容器" →
+    /// 归一化成 `UpstreamPartial/0`，又回到这次刚修掉的"静默少记"。
+    #[test]
+    fn a_token_key_without_a_numeric_value_is_not_evidence() {
+        let body = json!({"messages": [{"role": "user", "content": "x"}]});
+        for raw in [
+            json!({"model": "gpt-4o", "token_budget": null}),
+            json!({"token_limit": "1000"}),
+            json!({"tokens": {"a": 1}}),
+        ] {
+            let m = metered_usage_for(Protocol::Openai, Some(&raw), &body);
+            assert_eq!(m.source, UsageSource::Estimated, "只有键名不算证据（raw={raw}）");
+            assert!(m.usage.total() > 0, "保守方向：认不出就当不知道（raw={raw}）");
+        }
+        // 有数值才算"上游给了" —— 哪怕是 0，那也是上游明确说的 0
+        let zero = json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0});
+        let m = metered_usage_for(Protocol::Openai, Some(&zero), &body);
+        assert_eq!(m.source, UsageSource::UpstreamPartial, "数值型容器仍是上游数据");
+        assert_eq!(m.usage.total(), 0, "上游明确说 0 就是 0");
     }
 }
