@@ -44,12 +44,37 @@ function GitText {
     return "$out".Trim()
 }
 
-$diffBase = if ($Against) { @($Against) } else { @() }
+$diffBase = @()
+if ($Against) { $diffBase = @($Against) }
 
 function Fail($msg) { Write-Host "`n✘ $msg`n" -ForegroundColor Red; exit 1 }
 function Info($msg) { Write-Host "› $msg" -ForegroundColor Cyan }
 function Warn($msg) { Write-Host "! $msg" -ForegroundColor Yellow }
 function Ok($msg)   { Write-Host "✔ $msg" -ForegroundColor Green }
+
+# ⚠️ 门禁的"改动集"只能有一个来源，而且**git 失败必须与"没有改动"分开**。
+#
+# 我在这里犯过一次、而且比原来更糟（E2 与 E5 各自实测撞到，E2 定位到行）：
+#     $diffBase = if ($Against) { @($Against) } else { @() }
+#   PowerShell 的 `if` 会把单元素数组**展平成 String**，于是 `@diffBase` 对字符串
+#   splat 时**逐字符**传参（`git diff --cached f a b ...`）→ git 报错；而
+#   `2>$null` 把报错吞了 → `$staged` 为空 → 打印 `✔ 没有暂存文件，跳过` 并 **exit 0**。
+#   → **门禁静默退化成一个空操作，而且显示通过。**
+#
+# 所以这里两条一起改（E2 的建议）：
+#   ① `[string[]]` 显式保型，不让 PowerShell 展平；
+#   ② 检查 `$LASTEXITCODE` —— **"git 失败"永远不许伪装成"没有改动"**。
+function Get-ChangedSet {
+    param([string]$IndexHint)
+    $gitArgs = @('diff', '--cached', '--name-only', '--diff-filter=ACMR')
+    if ($IndexHint) { $gitArgs += $IndexHint }
+    $out = @(& git @gitArgs 2>&1)
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
+        Fail "git diff 失败（exit $code）—— 门禁无法确定改动集。**这不是「没有改动」**。`n  $($out -join "`n  ")"
+    }
+    return @($out | Where-Object { $_ })
+}
 
 $root = (git rev-parse --show-toplevel).Trim()
 Set-Location $root
@@ -63,8 +88,18 @@ if ($IndexFile) {
 }
 
 try {
-    $staged = @(& git diff --cached @diffBase --name-only --diff-filter=ACMR 2>$null)
-    if ($staged.Count -eq 0) { Ok '没有暂存文件，跳过'; exit 0 }
+    $staged = @(Get-ChangedSet -IndexHint ($diffBase -join ''))
+    if ($staged.Count -eq 0) {
+        # 钩子模式下"没有暂存文件"是正常的（用户只改了一个非代码文件）；但**在 PR 模式下
+        # 空改动集意味着工具链出了问题** —— 由调用方（pr.ps1）在更早处就会拒绝空 PR，
+        # 所以这里只需把两种情形区分清楚，不再无条件报"通过"。
+        if ($diffBase.Count -gt 0) {
+            Ok "相对 $Against 没有改动（不是错误；空 PR 由 pr.ps1 更早处拦截）"
+        } else {
+            Ok '没有暂存文件，跳过'
+        }
+        exit 0
+    }
 
     # ------------------------------------------------------------ 1) 明文密钥守卫
     $leakFail = @()
