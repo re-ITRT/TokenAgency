@@ -172,7 +172,9 @@ export const ROUTES: readonly AppRoute[] = [
     icon: ReceiptLongOutlinedIcon,
     owner: "F2",
     nav: true,
-    pages: ["logs"],
+    // 与 dashboard 一致：两个候选都列出（单文件形式 `logs.tsx` 与文件夹形式 `logs/index.tsx`）。
+    // 已落地的是 `src/pages/logs/index.tsx`（`pageRegistry` 的约定是"候选路径见本表"）。
+    pages: ["logs", "logs/index"],
     docRef: "07 §2 请求日志",
   },
   {
