@@ -44,6 +44,10 @@ param(
 
     [switch]$DryRun,
     [switch]$NoGate,
+
+    # 从基点重新开始，丢弃分支上已有的提交。用于改基点、或修掉 PR 里不该有的东西
+    # （例如隐式带上来的 Cargo.lock）。不加就是**追加**一个提交。
+    [switch]$Reset,
     [switch]$List,
     [string]$Show
 )
@@ -122,10 +126,29 @@ if ($outside.Count -gt 0 -and -not $Override) {
 
 # ---------------------------------------------------------------- 2) 收集实际改动
 #
-# ⚠️ 搜索集要 **加上隐式范围**（`Cargo.lock`）：它虽然不在「你要提的路径」里，
-# 但改任何 crate 的 `Cargo.toml` 都会连带改它。不带上，PR 就会并入新依赖却
-# 留下不一致的锁文件 —— 合并后变成"别人的树突然变脏"，而且没人觉得是自己的责任。
-$searchPaths = @($requested + $ImplicitScopes | Sort-Object -Unique)
+# 先只看**你自己范围**内的改动。
+$ownChanged = @()
+foreach ($line in @(git status --porcelain --untracked-files=all -- $requested)) {
+    if (-not $line) { continue }
+    $p = $line.Substring(3)
+    if ($p -match ' -> ') { $p = ($p -split ' -> ')[1] }
+    $ownChanged += $p.Trim('"')
+}
+$ownChanged = @($ownChanged | Sort-Object -Unique)
+
+# 隐式范围（`Cargo.lock`）**只在确实由本次改动引起时**才带上：
+# 只有你动了某个 `Cargo.toml`，锁文件才可能是你造成的。
+#
+# 无条件带上会把**别人**在途的依赖变更捎进你的 PR —— 真实发生过：E4 改了
+# `crates/ta-kernel/Cargo.toml`（在途未提交），E2 提 PR 时就多出一个不属于它的
+# `Cargo.lock` 变更。合并它等于让 main 的锁文件先于 manifest 落地。
+$touchedManifest = @($ownChanged | Where-Object { $_ -like '*Cargo.toml' }).Count -gt 0
+$searchPaths = if ($touchedManifest) {
+    @($requested + $ImplicitScopes | Sort-Object -Unique)
+} else {
+    $requested
+}
+
 $changed = @()
 foreach ($line in @(git status --porcelain --untracked-files=all -- $searchPaths)) {
     if (-not $line) { continue }
@@ -148,8 +171,10 @@ $idx = Join-Path $tmpDir 'index'
 
 $tipRaw = (git rev-parse --verify -q "refs/heads/$branch")
 $hasBranch = ($LASTEXITCODE -eq 0 -and $tipRaw)
-$parent = if ($hasBranch) { $tipRaw.Trim() } else { $base }
+$tip = if ($hasBranch) { $tipRaw.Trim() } else { $null }
+$parent = if ($hasBranch -and -not $Reset) { $tip } else { $base }
 $seed = $parent
+if ($Reset -and $hasBranch) { Write-Host "› -Reset：分支 $branch 将从基点 $($base.Substring(0,7)) 重新开始（已有提交被丢弃）" -ForegroundColor Yellow }
 
 $savedIndex = $env:GIT_INDEX_FILE
 try {
@@ -230,7 +255,7 @@ try {
     $env:GIT_COMMITTER_NAME = $savedAuthor.CN; $env:GIT_COMMITTER_EMAIL = $savedAuthor.CE
 }
 
-$oldValue = if ($hasBranch) { $parent } else { '0000000000000000000000000000000000000000' }
+$oldValue = if ($hasBranch) { $tip } else { '0000000000000000000000000000000000000000' }
 & git update-ref "refs/heads/$branch" $commit $oldValue
 if ($LASTEXITCODE -ne 0) {
     Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue

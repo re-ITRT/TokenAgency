@@ -12,7 +12,19 @@ dist/
 /src-tauri/gen
 
 # 生成物（由 tauri-specta / schemars 产出，禁止手改）
-src/shared/bindings.ts
+#
+# ⚠️ `src/shared/bindings.ts` **当前不在忽略列表里**（第 11 轮改）。
+#
+# 原因：它现在装的是**手写的 105 条命令契约**，而 `src/shared/api/**` 下有 5+ 个
+# 文件 `import ... from "@/shared/bindings"` —— 忽略它 = **干净 clone 根本构建不了**
+# （tsc 报模块不存在）。构建不出来就谈不上"可安装包"，也谈不上别人能复现我们的结果。
+#
+# 它被忽略的那些天里，"契约"其实不在版本控制里：唯一能还原的只有
+# `docs/contracts/bindings-handwritten-reference.ts.txt` 那份归档，而且**没有任何
+# 机制会把归档复制回去**。这是 L22 的同族问题：完成的工作没入库。
+#
+# T1b（E1 把 `src/shared/api/**` 迁到生成物上）完成后再把它放回生成物规则里 ——
+# 那时它会由 `gen-bindings.ps1` 产出，重新忽略才是对的。
 src/shared/schema/config.schema.json
 # `gen-bindings.ps1` 在覆盖前自动备份的上一版（它**有价值**：见 docs/06 §11.2 ——
 # 生成物比手写契约窄时，`.bak` 就是唯一能还原的东西。但它是本地产物，不入库。）
