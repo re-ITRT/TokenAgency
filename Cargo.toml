@@ -96,7 +96,13 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-log = "2"
 # 注意：specta 2 目前只有 RC，必须显式钉版本（工作包 T1 使用）
-specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json", "typescript"] }
+#
+# ⚠️ `specta` **没有** `typescript` feature —— TS 导出在 `tauri-specta` 的
+#    `typescript` / `javascript`（两者是同一 feature 的别名，都指向 `specta-typescript`）后面。
+#    把 `typescript` 写在 specta 上会让**任何** `specta = { workspace = true }` 的
+#    下游 crate 直接解析失败（员工 E3 做 T1 时撞到，我先撞到了它自己）。
+#    权威核对：`cargo info specta@2.0.0-rc.25` / `cargo info tauri-specta@2.0.0-rc.25`。
+specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json"] }
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 
 # --- 测试 ---

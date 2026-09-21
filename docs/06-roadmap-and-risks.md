@@ -35,11 +35,11 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 | K1 | ✅ **已验证（见 §1.6）：成立** —— `listeners` 增删可靠 `PUT /configs?force=true` 生效**且进程不重启**（PID 不变） | 当前 `apply()` 策略是"能 reload 就 reload，报错才 restart"。**若 reload 静默成功但 listener 陈旧，则策略是错的** —— 会出现"通道指向一个已关闭的端口"，且没有任何报错 | 改端口 / 加删 lane → reload → 断言**新端口在 listen 且旧端口已关** |
 | K2 | ✅ **已验证（见 §1.6）：成立** —— 冷启动创建指向 `use: [provider]` 的组**不失败**，组当场可用（节点以 `alive:false` 存在） | 启动即失败，或通道静默不可用 | 冷启动（无缓存）直接起，看日志与 `GET /proxies` |
 | K3 | `proxy-groups` 上的 `filter` / `exclude-filter` 与 `use`（provider）可同时用 | `filter` lane 全部失效 | 生成一个带 filter 的组，看节点数与正则是否吻合 |
-| K4 | `listeners[].proxy` 可直接指**裸节点名**与**订阅自带组名（含 emoji）** | 线路分配的核心机制失效（docs/04 §7.1 全靠这条） | 两种各配一条 lane，`curl -x` 验证出口 |
+| K4 | ✅ **已验证（见 §1.6）：成立** —— `listeners[].proxy` 可指**裸节点名**、**带 emoji 的组名**、`DIRECT`，路由日志确认按目标走。**但内核不校验**：指不存在的名字也照样绑定成功、只在请求时炸 → `config_gen` 必须自己校验 | 线路分配的核心机制失效（docs/04 §7.1 全靠这条） | 两种各配一条 lane，`curl -x` 验证出口 |
 | K5 | 严格解码：`select` 组多余的 `url/interval/tolerance`、`header` 用列表形式 `User-Agent: [...]`、`find-process-mode: off`、空集合 `proxy-providers: {}` / `proxy-groups: []` / `listeners: []` 都被接受 | 内核启动失败（当前按模板逐字写，未证实空集合） | 逐项最小配置试起 |
-| K6 | `mixed-port: 0` 确实等于"关闭默认入站" | 会多一个监听端口 → 违反 I1 入口唯一 | `netstat` 断言 |
+| K6 | ✅ **已验证（见 §1.6）：成立** —— `mixed-port: 0` 确实关闭默认入站（只剩 REST + 我们显式开的 lane）→ **生成配置永远写 0**，I1 由结构保证而非靠检查 | 会多一个监听端口 → 违反 I1 入口唯一 | `netstat` 断言 |
 | K7 | ⚠️ **已验证（见 §1.6）：字段名全部真实存在，但有 4 处偏差会让 `parse_snapshot` 解析错误** —— `providers` 是**对象不是数组**、`type` 是**大写** `Selector`/`Shadowsocks`、**provider 节点不在 `/proxies` 顶层**（组 `all` 会悬空）、内置伪节点 `DIRECT/REJECT/PASS/COMPATIBLE…` 混在列表里 | 我的 wiremock 测的是"我以为的内核"。**这是全清单里最需要重验的一条** —— UI 的线路下拉完全依赖它 | 用 P5 提供的 `RawSnapshot::fetch` dump 真 JSON，与假设逐字段对比 |
-| K8 | Windows `taskkill /PID x /T`（不带 `/F`）对控制台程序基本无效 → 实际是 2s 后强杀 | 若 `profile.store-selected: true` 的选中项需优雅退出才落盘，**强杀会导致重启后选中的节点丢失** —— 直接破坏"线路分配"的用户体验 | 切节点 → 杀 → 重启 → 看选中是否保留 |
+| K8 | ✅ **已验证（见 §1.6）：担心的坏事没发生** —— 强杀（`Stop-Process -Force`）后重启，**选中项仍保留**（`store-selected` 在选择变更时就写 `cache.db`，不是退出时写）→ **不需要为它做优雅退出** | 若 `profile.store-selected: true` 的选中项需优雅退出才落盘，**强杀会导致重启后选中的节点丢失** —— 直接破坏"线路分配"的用户体验 | 切节点 → 杀 → 重启 → 看选中是否保留 |
 | K9 | `AssignProcessToJobObject` 在受限沙箱里可用 | 失败会降级为 warn + `taskkill /T` 兜底，孤儿进程风险 ↑ | 在有沙箱的机器上确认 |
 
 **K1 / K2 / K7 是三条阻塞项**；K7 若形态不同，只是改 `parse_snapshot`；**K1 若成立性不满足，会改动 `apply()` 的整体策略**（可能要"重启内核 + 请求排队"）。
@@ -119,15 +119,77 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 
 ### 仍未验（M0 剩余）
 
-**K3 / K4 / K5 / K6 / K8 / K9** 本轮未跑完（K6 `mixed-port: 0`、K4 裸节点名+emoji 组名做 lane `proxy`、
-K8 强杀后选中项是否落盘，这三条对 lane 机制影响最大）。**判据与验法见上表，M1 联调时补。**
+**K3 / K5 / K9** 本轮未跑（K3 `filter`+`use` 同用、K5 严格解码的空集合、K9 Job Object 在受限沙箱）。
+**K4 / K6 / K8 已在第二批跑完，见下。** 判据与验法见上表。
+
+### 第二批实机验证（K4 / K6 / K8，2026-09-21 同一次 spike）
+
+#### K4 ✅ **成立 —— 四种 `listeners[].proxy` 目标全部可绑定，路由日志确认真的按目标走**
+
+配置了 4 个 lane listener，`proxy` 分别指向不同类型的目标：
+
+| 端口 | `proxy:` 指向 | 绑定 | 内核路由日志 | 客户端看到 |
+|---|---|---|---|---|
+| 39101 | **裸节点名** `裸节点-香港01` | ✅ | `dial 裸节点-香港01 … --> cp.cloudflare.com:80` | 502（节点是假的不通） |
+| 39102 | **带 emoji 的组名** `🚀 节点选择` | ✅ | `dial 🚀 节点选择 … --> cp.cloudflare.com:80` | 502 |
+| 39103 | 内建 `DIRECT` | ✅ | `127.0.0.1:5130 --> cp.cloudflare.com:80 using DIRECT` | **HTTP 204** |
+| 39104 | **不存在的名字** `这个节点不存在` | ✅（！） | `[Metadata] parse failed: proxy 这个节点不存在 not found` | 502 |
+
+**结论：[04 §7.1] 的线路分配机制成立** —— 裸节点名、emoji 组名、`DIRECT` 都能直接做 lane 的出口，
+这正是"通道级线路分配"要的全部能力。**emoji 组名可用**很重要：真实机场订阅的组名普遍带 emoji。
+
+> ⚠️ **K4(d) 是一条危险的附属发现，必须写进实现要求：**
+>
+> **指向一个不存在的节点名时，listener 照样绑定成功、内核启动零报错**，
+> 只在**请求真的到达时**才在内核日志里报 `proxy ... not found`（客户端看到 502）。
+>
+> **后果**：订阅更新后节点被改名或删除，而我们生成的配置仍指向旧名 ——
+> **通道会一直"看起来正常"（端口在听、健康检查也通），直到用户发请求才炸**，
+> 而且错误只出现在**内核日志**里，没有对应的 `TA-*` 错误码。
+>
+> **裁决：`config_gen.rs` 必须自己做引用校验** ——
+> `listeners[].proxy` 必须存在于「解析后的订阅节点 ∪ 自有节点 ∪ 组名 ∪ `DIRECT`」之中，
+> 否则**生成阶段就报错**（带字段路径），而不是交给内核在运行时静默失败。
+> *这一条不能指望内核，它明确不校验。*
+
+> ⚠️ **给 `ta-kernel/src/rest.rs` 的实现要求**：REST 路径里的组名**必须百分号编码**。
+> 实测 emoji 组名要写成 `/proxies/%F0%9F%9A%80%20%E8%8A%82%E7%82%B9%E9%80%89%E6%8B%A9`；
+> 未编码会请求失败。**真实机场订阅的组名带 emoji 是常态，不是边角情况。**
+
+#### K6 ✅ **成立 —— `mixed-port: 0` 确实关闭默认入站**
+
+配 `mixed-port: 0` + 4 个显式 listener 后，内核的监听只有：
+`39090`（REST）+ `39101/39102/39103/39104`（我们定义的 lane）。
+**没有多出 `39100`，也没有任何 `0.0.0.0`。**
+
+**结论：I1（入口唯一）可以这样保证** —— 生成配置**永远写 `mixed-port: 0`**，只通过显式 `listeners` 开端口。
+这样"内核自己偷偷开一个入站"这条路径被结构性关闭，而不是靠每次 netstat 检查发现。
+
+#### K8 ✅ **成立 —— 而且我们担心的坏事没有发生**
+
+假设是："Windows `taskkill /PID x /T`（不带 `/F`）基本无效 → 实际是强杀 → 若 `store-selected` 只在
+优雅退出时落盘，**强杀会导致重启后选中节点丢失**"。实测结果相反：
+
+1. 切组选中项 → `裸节点-日本01`（`GET` 确认）
+2. **`Stop-Process -Force`**（等价 `taskkill /F`）
+3. 用**同一份配置**重启
+4. `GET` 该组 → **`now` 仍是 `裸节点-日本01`** ✅
+
+落盘文件：`<data-dir>/cache.db`（32768 字节）。
+**机制**：`profile.store-selected: true` 在**选择发生变更时就写盘**，不是退出时集中写。
+
+**裁决：不需要为"保住选中项"做优雅退出。**
+`KernelSupervisor` 的强杀兜底（K9 降级路径）**不会**破坏用户的线路选择 ——
+所以退出路径可以继续以"能杀掉就行"为目标，不必引入关闭握手。**这条省掉了一个复杂度。**
 
 ### 原始证据（真 JSON）
 
 **未提交**（属 E4 范围，由 E4 收入测试夹具）：`C:\Users\19404\workspace\.ta-tools\m0\fixtures\`
-—— `version.json`、`configs.json`、`proxies.json`、`providers-proxies.json`，
-以及 `config.yaml` / `config2.yaml` / `providers/lane.yaml` 与 `before.json`（I2 基线）。
-`ta-kernel` 的 `parse_snapshot` 应当**直接对这四份真 JSON 做往返测试**，而不是继续用"我以为的内核"。
+—— `version.json`、`configs.json`、`proxies.json`、`providers-proxies.json`、
+`config.yaml` / `config2.yaml` / `config-k4.yaml`、`k4.log` / `k8.log`，
+以及 `before.json`（I2 基线）。
+`ta-kernel` 的 `parse_snapshot` 应当**直接对这四份真 JSON 做往返测试**，而不是继续用"我以为的内核"；
+`config_gen` 的引用校验应当用 `config-k4.yaml` 里那个"不存在的名字"做**负例**。
 
 ## 2. M1 · 可用 MVP（约 2 周）
 
