@@ -198,7 +198,7 @@ pub fn handle_cli_early_exit() -> bool {
                 actual = state.actual,
                 "卸载：已清理开机自启动条目"
             ),
-            Err(e) => tracing::warn!(error = %e, "卸载：清理开机自启动条目失败"),
+            Err(e) => tracing::warn!(code = e.code(), error = %e, "卸载：清理开机自启动条目失败"),
         }
         return true;
     }

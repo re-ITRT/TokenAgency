@@ -54,6 +54,11 @@ pub struct KernelProcessConfig {
     pub ready_timeout: Duration,
     /// 就绪探测间隔
     pub ready_poll: Duration,
+    /// provider 就绪预算（默认 30s）。
+    ///
+    /// 内核起来之后要**自己去抓订阅**，这一步可能比 `/version` 慢得多。所以 provider 检查
+    /// 有独立的、更宽的预算：进程+REST 就绪 ≠ provider 就绪。
+    pub provider_ready_timeout: Duration,
     /// 停止时 TERM 后等多久再强杀（默认 2s）
     pub terminate_grace: Duration,
     /// ready 状态下的存活轮询间隔
@@ -95,6 +100,7 @@ impl KernelProcessConfig {
             secret: secret.into(),
             ready_timeout: Duration::from_secs(5),
             ready_poll: Duration::from_millis(200),
+            provider_ready_timeout: Duration::from_secs(30),
             terminate_grace: Duration::from_secs(2),
             alive_poll: Duration::from_secs(1),
             max_consecutive_failures: 5,
@@ -559,6 +565,9 @@ pub enum SuperviseOutcome {
     Restarted,
     /// 本轮尝试失败（已计入退避）
     AttemptFailed { attempt: u32, message: String },
+    /// 进程活着、REST 也通，但 provider 还没加载到节点 —— **不报就绪、也不重启**
+    /// （内核没错，只是订阅还没抓完；`verify_providers` 会继续复查）
+    WaitingForProviders { message: String },
     /// 连续失败达到上限，进入 `failed`，不再重试
     GaveUp { attempts: u32, message: String },
 }
@@ -688,11 +697,12 @@ impl KernelSupervisor {
             tracing::error!(
                 failures = i.consecutive_failures,
                 error = %e,
+                code = e.code(),
                 "内核连续启动失败，进入 failed（通道降级为仅 direct）"
             );
             KernelState::Failed
         } else {
-            tracing::warn!(failures = i.consecutive_failures, error = %e, "内核启动失败，将退避重启");
+            tracing::warn!(failures = i.consecutive_failures, code = e.code(), error = %e, "内核启动失败，将退避重启");
             KernelState::Restarting
         };
     }
@@ -716,20 +726,36 @@ impl KernelSupervisor {
             i.pid = Some(pid);
             i.spawn_attempts += 1;
         }
-        match self.wait_ready(pid).await {
+        match self.wait_rest_ready(pid).await {
             Ok(version) => {
-                let mut i = self.lock();
-                i.state = KernelState::Ready;
-                i.version = Some(version.clone());
-                i.consecutive_failures = 0;
-                i.last_error = None;
-                tracing::info!(pid, %version, "内核已就绪");
-                Ok(())
+                // 第二关：provider 必须真的加载到节点。**失败时不杀进程、不计失败** ——
+                // 内核本身是对的，只是订阅还没抓完；杀掉它会让慢订阅永远起不来。
+                match self.wait_providers().await {
+                    Ok(()) => {
+                        let mut i = self.lock();
+                        i.state = KernelState::Ready;
+                        i.version = Some(version.clone());
+                        i.consecutive_failures = 0;
+                        i.last_error = None;
+                        tracing::info!(pid, %version, "内核已就绪（provider 已加载节点）");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        {
+                            let mut i = self.lock();
+                            i.state = KernelState::Starting;
+                            i.version = Some(version);
+                            i.last_error = Some(e.to_string());
+                        }
+                        tracing::error!(pid, code = e.code(), error = %e, "内核进程活着但 provider 没有节点：不报就绪");
+                        Err(e)
+                    }
+                }
             }
             Err(e) => {
                 // 起不来就把这个半死的进程收掉，别留着占端口
                 if let Err(te) = self.spawner.terminate(pid, self.cfg.terminate_grace).await {
-                    tracing::warn!(pid, error = %te, "清理未就绪的内核进程失败");
+                    tracing::warn!(pid, code = te.code(), error = %te, "清理未就绪的内核进程失败");
                 }
                 self.record_failure(&e);
                 Err(e)
@@ -737,8 +763,8 @@ impl KernelSupervisor {
         }
     }
 
-    /// 轮询 `GET /version`，超时 `ready_timeout`（默认 5s）
-    async fn wait_ready(&self, pid: u32) -> Result<String> {
+    /// 轮询 `GET /version`，超时 `ready_timeout`（默认 5s）—— 只证明"进程活着、REST 通了"
+    async fn wait_rest_ready(&self, pid: u32) -> Result<String> {
         let deadline = Instant::now() + self.cfg.ready_timeout;
         loop {
             if !self.spawner.is_alive(pid) {
@@ -755,6 +781,53 @@ impl KernelSupervisor {
                 )));
             }
             self.sleeper.sleep(self.cfg.ready_poll).await;
+        }
+    }
+
+    /// ★ **就绪的第二关**：我们生成的每个 provider 真的加载到节点了吗？
+    ///
+    /// 为什么必须有这一关：provider 加载失败（文件缺失 / `proxies: []` / 解析错）时，
+    /// 内核**一边 `level=error` 一边照常启动**，REST 也通 —— 只看"进程在不在"会把
+    /// **整个内核静默降级**报成"已就绪"，然后所有 lane 一起走空（配合
+    /// `empty-fallback: REJECT` 是 502，没配就是静默直连 = 境外流量裸奔）。
+    ///
+    /// 可**重复调用**：订阅同步完成后 provider 才可能有效，所以这不是"启动时查一次就锁死"。
+    pub async fn verify_providers(&self) -> Result<()> {
+        let expected = self.source.expected_providers()?;
+        if expected.is_empty() {
+            return Ok(()); // 没有 provider（全直连的配置）→ 没什么可查
+        }
+        let counts = self.rest.provider_node_counts().await?;
+        let empty: Vec<String> = expected
+            .iter()
+            .filter(|key| counts.get(key.as_str()).copied().unwrap_or(0) == 0)
+            .cloned()
+            .collect();
+        if !empty.is_empty() {
+            return Err(TaError::Kernel(format!(
+                "内核进程与 REST 都正常，但 provider 没有节点：{}（内核日志里通常有 \
+                 `file doesn't have any proxy` / `initial proxy provider ... error`）—— \
+                 因此**不报就绪**",
+                empty.join("、")
+            )));
+        }
+        Ok(())
+    }
+
+    /// 在 `provider_ready_timeout` 内反复检查 provider（内核抓订阅可能比 REST 慢很多）
+    async fn wait_providers(&self) -> Result<()> {
+        let deadline = Instant::now() + self.cfg.provider_ready_timeout;
+        loop {
+            match self.verify_providers().await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if Instant::now() >= deadline {
+                        return Err(e);
+                    }
+                    tracing::debug!(code = e.code(), error = %e, "provider 还没加载到节点，稍后再查");
+                    self.sleeper.sleep(self.cfg.ready_poll).await;
+                }
+            }
         }
     }
 
@@ -783,6 +856,33 @@ impl KernelSupervisor {
                     tracing::warn!("内核进程掉线，准备重启");
                 }
             },
+            KernelState::Starting => {
+                // 进程还活着 → 只复查 provider，**绝不重新拉起**（否则会同时跑两个内核）
+                if let Some(pid) = pid {
+                    if self.spawner.is_alive(pid) {
+                        return match self.verify_providers().await {
+                            Ok(()) => {
+                                let mut i = self.lock();
+                                i.state = KernelState::Ready;
+                                i.consecutive_failures = 0;
+                                i.last_error = None;
+                                tracing::info!(pid, "provider 已加载到节点，内核转为就绪");
+                                SuperviseOutcome::Started
+                            }
+                            Err(e) => {
+                                self.lock().last_error = Some(e.to_string());
+                                SuperviseOutcome::WaitingForProviders { message: e.to_string() }
+                            }
+                        };
+                    }
+                }
+                // 进程没了 → 落到下面的重启流程
+                {
+                    let mut i = self.lock();
+                    i.state = KernelState::Restarting;
+                    i.pid = None;
+                }
+            }
             _ => {}
         }
 
@@ -851,7 +951,10 @@ impl KernelSupervisor {
                 tracing::error!("内核看护放弃：连续失败已达上限");
                 return;
             }
-            let pause = if matches!(outcome, SuperviseOutcome::Idle) {
+            let pause = if matches!(
+                outcome,
+                SuperviseOutcome::Idle | SuperviseOutcome::WaitingForProviders { .. }
+            ) {
                 self.cfg.alive_poll
             } else {
                 Duration::ZERO
@@ -947,10 +1050,17 @@ impl KernelController for KernelSupervisor {
         match self.state() {
             KernelState::Ready => {
                 if let Err(e) = self.rest.reload_config(&abs).await {
-                    tracing::warn!(error = %e, "内核 reload 失败，改为重启");
+                    tracing::warn!(code = e.code(), error = %e, "内核 reload 失败，改为重启");
                     self.restart().await?;
                 } else {
                     tracing::info!(config = %abs, "内核配置已 reload");
+                    // reload 之后重新做第二关检查：新配置可能引入了新的 provider
+                    if let Err(e) = self.verify_providers().await {
+                        tracing::error!(code = e.code(), error = %e, "reload 后 provider 没有节点：回落为未就绪");
+                        let mut i = self.lock();
+                        i.state = KernelState::Starting;
+                        i.last_error = Some(e.to_string());
+                    }
                 }
             }
             _ => {
@@ -1036,7 +1146,7 @@ mod tests {
     use crate::testutil::TempDir;
     use serde_json::json;
     use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
     // ------------------------------------------------------------ 假 spawner
 
@@ -1127,6 +1237,8 @@ mod tests {
         dir: PathBuf,
         body: String,
         targets: BTreeMap<LaneId, String>,
+        /// 我们"写进配置"的 provider key（就绪第二关要逐个查）
+        providers: Vec<String>,
     }
 
     impl TestSource {
@@ -1135,11 +1247,17 @@ mod tests {
                 dir: dir.path().to_path_buf(),
                 body: "# GENERATED BY TokenAgency — DO NOT EDIT\nmode: rule\n".to_string(),
                 targets: BTreeMap::new(),
+                providers: Vec::new(),
             }
         }
 
         fn with_target(mut self, lane: &str, target: &str) -> Self {
             self.targets.insert(LaneId::new(lane), target.to_string());
+            self
+        }
+
+        fn with_provider(mut self, key: &str) -> Self {
+            self.providers.push(key.to_string());
             self
         }
     }
@@ -1152,6 +1270,9 @@ mod tests {
         }
         fn lane_targets(&self) -> Result<BTreeMap<LaneId, String>> {
             Ok(self.targets.clone())
+        }
+        fn expected_providers(&self) -> Result<Vec<String>> {
+            Ok(self.providers.clone())
         }
     }
 
@@ -1489,6 +1610,147 @@ mod tests {
         let st = KernelController::apply(h.supervisor.as_ref()).await.unwrap();
         assert_eq!(st.state, KernelState::Ready);
         assert_eq!(h.spawner.spawn_count(), 1);
+    }
+
+    // ------------------------------------------------------------ ★ 就绪第二关：provider
+
+    fn provider_json(key: &str, nodes: usize) -> serde_json::Value {
+        let proxies: Vec<serde_json::Value> =
+            (0..nodes).map(|i| json!({ "name": format!("节点{i}") })).collect();
+        json!({ "providers": { key: { "name": "机场A", "vehicleType": "HTTP", "proxies": proxies } } })
+    }
+
+    /// 起一个"REST 就绪 + provider 正常/为空"的假内核，并禁用 provider 等待（一查即判）
+    async fn sup_with_providers(
+        server: &MockServer,
+        dir: &TempDir,
+        keys: &[&str],
+    ) -> (Arc<KernelSupervisor>, Arc<ScriptedSpawner>) {
+        let rest = Arc::new(KernelRest::new(&server.uri(), "s3cret").unwrap());
+        let mut source = TestSource::new(dir);
+        for k in keys {
+            source = source.with_provider(k);
+        }
+        let spawner = Arc::new(ScriptedSpawner::new());
+        let mut cfg =
+            KernelProcessConfig::new("mihomo", dir.path(), dir.path(), "127.0.0.1:1", "s3cret")
+                .with_args(Vec::<String>::new());
+        cfg.provider_ready_timeout = Duration::ZERO;
+        let sup = KernelSupervisor::new(
+            cfg,
+            spawner.clone(),
+            rest,
+            Arc::new(source) as Arc<dyn KernelConfigSource>,
+        )
+        .with_sleeper(Arc::new(RecordingSleeper::default()));
+        (Arc::new(sup), spawner)
+    }
+
+    async fn ready_server_with_providers(key: &str, nodes: usize) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "version": "v1.19.31", "meta": true
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/providers/proxies"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(provider_json(key, nodes)))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// ★ provider 没节点时**不许报就绪**，但也**不许杀进程**（内核没错，只是订阅没抓完）
+    #[tokio::test]
+    async fn empty_provider_blocks_readiness_without_killing_the_kernel() {
+        let server = ready_server_with_providers("sub-jp", 0).await;
+        let dir = TempDir::new("provider-empty");
+        let (sup, spawner) = sup_with_providers(&server, &dir, &["sub-jp"]).await;
+
+        let err = KernelController::start(sup.as_ref()).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("provider"), "{msg}");
+        assert!(msg.contains("sub-jp"), "要说清是哪个 provider：{msg}");
+
+        let st = sup.status_sync();
+        assert_eq!(st.state, KernelState::Starting, "REST 通了但 provider 空 → 不是 Ready");
+        assert_eq!(st.pid, Some(1), "进程必须留着");
+        assert!(st.last_error.unwrap().contains("sub-jp"));
+        // ★ 关键：没有把它当成"启动失败"去杀进程/重试
+        assert!(spawner.terminated().is_empty(), "不该杀这个进程");
+        assert_eq!(spawner.spawn_count(), 1);
+        assert!(sup.verify_providers().await.is_err(), "复查仍应报错");
+    }
+
+    /// ★ provider 稍后才加载好 → 自己转 Ready，而且**不会重新拉起**（否则会跑两个内核）
+    #[tokio::test]
+    async fn providers_appearing_later_flip_starting_to_ready_without_respawn() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "version": "v1" })))
+            .mount(&server)
+            .await;
+        // 第一次查是空的，之后有 3 个节点
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = hits.clone();
+        Mock::given(method("GET"))
+            .and(path("/providers/proxies"))
+            .respond_with(move |_req: &Request| {
+                let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .set_body_json(provider_json("sub-jp", if n == 0 { 0 } else { 3 }))
+            })
+            .mount(&server)
+            .await;
+
+        let dir = TempDir::new("provider-later");
+        let (sup, spawner) = sup_with_providers(&server, &dir, &["sub-jp"]).await;
+
+        assert!(KernelController::start(sup.as_ref()).await.is_err());
+        assert_eq!(sup.state(), KernelState::Starting);
+
+        // 再走一轮看护：provider 好了 → Ready，且**没有新进程**
+        let outcome = sup.supervise_once().await;
+        assert_eq!(outcome, SuperviseOutcome::Started, "{outcome:?}");
+        assert_eq!(sup.state(), KernelState::Ready);
+        assert_eq!(spawner.spawn_count(), 1, "不许重新拉起");
+        assert!(spawner.terminated().is_empty());
+        assert!(sup.verify_providers().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn missing_provider_key_counts_as_empty() {
+        // 内核只报了一个别的 provider → 我们那个还是"没节点"
+        let server = ready_server_with_providers("other-provider", 5).await;
+        let dir = TempDir::new("provider-missing");
+        let (sup, _) = sup_with_providers(&server, &dir, &["sub-jp"]).await;
+        let err = sup.verify_providers().await.unwrap_err();
+        assert!(err.to_string().contains("sub-jp"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn provider_check_is_skipped_when_none_configured() {
+        // 全直连（没有 provider）→ 不做这一关，正常就绪
+        let server = ready_server().await;
+        let dir = TempDir::new("provider-none");
+        let (sup, spawner) = sup_with_providers(&server, &dir, &[]).await;
+        KernelController::start(sup.as_ref()).await.unwrap();
+        assert_eq!(sup.state(), KernelState::Ready);
+        assert_eq!(spawner.spawn_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn provider_check_lists_every_empty_provider() {
+        let server = ready_server_with_providers("sub-a", 2).await;
+        let dir = TempDir::new("provider-multi");
+        let (sup, _) = sup_with_providers(&server, &dir, &["sub-a", "sub-b"]).await;
+        let err = sup.verify_providers().await.unwrap_err().to_string();
+        assert!(err.contains("sub-b"), "{err}");
+        assert!(!err.contains("sub-a"), "有节点的那个不该被点名：{err}");
     }
 
     // ------------------------------------------------------------ set_select / log_tail

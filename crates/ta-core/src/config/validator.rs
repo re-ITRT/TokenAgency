@@ -1020,7 +1020,8 @@ fn ref_exists(
 fn check_warnings(doc: &ConfigDoc, ix: &Index<'_>, r: &mut ValidationReport) {
     // 未定价模型：有通道但没有一条定价条目命中它
     for (i, m) in doc.models.iter().enumerate() {
-        let channels: Vec<&Channel> = doc.channels.iter().filter(|c| m.matches(&c.model)).collect();
+        let channels: Vec<&ChannelConfig> =
+            doc.channels.iter().filter(|c| m.matches(&c.model)).collect();
         if channels.is_empty() {
             continue;
         }
@@ -1215,7 +1216,13 @@ mod tests {
     #[test]
     fn error_paths_are_exact_and_specific() {
         let mut d = doc();
-        d.channels.push(Channel::new("ch-broken", "gpt-4o", "p-missing", "c-missing", "gpt-4o"));
+        d.channels.push(ChannelConfig::new(
+            "ch-broken",
+            "gpt-4o",
+            "p-missing",
+            "c-missing",
+            "gpt-4o",
+        ));
         d.channels.last_mut().unwrap().lane = Some(LaneId::new("lane-missing"));
         d.channels.last_mut().unwrap().model = "model-missing".into();
         let report = check(&d);
@@ -1776,7 +1783,7 @@ mod tests {
     fn unpriced_model_is_a_warning() {
         let mut d = doc();
         d.models.push(Model::new("some-unpriced-model"));
-        d.channels.push(Channel::new(
+        d.channels.push(ChannelConfig::new(
             "ch-unpriced",
             "some-unpriced-model",
             "p-openai",

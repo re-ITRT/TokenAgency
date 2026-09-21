@@ -3,8 +3,8 @@
 //! 冻结契约（字段名 / 字段类型 / trait 签名）在 `domain/mod.rs` 与 `types.rs`；
 //! 本模块**只加行为，不改契约**：
 //!
-//! - 便捷构造函数与 builder：`Channel::new(..).with_lane(..)`
-//! - 只读辅助：`Model::matches`、`Channel::effective_lane`、`ConfigDoc::find_model`
+//! - 便捷构造函数与 builder：`ChannelConfig::new(..).with_lane(..)`
+//! - 只读辅助：`Model::matches`、`ChannelConfig::effective_lane`、`ConfigDoc::find_model`
 //! - 线路解析优先级（[04 §8.1]）：
 //!   `policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.default_lane ?? direct`
 //! - 模型名 glob（[`matches_glob`]）：校验器与定价引擎共用同一套匹配语义，
@@ -375,7 +375,7 @@ impl QuotaConfig {
 
 // ================================================================ Channel
 
-impl Channel {
+impl ChannelConfig {
     /// 新通道：`enabled = true`，`priority = 100`、`weight = 10`（与 serde 默认值一致）。
     pub fn new(
         id: impl Into<ChannelId>,
@@ -491,7 +491,7 @@ impl<'a> LaneResolution<'a> {
 /// 依据 [04 §8.1]。
 pub fn resolve_lane<'a>(
     policy_lane: Option<&'a LaneId>,
-    channel: &'a Channel,
+    channel: &'a ChannelConfig,
     credential: Option<&'a Credential>,
     provider: Option<&'a Provider>,
     net: &'a NetConfig,
@@ -948,7 +948,7 @@ impl ConfigDoc {
         self.lanes.iter().find(|l| l.id.as_str() == id)
     }
 
-    pub fn channel(&self, id: &str) -> Option<&Channel> {
+    pub fn channel(&self, id: &str) -> Option<&ChannelConfig> {
         self.channels.iter().find(|c| c.id.as_str() == id)
     }
 
@@ -977,7 +977,7 @@ impl ConfigDoc {
     pub fn channels_for_model<'a>(
         &'a self,
         name: &'a str,
-    ) -> impl Iterator<Item = &'a Channel> + 'a {
+    ) -> impl Iterator<Item = &'a ChannelConfig> + 'a {
         self.channels
             .iter()
             .filter(move |c| self.find_model(name).map(|m| m.matches(&c.model)).unwrap_or(false))
@@ -1053,7 +1053,7 @@ mod tests {
         let bare_credential = Credential::new("c", "p", "C", "${secret:c}");
         let bare_provider = Provider::new("p", "P", Protocol::Openai, "https://x/v1");
 
-        let mut channel = Channel::new("ch", "gpt-4o", "p", "c", "gpt-4o");
+        let mut channel = ChannelConfig::new("ch", "gpt-4o", "p", "c", "gpt-4o");
 
         // 1) 凭据/服务商都没配 → net.default_lane
         assert_eq!(
@@ -1095,7 +1095,7 @@ mod tests {
     #[test]
     fn resolve_lane_policy_wins_and_direct_fallback() {
         let net = NetConfig::default();
-        let channel = Channel::new("ch", "gpt-4o", "p", "c", "gpt-4o");
+        let channel = ChannelConfig::new("ch", "gpt-4o", "p", "c", "gpt-4o");
         let lane = LaneId::new("lane-policy");
         let resolved = resolve_lane(Some(&lane), &channel, None, None, &net);
         assert_eq!(resolved, LaneResolution::Lane(&lane));

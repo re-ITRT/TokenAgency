@@ -32,7 +32,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
 use ta_core::clock::Clock;
-use ta_core::domain::{Channel, ConfigDoc, Provider};
+use ta_core::domain::{ChannelConfig, ConfigDoc, Provider};
 use ta_core::error::{Result, TaError};
 use ta_core::types::{ChannelId, LaneId, Protocol};
 
@@ -237,7 +237,7 @@ pub struct PrepareInput<'a> {
     pub cfg: &'a ConfigDoc,
     pub policy: &'a dyn PassthroughPolicy,
     pub snapshot: &'a RequestSnapshot,
-    pub channel: &'a Channel,
+    pub channel: &'a ChannelConfig,
     /// 通道引用的服务商；缺失说明配置有洞（返回明确错误，不静默降级）
     pub provider: Option<&'a Provider>,
     /// 该通道凭据的明文 key（只在这里用一次，**绝不落库、绝不进日志**）
@@ -248,7 +248,7 @@ pub struct PrepareInput<'a> {
 /// **G1 的核心纯函数**：把"客户端原始请求 + 选定通道"变成"发往上游的请求"。
 ///
 /// 只做契约允许的事：`model` 定点 patch、鉴权头替换、`host`/`content-length` 重算、
-/// hop-by-hop 剥离、以及用户显式配置的 `Channel::transform`。
+/// hop-by-hop 剥离、以及用户显式配置的 `ChannelConfig::transform`。
 pub fn build_prepared_request(input: PrepareInput<'_>) -> Result<PreparedRequest> {
     let channel = input.channel;
     let snapshot = input.snapshot;

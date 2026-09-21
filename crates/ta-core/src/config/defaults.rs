@@ -309,9 +309,9 @@ fn models() -> Vec<Model> {
     ]
 }
 
-fn channels() -> Vec<Channel> {
+fn channels() -> Vec<ChannelConfig> {
     vec![
-        Channel::new(
+        ChannelConfig::new(
             "ch-openai-personal",
             "gpt-4o",
             "p-openai",
@@ -322,19 +322,19 @@ fn channels() -> Vec<Channel> {
         .with_priority(10)
         .with_weight(100)
         .with_tags(["official"]),
-        Channel::new("ch-relay-a", "gpt-4o", "p-mytoken", "c-relay-a", "gpt-4o")
+        ChannelConfig::new("ch-relay-a", "gpt-4o", "p-mytoken", "c-relay-a", "gpt-4o")
             .with_lane("lane-jp-original")
             .with_priority(20)
             .with_weight(50)
             .with_tags(["cheap"]),
-        Channel::new("ch-relay-b", "gpt-4o", "p-mytoken", "c-relay-b", "gpt-4o")
+        ChannelConfig::new("ch-relay-b", "gpt-4o", "p-mytoken", "c-relay-b", "gpt-4o")
             .with_lane("lane-direct")
             .with_priority(30)
             .with_weight(30)
             // 未标注是否识图 → 照发（默认行为是发出去，不是拒绝）
             .with_tags(["backup"]),
         // lane 不填 → 继承 credential.lane（lane-jp-auto）
-        Channel::new(
+        ChannelConfig::new(
             "ch-claude-official",
             "claude-sonnet-4-5",
             "p-anthropic",

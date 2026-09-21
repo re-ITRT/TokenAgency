@@ -52,7 +52,7 @@ pub struct ConfigDoc {
     #[serde(default)]
     pub models: Vec<Model>,
     #[serde(default)]
-    pub channels: Vec<Channel>,
+    pub channels: Vec<ChannelConfig>,
     #[serde(default)]
     pub channel_groups: Vec<ChannelGroup>,
     #[serde(default)]
@@ -990,9 +990,22 @@ pub struct DisplayConfig {
     pub extra: Map<String, Value>,
 }
 
+/// 通道：一个逻辑模型经某个凭据发往某个上游的**一条具体路径**。
+///
+/// **Rust 类型名必须是 `ChannelConfig`（不能叫 `Channel`）**：`tauri-specta` 会拒绝把
+/// 用户类型导出成 `Channel` —— 那个名字与 Tauri 自己的运行时类型（`tauri::ipc::Channel`）
+/// 冲突，报错原文：`User defined type 'Channel' ... must be renamed so it doesn't
+/// conflict with Tauri Specta runtime`。
+///
+/// **试过但走不通的两条捷径**（留给后来者，别再踩）：
+/// ① `#[specta(rename = "…")]` —— rc.25 已废弃容器上的 rename，编译器直接报错
+///    （`… is no longer supported on containers. Use #[serde(rename = "...")] instead`）；
+/// ② `#[serde(rename = "…")]` —— 能编译，**但 tauri-specta 的冲突检测看的是 Rust 类型名**
+///    （`tauri-specta/src/js_ts.rs` 里比对 `ndt.name`），导出时照样拒绝。
+/// **所以只能真的改类型名。** 结构体名不进 JSON（JSON 里是字段名），**线上形态一字不变**。
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct Channel {
+pub struct ChannelConfig {
     pub id: ChannelId,
     pub model: String,
     pub provider: ProviderId,

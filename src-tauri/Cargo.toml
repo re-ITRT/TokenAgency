@@ -14,14 +14,16 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { workspace = true, features = [] }
 
 [dependencies]
-ta-core = { path = "../crates/ta-core" }
-ta-store = { path = "../crates/ta-store" }
+ta-core = { path = "../crates/ta-core", features = ["specta"] }
+# IPC 的类型要从 Store 的 DTO 直接生成 → 打开 ta-store 的 specta feature
+ta-store = { path = "../crates/ta-store", features = ["specta"] }
 ta-kernel = { path = "../crates/ta-kernel" }
 ta-subscription = { path = "../crates/ta-subscription" }
 ta-secrets = { path = "../crates/ta-secrets" }
 ta-gateway = { path = "../crates/ta-gateway" }
 
 tauri = { workspace = true }
+sqlx = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -34,7 +36,15 @@ thiserror.workspace = true
 dirs.workspace = true
 arc-swap.workspace = true
 chrono.workspace = true
-# TODO(T1): 写 IPC 命令时加回 specta / tauri-specta（workspace 里已钉好 RC 版本）
+
+# T1：IPC 契约的类型导出。用 specta 直接从领域类型生成 TS，
+# 而不是在命令层手写 DTO（手写 DTO = 第二个真相源，字段一改就静默漂移）。
+# 版本只在根 Cargo.toml 维护（之前根里 specta 误挂了不存在的 `typescript` feature，
+# 已由主管在 2ea680b 修掉）。
+specta = { workspace = true }
+tauri-specta = { workspace = true }
+# tauri-specta 的 TS 导出实现体（它自己只 re-export 了 Builder/Event，没有 re-export 这个类型）
+specta-typescript = "0.0.12"
 
 tauri-plugin-shell.workspace = true
 tauri-plugin-single-instance.workspace = true
@@ -47,7 +57,9 @@ tauri-plugin-process.workspace = true
 tauri-plugin-window-state.workspace = true
 tauri-plugin-deep-link.workspace = true
 tauri-plugin-clipboard-manager.workspace = true
-tauri-plugin-log.workspace = true
+# ⚠️ **不引 `tauri-plugin-log`**：本应用用 `tracing_subscriber` 作为唯一日志路径。
+# 两套并行系统会让"日志到底去哪"不确定（[14 §1.1]）；插件默认还会再 `log::set_logger`
+# 一次 → 启动即 panic。之前用 `.skip_logger()` 只是压住了 panic，问题仍在。
 
 [features]
 default = ["custom-protocol"]

@@ -14,7 +14,7 @@ use crate::types::*;
 #[derive(Debug, Clone, Default)]
 pub struct RoutingIndex {
     /// 全部通道（含未启用的；未启用的会在 decide 里带 `Disabled` 原因进 eliminated）
-    pub channels: BTreeMap<ChannelId, Channel>,
+    pub channels: BTreeMap<ChannelId, ChannelConfig>,
     /// 配置里通道出现的顺序（稳定排序的兜底键）
     pub channel_order: Vec<ChannelId>,
     /// 逻辑模型 → 该模型下的通道（配置顺序）
@@ -92,7 +92,7 @@ impl RoutingIndex {
         self.model_alias.get(raw).cloned().unwrap_or_else(|| raw.to_string())
     }
 
-    pub fn channel(&self, id: &ChannelId) -> Option<&Channel> {
+    pub fn channel(&self, id: &ChannelId) -> Option<&ChannelConfig> {
         self.channels.get(id)
     }
 
@@ -116,7 +116,7 @@ impl RoutingIndex {
 
     /// lane 继承链：`channel.lane → credential.lane → provider.lane → net.default_lane`。
     /// （`policy.use_lane` 优先级更高，由调用方先判定。）
-    pub fn resolve_lane(&self, ch: &Channel) -> Option<LaneId> {
+    pub fn resolve_lane(&self, ch: &ChannelConfig) -> Option<LaneId> {
         if let Some(l) = &ch.lane {
             return Some(l.clone());
         }
@@ -132,7 +132,7 @@ impl RoutingIndex {
     /// 该通道的生效 lane（含 policy 覆盖）。
     pub fn lane_with_override(
         &self,
-        ch: &Channel,
+        ch: &ChannelConfig,
         lane_override: Option<&LaneId>,
     ) -> Option<LaneId> {
         lane_override.cloned().or_else(|| self.resolve_lane(ch))

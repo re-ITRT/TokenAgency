@@ -45,7 +45,7 @@ pub const EVENT_TRAY_REFRESH: &str = "tray:refresh";
 // ================================================================ 状态（[05 §1.1]）
 
 /// 托盘四态（[05 §1.1]）：正常 / 降级 / 异常 / 暂停。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum TrayStatus {
     /// 绿：全部启用通道可用、无冷却
@@ -267,7 +267,7 @@ fn blend(rgba: &mut [u8], x: u32, y: u32, color: [u8; 4], alpha: f32) {
 // ================================================================ 应急开关（[10 §2.2]）
 
 /// 紧急开关模式（[10 §2.2] `tray_emergency`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum EmergencyMode {
     /// 全部直连（绕过所有梯子）
@@ -540,7 +540,7 @@ pub fn build_menu_spec(s: &TraySnapshot) -> MenuSpec {
             label.push_str(&format!("  {ms}ms"));
         }
         if !l.reachable {
-            label.push_str("  ⚠ 不可达");
+            label.push_str("（不可达）");
         }
         lanes.push(MenuNode::Item {
             id: id::lane(&l.id),
@@ -553,7 +553,7 @@ pub fn build_menu_spec(s: &TraySnapshot) -> MenuSpec {
     lanes.push(MenuNode::Separator);
     lanes.push(MenuNode::Item {
         id: id::LANE_RETEST.to_string(),
-        label: "⟳ 立即测速".to_string(),
+        label: "立即测速".to_string(),
         enabled: !s.lanes.is_empty(),
         checked: None,
     });
@@ -567,11 +567,14 @@ pub fn build_menu_spec(s: &TraySnapshot) -> MenuSpec {
     // 通道状态（每项带"禁用/启用"与"清零额度"）
     let mut channels = Vec::new();
     for c in &s.channels {
-        let icon = match c.quota_state.as_str() {
-            "exhausted" => "⛔",
-            "soft" => "⚠️",
-            "unknown" => "❔",
-            _ => "✅",
+        // [15 §2.1] 托盘文案**不许用 emoji**（`⛔ ⚠️ ❔ ✅` 都被点名）。
+        // 托盘菜单只有文本、没有颜色，所以这里用**文字后缀**表达额度状态 ——
+        // 正常态不加后缀（少即是多），异常态才说清楚。
+        let quota_note = match c.quota_state.as_str() {
+            "exhausted" => "（已耗尽）",
+            "soft" => "（额度临界）",
+            "unknown" => "（额度未知）",
+            _ => "",
         };
         let children = vec![
             MenuNode::Item {
@@ -593,7 +596,7 @@ pub fn build_menu_spec(s: &TraySnapshot) -> MenuSpec {
         ];
         channels.push(MenuNode::Submenu {
             id: format!("channel:{}", c.id),
-            label: format!("{icon} {}  {}", c.label, c.quota_text),
+            label: format!("{}  {}{}", c.label, c.quota_text, quota_note),
             enabled: true,
             items: children,
         });
@@ -632,37 +635,37 @@ pub fn build_menu_spec(s: &TraySnapshot) -> MenuSpec {
     items.push(MenuNode::Separator);
     items.push(MenuNode::Item {
         id: id::COPY_ACCESS_INFO.to_string(),
-        label: "📋 复制接入信息 (BASE_URL + KEY)".to_string(),
+        label: "复制接入信息 (BASE_URL + KEY)".to_string(),
         enabled: s.gateway_running,
         checked: None,
     });
     items.push(MenuNode::Item {
         id: id::OPEN_PANEL.to_string(),
-        label: "📊 打开面板".to_string(),
+        label: "打开面板".to_string(),
         enabled: true,
         checked: None,
     });
     items.push(MenuNode::Item {
         id: id::OPEN_LOGS.to_string(),
-        label: "📜 打开日志".to_string(),
+        label: "打开日志".to_string(),
         enabled: true,
         checked: None,
     });
     items.push(MenuNode::Item {
         id: id::OPEN_CONFIG_DIR.to_string(),
-        label: "📁 打开配置目录".to_string(),
+        label: "打开配置目录".to_string(),
         enabled: true,
         checked: None,
     });
     items.push(MenuNode::Item {
         id: id::SETTINGS.to_string(),
-        label: "⚙️ 设置".to_string(),
+        label: "设置".to_string(),
         enabled: true,
         checked: None,
     });
     items.push(MenuNode::Item {
         id: id::CHECK_UPDATE.to_string(),
-        label: "🔄 检查更新".to_string(),
+        label: "检查更新".to_string(),
         enabled: true,
         checked: None,
     });
@@ -1333,7 +1336,9 @@ mod tests {
         };
         assert_eq!(sub_id, "channel:relay-a");
         assert!(label.contains("中转站A") && label.contains("82%"), "{label}");
-        assert!(label.starts_with('⚠'), "soft 额度应有告警图标：{label}");
+        // [15 §2.1] 不许用 emoji；soft 额度用**文字后缀**表达
+        assert!(label.contains("额度临界"), "soft 额度应有文字提示：{label}");
+        assert!(!label.contains('⚠'), "托盘文案里不许出现 emoji：{label}");
         let ids: Vec<&str> = items
             .iter()
             .filter_map(|n| match n {

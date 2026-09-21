@@ -64,17 +64,17 @@ impl SqliteQuotaBackend {
                 match cmd {
                     Cmd::Put(rec) => {
                         if let Err(e) = persist_record(&pool, &rec).await {
-                            tracing::error!(error = %e, "额度账本落库失败（内存快照仍然有效）");
+                            tracing::error!(code = e.code(), error = %e, "额度账本落库失败（内存快照仍然有效）");
                         }
                     }
                     Cmd::Remove(cred) => {
                         if let Err(e) = persist_remove(&pool, &cred).await {
-                            tracing::error!(error = %e, "额度账本删除失败");
+                            tracing::error!(code = e.code(), error = %e, "额度账本删除失败");
                         }
                     }
                     Cmd::SetConfig(cred, cfg) => {
                         if let Err(e) = persist_quota_config(&pool, &cred, &cfg).await {
-                            tracing::error!(error = %e, "手工额度落库失败");
+                            tracing::error!(code = e.code(), error = %e, "手工额度落库失败");
                         }
                     }
                     Cmd::Barrier(ack) => {
@@ -279,7 +279,7 @@ async fn persist_quota_config(
         .await
         .store_err()?;
     let Some(row) = row else {
-        tracing::warn!(cred = cred.as_str(), "手工额度对应的凭据不在配置里，跳过落库");
+        tracing::warn!(credential_id = cred.as_str(), "手工额度对应的凭据不在配置里，跳过落库");
         return Ok(());
     };
     let json: String = row.get("json");

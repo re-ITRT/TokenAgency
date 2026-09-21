@@ -7,6 +7,7 @@
 
 pub mod clock;
 pub mod config;
+pub mod diag;
 pub mod domain;
 pub mod error;
 pub mod metering;

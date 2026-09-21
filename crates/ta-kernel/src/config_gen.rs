@@ -166,7 +166,7 @@ impl MhConfigGen {
         let mut index = ProviderIndex::default();
         for (i, sub) in doc.proxy_subscriptions.iter().enumerate() {
             if !self.ignore_enabled && !sub.enabled {
-                tracing::debug!(sub = %sub.id, "订阅已停用（enabled: false），不生成 proxy-provider");
+                tracing::debug!(sub_id = %sub.id, "订阅已停用（enabled: false），不生成 proxy-provider");
                 index.disabled.insert(sub.id.to_string());
                 continue;
             }
@@ -197,7 +197,7 @@ impl MhConfigGen {
                 &mut errors,
             );
             if sub.interval_s == 0 {
-                tracing::warn!(sub = %sub.id, "订阅 interval 为 0，按 6h 处理");
+                tracing::warn!(sub_id = %sub.id, "订阅 interval 为 0，按 6h 处理");
             }
             if let Some(prev) =
                 index.by_key.insert(key.clone(), ProviderPlan { key: key.clone(), index: i, sub })
@@ -216,7 +216,7 @@ impl MhConfigGen {
         let mut seen_ids: BTreeMap<String, usize> = BTreeMap::new();
         for (i, lane) in doc.lanes.iter().enumerate() {
             if !self.ignore_enabled && !lane.enabled {
-                tracing::debug!(lane = %lane.id, "lane 已停用（enabled: false），不生成 listener");
+                tracing::debug!(lane_id = %lane.id, "lane 已停用（enabled: false），不生成 listener");
                 continue;
             }
             if let Some(prev) = seen_ids.insert(lane.id.to_string(), i) {
@@ -312,7 +312,7 @@ impl MhConfigGen {
                 let p = self.require_subscription(index, lane, i, errors)?;
                 if !is_blank(lane.filter.as_deref()) || !is_blank(lane.exclude_filter.as_deref()) {
                     tracing::warn!(
-                        lane = %lane.id,
+                        lane_id = %lane.id,
                         "kind: subscription_group 的 lane 级 filter 被忽略（内核的 filter 只作用于 provider，不作用于已有组）"
                     );
                 }
@@ -336,7 +336,7 @@ impl MhConfigGen {
                 let p = self.require_subscription(index, lane, i, errors)?;
                 if !is_blank(lane.filter.as_deref()) || !is_blank(lane.exclude_filter.as_deref()) {
                     tracing::warn!(
-                        lane = %lane.id,
+                        lane_id = %lane.id,
                         "kind: subscription_node 的 lane 级 filter 被忽略（节点是钉死的）"
                     );
                 }
@@ -441,7 +441,7 @@ impl MhConfigGen {
                 ),
             )),
             None => tracing::warn!(
-                provider = %provider_key,
+                provider_id = %provider_key,
                 %name,
                 "无法确认{what}存在（没有清单），按不严格模式放行"
             ),
@@ -714,6 +714,14 @@ pub trait KernelConfigSource: Send + Sync {
     fn write_generated(&self) -> Result<PathBuf>;
     /// 当前期望的 lane → 内核目标名
     fn lane_targets(&self) -> Result<BTreeMap<LaneId, String>>;
+    /// 我们写进配置的 `proxy-providers` key 列表。
+    ///
+    /// 就绪判定要**逐个**断言它们真的加载到了节点：内核在 provider 为空时
+    /// **一边报 error 一边照常启动**，所以只问"进程在不在"会把"整个内核静默降级"报成绿。
+    /// 默认空列表 = "没有 provider 需要检查"（全直连的配置）。
+    fn expected_providers(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
 }
 
 /// `KernelConfigSource` 的默认实现：`MhConfigGen` + 领域配置 + 端口表 → 落盘。
@@ -796,6 +804,21 @@ impl KernelConfigSource for GeneratedConfigSource {
             return Err(TaError::ConfigInvalid { errors });
         }
         Ok(out)
+    }
+
+    /// 从**我们已经写出的 YAML** 里读 provider key —— 这样它不可能与生成逻辑漂移，
+    /// 而且对任何 [`KernelConfigGen`] 实现都成立（不依赖具体生成器的内部结构）。
+    fn expected_providers(&self) -> Result<Vec<String>> {
+        let yaml = self.render()?;
+        let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml)
+            .map_err(|e| TaError::Internal(format!("回读生成的配置失败：{e}")))?;
+        let mut keys: Vec<String> = value
+            .get("proxy-providers")
+            .and_then(|p| p.as_mapping())
+            .map(|m| m.keys().filter_map(|k| k.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        keys.sort();
+        Ok(keys)
     }
 }
 

@@ -24,7 +24,7 @@ use futures_util::StreamExt;
 
 use ta_core::clock::Clock;
 use ta_core::domain::behavior::resolve_lane;
-use ta_core::domain::{Channel, ConfigDoc, NoCandidateAction};
+use ta_core::domain::{ChannelConfig, ConfigDoc, NoCandidateAction};
 use ta_core::error::{Result, TaError};
 use ta_core::quota::{QuotaLedger, QuotaObservation};
 use ta_core::routing::{
@@ -153,7 +153,7 @@ const LANE_RECOVERY_MS: i64 = 5_000;
 /// 一次尝试的"是谁"部分；结果由 [`AttemptBuilder::record`] 补上。
 struct AttemptBuilder<'a> {
     prepared: &'a PreparedRequest,
-    channel: &'a Channel,
+    channel: &'a ChannelConfig,
     lane: &'a LaneId,
     attempt: u32,
 }
@@ -270,7 +270,7 @@ impl Pipeline {
     fn lane_for(
         &self,
         cfg: &ConfigDoc,
-        channel: &Channel,
+        channel: &ChannelConfig,
         lane_override: Option<&LaneId>,
     ) -> LaneId {
         resolve_lane(
@@ -285,7 +285,7 @@ impl Pipeline {
         .unwrap_or_else(|| LaneId::new("direct"))
     }
 
-    fn resolved_channel(&self, cfg: &ConfigDoc, id: &ChannelId) -> Result<Channel> {
+    fn resolved_channel(&self, cfg: &ConfigDoc, id: &ChannelId) -> Result<ChannelConfig> {
         cfg.channel(id.as_str())
             .cloned()
             .ok_or_else(|| TaError::Internal(format!("通道 {id} 不在配置里（路由与配置不一致）")))
@@ -296,7 +296,7 @@ impl Pipeline {
         &self,
         cfg: &ConfigDoc,
         snapshot: &RequestSnapshot,
-        channel: &Channel,
+        channel: &ChannelConfig,
         lane_override: Option<&LaneId>,
     ) -> Result<PreparedRequest> {
         let credential = cfg
@@ -321,7 +321,7 @@ impl Pipeline {
     /// 429/402/5xx 的处置：402 直接判额度耗尽，其余进冷却。
     fn classify_cooling(
         &self,
-        channel: &Channel,
+        channel: &ChannelConfig,
         status: http::StatusCode,
         cooldown_s: u32,
         now_ms: i64,
@@ -348,7 +348,7 @@ impl Pipeline {
     fn attempt<'a>(
         &self,
         prepared: &'a PreparedRequest,
-        channel: &'a Channel,
+        channel: &'a ChannelConfig,
         lane: &'a LaneId,
         attempt: u32,
     ) -> AttemptBuilder<'a> {
@@ -656,7 +656,11 @@ impl Pipeline {
     }
 }
 
-fn meter_context(prepared: &PreparedRequest, channel: &Channel, lane: &LaneId) -> MeterContext {
+fn meter_context(
+    prepared: &PreparedRequest,
+    channel: &ChannelConfig,
+    lane: &LaneId,
+) -> MeterContext {
     MeterContext {
         request_id: prepared.request_id.clone(),
         channel_id: channel.id.clone(),
@@ -853,10 +857,12 @@ mod tests {
         doc.credentials.push(Credential::new("c-a", "p-a", "A", "${secret:a}"));
         doc.credentials.push(Credential::new("c-b", "p-b", "B", "${secret:b}"));
         doc.models.push(Model::new(MODEL));
-        doc.channels
-            .push(Channel::new("ch-a", MODEL, "p-a", "c-a", "upstream-a").with_lane("lane-jp"));
-        doc.channels
-            .push(Channel::new("ch-b", MODEL, "p-b", "c-b", "upstream-b").with_lane("lane-tokyo"));
+        doc.channels.push(
+            ChannelConfig::new("ch-a", MODEL, "p-a", "c-a", "upstream-a").with_lane("lane-jp"),
+        );
+        doc.channels.push(
+            ChannelConfig::new("ch-b", MODEL, "p-b", "c-b", "upstream-b").with_lane("lane-tokyo"),
+        );
         doc
     }
 

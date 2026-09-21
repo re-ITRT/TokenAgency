@@ -8,7 +8,13 @@
 //!
 //! 1. **single-instance 必须最前**：它在插件初始化时就去抢单实例锁，越早越能避免
 //!    第二个实例先建窗口/先碰数据库再被要求退出（那是真实的脏数据来源）。
-//! 2. **log 第二**：后面的插件初始化失败也要能留日志。
+//! 2. **单一日志路径**：**不注册 `tauri-plugin-log`**。
+//!    本应用自己装了 `tracing_subscriber`（`lib.rs::init_tracing`），
+//!    再挂一个日志插件就是**两套并行系统**（[14 §1.1]）：global logger 只能有一个，
+//!    插件默认会再 `log::set_logger` 一次 —— 那是**启动即 panic**
+//!    （`attempted to set a logger after the logging system was already initialized`）。
+//!    第 10 轮之前用 `.skip_logger()` 绕过，那只是让 panic 不发生：
+//!    **两套系统仍然并存，日志该去哪仍然不确定**。正解是移除该插件（本文件已移除）。
 //! 3. `window-state` → `notification` → `deep-link` → …… → `shell`：其余顺序无强依赖，
 //!    按"越基础越靠前"排。
 //!
@@ -43,17 +49,13 @@ pub struct PluginSpec {
     pub note: &'static str,
 }
 
-/// 12 个插件（[12 §5 T2] ③）。顺序 = 注册顺序，见模块文档。
-pub const PLUGINS: [PluginSpec; 12] = [
+/// 11 个插件（[12 §5 T2] ③ 原列 12 个，**已去掉 `tauri-plugin-log`**，见模块文档第 2 条）。
+/// 顺序 = 注册顺序，见模块文档。
+pub const PLUGINS: [PluginSpec; 11] = [
     PluginSpec {
         id: "single-instance",
         krate: "tauri-plugin-single-instance",
         note: "必须最先：抢单实例锁，第二个实例唤起初窗后直接退出（[12 §5 T2] ④）",
-    },
-    PluginSpec {
-        id: "log",
-        krate: "tauri-plugin-log",
-        note: "第二位：后续插件初始化失败也要留痕",
     },
     PluginSpec {
         id: "window-state",
@@ -119,15 +121,7 @@ pub fn register<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             lifecycle::on_second_instance(app, &argv, &cwd);
         }))
-        // 2) 日志：放在最前，后面出问题也有痕迹
-        //
-        // ⚠️ 必须 `.skip_logger()`：本应用自己装了 `tracing_subscriber`（`lib.rs::init_tracing`），
-        // 而这个插件默认会再 `log::set_logger` 一次 —— 全局 logger 只能有一个，否则
-        // **启动即 panic**：`attempted to set a logger after the logging system was already initialized`
-        // （这是真机启动才暴露的问题，单元测试发现不了）。
-        // 代价：前端 console 经该插件转发过来的 `log` 记录不再落盘。见 T2 汇报的"待裁决 1"。
-        .plugin(tauri_plugin_log::Builder::new().skip_logger().build())
-        // 3) 窗口位置记忆
+        // 2) 窗口位置记忆
         .plugin(tauri_plugin_window_state::Builder::default().build())
         // 4) 系统通知
         .plugin(tauri_plugin_notification::init())
@@ -203,7 +197,7 @@ mod tests {
     fn single_instance_is_registered_first() {
         // 顺序是有理由的（见模块文档）：第一位必须是 single-instance
         assert_eq!(PLUGINS[0].id, "single-instance");
-        assert_eq!(PLUGINS[1].id, "log");
+        assert_eq!(PLUGINS[1].id, "window-state");
     }
 
     #[test]

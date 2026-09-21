@@ -429,7 +429,7 @@ pub fn policy_matches(
     }
 
     if !m.channel_tags_any.is_empty() || !m.channel_tags_all.is_empty() {
-        let enabled: Vec<&Channel> =
+        let enabled: Vec<&ChannelConfig> =
             model_scope.iter().filter_map(|id| idx.channel(id)).filter(|c| c.enabled).collect();
         if !m.channel_tags_any.is_empty()
             && !enabled

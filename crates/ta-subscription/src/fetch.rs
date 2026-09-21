@@ -292,7 +292,7 @@ impl SubscriptionFetcher for HttpSubscriptionFetcher {
             match self.attempt(s).await {
                 Ok(response) => return Ok(build_outcome(s, response)),
                 Err(e) if !e.is_transient() => {
-                    tracing::warn!(subscription = %s.id, error = %e, "订阅下载失败（不可重试），保留上版");
+                    tracing::warn!(sub_id = %s.id, error = %e, "订阅下载失败（不可重试），保留上版");
                     return Err(fetch_error(&s.id, &e));
                 }
                 Err(e) => {
@@ -301,7 +301,7 @@ impl SubscriptionFetcher for HttpSubscriptionFetcher {
                         break;
                     };
                     tracing::warn!(
-                        subscription = %s.id,
+                        sub_id = %s.id,
                         attempt,
                         error = %e,
                         delay_ms = delay.as_millis() as u64,
@@ -313,7 +313,7 @@ impl SubscriptionFetcher for HttpSubscriptionFetcher {
             }
         }
         let e = last.unwrap_or_else(|| AttemptError::Transient("未发起任何请求".into()));
-        tracing::warn!(subscription = %s.id, attempts, error = %e, "订阅下载最终失败，保留上版");
+        tracing::warn!(sub_id = %s.id, attempts, error = %e, "订阅下载最终失败，保留上版");
         Err(fetch_error(&s.id, &e))
     }
 }
@@ -334,7 +334,7 @@ fn build_outcome(sub: &Subscription, response: RawResponse) -> FetchOutcome {
     let raw = match maybe_decompress(&response.body, DEFAULT_MAX_BYTES) {
         Ok(b) => b,
         Err(e) => {
-            tracing::warn!(subscription = %sub.id, error = %e, "响应解压失败，按原文处理");
+            tracing::warn!(sub_id = %sub.id, code = e.code(), error = %e, "响应解压失败，按原文处理");
             response.body
         }
     };
@@ -347,7 +347,7 @@ fn build_outcome(sub: &Subscription, response: RawResponse) -> FetchOutcome {
     let removed = parse::apply_node_filter(&mut nodes, &sub.filter);
     if !removed.is_empty() {
         tracing::debug!(
-            subscription = %sub.id,
+            sub_id = %sub.id,
             removed = removed.len(),
             names = ?removed.iter().map(|n| n.name.as_str()).collect::<Vec<_>>(),
             "订阅级 filter 剔除了假节点"

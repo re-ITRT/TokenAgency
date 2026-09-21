@@ -255,7 +255,7 @@ impl RangePortAllocator {
         for (lane, port) in persisted {
             if port < self.range[0] || port > self.range[1] {
                 tracing::warn!(
-                    lane = %lane,
+                    lane_id = %lane,
                     port,
                     range = ?self.range,
                     "落库的 lane 端口超出当前 range，丢弃并清理"
@@ -264,7 +264,7 @@ impl RangePortAllocator {
                 continue;
             }
             if assigned.values().any(|p| *p == port) {
-                tracing::warn!(lane = %lane, port, "落库的 lane 端口重复，丢弃并清理");
+                tracing::warn!(lane_id = %lane, port, "落库的 lane 端口重复，丢弃并清理");
                 self.store.remove(&lane)?;
                 continue;
             }
@@ -284,7 +284,7 @@ impl PortAllocator for RangePortAllocator {
             if self.probe.is_free(port) {
                 return Ok(port);
             }
-            tracing::warn!(lane = %lane, port, "落库的 lane 端口已被占用，重新分配（对上层透明）");
+            tracing::warn!(lane_id = %lane, port, "落库的 lane 端口已被占用，重新分配（对上层透明）");
             assigned.remove(lane);
             self.store.remove(lane)?;
         }
@@ -300,7 +300,7 @@ impl PortAllocator for RangePortAllocator {
                     assigned.remove(lane);
                     return Err(e);
                 }
-                tracing::debug!(lane = %lane, port, "lane 端口已分配");
+                tracing::debug!(lane_id = %lane, port, "lane 端口已分配");
                 return Ok(port);
             }
         }
@@ -315,7 +315,7 @@ impl PortAllocator for RangePortAllocator {
         let removed = self.inner.lock().expect("allocator 锁被毒化").remove(lane);
         if removed.is_some() {
             if let Err(e) = self.store.remove(lane) {
-                tracing::warn!(lane = %lane, error = %e, "清理 lane 端口记录失败");
+                tracing::warn!(lane_id = %lane, code = e.code(), error = %e, "清理 lane 端口记录失败");
             }
         }
     }

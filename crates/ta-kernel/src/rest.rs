@@ -208,6 +208,11 @@ impl KernelRest {
         let providers = self.providers().await?;
         parse_snapshot(&proxies, &providers)
     }
+
+    /// `GET /providers/proxies` → provider key → 节点数（就绪判定用）
+    pub async fn provider_node_counts(&self) -> Result<BTreeMap<String, usize>> {
+        parse_provider_counts(&self.providers().await?)
+    }
 }
 
 // ================================================================ 纯解析
@@ -249,6 +254,17 @@ pub fn parse_snapshot(
     }
 
     Ok(ProvidersSnapshot { proxies: out_proxies, providers: out_providers })
+}
+
+/// `GET /providers/proxies` → provider key → 节点数。
+///
+/// **key 才是 provider 的身份**（我们生成的 `sub-jp` 这种），`name` 是给人看的机场名。
+/// 就绪判定必须按 key 查 —— 内核在 provider 加载失败（文件缺失 / 为空 / 解析错）时
+/// **一边 `level=error` 一边照常启动**，此时那个 key 的节点数就是 0。
+pub fn parse_provider_counts(providers: &serde_json::Value) -> Result<BTreeMap<String, usize>> {
+    let env = ProvidersEnvelope::deserialize(providers)
+        .map_err(|e| TaError::Kernel(format!("GET /providers/proxies 形态不符：{e}")))?;
+    Ok(env.providers.into_iter().map(|(key, raw)| (key, raw.proxies.len())).collect())
 }
 
 #[derive(Debug, Deserialize)]

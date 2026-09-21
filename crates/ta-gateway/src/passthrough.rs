@@ -9,8 +9,8 @@
 //! - 头：`HeaderMap` **整体复制**，再定点增删改；**绝不白名单式重建**
 //!   （白名单就是 `x-stainless-*` / `anthropic-beta` 被吞的地方）。
 //! - 体：`serde_json::Value` 定点 patch；**解析失败原样返回原字节**。
-//!   请求体只能改 `model`（映射为 `Channel::upstream_model`）+ 用户显式配置的
-//!   `Channel::transform.body_patch`；其余字段（含未知字段、未知 part）一个都不动。
+//!   请求体只能改 `model`（映射为 `ChannelConfig::upstream_model`）+ 用户显式配置的
+//!   `ChannelConfig::transform.body_patch`；其余字段（含未知字段、未知 part）一个都不动。
 //! - `diff_headers` 是**自检**不是策略：豁免 4 处契约例外后，任何差异都说明网关自己漏了字段。
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,7 +19,7 @@ use http::{header, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value};
 
 use ta_core::domain::{
-    AuthConfig, AuthScheme, Channel, ConfigDoc, HeaderConflict, HeaderMode, Provider,
+    AuthConfig, AuthScheme, ChannelConfig, ConfigDoc, HeaderConflict, HeaderMode, Provider,
 };
 use ta_core::error::{Result, TaError};
 
@@ -43,17 +43,17 @@ pub trait PassthroughPolicy: Send + Sync {
         &self,
         cfg: &ConfigDoc,
         client: &HeaderMap,
-        channel: &Channel,
+        channel: &ChannelConfig,
         secret: &str,
         upstream_url: &str,
     ) -> HeaderMap;
 
     /// `serde_json::Value` 定点 patch；解析失败则返回原字节（不阻断）
-    fn patch_body(&self, raw: &[u8], channel: &Channel) -> Result<Vec<u8>>;
+    fn patch_body(&self, raw: &[u8], channel: &ChannelConfig) -> Result<Vec<u8>>;
 
     fn diff_headers(&self, client: &HeaderMap, upstream: &HeaderMap) -> HeaderDiff;
 
-    fn header_mode(&self, cfg: &ConfigDoc, channel: &Channel) -> HeaderMode;
+    fn header_mode(&self, cfg: &ConfigDoc, channel: &ChannelConfig) -> HeaderMode;
 }
 
 // ================================================================ 常量表
@@ -133,7 +133,7 @@ impl FullPassthrough {
         &self,
         cfg: &ConfigDoc,
         client: &HeaderMap,
-        channel: &Channel,
+        channel: &ChannelConfig,
         secret: &str,
         upstream_url: &str,
         body_len: Option<usize>,
@@ -194,14 +194,14 @@ impl PassthroughPolicy for FullPassthrough {
         &self,
         cfg: &ConfigDoc,
         client: &HeaderMap,
-        channel: &Channel,
+        channel: &ChannelConfig,
         secret: &str,
         upstream_url: &str,
     ) -> HeaderMap {
         self.build_headers_with_body(cfg, client, channel, secret, upstream_url, None)
     }
 
-    fn patch_body(&self, raw: &[u8], channel: &Channel) -> Result<Vec<u8>> {
+    fn patch_body(&self, raw: &[u8], channel: &ChannelConfig) -> Result<Vec<u8>> {
         // 非 JSON（multipart 上传、SSE、畸形体…）→ 原样透传。
         // 这里**不能**报错：有些客户端会发非 JSON 的畸形体，透传比拒绝更尊重用户。
         let Ok(mut value) = serde_json::from_slice::<Value>(raw) else {
@@ -276,7 +276,7 @@ impl PassthroughPolicy for FullPassthrough {
         diff
     }
 
-    fn header_mode(&self, cfg: &ConfigDoc, channel: &Channel) -> HeaderMode {
+    fn header_mode(&self, cfg: &ConfigDoc, channel: &ChannelConfig) -> HeaderMode {
         // provider 级覆盖 > gateway 全局；默认恒为 Pass
         cfg.provider(channel.provider.as_str())
             .and_then(|p| p.passthrough.header_mode)
@@ -557,8 +557,8 @@ pub(crate) mod tests {
     use super::*;
     use ta_core::types::Protocol;
 
-    fn channel() -> Channel {
-        Channel::new(
+    fn channel() -> ChannelConfig {
+        ChannelConfig::new(
             "ch-relay-a",
             "claude-sonnet-4-5",
             "p-relay",
@@ -571,7 +571,7 @@ pub(crate) mod tests {
         Provider::new("p-relay", "中转A", Protocol::Openai, "https://relay.example.com/v1")
     }
 
-    fn cfg_with(provider: Provider, channel: Channel) -> ConfigDoc {
+    fn cfg_with(provider: Provider, channel: ChannelConfig) -> ConfigDoc {
         let mut doc = ConfigDoc::default();
         doc.providers.push(provider);
         doc.channels.push(channel);
@@ -581,7 +581,7 @@ pub(crate) mod tests {
     /// DoD 的 golden 输入（`ingress` 的端到端测试复用同一份，避免两处漂移）。
     pub(crate) struct GoldenFixture {
         pub provider: Provider,
-        pub channel: Channel,
+        pub channel: ChannelConfig,
         pub headers: HeaderMap,
         pub body: Value,
     }
