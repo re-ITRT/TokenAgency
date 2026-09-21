@@ -1,23 +1,43 @@
-import { Box, Paper, Stack, Typography } from "@mui/material";
-
 /**
- * W0 骨架页。
- * 工作包 F1 会把它替换成完整路由（10 个页面，见 docs/05-ui-tray.md §2）。
+ * 应用根组件（F1 交付：取代 W0 骨架页）。
+ *
+ * 职责边界：
+ * - `main.tsx`（W0 提供）负责 QueryClientProvider；
+ * - 这里负责主题（跟随 `useUiStore.themeMode`）、i18n 初始化、路由与外壳；
+ * - **浏览器里能跑**：非 Tauri 环境下 `registerDevMocks()` 会注册 [03 §0] 基准场景的
+ *   mock 数据，所以 `npm run dev` 不依赖 Rust/Tauri 就能看页面。
+ *
+ * 路由用 `HashRouter`：Tauri 生产环境走自定义协议、没有服务端回退，
+ * hash 路由刷新/深链不会 404（桌面应用里 URL 美观度不重要）。
  */
+
+import { CssBaseline, ThemeProvider } from "@mui/material";
+import { HashRouter } from "react-router-dom";
+
+// ⚠️ 用显式路径 `@/app/AppShell` 而不是 `@/app`：Windows 文件系统大小写不敏感，
+// `@/app` 会先命中 `src/App.tsx`（那个骨架页）而不是 `src/app/` 目录，
+// 导致 TS 报"only in casing"错误。四个包同理：请 `import { ROUTES } from "@/app/routes"`。
+import { AppShell } from "@/app/AppShell";
+import { registerDevMocks } from "@/shared/api";
+import { useUiStore } from "@/stores";
+
+import { buildTheme } from "./theme";
+
+// i18n：导入即初始化（资源内联 + 关 Suspense，首帧可渲染）
+import "@/shared/i18n";
+
+// 浏览器开发环境自动注册基准场景 mock（幂等；Tauri 里是空操作）
+registerDevMocks();
+
 export default function App() {
+  const themeMode = useUiStore((s) => s.themeMode);
+
   return (
-    <Box sx={{ p: 3 }}>
-      <Paper sx={{ p: 3 }}>
-        <Stack spacing={1}>
-          <Typography variant="h5">TokenAgency</Typography>
-          <Typography variant="body2" color="text.secondary">
-            工作区骨架已就位。接下来由工作包 F1–F4 填充页面。
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            接口契约：docs/10-interface-spec.md · 内部契约：docs/11-internal-contracts.md
-          </Typography>
-        </Stack>
-      </Paper>
-    </Box>
+    <ThemeProvider theme={buildTheme(themeMode)}>
+      <CssBaseline />
+      <HashRouter>
+        <AppShell />
+      </HashRouter>
+    </ThemeProvider>
   );
 }
