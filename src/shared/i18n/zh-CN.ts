@@ -78,6 +78,23 @@ export const zhCN = {
   "common.owner": "归属",
   "common.notImplemented": "未实现",
 
+  // ---------------------------------------------------------------- 看板（[07 §1]）
+  "dashboard.readiness": "可用性",
+  "dashboard.gateway": "网关",
+  "dashboard.providerCheck": "provider 加载检查",
+  "dashboard.providerCheck.hint":
+    "还没有可用的检查结果 —— 不推测为「正常」。内核进程状态正常不等于 provider 已加载成功。",
+  "dashboard.kernel.restarts": "已重启 {{count}} 次",
+  "dashboard.uptime": "已运行",
+  "dashboard.card.requests": "今日请求",
+  "dashboard.card.tokens": "今日 Token",
+  "dashboard.card.tokensUnit": "tok",
+  "dashboard.card.cost": "今日花费",
+  "dashboard.card.successRate": "成功率",
+  "dashboard.unpriced": "{{count}} 个模型未定价：成本数字不完整",
+  "dashboard.quota": "套餐额度",
+  "dashboard.cache": "缓存命中 {{rate}} · 已省 {{saved}}",
+
   // ---------------------------------------------------------------- 共享组件
   "component.numberCard.hintExact": "精确值 {{value}}",
   "component.sparkline.label": "近 24 小时趋势",

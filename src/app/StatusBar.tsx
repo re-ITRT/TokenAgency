@@ -29,30 +29,12 @@ import {
   useCommandMutation,
   useCommandQuery,
 } from "@/shared/api";
-import type { KernelState } from "@/shared/bindings";
 import { formatDuration, formatLatency } from "@/shared/format";
 import { useTranslation } from "@/shared/i18n";
 import { useAppStore } from "@/stores";
 import { typography } from "@/theme";
 
-import { StatusDot, type SemStatus } from "@/shared/components";
-
-/** 内核状态 → 语义色（与 StatusDot 的全局语义一致）。 */
-const KERNEL_STATUS: Record<KernelState, SemStatus> = {
-  stopped: "off",
-  starting: "info",
-  ready: "ok",
-  restarting: "warn",
-  failed: "error",
-};
-
-const KERNEL_LABEL_KEY = {
-  stopped: "status.kernel.stopped",
-  starting: "status.kernel.starting",
-  ready: "status.kernel.ready",
-  restarting: "status.kernel.restarting",
-  failed: "status.kernel.failed",
-} as const;
+import { KernelStateDot, StatusDot } from "@/shared/components";
 
 /** 与侧边栏品牌区同高。 */
 const CHROME_HEIGHT = 48;
@@ -85,7 +67,8 @@ export function StatusBar() {
   }, [config.data, setExperimental]);
 
   const gatewayRunning = (status ?? undefined)?.gateway !== "paused";
-  const kernelState = kernel?.state ?? status?.kernel.state ?? "stopped";
+  // 状态源顺序：实时事件（store）→ app_status → **未知**（不默认成 "stopped"，那是编事实）
+  const kernelState = kernel?.state ?? status?.kernel.state;
   const policyName =
     policies.data?.find((p) => p.id === status?.active_policy_id)?.name ?? t("status.policy.none");
   const laneId = status?.default_lane_id ?? null;
@@ -115,10 +98,7 @@ export function StatusBar() {
         label={gatewayRunning ? t("status.gateway.running") : t("status.gateway.paused")}
       />
 
-      <StatusDot
-        status={KERNEL_STATUS[kernelState]}
-        label={`${t("status.kernel.label")} ${t(KERNEL_LABEL_KEY[kernelState])}`}
-      />
+      <KernelStateDot state={kernelState} withLabelPrefix />
 
       {experimental ? (
         // 只展示与解释，不提供开关（I2）

@@ -36,3 +36,9 @@ export { NumberCard, type NumberCardProps, type ValueFormat } from "./NumberCard
 export { QuotaBar, quotaLevel, type QuotaBarProps, type QuotaLevel } from "./QuotaBar";
 export { Sparkline, type SparklineProps } from "./Sparkline";
 export { StatusDot, type SemStatus, type StatusDotProps } from "./StatusDot";
+export {
+  KernelStateDot,
+  KERNEL_LABEL_KEY,
+  KERNEL_SEM_STATUS,
+  type KernelStateDotProps,
+} from "./KernelStateDot";

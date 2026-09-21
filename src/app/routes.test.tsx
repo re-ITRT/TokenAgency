@@ -3,7 +3,8 @@
  * 外壳的机械化验收（F1 的 DoD 2 + 路由契约一致性）。
  *
  * 为什么不靠"我看了一眼"：
- * - **每个路由都必须能渲染**（页面缺失 → 占位壳，不白屏、不抛错）——这里逐条跑；
+ * - **每个路由都必须能渲染**：有页面文件就渲染页面（必须有页头、不许再走占位壳），
+ *   没有页面文件就给占位壳（不白屏、不抛错）——这里逐条跑；
  * - **`/` 必须重定向到看板**；
  * - **未知路径必须给 404 页面**，不能是空白；
  * - **路由表自身要自洽**：key/path 不重复、`titleKey` 在 zh-CN 里真的存在、
@@ -11,7 +12,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -21,7 +22,7 @@ import { i18n } from "@/shared/i18n";
 import { zhCN } from "@/shared/i18n/zh-CN";
 
 import { AppShell } from "./AppShell";
-import { primaryCandidate } from "./pageRegistry";
+import { primaryCandidate, resolvePage } from "./pageRegistry";
 import { HOME_PATH, NAV_ROUTES, ROUTES, routeByKey } from "./routes";
 
 beforeAll(async () => {
@@ -55,24 +56,42 @@ function placeholderMarker(path: string): string {
 }
 
 describe("路由外壳", () => {
-  it("每个路由都能渲染（页面缺失时给占位壳，不白屏）", () => {
+  it("每个路由都能渲染：有页面就渲染页面，没页面就给占位壳（都不白屏）", async () => {
     for (const route of ROUTES) {
       const url = route.path.replace(":id", "p-bytedance");
+      const page = resolvePage(route.pages);
       const view = renderAt(url);
-      const expected = placeholderMarker(primaryCandidate(route.pages));
-      expect(
-        screen.queryByText(expected),
-        `${url} 应当渲染占位壳（找 ${expected}）`,
-      ).toBeTruthy();
+
+      // 页面组件是懒加载的：先出 Suspense 骨架，再出内容
+      await waitFor(() => {
+        expect(document.body.textContent?.trim().length ?? 0, `${url} 白屏了`).toBeGreaterThan(0);
+      });
+
+      if (page === undefined) {
+        const expected = placeholderMarker(primaryCandidate(route.pages));
+        expect(
+          screen.queryByText(expected),
+          `${url} 没有页面文件时应当渲染占位壳（找 ${expected}）`,
+        ).toBeTruthy();
+      } else {
+        // 页面已就位：不许再显示占位壳，且必须渲染出自己的页头
+        expect(
+          screen.queryByTestId("page-placeholder"),
+          `${url} 页面已存在，不应再走占位壳`,
+        ).toBeNull();
+        await waitFor(() => expect(screen.queryByTestId("page-header")).toBeTruthy());
+      }
       view.unmount();
     }
   });
 
-  it("`/` 重定向到看板", () => {
+  it("`/` 重定向到看板（看板已有页面，不再是占位壳）", async () => {
     renderAt("/");
     const dashboard = routeByKey("dashboard");
     expect(dashboard).toBeDefined();
-    expect(screen.queryByText(placeholderMarker(primaryCandidate(dashboard!.pages)))).toBeTruthy();
+    expect(resolvePage(dashboard!.pages)).toBeDefined();
+    await waitFor(() => expect(screen.queryByTestId("page-header")).toBeTruthy());
+    expect(screen.queryByText(placeholderMarker(primaryCandidate(dashboard!.pages)))).toBeNull();
   });
 
   it("未知路径渲染 404，而不是空白", () => {
