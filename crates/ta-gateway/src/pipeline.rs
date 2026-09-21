@@ -584,6 +584,9 @@ impl RequestPipeline for Pipeline {
         let mut saw_exhausted = false;
         let mut saw_other = false;
         let mut attempt: u32 = 0;
+        // 上游**真正回了话**的最后一个响应（429/402/5xx）。失败链走完若没有候选成功，
+        // 就把它原样交给客户端 —— 见函数末尾与 [docs/11 §5]。
+        let mut last_upstream: Option<UpstreamResponse> = None;
         // 连接失败的候选：等队列空了再重试一次（K1）。
         //
         // ⚠️ 它**只记住最后一个** lane 级失败的候选：若 A、B 两个候选都是 lane 连接失败，
@@ -670,6 +673,11 @@ impl RequestPipeline for Pipeline {
                         last_error = Some(TaError::AllChannelsFailed {
                             message: format!("通道 {channel_id} 返回 {}", upstream.status.as_u16()),
                         });
+                        // 上游**说了话**（429/402/5xx）→ 记住它的原话。
+                        // 若整条失败链走完都没有候选成功，客户端必须看到**上游的原话**
+                        // 而不是我们的信封（[docs/11 §5] 第 1 行：哪怕 4xx/5xx 也原样透传）。
+                        // 边界就在"上游说不说话"：没听到（传输失败）才由我们包装。
+                        last_upstream = Some(upstream);
                         continue;
                     }
 
@@ -776,7 +784,20 @@ impl RequestPipeline for Pipeline {
             }
         }
 
-        // 全部候选都失败：额度全耗尽与"都挂了"是两种不同的对外语义
+        // ---- 失败链走完了。对外语义按 [docs/11 §5] 的两分法：
+        //
+        // 1) **上游说了话**（我们手里有它的 HTTP 响应）→ 原样透传。
+        //    状态码 / body / 头一个都不改（`x-tokenagency-*` 由 ingress 加）。
+        //    客户端必须看到上游原话：429 的 `retry-after`、401 的 key 无效说明、
+        //    404 的模型不存在……**不许改写成我们的信封** —— 那会让用户以为"是 TokenAgency 坏了"。
+        // 2) **我们没听到上游说话**（连接被拒/TLS/超时/读到一半断）→ 用我们自己的码 +
+        //    `retryable` + 人话。裸 socket 错误没有可透传的上游语义，直接吐出去只会被
+        //    误判成"中转站的服务没了"。
+        if let Some(upstream) = last_upstream {
+            return Ok(dispatch::into_client_response(upstream));
+        }
+
+        // 没有任何上游响应：额度全耗尽与"都挂了"是两种不同的对外语义
         if !saw_other && saw_exhausted {
             return Err(TaError::AllChannelsExhausted);
         }
@@ -1641,11 +1662,26 @@ mod tests {
         assert_eq!(sink.records.lock().unwrap().len(), 1);
     }
 
+    /// 全部候选都回 402 时，客户端看到的是**上游的 402**。
+    ///
+    /// 这条原先断言"返回我们的 TA-2004 信封"，按 [docs/11 §5] 第 1 行已改：
+    /// **上游返回了 HTTP 响应（哪怕 4xx/5xx）就原样透传** —— 401/404/429/402 都是
+    /// "上游说的话"，改写成我们的信封会让用户以为"是 TokenAgency 坏了"。
+    /// 账本侧的副作用不变（402 仍把该凭据标 `exhausted`）。
     #[tokio::test]
-    async fn exhausted_channels_report_2004_not_2005() {
+    async fn upstream_402_is_passed_through_when_every_candidate_is_exhausted() {
+        let upstream_body = r#"{"error":{"message":"insufficient_quota"}}"#;
         let dialer = Arc::new(ScriptedDialer::with(vec![
-            Scripted::Ok { status: 402, headers: vec![], body: "{}" },
-            Scripted::Ok { status: 402, headers: vec![], body: "{}" },
+            Scripted::Ok {
+                status: 402,
+                headers: vec![("content-type", "application/json")],
+                body: upstream_body,
+            },
+            Scripted::Ok {
+                status: 402,
+                headers: vec![("content-type", "application/json")],
+                body: upstream_body,
+            },
         ]));
         let pipeline = pipeline(
             test_cfg("https://a.example/v1", "https://b.example/v1"),
@@ -1658,9 +1694,93 @@ mod tests {
         );
         let prepared =
             pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
-        let err = pipeline.execute(prepared).await.expect_err("全部 402 必须报额度耗尽");
-        assert_eq!(err.code(), "TA-2004");
-        assert_eq!(err.http_status(), 402);
+        let response = pipeline.execute(prepared).await.expect("上游说了话就必须透传它");
+        assert_eq!(response.status(), http::StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
+        assert_eq!(body_string(response).await, upstream_body);
+    }
+
+    /// [docs/11 §5] 第 1 行：**上游返回了 HTTP 响应（哪怕 4xx/5xx）就原样透传**。
+    ///
+    /// 这是用户提出的那条边界 —— 客户端必须看到上游原话（`retry-after`、错误 JSON），
+    /// 而不是我们的信封。单候选、上游回 429：旧实现会把它冷却掉再拿我们自己的
+    /// `TA-2005`（502）去答复，客户端**永远看不到那个 `retry-after`**。
+    #[tokio::test]
+    async fn upstream_error_response_reaches_the_client_verbatim() {
+        let upstream_body =
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#;
+        let dialer = Arc::new(ScriptedDialer::with(vec![Scripted::Ok {
+            status: 429,
+            headers: vec![
+                ("content-type", "application/json"),
+                ("retry-after", "9"),
+                ("anthropic-ratelimit-requests-remaining", "0"),
+            ],
+            body: upstream_body,
+        }]));
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer,
+            Arc::new(RecordingSink::default()),
+        );
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let response =
+            pipeline.execute(prepared).await.expect("必须透传上游响应，而不是报我们的错");
+        assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get("retry-after").unwrap(), "9");
+        assert_eq!(response.headers().get("anthropic-ratelimit-requests-remaining").unwrap(), "0");
+        assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
+        let body = body_string(response).await;
+        assert_eq!(body, upstream_body, "上游的 body 必须逐字节到达");
+        assert!(!body.contains("tokenagency"), "不许把上游的话改写成我们的信封：{body}");
+    }
+
+    /// [docs/11 §5] 第 2 行：**没拿到响应**（连接被拒/TLS/超时）时**不假装那是上游的响应**。
+    ///
+    /// 客户端收到的是我们自己的信封：`TA-3002` + `retryable: true` + `tokenagency_*` 类型 +
+    /// 人话，而不是裸 socket 错误文本（那会被误判成"中转站的服务没了"）。
+    #[tokio::test]
+    async fn unreachable_upstream_becomes_our_envelope_not_a_fake_response() {
+        use crate::dispatch::{DialerOptions, KernelDialer, StaticLanePorts};
+
+        // ch-a 走 lane-jp；把 lane-jp 指到一个没人监听的端口 → 连接必被拒
+        let lane = LaneId::new("lane-jp");
+        let dialer = Arc::new(KernelDialer::new(
+            Arc::new(StaticLanePorts::new([(lane, 1)])),
+            DialerOptions { connect_timeout_s: 1, ..Default::default() },
+        ));
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer,
+            Arc::new(RecordingSink::default()),
+        );
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let err = pipeline.execute(prepared).await.expect_err("连不上就不能假装有上游响应");
+        assert_eq!(err.code(), "TA-3002", "线路连不上是我们的判断，不是上游的话");
+        assert_eq!(err.http_status(), 503);
+        assert!(err.retryable(), "503 必须可重试");
+        assert!(err.type_str().starts_with("tokenagency_"), "{:?}", err.type_str());
+
+        // 渲染成客户端真正收到的 body：必须是我们的 JSON 信封
+        let response = crate::ingress::error_response(&err, "req_test");
+        assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_string(response).await;
+        let envelope: serde_json::Value =
+            serde_json::from_str(&body).unwrap_or_else(|e| panic!("信封必须是 JSON：{e}\n{body}"));
+        assert_eq!(envelope["error"]["code"], "TA-3002");
+        assert_eq!(envelope["error"]["retryable"], true);
+        assert_eq!(envelope["error"]["type"], "tokenagency_lane_unavailable");
+        assert_eq!(envelope["error"]["request_id"], "req_test");
     }
 
     #[tokio::test]
@@ -1775,7 +1895,11 @@ mod tests {
         for (round, expected_s) in ladder.iter().enumerate() {
             let prepared =
                 pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
-            let _ = pipeline.execute(prepared).await.expect_err("429 会被换通道，最终失败");
+            // 429 是"上游说的话" → 按 [docs/11 §5] 原样交给客户端（不是我们的错误信封）。
+            // 冷却仍然照记（本测试要测的是冷却阶梯）。
+            let response = pipeline.execute(prepared).await.expect("429 应当被透传");
+            assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
+            drop(response);
             let until = now + expected_s * 1000;
             assert!(
                 !pipeline.is_available(&channel, Some(&lane), until - 1),
@@ -1820,7 +1944,9 @@ mod tests {
         // 第 1 轮：429 → 120s
         let prepared =
             pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
-        let _ = pipeline.execute(prepared).await.expect_err("429");
+        let response = pipeline.execute(prepared).await.expect("429 应当被透传");
+        assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
+        drop(response);
         assert!(!pipeline.is_available(&channel, Some(&lane), start + 119_000));
         assert!(pipeline.is_available(&channel, Some(&lane), start + 120_000));
 
@@ -1839,7 +1965,9 @@ mod tests {
         let after_success = start + 120_000;
         let prepared =
             pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
-        let _ = pipeline.execute(prepared).await.expect_err("429");
+        let response = pipeline.execute(prepared).await.expect("429 应当被透传");
+        assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
+        drop(response);
         assert!(
             !pipeline.is_available(&channel, Some(&lane), after_success + 119_000),
             "第 3 轮：冷却内必须不可用"
