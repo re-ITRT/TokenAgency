@@ -1,5 +1,5 @@
 /**
- * ⚠️ GENERATED REPLACEMENT PENDING — T1 完成后由 `npm run gen:bindings` 覆盖
+ * 注意：GENERATED REPLACEMENT PENDING — T1 完成后由 `npm run gen:bindings` 覆盖
  * （`tauri-specta` 从 Rust 类型生成；生成后**禁止手改**，前端只允许 import）。
  *
  * 在那之前，这份手写版是 F2/F3/F4 的唯一类型契约。它**逐字段对齐**
@@ -105,7 +105,7 @@ export type LaneKind =
   | "subscription_group"
   | "subscription_node"
   | "filter";
-/** ⚠️ kebab-case（与其它枚举不同）。 */
+/** 注意：kebab-case（与其它枚举不同）。 */
 export type GroupType = "select" | "url-test" | "fallback" | "load-balance";
 export type AuthScheme = "bearer" | "header" | "query" | "none";
 export type HeaderConflict = "keep_client" | "override";
@@ -158,7 +158,7 @@ export type RetryConfig = {
 };
 
 export type MeteringConfig = {
-  /** ⚠️ 开启会**修改客户端请求**（注入 `stream_options.include_usage`），默认关闭。 */
+  /** 注意：开启会**修改客户端请求**（注入 `stream_options.include_usage`），默认关闭。 */
   inject_stream_usage: boolean;
 };
 
@@ -187,7 +187,7 @@ export type RequestLogConfig = {
 export type DnsConfig = {
   enhanced_mode: string;
   nameserver: string[];
-  /** ★ 节点自身域名解析，必须配，否则节点都连不上。 */
+  /** 要点：节点自身域名解析，必须配，否则节点都连不上。 */
   proxy_server_nameserver: string[];
   default_nameserver: string[];
 };
@@ -249,7 +249,7 @@ export type Lane = {
   name: string;
   kind: LaneKind;
   subscription?: SubscriptionId | null;
-  /** `kind: subscription_group` 时，订阅里自带的组名（如 "🇯🇵 日本"）。 */
+  /** `kind: subscription_group` 时，订阅里自带的组名（如 "🇯🇵 日本"）。 */ // ta-allow-emoji —— 这是用户数据示例（[15 §2.2]），不是我们产生的文本
   group?: string | null;
   group_type?: GroupType | null;
   /** `kind: subscription_node` 时的固定节点名。 */

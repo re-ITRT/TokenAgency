@@ -35,7 +35,7 @@ pub(crate) fn build_default_doc() -> ConfigDoc {
         channel_groups: channel_groups(),
         policies: policies(),
         system_integration: SystemIntegration {
-            // ★ 会写操作系统状态的三个开关一律默认关（[09 §1.2] E1）：
+            // 注意：会写操作系统状态的三个开关一律默认关（[09 §1.2] E1）：
             //   装完就静默加一个开机启动项 / 接管整机网络，都是用户最反感的"副作用"。
             enable_tun: false,
             enable_system_proxy: false,
@@ -152,7 +152,7 @@ fn net() -> NetConfig {
                 "https://223.5.5.5/dns-query".into(),
                 "https://doh.pub/dns-query".into(),
             ],
-            // ★ 不配这条，节点自己都连不上
+            // 注意：不配这条，节点自己都连不上
             proxy_server_nameserver: vec!["https://223.5.5.5/dns-query".into()],
             default_nameserver: vec!["223.5.5.5".into(), "119.29.29.29".into()],
             extra: Map::new(),
@@ -352,7 +352,7 @@ fn channel_groups() -> Vec<ChannelGroup> {
         "gpt-4o",
         ["ch-openai-personal", "ch-relay-a", "ch-relay-b"],
     )
-    // ★ "一个额度用完了再用第二个" + 会话粘性
+    // 注意："一个额度用完了再用第二个" + 会话粘性
     .with_selector(Selector::StickyThenPriority)
     .with_sticky(StickyConfig {
         enabled: true,

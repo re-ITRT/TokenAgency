@@ -302,7 +302,7 @@ fn check_pricing(p: &PricingConfig, r: &mut ValidationReport) {
         }
     }
     for (i, e) in p.entries.iter().enumerate() {
-        // ★ 没有任何限定字段的 match 会命中所有请求，后面的条目全成死代码
+        // 注意：没有任何限定字段的 match 会命中所有请求，后面的条目全成死代码
         if e.r#match.is_unconstrained() {
             r.push_error(
                 format!("pricing.entries[{i}].match"),
@@ -378,7 +378,7 @@ fn check_net(net: &NetConfig, doc: &ConfigDoc, r: &mut ValidationReport) {
         r.push_error(
             "net.dns.proxy_server_nameserver",
             codes::MISSING_FIELD,
-            "★ 节点自身域名解析必须配，否则节点都连不上",
+            "节点自身域名解析必须配，否则节点都连不上",
         );
     }
     if net.dns.default_nameserver.is_empty() {
@@ -548,7 +548,7 @@ fn check_subscriptions(doc: &ConfigDoc, r: &mut ValidationReport) {
             r.push_error(
                 format!("proxy_subscriptions[{i}].user_agent"),
                 codes::INVALID_VALUE,
-                "★ 很多机场按 UA 返回不同格式，不能留空",
+                "很多机场按 UA 返回不同格式，不能留空",
             );
         }
         if s.interval_s == 0 {

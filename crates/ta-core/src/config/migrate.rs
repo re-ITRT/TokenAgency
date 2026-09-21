@@ -52,7 +52,7 @@ pub type MigrationStep = fn(ConfigDoc) -> Result<ConfigDoc, MigrationError>;
 
 /// 迁移注册表：`from_version -> 升到 from + 1 的步骤`。
 ///
-/// ⚠️ **新增步骤时必须同时更新 [`NEXT_CONFIG_VERSION`]（以及 [`CURRENT_CONFIG_VERSION`]）**，
+/// 注意：**新增步骤时必须同时更新 [`NEXT_CONFIG_VERSION`]（以及 [`CURRENT_CONFIG_VERSION`]）**，
 /// 否则将来有人加了步骤却忘了改版本号，`needs_migration` / `migrate` 会漏判"还能再升一版"。
 ///
 /// 当前为空（只有 v1，没有历史包袱）。将来加 v2 时在这里注册：
