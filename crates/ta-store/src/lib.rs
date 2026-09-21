@@ -1,14 +1,41 @@
 //! `ta-store` — SQLite 持久化：配置、账本、trace、粘性、额度状态。
 //!
 //! 契约：`docs/11-internal-contracts.md` §4。
-//! **实现由工作包 P4 完成**；此处仅定义对外接口与模块边界。
+//!
+//! 实现（P4）：
+//! - [`config_store`] 一行一实体的 JSON 配置真源 + 快照/回滚；
+//! - [`usage_store`] 账本：单事务写入 + 任意维度查询 + 看板 + CSV；
+//! - [`trace_store`] 请求日志：zstd 压缩 BLOB、脱敏、双限清理（retention + max_rows/max_size）；
+//! - [`sticky_store`] / [`health_store`] 会话粘性、健康样本、密钥元数据。
 
 pub mod config_store;
 pub mod health_store;
 pub mod migrations;
+pub mod quota_backend;
 pub mod sticky_store;
+pub mod timebucket;
 pub mod trace_store;
 pub mod usage_store;
+mod util;
+
+pub use config_store::{ConfigStore, SnapshotId, SnapshotMeta, SqliteConfigStore};
+pub use health_store::{
+    HealthSample, HealthStore, SecretMeta, SecretMetaStore, SqliteHealthStore,
+    SqliteSecretMetaStore,
+};
+pub use quota_backend::SqliteQuotaBackend;
+pub use sticky_store::{SqliteStickyStore, StickyEntry, StickyStore};
+pub use timebucket::TimeBucket;
+pub use trace_store::{
+    ClearMode, LogPage, LogQuery, SqliteTraceStore, StorageStats, TraceAttempt, TraceDetail,
+    TraceLimits, TraceRecord, TraceRow, TraceStore,
+};
+pub use usage_store::{
+    ApiKeyUsageRow, CacheStat, DashboardCards, DashboardData, GroupDim, LaneHealthItem, Metric,
+    Num, QuotaBar, QuotaStateRow, Sparklines, SqliteUsageStore, StatusBar, TopModel, TrendPoint,
+    UsageFilters, UsageFormat, UsageQuery, UsageRow, UsageSeriesPoint, UsageStatus, UsageStore,
+    UsageTable,
+};
 
 use std::path::Path;
 
@@ -42,9 +69,7 @@ pub async fn open(db_path: &Path) -> Result<SqlitePool> {
 
 /// 打开一个纯内存库（测试用）。
 pub async fn open_memory() -> Result<SqlitePool> {
-    let opts = SqliteConnectOptions::new()
-        .in_memory(true)
-        .foreign_keys(true);
+    let opts = SqliteConnectOptions::new().in_memory(true).foreign_keys(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(opts)
