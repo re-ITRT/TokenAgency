@@ -33,10 +33,12 @@ use serde_json::{json, Value};
 
 use ta_core::clock::Clock;
 use ta_core::domain::{ChannelConfig, ConfigDoc, Provider};
-use ta_core::error::{Result, TaError};
+use ta_core::error::{FieldError, Result, TaError};
 use ta_core::types::{ChannelId, LaneId, Protocol};
+use ta_secrets::{classify_literal, is_reference, PlaintextKind};
 
 use crate::passthrough::{self, HeaderDiff, PassthroughPolicy};
+use crate::pipeline::SecretResolver;
 use crate::GatewayDeps;
 
 // ================================================================ 端点
@@ -441,6 +443,10 @@ pub struct IngressState {
     pub cfg: Arc<arc_swap::ArcSwap<ConfigDoc>>,
     pub clock: Arc<dyn Clock>,
     pub passthrough: Arc<dyn PassthroughPolicy>,
+    /// 引用解析器：`gateway.local_key` 允许写成 `"${secret:name}"` / `"${env:VAR}"`
+    /// （默认配置就是），所以鉴权前必须解析。与通道凭据共用同一个解析器 ——
+    /// 同一套引用语法有两份实现，迟早会漂移。
+    pub secrets: Arc<dyn SecretResolver>,
     pub pipeline: Arc<dyn RequestPipeline>,
     pub kernel: Arc<dyn KernelProbe>,
     pub rpm: RpmLimiter,
@@ -452,22 +458,32 @@ impl IngressState {
         cfg: Arc<arc_swap::ArcSwap<ConfigDoc>>,
         clock: Arc<dyn Clock>,
         passthrough: Arc<dyn PassthroughPolicy>,
+        secrets: Arc<dyn SecretResolver>,
         pipeline: Arc<dyn RequestPipeline>,
         kernel: Arc<dyn KernelProbe>,
         options: IngressOptions,
     ) -> Self {
-        Self { cfg, clock, passthrough, pipeline, kernel, rpm: RpmLimiter::new(), options }
+        Self { cfg, clock, passthrough, secrets, pipeline, kernel, rpm: RpmLimiter::new(), options }
     }
 
     /// 从 `lib.rs` 的依赖包装配（T2 用）。
     pub fn from_deps(
         deps: &Arc<GatewayDeps>,
         passthrough: Arc<dyn PassthroughPolicy>,
+        secrets: Arc<dyn SecretResolver>,
         pipeline: Arc<dyn RequestPipeline>,
         kernel: Arc<dyn KernelProbe>,
         options: IngressOptions,
     ) -> Self {
-        Self::new(deps.config.clone(), deps.clock.clone(), passthrough, pipeline, kernel, options)
+        Self::new(
+            deps.config.clone(),
+            deps.clock.clone(),
+            passthrough,
+            secrets,
+            pipeline,
+            kernel,
+            options,
+        )
     }
 }
 
@@ -562,7 +578,7 @@ async fn handle(State(state): State<Arc<IngressState>>, req: Request) -> Respons
             return error_response(&TaError::BodyTooLarge { size, limit }, &request_id);
         }
     }
-    if let Err(err) = check_local_key(&cfg, &parts.headers) {
+    if let Err(err) = check_local_key(&cfg, &parts.headers, state.secrets.as_ref()).await {
         return error_response(&err, &request_id);
     }
     if let Some(limit) = state.options.rpm_limit {
@@ -630,9 +646,77 @@ fn declared_length(headers: &HeaderMap) -> Option<usize> {
 // ================================================================ 鉴权 / 错误信封
 
 /// 本地密钥校验（`gateway.local_key` 为空则跳过）。
-pub fn check_local_key(cfg: &ConfigDoc, headers: &HeaderMap) -> Result<()> {
-    let expected = cfg.gateway.local_key.as_deref().map(str::trim).filter(|key| !key.is_empty());
-    let Some(expected) = expected else { return Ok(()) };
+///
+/// ## 为什么必须先解析引用（[06 §10.2 D4]）
+///
+/// `gateway.local_key` 允许写成 `"${secret:name}"` / `"${env:VAR}"`，**而且默认配置就是**
+/// `"${secret:gateway-local-key}"`（`ta-core/config/defaults.rs`）。客户端发来的是**明文**，
+/// 所以"拿引用字面量当密码比"会让默认配置下的每一个请求都 401 —— 用户看到的是
+/// "我的 key 错了"，而真正的原因是我们没去解析。
+///
+/// ## 三条不许退化的边界
+///
+/// 1. 引用解析失败 → **响亮地失败**（原样返回解析错误，TA-9001）。绝不退化成"按字面量比"，
+///    那等于把引用本身当成密钥。
+/// 2. 引用**写坏了**（`"${secret:}"` 这类，`is_reference` 为假但形似引用）→ 配置错误（TA-5001），
+///    也不当明文密码。这正是 [06 §1.6 K4(d)] 的通用原则：能提前判定就自己判定，选响亮的一侧。
+/// 3. 解析出来是空串 → 配置错误。否则"钥匙串里存了个空值"会变成"空 key 即可通过"的放行洞。
+pub async fn check_local_key(
+    cfg: &ConfigDoc,
+    headers: &HeaderMap,
+    secrets: &dyn SecretResolver,
+) -> Result<()> {
+    let spec = cfg.gateway.local_key.as_deref().map(str::trim).filter(|key| !key.is_empty());
+    let Some(spec) = spec else { return Ok(()) };
+
+    let expected = if is_reference(spec) {
+        match secrets.resolve(spec).await {
+            Ok(value) => value,
+            Err(err) => {
+                tracing::error!(
+                    path = "gateway.local_key",
+                    code = err.code(),
+                    retryable = err.retryable(),
+                    error = %err,
+                    "本地密钥引用解析失败，网关无法鉴权（不降级为按字面量比较）"
+                );
+                return Err(err);
+            }
+        }
+    } else if matches!(classify_literal(spec), Some(PlaintextKind::MalformedRef)) {
+        tracing::error!(
+            path = "gateway.local_key",
+            reason = "引用写坏了（不是合法的 ${secret:name} / ${env:VAR}）",
+            "本地密钥配置错误，拒绝一切请求（fail closed）"
+        );
+        return Err(TaError::ConfigInvalid {
+            errors: vec![FieldError {
+                path: "gateway.local_key".into(),
+                code: "malformed_reference".into(),
+                message: "本地密钥写成了非法引用，合法形式只有 ${secret:条目名} 与 ${env:变量名}"
+                    .into(),
+            }],
+        });
+    } else {
+        spec.to_string()
+    };
+
+    if expected.trim().is_empty() {
+        tracing::error!(
+            path = "gateway.local_key",
+            reason = "解析结果是空串",
+            "本地密钥解析结果为空，拒绝一切请求（空 key 不是「不校验」）"
+        );
+        return Err(TaError::ConfigInvalid {
+            errors: vec![FieldError {
+                path: "gateway.local_key".into(),
+                code: "empty_after_resolve".into(),
+                message: "本地密钥解析后为空；空值不等于「不校验」，请清空该字段或填入真实密钥"
+                    .into(),
+            }],
+        });
+    }
+
     let presented = bearer_token(headers).or_else(|| header_str(headers, "x-api-key"));
     match presented {
         Some(key) if ct_eq(key.trim().as_bytes(), expected.as_bytes()) => Ok(()),
@@ -769,6 +853,20 @@ mod tests {
         options: IngressOptions,
         kernel: KernelState,
     ) -> Arc<IngressState> {
+        state_with_secrets(
+            cfg,
+            options,
+            kernel,
+            Arc::new(crate::pipeline::StaticSecrets::default()),
+        )
+    }
+
+    fn state_with_secrets(
+        cfg: ConfigDoc,
+        options: IngressOptions,
+        kernel: KernelState,
+        secrets: Arc<dyn SecretResolver>,
+    ) -> Arc<IngressState> {
         struct FixedKernel(KernelState);
         impl KernelProbe for FixedKernel {
             fn state(&self) -> KernelState {
@@ -780,6 +878,7 @@ mod tests {
             Arc::new(arc_swap::ArcSwap::from_pointee(cfg.clone())),
             clock,
             FullPassthrough::shared(),
+            secrets,
             Arc::new(EchoPipeline { cfg, policy: FullPassthrough::shared() }),
             Arc::new(FixedKernel(kernel)),
             options,
@@ -1007,6 +1106,114 @@ mod tests {
             send(state, json_request("POST", "/v1/chat/completions", body)).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(value["error"]["code"], "TA-1001");
+    }
+
+    /// D4 守卫：`gateway.local_key` 允许写成引用 —— **默认配置就是**
+    /// `"${secret:gateway-local-key}"`（`ta-core/config/defaults.rs`）。
+    /// 客户端发来的是**解析后的明文**；如果拿引用字面量当密码比，默认配置下人人 401。
+    ///
+    /// 这条测试**先于修复存在**，当时的实现直接比字面量，第一个断言是红的。
+    #[tokio::test]
+    async fn local_key_reference_is_resolved_before_comparison() {
+        let mut cfg = test_cfg();
+        cfg.gateway.local_key = Some("${secret:gateway-local-key}".into());
+        let secrets = Arc::new(crate::pipeline::StaticSecrets::new([(
+            "${secret:gateway-local-key}",
+            "resolved-local-key",
+        )]));
+        let state = state_with_secrets(cfg, IngressOptions::default(), KernelState::Ready, secrets);
+        let body = b"{\"model\":\"claude-sonnet-4-5\"}";
+
+        // 解析后的明文 → 必须通过
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header(header::AUTHORIZATION, "Bearer resolved-local-key")
+            .body(Body::from(body.to_vec()))
+            .unwrap();
+        let (status, _, value) = send(state.clone(), request).await;
+        assert_eq!(status, StatusCode::OK, "local_key 是引用时必须先解析再用：{value}");
+
+        // 引用字面量本身**不是**密码 → 必须拒绝
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header(header::AUTHORIZATION, "Bearer ${secret:gateway-local-key}")
+            .body(Body::from(body.to_vec()))
+            .unwrap();
+        let (status, _, _) = send(state, request).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "引用字面量不许被当成密码");
+    }
+
+    /// 解析不到的引用 → 响亮地失败（TA-9001），**绝不退化成"按字面量比"**。
+    ///
+    /// 退化的后果正是 D4 想避免的：用户看到"你的 key 错了"，而真实原因是钥匙串里没这条。
+    #[tokio::test]
+    async fn unresolvable_local_key_reference_fails_loudly() {
+        let mut cfg = test_cfg();
+        cfg.gateway.local_key = Some("${secret:gateway-local-key}".into());
+        // 空解析器：这个引用必然解析不到
+        let state = state_with(cfg, IngressOptions::default(), KernelState::Ready);
+        let body = b"{\"model\":\"claude-sonnet-4-5\"}";
+
+        // 拿引用字面量当密码 —— 旧实现会放行，这里必须不是 200
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header(header::AUTHORIZATION, "Bearer ${secret:gateway-local-key}")
+            .body(Body::from(body.to_vec()))
+            .unwrap();
+        let (status, _, value) = send(state, request).await;
+        assert_ne!(status, StatusCode::OK, "解析不到就不能放行：{value}");
+        assert_eq!(value["error"]["code"], "TA-9001", "解析失败是 TA-9001（不是 401）：{value}");
+        assert_ne!(value["error"]["type"], "tokenagency_unauthorized", "别把配置问题报成密钥错");
+    }
+
+    /// 写坏的引用（`"${secret:}"`）是**配置错误**，既不放行、也不当明文密码。
+    #[tokio::test]
+    async fn malformed_local_key_reference_is_a_config_error() {
+        let mut cfg = test_cfg();
+        cfg.gateway.local_key = Some("${secret:}".into());
+        let state = state_with(cfg, IngressOptions::default(), KernelState::Ready);
+        let body = b"{\"model\":\"claude-sonnet-4-5\"}";
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header(header::AUTHORIZATION, "Bearer ${secret:}")
+            .body(Body::from(body.to_vec()))
+            .unwrap();
+        let (status, _, value) = send(state, request).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+        assert_eq!(value["error"]["code"], "TA-5001", "{value}");
+    }
+
+    /// 引用解析成**空串**不是"不校验"：否则钥匙串里存个空值就成了放行洞。
+    #[tokio::test]
+    async fn local_key_resolving_to_empty_is_not_a_free_pass() {
+        let mut cfg = test_cfg();
+        cfg.gateway.local_key = Some("${secret:gateway-local-key}".into());
+        let secrets =
+            Arc::new(crate::pipeline::StaticSecrets::new([("${secret:gateway-local-key}", "   ")]));
+        let state = state_with_secrets(cfg, IngressOptions::default(), KernelState::Ready, secrets);
+        let body = b"{\"model\":\"claude-sonnet-4-5\"}";
+
+        // 不带任何密钥 → 不许通过（"解析成空"不等于"未配置"）
+        let (status, _, value) =
+            send(state.clone(), json_request("POST", "/v1/chat/completions", body)).await;
+        assert_ne!(status, StatusCode::OK, "空 key 不能放行：{value}");
+        assert_eq!(value["error"]["code"], "TA-5001", "{value}");
+
+        // 直接发空 Bearer → 也不许通过
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header(header::AUTHORIZATION, "Bearer ")
+            .body(Body::from(body.to_vec()))
+            .unwrap();
+        let (status, _, value) = send(state, request).await;
+        assert_ne!(status, StatusCode::OK, "{value}");
+        assert_eq!(value["error"]["code"], "TA-5001", "{value}");
     }
 
     #[tokio::test]
