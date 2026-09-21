@@ -38,7 +38,14 @@ $Scopes = @{
         # 就得改 types.rs —— 一查才发现它没有 Owner（docs/13 §1.3：没有 Owner 的归主管）。
         # 补进名册好过每次由我代笔：**无主文件是协作摩擦的源头**。
         'crates/ta-core/src/types.rs', 'crates/ta-core/src/error.rs',
-        'crates/ta-core/src/trace.rs'
+        'crates/ta-core/src/trace.rs',
+        # 守卫套件（error_log_guard / log_field_guard / metered_usage_guard / example_config_guard）
+        # 的功能归 E2 —— 它拥有契约的判定层。此前这个目录**无主**，E2 提守卫时只能走
+        # `-Override`（它自己报上来的：无主文件是协作摩擦的源头）。
+        #
+        # 注意：契约**决策**仍归主管（docs/14 §5 白名单、EXEMPT 清单的内容），
+        # 主管改这些文件时走 `-Override` 并写明理由 —— 那是可审计的，不是绕过。
+        'crates/ta-core/tests'
     )
     'E3'   = @('crates/ta-store', 'crates/ta-secrets', 'src-tauri')
     'E4'   = @('crates/ta-kernel', 'crates/ta-subscription')

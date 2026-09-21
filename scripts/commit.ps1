@@ -124,6 +124,56 @@ if ($outside.Count -gt 0) {
     $outside | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
 }
 
+# ---------------------------------------------------------------- 跨范围保护（主管也适用）
+#
+# 真实事故（第 11 轮，我犯的）：用 `-Paths docs,crates/ta-core` 提交契约改动时，
+# `crates/ta-core` 是个**目录 pathspec**，于是把 E2 在途的 quota/metering 代码
+# （201 行）一起卷了进来 —— 提交信息写的是 "docs(observability)"，署名是主管，
+# 而 E2 的 PR 当场变成"无可提内容"。三样都错：归属、信息、评审点。
+#
+# 根因：**`-Paths` 是 pathspec，不是"我要提交的文件清单"。** 传目录 = 把那一刻
+# 该目录下所有脏文件都收了，包括别人的在途工作。
+#
+# 所以这里把"每个人的独占范围"变成机械检查：只要待提交的文件落在**别人**的
+# 独占范围里，就必须显式 `-Override "原因"`。契约文件（如 `docs/14` +
+# `diag/fields.rs` 必须同改）会命中这条，那就堂堂正正写理由 —— 这正是它存在的意义。
+if ($As -eq 'lead') {
+    $willStage = @(git status --porcelain --untracked-files=all -- $Paths 2>$null | ForEach-Object {
+            if (-not $_) { return }
+            $p = $_.Substring(3)
+            if ($p -match ' -> ') { $p = ($p -split ' -> ')[1] }
+            $p.Trim('"')
+        } | Where-Object { $_ })
+    $foreign = @()
+    foreach ($f in $willStage) {
+        foreach ($k in $Identities.Keys) {
+            if ($k -eq 'lead' -or $k -eq 'mech') { continue }
+            if ($Scopes.ContainsKey($k) -and (Test-InScope $f $Scopes[$k])) {
+                $foreign += "$f  (属于 $k)"
+                break
+            }
+        }
+    }
+    if ($foreign.Count -gt 0 -and -not $Override) {
+        Write-Host ""
+        Write-Host "✘ 待提交文件里有**别人独占范围**的东西 —— 停一下，这多半不是你的本意" -ForegroundColor Red
+        $foreign | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        Write-Host ""
+        Write-Host "  常见成因：`-Paths` 传的是**目录**（如 crates/ta-core），它会把该目录下" -ForegroundColor Yellow
+        Write-Host "  那一刻所有脏文件都收进来，**包括同事的在途工作**。同事的活应该走他的 PR。" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  两条出路：" -ForegroundColor Cyan
+        Write-Host "    ① 换成**具体文件**：-Paths docs/14-observability.md,crates/ta-core/src/diag/fields.rs"
+        Write-Host "    ② 确实要主管落笔（例如契约同改）：-Override ""一句话说明原因"""
+        Write-Host ""
+        exit 3
+    }
+    if ($foreign.Count -gt 0 -and $Override) {
+        Write-Host "⚠ 已用 -Override 承担跨范围提交：$Override" -ForegroundColor Yellow
+        $foreign | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+    }
+}
+
 # ---------------------------------------------------------------- 确认路径存在
 $missing = @()
 foreach ($p in $Paths) {

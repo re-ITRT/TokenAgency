@@ -117,6 +117,43 @@ if ($Status) {
             $touched = @(git diff --name-only "$baseSha..master" -- $scopes)
             if ($touched.Count -eq 0) { Write-Host '      （无）' -ForegroundColor DarkGray }
             else { $touched | ForEach-Object { Write-Host "      $_" } }
+
+            # ── 基点体检（E1 报的真实事故：master 被改写过）──────────────────
+            #
+            # 症状：`git diff master...branch` 里冒出**不属于你范围**的文件，合并时等于把
+            # 别人的改动"复活"进主干。E1 就撞到过：它 `-Reset` 时的 master 是 `35d4d99`
+            # （一笔误含 E2 的 201 行代码的提交），随后主干被改写为 `d843946`，
+            # 于是它分支里的差异把 E2 的代码当成了自己的。
+            #
+            # 两条判据，任一命中就提示必须 `-Reset` —— 只说"重新读文件"是不够的，
+            # 因为这种情况下**追加提交永远修不好**，必须按新基点重建分支。
+            $recordedBase = GitText @('log', '-1', '--format=%(trailers:key=Base,valueonly)', $tip)
+            $staleBase = $false
+            if ($recordedBase) {
+                $full = GitText @('rev-parse', "$recordedBase^{commit}")
+                if ($full) {
+                    & git merge-base --is-ancestor $full master 2>$null
+                    if ($LASTEXITCODE -ne 0) { $staleBase = $true }
+                }
+            }
+            $foreignInDiff = @(git diff --name-only "$baseSha..$tip" |
+                Where-Object { $_ -and (-not (Test-InScope $_ $scopes)) })
+            if ($staleBase -or $foreignInDiff.Count -gt 0) {
+                Write-Host ''
+                Write-Host '  ✘ 基点体检不通过 —— **追加提交修不好这个**，必须重建分支' -ForegroundColor Red
+                if ($staleBase) {
+                    Write-Host "     记录在提交里的基点 $recordedBase 已不是当前 master 的祖先 → master 被改写过了" -ForegroundColor Red
+                }
+                if ($foreignInDiff.Count -gt 0) {
+                    Write-Host "     你的分支差异里有 $($foreignInDiff.Count) 个**不属于你范围**的文件（合并会把这些复活进主干）：" -ForegroundColor Red
+                    $foreignInDiff | Select-Object -First 10 | ForEach-Object { Write-Host "        $_" -ForegroundColor Red }
+                }
+                Write-Host '     处置（照 E1 那次的正确做法，先用只读预演确认）：' -ForegroundColor Yellow
+                Write-Host '       git merge-tree --write-tree master <你的分支>   # 只读，不改任何东西'
+                Write-Host '       pwsh -File scripts/pr.ps1 -As <你> -Paths <你的范围> -Title "..." -MessageFile <文件> -Reset'
+                Write-Host '     `-Reset` 会按**当前 master** 重建分支快照；内容取自工作区，不会丢代码。' -ForegroundColor DarkGray
+                Write-Host '     重建前请先确认工作区里你的改动是完整的（`-Status` 下面那段就是查这个）。' -ForegroundColor DarkGray
+            }
         } else {
             Write-Host '  ✔ 你的基点就是当前 master' -ForegroundColor Green
         }
