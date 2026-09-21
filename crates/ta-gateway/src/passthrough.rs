@@ -979,6 +979,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn patch_body_normalizes_number_literals_when_it_must_rewrite() {
+        // **已知且被测的有界偏离**（主管裁决 2026-09-21，记录于 docs/03 §7.2）：
+        // patch 生效时整份 body 会被重新序列化，`serde_json` 会把数字字面量规范化
+        // （`0.70` → `0.7`）。这是刻意接受的边界，**不是 bug**：
+        //   - 只有"确实要改 model / body_patch"的请求才会走到这里；
+        //   - 不需要改动的请求返回**原字节**（见 patch_body_is_byte_exact_when_nothing_changes）；
+        //   - 修它要开 `serde_json/arbitrary_precision`，那会改 `Value::Number` 的全局语义，
+        //     可能悄悄破坏别处的 `as_u64()` —— 拿真实风险换理论收益，不做。
+        let policy = FullPassthrough::new();
+        let raw = br#"{"model":"claude-sonnet-4-5","temperature":0.70,"top_p":1.0}"#;
+        let patched = policy.patch_body(raw, &channel()).unwrap();
+        let text = String::from_utf8(patched).unwrap();
+        assert!(text.contains("\"temperature\":0.7"), "0.70 会被规范化成 0.7：{text}");
+        assert!(!text.contains("0.70"), "这个偏离必须被看见，而不是被假设不存在：{text}");
+        // 语义没变：解析回来仍是同一个数
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["temperature"].as_f64(), Some(0.7));
+    }
+
+    #[test]
+    fn tokenagency_model_header_is_forwarded_by_design() {
+        // 客户端自己发的 `x-tokenagency-model`（选模型提示）**仍然原样转发**：
+        // 铁律是"除 4 处例外一律原样转发"，它**不是第 5 处例外**。
+        // 若将来发现某个上游会拒绝我们命名空间的头，必须**走契约变更**
+        // （docs/10 §1.3 的例外表）才能把它加进去 —— 不允许在实现里偷偷改。
+        let policy = FullPassthrough::new();
+        let cfg = cfg_with(provider(), channel());
+        let mut client = HeaderMap::new();
+        client.insert("x-tokenagency-model", "gpt-4o".parse().unwrap());
+        let upstream = policy.build_headers(&cfg, &client, &channel(), "sk-x", UPSTREAM_URL);
+        assert_eq!(upstream.get("x-tokenagency-model").unwrap(), "gpt-4o");
+        assert!(
+            policy.diff_headers(&client, &upstream).is_empty(),
+            "转发它是刻意决定，自检必须为空"
+        );
+    }
+
+    #[test]
     fn build_headers_strips_connection_listed_headers() {
         let policy = FullPassthrough::new();
         let cfg = cfg_with(provider(), channel());

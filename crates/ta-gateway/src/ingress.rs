@@ -483,9 +483,14 @@ pub fn router(state: Arc<IngressState>) -> Router {
 }
 
 /// 绑定监听端口。**只接受 loopback**（`docs/09 §1.2` I1：永不监听 `0.0.0.0`）。
+///
+/// `localhost` 会被**归一化**成 `127.0.0.1`（人就是会写 `localhost`，让它变成
+/// 一个"启动失败"的坑不值得）。注意这是**归一化而不是信任**：归一化之后仍然
+/// 走同一套 loopback 检查，I1 不受影响。
 pub fn parse_loopback_addr(addr: &str) -> Result<SocketAddr> {
-    let socket: SocketAddr = addr
-        .trim()
+    let trimmed = addr.trim();
+    let normalized = normalize_localhost(trimmed);
+    let socket: SocketAddr = normalized
         .parse()
         .map_err(|e| TaError::Internal(format!("监听地址不合法：{addr}（{e}）")))?;
     if !socket.ip().is_loopback() {
@@ -494,6 +499,16 @@ pub fn parse_loopback_addr(addr: &str) -> Result<SocketAddr> {
         )));
     }
     Ok(socket)
+}
+
+/// `localhost:8787` → `127.0.0.1:8787`（大小写不敏感）。
+/// `localhostevil:80` 这类会被拼成非法地址而**解析失败** —— 失败的姿势是安全的。
+fn normalize_localhost(addr: &str) -> String {
+    const NAME: &str = "localhost";
+    if addr.len() >= NAME.len() && addr[..NAME.len()].eq_ignore_ascii_case(NAME) {
+        return format!("127.0.0.1{}", &addr[NAME.len()..]);
+    }
+    addr.to_string()
 }
 
 pub async fn bind_loopback(addr: &str) -> Result<tokio::net::TcpListener> {
@@ -1092,6 +1107,18 @@ mod tests {
         assert!(parse_loopback_addr("0.0.0.0:8787").is_err(), "永不监听 0.0.0.0");
         assert!(parse_loopback_addr("192.168.1.10:8787").is_err());
         assert!(parse_loopback_addr("not-an-addr").is_err());
+    }
+
+    #[test]
+    fn localhost_is_normalized_to_loopback_not_trusted() {
+        // 人就是会写 localhost：归一化成 127.0.0.1，而不是报"地址不合法"
+        assert_eq!(parse_loopback_addr("localhost:8787").unwrap().to_string(), "127.0.0.1:8787");
+        assert_eq!(parse_loopback_addr("LOCALHOST:8787").unwrap().to_string(), "127.0.0.1:8787");
+        assert_eq!(parse_loopback_addr("  localhost:0  ").unwrap().port(), 0);
+        // 归一化 ≠ 放行：其它主机名一律拒绝
+        assert!(parse_loopback_addr("example.com:8787").is_err());
+        assert!(parse_loopback_addr("localhost").is_err(), "缺端口必须失败");
+        assert!(parse_loopback_addr("localhostevil:80").is_err(), "前缀匹配不能变成放行漏洞");
     }
 
     #[tokio::test]

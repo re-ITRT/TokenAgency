@@ -383,8 +383,9 @@ async fn h_log_detail(
         return response;
     }
     match state.backend.log_detail(&id).await {
-        // 契约没定义 404 语义，而错误码表里没有"记录不存在"——
-        // 与其发明一个错误码，不如 200 + null（见交付清单 E 块）
+        // **已裁决语义（2026-09-21，见 docs/10 §3）**：记录不存在 → 200 + `null`。
+        // 理由：错误码表是冻结契约，为它新增一码要走广播；而 `null` 在 JSON 里
+        // 无歧义（不会和"空记录"混淆），管理 API 也只服务我们自己的 UI/CLI。
         Ok(None) => {
             with_request_id((StatusCode::OK, axum::Json(Value::Null)).into_response(), &request_id)
         }
