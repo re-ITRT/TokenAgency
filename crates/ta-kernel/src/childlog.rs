@@ -19,6 +19,7 @@
 //!   崩溃原因往往正是最后那一行，丢了它等于没记；
 //! - **输出到哪是可注入的**（[`ChildLogSinkFactory`]）：单测不需要真进程，
 //!   而生产默认是"落 `<appdata>/logs/kernel.log` + 转发进 tracing"两份都要；
+//!   **两份都过脱敏层** —— 内核原文里真的会出现带 token 的订阅 URL（[`KernelLogFileSink`] 有实测证据）;
 //! - **内核原文放 tracing 的 message，不放结构化字段**：logrus 行是**外部系统的自由文本**，
 //!   塞进字段等于让外部数据污染我们的字段契约（[docs/14 §5] 的白名单）；
 //!   `code = e.code()` 那套规则管的是**我们自己的** `TaError`，不是内核的行。
@@ -212,7 +213,11 @@ pub fn pump_reader<R: Read>(reader: R, stream: ChildStream, sink: &dyn ChildLogS
             Ok(0) => return, // EOF
             Ok(_) => {}
             Err(e) => {
-                // 不用 `error =` 字段：io::Error 没有 TA 码，[docs/14 §6.3] 的守卫会要求配 code
+                // **有意不用 `error =` 字段**（不是漏了）：这是"读子进程管道失败"的 `io::Error`,
+                // 它没有 TA 码可记，也不是业务错误。[docs/14 §6.3] 的 `error_log_guard` 只在出现
+                // `error =` 字段时才要求配 `code =`；把它提升成结构化字段的收益只是"字段齐全"，
+                // 代价是再开一条 EXEMPT 并让豁免表变长 —— **豁免越多，守卫越软**。
+                // 所以留 message 是有意的；"有意的"与"漏掉的"必须看起来不一样，这条注释就是这个区别。
                 tracing::debug!(source = stream.as_str(), "读取内核输出失败，停止转发：{e}");
                 return;
             }
@@ -271,7 +276,26 @@ impl ChildLogSink for TracingChildSink {
 
 /// 追加进 `<appdata>/logs/kernel.log`（[docs/14 C1]：日志要有确定落点，用户能一键打开）。
 ///
-/// 写的是 [`ChildLogLine::raw`]，所以文件里的内容与内核自己写的一模一样。
+/// ## ★ 落盘前**必须**过脱敏层（[docs/14 §7.1] 的第二道防线）
+///
+/// 这里写的是 [`ChildLogLine::raw`] **经 `ta_core::diag::sanitize::sanitize` 处理之后**的内容，
+/// 而不是逐字节原文 —— **这是一个刻意的取舍，理由是有实测证据的**：
+///
+/// 真内核（v1.19.31）在订阅拉取失败时会把**带 token 的完整 URL** 打进 stdout：
+///
+/// ```text
+/// level=error msg="initial proxy provider leak-test error: Get \"http://127.0.0.1:9/…?token=<真 token>\": EOF"
+/// level=error msg="[Provider] leak-test pull error: Get \"http://127.0.0.1:9/…?token=<真 token>\": EOF"
+/// ```
+///
+/// tracing 那条路有出口脱敏层兜着（E2 的 `[?&](key|token|api_key…)=` 规则），
+/// 但**文件这条路原来没有** → `kernel.log` 里躺着明文 token，而 `kernel.log` 正是
+/// **诊断包要带走的文件之一** → 导出诊断包等于把用户的订阅凭据一起交出去。
+///
+/// **"不再是逐字节原文"这个代价被判为应该让位**：保真度服务排查，泄漏服务用户的账号安全。
+/// 而且保真是有边界的（UTF-8 lossy / 空行跳过 / 背压风险都已在本模块文档里承认），
+/// 它从来不是逐字节原文，只是原先没写出来。
+/// 另一条路（只在导出时拒发）有更糟的失败模式：用户**最需要诊断包的时候反而导不出来**。
 pub struct KernelLogFileSink {
     path: PathBuf,
     file: Mutex<std::fs::File>,
@@ -297,8 +321,10 @@ impl KernelLogFileSink {
 
 impl ChildLogSink for KernelLogFileSink {
     fn emit(&self, line: &ChildLogLine) {
+        // ★ 落盘前过脱敏层 —— 详见上面结构体文档里的实测证据（订阅 token 会出现在内核原文里）
+        let safe = ta_core::diag::sanitize::sanitize(&line.raw);
         let result = match self.file.lock() {
-            Ok(mut f) => writeln!(f, "{}", line.raw),
+            Ok(mut f) => writeln!(f, "{safe}"),
             Err(_) => Ok(()), // 锁被毒化：静默放过，不在日志路径上再 panic（[docs/14 §9.2]）
         };
         if let Err(e) = result {
@@ -653,6 +679,46 @@ mod tests {
         assert_eq!(a.taken().len(), 1);
         assert_eq!(b.taken().len(), 1);
         assert_eq!(a.taken()[0].message, "hi");
+    }
+
+    /// ★ 安全回归（**实测驱动**）：内核原文里会出现**带 token 的订阅 URL** ——
+    /// 真内核 v1.19.31 在订阅拉取失败时打的就是这一行（本次修这条 bug 的原始证据）：
+    /// `level=error msg="initial proxy provider … error: Get \"http://…?token=<真 token>\": EOF"`。
+    ///
+    /// 而 `kernel.log` 是**诊断包要带走的文件之一** → 落盘前必须过脱敏层，
+    /// 否则"用户凭据绝不出现在可分享产物里"这个承诺就被破了。
+    #[test]
+    fn file_sink_redacts_secrets_before_writing() {
+        let dir = std::env::temp_dir().join(format!("ta-kernel-redact-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("kernel.log");
+        let sink = KernelLogFileSink::open(&path).expect("开日志文件");
+
+        // 与实测输出**同构**（连 `\"` 转义都一样），只是把真 token 换成 canary
+        let canary = "TA-LEAK-CANARY-9f3a2b";
+        let raw = format!(
+            r#"time="2026-09-22T03:06:02.034011200+08:00" level=error msg="initial proxy provider leak-test error: Get \"http://127.0.0.1:9/ta-leak-canary?token={canary}\": EOF""#
+        );
+        sink.emit(&parse_child_line(ChildStream::Stdout, &raw));
+
+        let text = std::fs::read_to_string(&path).expect("读回");
+
+        // ① 正向：文件里 grep 不到那个 token
+        assert!(!text.contains(canary), "落盘后仍能搜到 token —— 诊断包会把它交出去：{text}");
+        assert!(!text.contains("token=TA-LEAK"), "{text}");
+
+        // ② 反向控制：**不能靠"什么都不写"来实现 ①**（否则这条测试是假绿）
+        assert_eq!(text.lines().count(), 1, "应当写出且只写出一行：{text}");
+        assert!(text.contains("2026-09-22T03:06:02"), "时间戳必须还在：{text}");
+        assert!(text.contains("level=error"), "级别必须还在：{text}");
+        assert!(
+            text.contains("initial proxy provider leak-test error"),
+            "可读的上下文必须还在（否则排查价值没了）：{text}"
+        );
+        assert!(
+            text.contains("127.0.0.1:9/ta-leak-canary"),
+            "URL 本身可以留，只有凭据该被遮：{text}"
+        );
     }
 
     #[test]
