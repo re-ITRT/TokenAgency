@@ -5340,6 +5340,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
  "wiremock",
  "zstd",
 ]

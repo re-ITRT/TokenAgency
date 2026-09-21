@@ -142,10 +142,34 @@ pub struct PipelineDeps {
 struct Runtime {
     /// 通道 → 冷却结束时间（ms）
     cooling_until_ms: BTreeMap<ChannelId, i64>,
+    /// 通道 → **连续**失败次数（退避阶梯用）。成功一次清零（[docs/03 §5.3]）。
+    channel_failures: BTreeMap<ChannelId, u32>,
     /// lane → 不可用**截止时间**（ms）。不是永久拉黑，见 [`LANE_RECOVERY_MS`]。
     lane_down_until_ms: BTreeMap<LaneId, i64>,
     /// lane → **连续**连接失败次数。成功一次清零（[docs/03 §5.3]）。
     lane_failures: BTreeMap<LaneId, u32>,
+}
+
+/// 冷却退避的上限（[docs/03 §5.3]：1 小时）。
+const COOLDOWN_CAP_S: u32 = 3_600;
+
+/// 第 `failures` 次连续失败后该冷却多久（[docs/03 §5.3] 的指数退避）。
+///
+/// 文档给的阶梯是 **`120s → 300s → 900s`，上限 1h**。这里把它写成"相对配置的
+/// `cooldown_s`"：base=120 时逐级得到 120 / 300 / 900（正是文档那串），再往上每级 ×3
+/// （900 → 2700 → 8100），撞到 1h 上限为止。
+///
+/// **为什么不写成 `base * 2^n`**：那样 base=120 时第二级是 240 而不是文档的 300；
+/// 文档给的是三个具体值，照抄这三个值比"看起来更数学"更重要 —— 用户与 UI 是照着
+/// 那几个秒数建立预期的。
+fn cooldown_seconds(base_s: u32, failures: u32) -> u32 {
+    let base = base_s.max(1) as f64;
+    let raw = match failures.max(1) {
+        1 => base,
+        2 => base * 2.5,
+        n => base * 7.5 * 3f64.powi((n - 3) as i32),
+    };
+    (raw.min(COOLDOWN_CAP_S as f64).max(1.0)) as u32
 }
 
 /// 连续失败多少次才把一条 lane 判为降级（[docs/03 §5.3]：连续 3 次）。
@@ -231,11 +255,28 @@ impl Pipeline {
             .unwrap_or(false)
     }
 
-    /// 通道级失败（429/402/5xx）：冷却该通道。
+    /// 通道级失败（429/402/5xx/传输失败）：冷却该通道，**按连续失败次数退避**
+    /// （[docs/03 §5.3] 的 120s → 300s → 900s → … → 上限 1h）。
     fn cool_channel(&self, channel_id: &ChannelId, cooldown_s: u32, now_ms: i64) {
-        self.lock_runtime()
-            .cooling_until_ms
-            .insert(channel_id.clone(), now_ms + (cooldown_s as i64) * 1000);
+        let mut guard = self.lock_runtime();
+        let failures = {
+            let count = guard.channel_failures.entry(channel_id.clone()).or_insert(0);
+            *count = count.saturating_add(1);
+            *count
+        };
+        let seconds = cooldown_seconds(cooldown_s, failures);
+        guard.cooling_until_ms.insert(channel_id.clone(), now_ms + (seconds as i64) * 1000);
+    }
+
+    /// 通道级成功：清掉连续失败计数并立即解除冷却
+    /// （[docs/03 §5.3]「成功一次 → 冷却计时器清零」）。
+    ///
+    /// 不这么做的话，"偶发 429 的通道"会被自己的历史一次次推得更远 ——
+    /// 那正是 [docs/03 §6.2] 说的"自动学习降级比不降级更糟"。
+    fn record_channel_success(&self, channel_id: &ChannelId) {
+        let mut guard = self.lock_runtime();
+        guard.channel_failures.remove(channel_id);
+        guard.cooling_until_ms.remove(channel_id);
     }
 
     /// lane 级失败：记一次**连续**失败；到阈值才降级（[docs/03 §5.3]）。
@@ -543,6 +584,9 @@ impl RequestPipeline for Pipeline {
         let mut saw_exhausted = false;
         let mut saw_other = false;
         let mut attempt: u32 = 0;
+        // 上游**真正回了话**的最后一个响应（429/402/5xx）。失败链走完若没有候选成功，
+        // 就把它原样交给客户端 —— 见函数末尾与 [docs/11 §5]。
+        let mut last_upstream: Option<UpstreamResponse> = None;
         // 连接失败的候选：等队列空了再重试一次（K1）。
         //
         // ⚠️ 它**只记住最后一个** lane 级失败的候选：若 A、B 两个候选都是 lane 连接失败，
@@ -629,8 +673,19 @@ impl RequestPipeline for Pipeline {
                         last_error = Some(TaError::AllChannelsFailed {
                             message: format!("通道 {channel_id} 返回 {}", upstream.status.as_u16()),
                         });
+                        // 上游**说了话**（429/402/5xx）→ 记住它的原话。
+                        // 若整条失败链走完都没有候选成功，客户端必须看到**上游的原话**
+                        // 而不是我们的信封（[docs/11 §5] 第 1 行：哪怕 4xx/5xx 也原样透传）。
+                        // 边界就在"上游说不说话"：没听到（传输失败）才由我们包装。
+                        last_upstream = Some(upstream);
                         continue;
                     }
+
+                    // 上游给了**非换通道**状态（2xx/其它 4xx）→ 这个通道是通的：
+                    // 连续失败计数清零、冷却立即解除（[docs/03 §5.3]「成功一次 → 清零」）。
+                    // 放在这里而不是"读完 body"之后：状态码已经证明它服务正常，
+                    // 后面 body 读坏了属于传输层问题（那条路径有自己的处理）。
+                    self.record_channel_success(&channel_id);
 
                     if prepared.stream {
                         // **已经向客户端交出流**：从这里开始任何失败都只记录，绝不重试
@@ -647,11 +702,20 @@ impl RequestPipeline for Pipeline {
                             Some(meter) => meter.observe_stream(ctx, body),
                             None => body,
                         };
-                        return Ok(dispatch::client_response_from_parts(
-                            status,
-                            headers,
-                            self.watch_stream(record, stream),
-                        ));
+                        // ④ 下游断连 → 取消上游（[docs/12 §4 G2]）：
+                        // body 被 axum 丢掉且**没读完**时置位；正常读完不置位
+                        // （否则每一次成功的流式响应都会记一条假的"客户端断连"）。
+                        let (stream, downstream) =
+                            dispatch::cancel_on_drop(self.watch_stream(record, stream));
+                        let request_id = prepared.request_id.clone();
+                        tokio::spawn(async move {
+                            downstream.cancelled().await;
+                            tracing::info!(
+                                request_id = %request_id,
+                                "客户端在流中途断连：放弃上游连接（不重试、不再写）"
+                            );
+                        });
+                        return Ok(dispatch::client_response_from_parts(status, headers, stream));
                     }
 
                     // 非流式：body 还没吐给客户端，读失败仍然可以换通道
@@ -720,7 +784,20 @@ impl RequestPipeline for Pipeline {
             }
         }
 
-        // 全部候选都失败：额度全耗尽与"都挂了"是两种不同的对外语义
+        // ---- 失败链走完了。对外语义按 [docs/11 §5] 的两分法：
+        //
+        // 1) **上游说了话**（我们手里有它的 HTTP 响应）→ 原样透传。
+        //    状态码 / body / 头一个都不改（`x-tokenagency-*` 由 ingress 加）。
+        //    客户端必须看到上游原话：429 的 `retry-after`、401 的 key 无效说明、
+        //    404 的模型不存在……**不许改写成我们的信封** —— 那会让用户以为"是 TokenAgency 坏了"。
+        // 2) **我们没听到上游说话**（连接被拒/TLS/超时/读到一半断）→ 用我们自己的码 +
+        //    `retryable` + 人话。裸 socket 错误没有可透传的上游语义，直接吐出去只会被
+        //    误判成"中转站的服务没了"。
+        if let Some(upstream) = last_upstream {
+            return Ok(dispatch::into_client_response(upstream));
+        }
+
+        // 没有任何上游响应：额度全耗尽与"都挂了"是两种不同的对外语义
         if !saw_other && saw_exhausted {
             return Err(TaError::AllChannelsExhausted);
         }
@@ -998,6 +1075,34 @@ mod tests {
             dialer,
             passthrough: FullPassthrough::shared(),
             sink,
+            meter: None,
+        }))
+    }
+
+    /// 与 [`pipeline`] 同义，但注入**可控时钟**并固定单候选 ch-a ——
+    /// 冷却/退避类测试需要推进时间才看得到"下一级"。
+    fn pipeline_with_clock(
+        cfg: ConfigDoc,
+        dialer: Arc<dyn OutboundDialer>,
+        clock: Arc<ManualClock>,
+    ) -> Pipeline {
+        let cfg = Arc::new(arc_swap::ArcSwap::from_pointee(cfg));
+        Pipeline::new(Arc::new(PipelineDeps {
+            cfg: cfg.clone(),
+            clock,
+            planner: Arc::new(crate::runtime::PolicySelectorPlanner::new(
+                cfg,
+                Arc::new(FixedPolicy {
+                    candidates: vec!["ch-a"],
+                    on_no_candidate: NoCandidateAction::Error,
+                }),
+                Arc::new(ChainSelector),
+            )),
+            quota: Arc::new(NoQuota),
+            secrets: Arc::new(StaticSecrets::new([("${secret:a}", SECRET)])),
+            dialer,
+            passthrough: FullPassthrough::shared(),
+            sink: Arc::new(RecordingSink::default()),
             meter: None,
         }))
     }
@@ -1323,6 +1428,102 @@ mod tests {
         assert!(head_lower.contains("accept: */*"), "{head}");
     }
 
+    // ---------------------------------------------------------- G2 ④：下游断连取消上游
+
+    /// [docs/12 §4 G2] ④：**客户端中断时上游连接必须被及时取消**。
+    ///
+    /// 用真 TCP。假上游发头 + 第 1 个 chunk 后继续慢速发；测试只读 1 个 chunk 就把响应
+    /// 丢掉（=客户端走人），然后断言**假上游的读半边看到连接被关**（`read` 返回 0）。
+    /// 用读半边而不是"写失败"判：小分片会被内核缓冲，写失败可能来得很晚甚至不来。
+    ///
+    /// 这条测试证明的是 **DoD 的属性**（此前没有任何测试覆盖它）；包装器自身的语义
+    /// （"读完不置位、被丢才置位"）由 `dispatch::tests` 的 4 个用例钉住。
+    #[tokio::test]
+    async fn client_disconnect_tears_down_the_upstream_stream() {
+        use crate::dispatch::tests::spawn_watching_upstream;
+        use crate::dispatch::{DialerOptions, KernelDialer, StaticLanePorts};
+        use http_body_util::BodyExt;
+        use tokio::io::AsyncWriteExt;
+
+        let upstream = spawn_watching_upstream(|_index, _head, mut write| async move {
+            let _ = write
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                      transfer-encoding: chunked\r\n\r\n",
+                )
+                .await;
+            for i in 1..=60 {
+                let chunk = format!("data: {{\"i\":{i}}}\n\n");
+                let frame = format!("{:x}\r\n{}\r\n", chunk.len(), chunk);
+                if write.write_all(frame.as_bytes()).await.is_err() {
+                    return;
+                }
+                let _ = write.flush().await;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let _ = write.write_all(b"0\r\n\r\n").await;
+        })
+        .await;
+
+        let mut cfg =
+            test_cfg(&format!("http://{}/v1/messages", upstream.addr), "https://b.example/v1");
+        cfg.channels[0].lane = Some(LaneId::new("direct"));
+        let pipeline = pipeline(
+            cfg,
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            Arc::new(KernelDialer::new(
+                Arc::new(StaticLanePorts::default()),
+                DialerOptions::default(),
+            )),
+            Arc::new(RecordingSink::default()),
+        );
+
+        let prepared = pipeline
+            .prepare(&snapshot(br#"{"model":"claude-sonnet-4-5","stream":true}"#))
+            .await
+            .expect("prepare");
+        assert!(prepared.stream);
+        let mut response = pipeline.execute(prepared).await.expect("首字节应当到达");
+
+        // 读第 1 个 chunk —— 证明流真的在流
+        let first =
+            tokio::time::timeout(std::time::Duration::from_secs(2), response.body_mut().frame())
+                .await
+                .expect("首字节必须到达")
+                .expect("应当有帧")
+                .expect("帧应当可读");
+        let first_text =
+            String::from_utf8_lossy(&first.into_data().unwrap_or_default()).to_string();
+        assert!(first_text.contains("data: {\"i\":1}"), "{first_text}");
+
+        // **正向控制**：此刻连接**还活着**（我们还握着响应体），所以标志必须是 false ——
+        // 否则下面那条断言可能只是"它一直是 true"（假守卫）。
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert!(
+            !upstream.client_gone.load(Ordering::SeqCst),
+            "还握着响应体时上游连接不该被关（否则这条测试证明不了任何事）"
+        );
+
+        // 客户端走人：丢掉响应体（真实的 axum 在客户端断连时就是这么做的）
+        drop(response);
+
+        let mut gone = false;
+        for _ in 0..150 {
+            if upstream.client_gone.load(Ordering::SeqCst) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            gone,
+            "客户端断连必须传导到上游：上游读半边应在 ~3s 内看到连接被关（而不是继续写下去）"
+        );
+    }
+
     // ---------------------------------------------------------- K1：listener 重建那一瞬
 
     /// K1（`docs/06 §1.6`）：内核热重载 `PUT /configs?force=true` 是**进程内**重载、PID 不变，
@@ -1461,11 +1662,26 @@ mod tests {
         assert_eq!(sink.records.lock().unwrap().len(), 1);
     }
 
+    /// 全部候选都回 402 时，客户端看到的是**上游的 402**。
+    ///
+    /// 这条原先断言"返回我们的 TA-2004 信封"，按 [docs/11 §5] 第 1 行已改：
+    /// **上游返回了 HTTP 响应（哪怕 4xx/5xx）就原样透传** —— 401/404/429/402 都是
+    /// "上游说的话"，改写成我们的信封会让用户以为"是 TokenAgency 坏了"。
+    /// 账本侧的副作用不变（402 仍把该凭据标 `exhausted`）。
     #[tokio::test]
-    async fn exhausted_channels_report_2004_not_2005() {
+    async fn upstream_402_is_passed_through_when_every_candidate_is_exhausted() {
+        let upstream_body = r#"{"error":{"message":"insufficient_quota"}}"#;
         let dialer = Arc::new(ScriptedDialer::with(vec![
-            Scripted::Ok { status: 402, headers: vec![], body: "{}" },
-            Scripted::Ok { status: 402, headers: vec![], body: "{}" },
+            Scripted::Ok {
+                status: 402,
+                headers: vec![("content-type", "application/json")],
+                body: upstream_body,
+            },
+            Scripted::Ok {
+                status: 402,
+                headers: vec![("content-type", "application/json")],
+                body: upstream_body,
+            },
         ]));
         let pipeline = pipeline(
             test_cfg("https://a.example/v1", "https://b.example/v1"),
@@ -1478,9 +1694,93 @@ mod tests {
         );
         let prepared =
             pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
-        let err = pipeline.execute(prepared).await.expect_err("全部 402 必须报额度耗尽");
-        assert_eq!(err.code(), "TA-2004");
-        assert_eq!(err.http_status(), 402);
+        let response = pipeline.execute(prepared).await.expect("上游说了话就必须透传它");
+        assert_eq!(response.status(), http::StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
+        assert_eq!(body_string(response).await, upstream_body);
+    }
+
+    /// [docs/11 §5] 第 1 行：**上游返回了 HTTP 响应（哪怕 4xx/5xx）就原样透传**。
+    ///
+    /// 这是用户提出的那条边界 —— 客户端必须看到上游原话（`retry-after`、错误 JSON），
+    /// 而不是我们的信封。单候选、上游回 429：旧实现会把它冷却掉再拿我们自己的
+    /// `TA-2005`（502）去答复，客户端**永远看不到那个 `retry-after`**。
+    #[tokio::test]
+    async fn upstream_error_response_reaches_the_client_verbatim() {
+        let upstream_body =
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#;
+        let dialer = Arc::new(ScriptedDialer::with(vec![Scripted::Ok {
+            status: 429,
+            headers: vec![
+                ("content-type", "application/json"),
+                ("retry-after", "9"),
+                ("anthropic-ratelimit-requests-remaining", "0"),
+            ],
+            body: upstream_body,
+        }]));
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer,
+            Arc::new(RecordingSink::default()),
+        );
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let response =
+            pipeline.execute(prepared).await.expect("必须透传上游响应，而不是报我们的错");
+        assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get("retry-after").unwrap(), "9");
+        assert_eq!(response.headers().get("anthropic-ratelimit-requests-remaining").unwrap(), "0");
+        assert_eq!(response.headers().get("content-type").unwrap(), "application/json");
+        let body = body_string(response).await;
+        assert_eq!(body, upstream_body, "上游的 body 必须逐字节到达");
+        assert!(!body.contains("tokenagency"), "不许把上游的话改写成我们的信封：{body}");
+    }
+
+    /// [docs/11 §5] 第 2 行：**没拿到响应**（连接被拒/TLS/超时）时**不假装那是上游的响应**。
+    ///
+    /// 客户端收到的是我们自己的信封：`TA-3002` + `retryable: true` + `tokenagency_*` 类型 +
+    /// 人话，而不是裸 socket 错误文本（那会被误判成"中转站的服务没了"）。
+    #[tokio::test]
+    async fn unreachable_upstream_becomes_our_envelope_not_a_fake_response() {
+        use crate::dispatch::{DialerOptions, KernelDialer, StaticLanePorts};
+
+        // ch-a 走 lane-jp；把 lane-jp 指到一个没人监听的端口 → 连接必被拒
+        let lane = LaneId::new("lane-jp");
+        let dialer = Arc::new(KernelDialer::new(
+            Arc::new(StaticLanePorts::new([(lane, 1)])),
+            DialerOptions { connect_timeout_s: 1, ..Default::default() },
+        ));
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer,
+            Arc::new(RecordingSink::default()),
+        );
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let err = pipeline.execute(prepared).await.expect_err("连不上就不能假装有上游响应");
+        assert_eq!(err.code(), "TA-3002", "线路连不上是我们的判断，不是上游的话");
+        assert_eq!(err.http_status(), 503);
+        assert!(err.retryable(), "503 必须可重试");
+        assert!(err.type_str().starts_with("tokenagency_"), "{:?}", err.type_str());
+
+        // 渲染成客户端真正收到的 body：必须是我们的 JSON 信封
+        let response = crate::ingress::error_response(&err, "req_test");
+        assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_string(response).await;
+        let envelope: serde_json::Value =
+            serde_json::from_str(&body).unwrap_or_else(|e| panic!("信封必须是 JSON：{e}\n{body}"));
+        assert_eq!(envelope["error"]["code"], "TA-3002");
+        assert_eq!(envelope["error"]["retryable"], true);
+        assert_eq!(envelope["error"]["type"], "tokenagency_lane_unavailable");
+        assert_eq!(envelope["error"]["request_id"], "req_test");
     }
 
     #[tokio::test]
@@ -1566,6 +1866,116 @@ mod tests {
         }
         // **只有 1 次上游请求**（DoD 原文：输出 3 个 chunk 后断连 → 只有 1 次上游请求）
         assert_eq!(upstream.connection_count(), 1, "已输出字节后绝不允许重试");
+    }
+
+    // ---------------------------------------------------------- 冷却退避（[docs/03 §5.3]）
+
+    /// 同一通道连续失败时，冷却必须按文档的阶梯退避：`120s → 300s → 900s → … → 上限 1h`。
+    ///
+    /// 断言写成"冷却结束前 1ms 仍不可用、结束那一刻可用"，把每一级的**秒数**钉死；
+    /// 不能只断言"有冷却"（那对固定 `cooldown_s` 的旧实现也成立）。
+    #[tokio::test]
+    async fn cooldown_backs_off_per_the_documented_ladder() {
+        let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+        let ladder: [i64; 5] = [120, 300, 900, 2_700, 3_600];
+        let dialer = Arc::new(ScriptedDialer::with(
+            (0..ladder.len())
+                .map(|_| Scripted::Ok { status: 429, headers: vec![], body: "{}" })
+                .collect(),
+        ));
+        let pipeline = pipeline_with_clock(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            dialer.clone(),
+            clock.clone(),
+        );
+
+        let channel = ChannelId::new("ch-a");
+        let lane = LaneId::new("lane-jp");
+        let mut now = 1_700_000_000_000;
+        for (round, expected_s) in ladder.iter().enumerate() {
+            let prepared =
+                pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+            // 429 是"上游说的话" → 按 [docs/11 §5] 原样交给客户端（不是我们的错误信封）。
+            // 冷却仍然照记（本测试要测的是冷却阶梯）。
+            let response = pipeline.execute(prepared).await.expect("429 应当被透传");
+            assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
+            drop(response);
+            let until = now + expected_s * 1000;
+            assert!(
+                !pipeline.is_available(&channel, Some(&lane), until - 1),
+                "第 {} 轮：冷却必须覆盖到 {}s",
+                round + 1,
+                expected_s
+            );
+            assert!(
+                pipeline.is_available(&channel, Some(&lane), until),
+                "第 {} 轮：冷却必须恰好是 {}s（[docs/03 §5.3] 的阶梯）",
+                round + 1,
+                expected_s
+            );
+            now = until;
+            clock.advance(expected_s * 1000);
+        }
+        assert_eq!(dialer.calls(), ladder.len() as u32, "每轮都要真的打到同一个通道");
+    }
+
+    /// 成功一次必须把"连续失败计数"与冷却一起清零：否则偶发 429 的通道会被自己的历史
+    /// 越推越远（[docs/03 §6.2]「自动学习降级比不降级更糟」）。
+    ///
+    /// 可观测点：成功后的下一次失败应当**从阶梯第一级（120s）重新开始**，
+    /// 而不是接着上一级（300s）。
+    #[tokio::test]
+    async fn a_success_clears_the_channel_backoff() {
+        let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+        let dialer = Arc::new(ScriptedDialer::with(vec![
+            Scripted::Ok { status: 429, headers: vec![], body: "{}" },
+            Scripted::Ok { status: 200, headers: vec![], body: r#"{"ok":true}"# },
+            Scripted::Ok { status: 429, headers: vec![], body: "{}" },
+        ]));
+        let pipeline = pipeline_with_clock(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            dialer,
+            clock.clone(),
+        );
+        let channel = ChannelId::new("ch-a");
+        let lane = LaneId::new("lane-jp");
+        let start = 1_700_000_000_000;
+
+        // 第 1 轮：429 → 120s
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let response = pipeline.execute(prepared).await.expect("429 应当被透传");
+        assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
+        drop(response);
+        assert!(!pipeline.is_available(&channel, Some(&lane), start + 119_000));
+        assert!(pipeline.is_available(&channel, Some(&lane), start + 120_000));
+
+        // 第 2 轮：冷却过期后成功 → 计数清零
+        clock.advance(120_000);
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let response = pipeline.execute(prepared).await.expect("应当成功");
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert!(
+            pipeline.is_available(&channel, Some(&lane), start + 120_000),
+            "成功后不该还留着冷却"
+        );
+
+        // 第 3 轮：再 429 → 必须回到第一级 120s（若计数没清零，这里会是 300s）
+        let after_success = start + 120_000;
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let response = pipeline.execute(prepared).await.expect("429 应当被透传");
+        assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
+        drop(response);
+        assert!(
+            !pipeline.is_available(&channel, Some(&lane), after_success + 119_000),
+            "第 3 轮：冷却内必须不可用"
+        );
+        assert!(
+            pipeline.is_available(&channel, Some(&lane), after_success + 120_000),
+            "成功必须把退避计数清零：第 3 轮应回到 120s，而不是 300s"
+        );
     }
 
     // ---------------------------------------------------------- 降级窗口的正向控制

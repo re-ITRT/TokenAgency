@@ -351,6 +351,105 @@ pub fn client_response_from_bytes(
     response
 }
 
+// ================================================================ 下游断连 → 取消上游
+
+/// 极简取消令牌：一置位、多观察者、可 `await`。
+///
+/// [docs/12 §4 G2] ④ 要求"下游断连 → `CancellationToken` 取消上游"。
+/// `tokio_util::sync::CancellationToken` 需要 tokio-util 的 `sync` feature，
+/// 而 workspace 的 `tokio-util` 只开了 `io` / `time`（根 `Cargo.toml` 归主管）；
+/// 这里要的语义很简单（置位 + 唤醒 + 判位），用 `tokio::sync::Notify` 实现等价物，
+/// **不为一个 feature 牵动全仓构建**。若将来要用 tokio-util 的正式类型，
+/// 打开 feature 后把这个类型换成别名即可。
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+        // `notify_waiters` 不排队：等待者必须在置位**之前**就注册好 ——
+        // `cancelled()` 里的循环正是为此（先建 future 再复查标志）。
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// 等到被取消（已取消则立即返回）。
+    pub async fn cancelled(&self) {
+        loop {
+            if self.is_cancelled() {
+                return;
+            }
+            let notified = self.notify.notified();
+            // 建好 future 之后再复查一次：中间若发生 cancel，`notify_waiters` 会把我们叫醒，
+            // 而这次复查直接返回 —— 两条路都不会漏。
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+/// 用一个 token 包住 body 流：**流被 drop 且它没走到结尾**时置位。
+///
+/// 三种结束方式分得很清：
+/// - 正常读完（`poll_next` 返回 `None`）→ **不置位**（客户端好好地收完了）；
+/// - 客户端中途断连 / 请求被取消 → axum 丢掉 body → drop → **置位**；
+/// - 上游中途断连 → 流以 `Err` 结束，随后被 drop → 也会置位
+///   （那是"这条流不明不白地结束了"，同样值得知道；`TA-3003` 由管线单独记）。
+///
+/// 为什么必须区分"读完"与"被丢"，见 [`cancel_on_drop`] 的说明。
+struct CancelOnDropStream {
+    inner: ByteStream,
+    token: CancelToken,
+    finished: bool,
+}
+
+impl futures_util::Stream for CancelOnDropStream {
+    type Item = Result<Bytes, BoxError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let polled = self.inner.as_mut().poll_next(cx);
+        if matches!(polled, std::task::Poll::Ready(None)) {
+            self.finished = true;
+        }
+        polled
+    }
+}
+
+impl Drop for CancelOnDropStream {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.token.cancel();
+        }
+    }
+}
+
+/// 给 body 流装上"下游走了就置位"的钩子，并返回该 token。
+///
+/// **必须区分"正常读完"与"被丢掉"**：axum 在正常收完一个流之后同样会 drop body，
+/// 若把 drop 一律当"客户端断连"，我们就会给每一次成功的流式响应都记一条
+/// "客户端中途断连" —— 假日志比没有日志更坏（[docs/14 §1.2] 的同一条理由）。
+pub fn cancel_on_drop(stream: ByteStream) -> (ByteStream, CancelToken) {
+    let token = CancelToken::new();
+    let wrapped: ByteStream =
+        Box::pin(CancelOnDropStream { inner: stream, token: token.clone(), finished: false });
+    (wrapped, token)
+}
+
 fn copy_response_headers(from: &HeaderMap, to: &mut HeaderMap) {
     for (name, value) in from.iter() {
         if crate::passthrough::is_hop_by_hop(name.as_str()) {
@@ -446,6 +545,132 @@ pub(crate) mod tests {
 
     fn direct() -> LaneId {
         LaneId::new("direct")
+    }
+
+    // ---------------------------------------------------------- 下游断连 → 取消
+
+    #[tokio::test]
+    async fn cancel_token_wakes_a_waiter() {
+        let token = CancelToken::new();
+        let waiter = token.clone();
+        let handle = tokio::spawn(async move { waiter.cancelled().await });
+        assert!(!token.is_cancelled());
+        token.cancel();
+        tokio::time::timeout(Duration::from_millis(500), handle)
+            .await
+            .expect("取消必须唤醒等待者")
+            .expect("任务不该 panic");
+        assert!(token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancel_token_already_cancelled_returns_immediately() {
+        let token = CancelToken::new();
+        token.cancel();
+        tokio::time::timeout(Duration::from_millis(100), token.cancelled())
+            .await
+            .expect("已取消的 token 必须立刻返回，不许挂住");
+    }
+
+    /// 关键区分：**读到结尾**不置位，**被丢掉**才置位。
+    ///
+    /// 若把"drop"一律当断连，每一次成功的流式响应都会记一条"客户端断连" ——
+    /// 假日志比没有日志更坏，因为它会把人引向错误的结论。
+    #[tokio::test]
+    async fn cancelling_happens_on_abandon_not_on_normal_completion() {
+        // 1) 正常读完 → 不置位
+        let (mut stream, token) = cancel_on_drop(byte_stream_from_bytes(Bytes::from_static(b"ok")));
+        while let Some(chunk) = stream.next().await {
+            chunk.expect("chunk");
+        }
+        drop(stream);
+        assert!(!token.is_cancelled(), "正常读完不该被当成客户端断连");
+
+        // 2) 一个字节都不读就丢掉（客户端刚连上就走 / 请求被取消）→ 置位
+        let (stream, token) = cancel_on_drop(byte_stream_from_bytes(Bytes::from_static(b"ok")));
+        drop(stream);
+        assert!(token.is_cancelled(), "没读完就丢掉必须置位");
+
+        // 3) 读了一部分再丢掉（流式传输中途断连）→ 置位
+        let (mut stream, token) = cancel_on_drop(byte_stream_from_bytes(Bytes::from_static(b"ok")));
+        let first = stream.next().await.expect("有 chunk").expect("chunk 可读");
+        assert_eq!(&first[..], b"ok");
+        drop(stream);
+        assert!(token.is_cancelled(), "读到一半丢掉必须置位");
+    }
+
+    /// **边界**：上游把流写坏了（以 `Err` 结束）**不等于客户端走人**。
+    ///
+    /// 这条 token 只表示"下游不要了"，因为它的用途是**取消上游连接**并记一条
+    /// "客户端中途断连"。上游断流是另一件事（管线记 `TA-3003`）；把两者混在一个信号里，
+    /// 就会在上游抖动时对着仍然连着的客户端记"客户端断连" —— 假日志比没有日志更坏。
+    #[tokio::test]
+    async fn an_upstream_broken_stream_is_not_reported_as_a_client_disconnect() {
+        let broken: ByteStream = Box::pin(futures_util::stream::iter(vec![
+            Ok(Bytes::from_static(b"part")),
+            Err(Box::new(std::io::Error::other("upstream reset")) as BoxError),
+        ]));
+        let (mut stream, token) = cancel_on_drop(broken);
+        let mut saw_error = false;
+        while let Some(item) = stream.next().await {
+            if item.is_err() {
+                saw_error = true;
+            }
+        }
+        drop(stream);
+        assert!(saw_error, "这条流应当以 Err 结束（模拟上游断流）");
+        assert!(
+            !token.is_cancelled(),
+            "上游断流 ≠ 客户端断连；后者由 TA-3003 单独记录，不能混进这个信号"
+        );
+    }
+
+    // ---------------------------------------------------------- 下游断连的证据用假上游
+
+    /// 假上游 + **盯着读半边**：客户端（网关）一关连接，`read` 就返回 0/Err，
+    /// `client_gone` 立刻置位。用于"下游断连是否真的传导到上游连接"这类证据。
+    ///
+    /// 为什么不能靠"写失败"来判：小分片会被内核缓冲，写失败可能来得很晚甚至不来；
+    /// 而**对端关闭连接会让本端 `read` 立刻返回 0**，这是可靠信号。
+    pub(crate) struct WatchedUpstream {
+        pub addr: std::net::SocketAddr,
+        pub client_gone: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    pub(crate) async fn spawn_watching_upstream<F, Fut>(script: F) -> WatchedUpstream
+    where
+        F: Fn(u32, String, tokio::net::tcp::OwnedWriteHalf) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("绑定假上游");
+        let addr = listener.local_addr().expect("本地地址");
+        let client_gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = client_gone.clone();
+        let counter = Arc::new(AtomicU32::new(0));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let index = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                let head = read_request_head(&mut socket).await;
+                let (mut read, write) = socket.into_split();
+                // 盯着读半边：对端一关就置位
+                let watching = flag.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    loop {
+                        match read.read(&mut buf).await {
+                            Ok(0) | Err(_) => {
+                                watching.store(true, Ordering::SeqCst);
+                                return;
+                            }
+                            Ok(_) => {}
+                        }
+                    }
+                });
+                script(index, head, write).await;
+            }
+        });
+        WatchedUpstream { addr, client_gone }
     }
 
     // ---------------------------------------------------------- A2 用的"记录型"假上游

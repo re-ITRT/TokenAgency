@@ -561,15 +561,43 @@ async fn handle(State(state): State<Arc<IngressState>>, req: Request) -> Respons
     let (parts, body) = req.into_parts();
     let request_id = new_request_id();
     let endpoint = classify(&parts.method, parts.uri.path());
-    let path = parts.uri.path().to_string();
-    let query = parts.uri.query().map(str::to_string);
-    let cfg = state.cfg.load_full();
-    let now_ms = state.clock.now_ms();
 
     // `/healthz`：不走上游、不校验密钥（本机健康检查，见 docs/10 §1.2）
     if endpoint == Endpoint::Healthz {
         return healthz_response(&state, &request_id);
     }
+
+    // 一切真实请求都在这一个 span 里处理（见 `handle_request` 的文档）：
+    // 之后**任何模块**打的日志都自动带上 `request_id`，不用每处重复写一遍。
+    handle_request(state, parts, body, request_id, endpoint).await
+}
+
+/// 请求处理主体。**唯一的作用是给整条路径套一个带 `request_id` 的 span。**
+///
+/// [docs/14 §6 G2] 要求"拿一个 `request_id` 能筛出它经过的全部日志行，含跨 crate 与后台分叉"。
+/// 靠"每个日志点都手写 `request_id = %rid`"是守不住的：新加一行忘了写就静默失效。
+/// 用 `#[instrument]` 把 span 挂在**函数**上，`tracing` 会在每次 poll 时正确进入/退出
+/// （不是 `span.enter()` 那种跨 `.await` 的错法），于是：
+/// - `ingress` / `pipeline` / `dispatch` 里的日志**自动**带上 `request_id`；
+/// - 后台分叉（`tokio::spawn`）要用 `Span::current()` 显式带过去 —— 那是有意识的动作。
+///
+/// `skip_all` + `fields(request_id = ...)`：请求体/头**绝不**进 span（那是用户数据）。
+#[tracing::instrument(
+    name = "request",
+    skip_all,
+    fields(request_id = %request_id)
+)]
+async fn handle_request(
+    state: Arc<IngressState>,
+    parts: http::request::Parts,
+    body: Body,
+    request_id: String,
+    endpoint: Endpoint,
+) -> Response {
+    let path = parts.uri.path().to_string();
+    let query = parts.uri.query().map(str::to_string);
+    let cfg = state.cfg.load_full();
+    let now_ms = state.clock.now_ms();
 
     let limit = cfg.gateway.max_body_mb.saturating_mul(1024 * 1024);
     // 先看声明的长度：超限的大 body 根本不必读进内存
@@ -608,11 +636,30 @@ async fn handle(State(state): State<Arc<IngressState>>, req: Request) -> Respons
 
     let prepared = match state.pipeline.prepare(&snapshot).await {
         Ok(prepared) => prepared,
-        Err(err) => return error_response(&err, &request_id),
+        Err(err) => {
+            // 失败也要能在日志里按码+ID 查到（[docs/14 §6.2]：报 TaError 必带 code）
+            tracing::warn!(
+                code = err.code(),
+                retryable = err.retryable(),
+                status = err.http_status(),
+                error = %err,
+                "请求在网关自身被拒"
+            );
+            return error_response(&err, &request_id);
+        }
     };
     match state.pipeline.execute(prepared).await {
         Ok(response) => with_request_id(response, &request_id),
-        Err(err) => error_response(&err, &request_id),
+        Err(err) => {
+            tracing::warn!(
+                code = err.code(),
+                retryable = err.retryable(),
+                status = err.http_status(),
+                error = %err,
+                "请求在网关自身被拒（分发/失败链）"
+            );
+            error_response(&err, &request_id)
+        }
     }
 }
 
@@ -1429,5 +1476,107 @@ mod tests {
         let b = new_request_id();
         assert!(a.starts_with("req_"));
         assert_ne!(a, b);
+    }
+
+    // ---------------------------------------------------------- request_id 的 span
+
+    /// [docs/14 §6 G2]：**拿一个 `request_id` 能筛出它经过的全部日志行**。
+    ///
+    /// 这条证明的不是"我们写了 `request_id` 字段"，而是**span 真的把它带出来了**：
+    /// 断言的那行日志来自**拨号器**（另一个模块），而它自己**一个字段都没写**。
+    /// 靠"每个日志点手写 `request_id = %rid`"是守不住的 —— 新加一行忘了写就静默失效。
+    ///
+    /// 用 `current_thread` 运行时 + 线程局部 subscriber：请求在测试自己的线程上跑，
+    /// 捕获到的就只有这次请求的输出，不会与并行测试互相污染。
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_id_rides_the_span_into_other_modules_log_lines() {
+        use std::io::Write;
+        use std::sync::Mutex as StdMutex;
+
+        use crate::dispatch::{HealthReport, OutboundDialer, UpstreamRequest, UpstreamResponse};
+        use crate::runtime::{build_runtime, tests::*};
+        use ta_core::types::LaneId;
+
+        #[derive(Clone, Default)]
+        struct Buf(Arc<StdMutex<Vec<u8>>>);
+        impl Write for Buf {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                match self.0.lock() {
+                    Ok(mut guard) => guard.extend_from_slice(bytes),
+                    Err(poisoned) => poisoned.into_inner().extend_from_slice(bytes),
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        struct ChattyDialer;
+
+        #[async_trait]
+        impl OutboundDialer for ChattyDialer {
+            async fn execute(
+                &self,
+                _lane: &LaneId,
+                _req: UpstreamRequest,
+            ) -> ta_core::error::Result<UpstreamResponse> {
+                // 这一行**故意不写任何字段**：它必须靠 span 才带得上 request_id
+                tracing::info!("拨号器被调用");
+                Ok(UpstreamResponse {
+                    status: StatusCode::OK,
+                    headers: HeaderMap::new(),
+                    body: crate::dispatch::byte_stream_from_bytes(Bytes::from_static(b"{}")),
+                })
+            }
+            async fn health(&self, lane: &LaneId) -> HealthReport {
+                HealthReport { lane_id: lane.clone(), ok: true, latency_ms: None, error: None }
+            }
+        }
+
+        let buf = Buf::default();
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .finish();
+        // **必须用全局 subscriber + 重建兴趣缓存**，否则这条测试会随测试顺序时绿时红：
+        // `tracing` 把"这个 span/event 值不值得记录"缓存在**进程全局**的 callsite 上，
+        // 缓存是**第一次调用**该 callsite 时按当时的 dispatcher 决定的。同进程里别的测试
+        // （例如 `every_registered_route_reaches_the_pipeline`）也会走 `handle_request`，
+        // 那时没有 subscriber → 缓存成"从不记录"；之后装**线程局部** subscriber 不会让
+        // 那份缓存失效，而 `rebuild_interest_cache()` 是按**全局** dispatcher 重建的 ——
+        // 两者叠加才是"装了就能看见"。生产路径没有这个问题：subscriber 在 `main` 里、
+        // **任何请求之前**就装好了。
+        // 这里第一次跑可能已被别的测试装过（返回 Err），忽略即可：我们的目的是"有 subscriber"。
+        let _ = tracing::subscriber::set_global_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+
+        let deps = test_deps(cfg_with_channels(0), Arc::new(ChattyDialer));
+        let runtime = build_runtime(&deps, test_parts());
+        let body = br#"{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}"#;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/messages")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_vec()))
+            .expect("构造请求");
+        let response = tower::ServiceExt::oneshot(router(runtime.state.clone()), request)
+            .await
+            .expect("路由必须能处理请求");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let logged = match buf.0.lock() {
+            Ok(guard) => String::from_utf8_lossy(&guard).into_owned(),
+            Err(poisoned) => String::from_utf8_lossy(&poisoned.into_inner()).into_owned(),
+        };
+        let line = logged
+            .lines()
+            .find(|line| line.contains("拨号器被调用"))
+            .unwrap_or_else(|| panic!("拨号器的日志没被捕获到：\n{logged}"));
+        assert!(line.contains("request_id=req_"), "span 没有把 request_id 带进别的模块：{line}");
+        // 这条是拿来贴进 commit 的真实日志行
+        println!("=== 真实日志行（request_id 来自 span）===\n{line}");
     }
 }
