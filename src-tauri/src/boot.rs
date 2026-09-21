@@ -38,7 +38,7 @@ use ta_kernel::config_gen::{GeneratedConfigSource, MhConfigGen};
 use ta_kernel::ports::{FilePortStore, PortAllocator, RangePortAllocator};
 use ta_kernel::process::{KernelProcessConfig, KernelSupervisor};
 use ta_kernel::rest::KernelRest;
-use ta_kernel::{KernelController, KernelState, KernelStatus};
+use ta_kernel::{KernelController, KernelState, KernelStatus, PortMap};
 
 use crate::lifecycle::{BootDeps, BootPhase, BootPhasePayload, Sleeper, TokioSleeper, EVENT_BOOT};
 use crate::tray;
@@ -46,11 +46,15 @@ use crate::tray::{
     ActionOutcome, EmergencyMode, TrayAction, TrayDataSource, TraySnapshot, TrayStatus,
 };
 
-/// 等内核 / 网关就绪的总预算。
+/// 等**每一个**就绪阶段（内核、网关）的超时预算。
+///
+/// ⚠️ 这是**每阶段各一份**，不是"整场启动的总预算" —— `BootOrchestrator::run` 把
+/// 同一个 `timeout` 分别交给 `wait_kernel_ready` 与 `wait_gateway_ready`，
+/// 所以最坏情况是"内核起的耗时 + 60s + 60s"。
 ///
 /// 为什么必须比 `lifecycle::KERNEL_READY_TIMEOUT`（20s）宽：内核自己的两道关就有
 /// `ready_timeout`(5s) + `provider_ready_timeout`(30s)，而订阅抓取可能更慢 ——
-/// 外层预算比内层短会把"订阅慢"误判成"内核起不来"。
+/// 单阶段预算比内核内层短会把"订阅慢"误判成"内核起不来"。
 pub const READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 轮询内核状态的间隔。
@@ -64,6 +68,12 @@ pub struct KernelBuild {
     /// 生成配置的真源。命令层 `kernel_apply` / 配置变更时要更新它，
     /// 所以除了交给 supervisor，还要单独留一份句柄。
     pub source: Arc<GeneratedConfigSource>,
+    /// lane → 内核 listener 端口。
+    ///
+    /// 网关的出站拨号器要用它，而 `ta_kernel::PortMap` **已经**实现了
+    /// `ta_gateway::dispatch::LanePorts`（blanket impl），所以这里直接把表交出去，
+    /// 不需要任何适配器。
+    pub port_map: PortMap,
 }
 
 impl std::fmt::Debug for KernelBuild {
@@ -109,6 +119,8 @@ pub fn build_kernel(doc: &ConfigDoc, data_dir: &Path) -> Result<Option<KernelBui
     }
     let ports = alloc.map();
     let lane_port_count = ports.map.len();
+    // 交一份给网关做拨号表（`port_map` 语义相同，但源对象会被配置源吃掉）
+    let port_map = ports.clone();
 
     // 2) REST secret：同一份同时写进生成的配置与 REST 客户端，两者必须一致。
     let gen = MhConfigGen::random_secret();
@@ -117,11 +129,30 @@ pub fn build_kernel(doc: &ConfigDoc, data_dir: &Path) -> Result<Option<KernelBui
     // 3) 配置源。`apply()` 会**先原子落盘再拉起** —— 冷启动时配置文件还不存在，
     //    所以必须走 apply，直接 start 会让内核拿着一个不存在的 `-f` 路径启动。
     //
-    //    `strict_refs(false)` 是刻意的：内核默认自己拉订阅（`net.kernel.subscription_source
-    //    = kernel`），首次启动时我们**还没有**组名/节点名清单，strict 会让配置生成
-    //    直接失败 —— 而那时内核连启动的机会都没有，等于永远起不来。
-    //    真正的防线不是这个预检，而是 ta-kernel 的就绪第二关
-    //    （`verify_providers()`）+ 生成配置里写死的 `empty-fallback: REJECT`。
+    //    ## `strict_refs(false)` 的**已知缺口**（主管评审 A1，已核实）
+    //
+    //    为什么关它：内核默认自己拉订阅（`net.kernel.subscription_source = kernel`），
+    //    首次启动时我们**还没有**组名/节点名清单，strict 会让配置生成直接失败 ——
+    //    而那时内核连启动的机会都没有，等于永远起不来。
+    //
+    //    ⚠️ **但"有两道防线兜底"是错的，这个缺口是真的**（评审逐条拆过）：
+    //    1. `strict_refs` 正是"组名/节点名在订阅里真的存在吗"这**唯一一道生成期校验**
+    //       （`config_gen.rs:435` 严格报错 vs `:446` 不严格只 `warn!` 放行）；
+    //    2. `empty-fallback: REJECT` **只加在我们生成的组上**（`config_gen.rs:538-548`
+    //       只遍历有 `group` 的 lane）；而 `subscription_group` / `subscription_node`
+    //       两类 lane 的 `listeners[].proxy` **直接指向订阅自带的名字、不建组**
+    //       （`config_gen.rs:311` / `:335`）→ REJECT 对它们不生效；
+    //    3. `verify_providers()`（ta-kernel）只断言"provider 节点数非空"
+    //       （`process.rs:795` 起），**不校验 listener 目标能否解析**；
+    //    4. 内核自己也不校验引用。
+    //
+    //    ⇒ **可达路径**：lane 指向不存在的组/节点 → 生成成功 → provider 有节点 →
+    //    内核 `Ready` → 编排 Ready、托盘绿，而那条 lane 每个请求 502。
+    //    **登记为已知缺口**，修法见下方 TODO 之前的说明（需要 lane 目标可解析断言）。
+    //
+    //    TODO(A1)：内核 Ready 后，取 `/proxies` 顶层 ∪ provider 节点，逐条 lane 校验
+    //    其目标存在；缺失则**不 Ready / Degraded 且点名 `lane_id`**。
+    //    这一步要落在就绪链上（`wait_kernel_ready` 之后），不能只靠生成期预检。
     let gen = gen.with_strict_refs(false);
     let source =
         Arc::new(GeneratedConfigSource::new(Box::new(gen), doc.clone(), ports, kernel_dir.clone()));
@@ -142,7 +173,7 @@ pub fn build_kernel(doc: &ConfigDoc, data_dir: &Path) -> Result<Option<KernelBui
         lane_count = lane_port_count,
         "内核已装配（尚未拉起）"
     );
-    Ok(Some(KernelBuild { supervisor, source }))
+    Ok(Some(KernelBuild { supervisor, source, port_map }))
 }
 
 // ================================================================ 阶段广播
@@ -234,15 +265,23 @@ impl<R: Runtime> PhaseSink for TauriPhaseSink<R> {
         self.holder.set_phase(phase, detail);
 
         let payload = BootPhasePayload { phase, detail: detail.to_string() };
-        if let Err(e) = self.app.emit(EVENT_BOOT, payload) {
-            // 广播失败不该影响启动（前端可能还没订阅上），但要留痕
-            tracing::warn!(error = %e, "广播启动阶段事件失败");
+        if let Err(err) = self.app.emit(EVENT_BOOT, payload) {
+            // `tauri::Error` **没有 TA 码**。包成 `TaError::Internal` 再取 `code()`：
+            // TA-9001（tokenagency_internal，"其它"）正是这件事的语义。
+            //
+            // 为什么不用"把码拼进 message"或"靠 EXEMPT 白名单"：
+            // [14 §6 C2] 的判据是**能按 TA-xxxx 检索**，而检索要的是 `code` **字段**
+            // （拼进 message 的人在肉眼看得到、筛不出来）；映射成 TA-9001 则真的可筛，
+            // 也省掉一条"豁免会不会腐烂"的长期负担。
+            let e = TaError::Internal(format!("广播启动阶段事件失败：{err}"));
+            tracing::warn!(code = e.code(), error = %e, "广播启动阶段事件失败");
         }
 
         // 托盘图标 / tooltip 跟着阶段走：`refresh` 读的是注入的数据源，
         // 数据源又读这个 holder —— 所以"转绿"的时机由真实就绪判据决定。
-        if let Err(e) = tray::refresh(&self.app) {
-            tracing::debug!(error = %e, "启动阶段刷新托盘失败");
+        if let Err(err) = tray::refresh(&self.app) {
+            let e = TaError::Internal(format!("启动阶段刷新托盘失败：{err}"));
+            tracing::debug!(code = e.code(), error = %e, "启动阶段刷新托盘失败");
         }
 
         // `detail` 是自由文本，按 [14 §5.6] 的裁决**不开字段**（开了就变垃圾桶，
@@ -261,15 +300,18 @@ impl<R: Runtime> PhaseSink for TauriPhaseSink<R> {
 
 // ================================================================ BootDeps 的生产实现
 
-/// 把编排接到真实内核上。
+/// 把编排接到真实内核（以及网关，若已装配）上。
 ///
-/// **网关方法刻意不覆盖**：默认实现返回 [`crate::lifecycle::GATEWAY_NOT_WIRED`]，
-/// 让"网关还没接线"成为可见的降级原因，而不是一个假的绿灯。
+/// **网关是可选接缝**：没有网关时走 `BootDeps` 的默认实现（返回
+/// [`crate::lifecycle::GATEWAY_NOT_WIRED`]），于是"网关还没接线"是可见的降级原因，
+/// 而不是一个假的绿灯。装配好之后由 [`KernelBootDeps::with_gateway`] 接上。
 pub struct KernelBootDeps {
     kernel: Option<Arc<dyn KernelController>>,
     /// 内核为 `None` 时的可读原因。**刻意区分**"没配内核路径"与"装配失败" ——
     /// 两者的处置完全不同，混成一句话会让用户查错方向。
     missing_reason: String,
+    /// 已装配的网关（`None` = 还没接线）
+    gateway: Option<Arc<dyn crate::gateway::GatewayStarter>>,
     sink: Arc<dyn PhaseSink>,
     sleeper: Arc<dyn Sleeper>,
     poll: Duration,
@@ -284,6 +326,7 @@ impl KernelBootDeps {
         Self {
             kernel,
             missing_reason: NO_KERNEL_CONFIGURED.to_string(),
+            gateway: None,
             sink,
             sleeper: Arc::new(TokioSleeper),
             poll: POLL_INTERVAL,
@@ -305,6 +348,12 @@ impl KernelBootDeps {
     /// 指定"没有内核"的可读原因（装配失败时用它把真实原因带出去）。
     pub fn with_missing_reason(mut self, reason: impl Into<String>) -> Self {
         self.missing_reason = reason.into();
+        self
+    }
+
+    /// 接上已装配的网关。**不接**就保持"未接线"的默认降级（可见，不假绿）。
+    pub fn with_gateway(mut self, gateway: impl crate::gateway::GatewayStarter + 'static) -> Self {
+        self.gateway = Some(Arc::new(gateway));
         self
     }
 }
@@ -393,6 +442,26 @@ impl BootDeps for KernelBootDeps {
     fn on_phase(&self, phase: BootPhase, detail: &str) {
         self.sink.phase(phase, detail);
     }
+
+    /// 真的把网关拉起来（`spawn` 只是提交任务；**就绪由 `wait_gateway_ready` 判**）。
+    async fn start_gateway(&self) -> Result<(), String> {
+        match &self.gateway {
+            Some(gateway) => {
+                gateway.spawn();
+                Ok(())
+            }
+            // 没接线：如实暴露缺口（默认实现的那句话），而不是假装已启动
+            None => Err(crate::lifecycle::GATEWAY_NOT_WIRED.to_string()),
+        }
+    }
+
+    /// 就绪判据 = **真的能连上 `gateway.listen`**，不是"调用过 `spawn()`"。
+    async fn wait_gateway_ready(&self, timeout: Duration) -> Result<(), String> {
+        match &self.gateway {
+            Some(gateway) => gateway.wait_listening(timeout).await,
+            None => Err(crate::lifecycle::GATEWAY_NOT_WIRED.to_string()),
+        }
+    }
 }
 
 // ================================================================ 托盘数据源（真实就绪驱动）
@@ -451,7 +520,7 @@ impl TrayDataSource for PhaseTraySource {
         if let Some(k) = &s.kernel {
             tooltip_lines.push(format!("内核：{}", kernel_label(&k.state)));
             if let Some(err) = &k.last_error {
-                tooltip_lines.push(format!("内生原因：{err}"));
+                tooltip_lines.push(format!("内核原因：{err}"));
             }
         }
 
@@ -473,7 +542,10 @@ impl TrayDataSource for PhaseTraySource {
     fn dispatch(&self, action: TrayAction) -> ActionOutcome {
         // 动作执行属于服务层（命令面那一步统一提供）。现在**如实**报缺口：
         // 既不假装成功，也不静默吞掉 —— 静默吞掉会让用户以为菜单坏了。
-        ActionOutcome::Failed(format!("该托盘操作尚未接线：{action:?}"))
+        //
+        // 用 `action.label()` 而**不是** `{action:?}`：后者会把 `UsePolicy` 这种
+        // Rust 枚举名经 `tray.rs` 的 toast 直接显示给用户（主管评审 B4）。
+        ActionOutcome::Failed(format!("「{}」尚未接线", action.label()))
     }
 }
 
@@ -847,6 +919,71 @@ mod tests {
         assert!(!sink.phases().contains(&BootPhase::Ready));
         let detail = out.detail.expect("要有原因");
         assert!(detail.contains("net.kernel.path"), "要点名是哪个配置项：{detail}");
+    }
+
+    /// 假网关：`listening=false` 时永远不监听（模拟端口被占 / 绑定失败）。
+    #[derive(Clone)]
+    struct FakeGateway {
+        listening: bool,
+        spawned: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl crate::gateway::GatewayStarter for FakeGateway {
+        fn spawn(&self) {
+            self.spawned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        async fn wait_listening(&self, timeout: Duration) -> Result<(), String> {
+            if self.listening {
+                Ok(())
+            } else {
+                Err(format!("{} 秒内没有在 127.0.0.1:8787 上监听：拒绝连接", timeout.as_secs()))
+            }
+        }
+    }
+
+    /// **正向**：网关真的在监听 → 编排才转绿，且网关确实被启动过一次。
+    #[tokio::test]
+    async fn green_requires_the_gateway_to_really_listen() {
+        let kernel = FakeKernel::new();
+        kernel.configure(|f| f.post_start = KernelState::Ready);
+        let sink = RecordingSink::new();
+        let spawned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let deps = KernelBootDeps::new(Some(kernel), sink.clone())
+            .with_sleeper(fast_sleeper())
+            .with_gateway(FakeGateway { listening: true, spawned: spawned.clone() });
+
+        let out = BootOrchestrator::run(&deps, &StartupArgs::default(), READY_TIMEOUT).await;
+
+        assert_eq!(out.phase, BootPhase::Ready, "内核与网关都就绪时必须转绿");
+        assert_eq!(spawned.load(std::sync::atomic::Ordering::SeqCst), 1, "网关必须真的被启动过");
+        let phases = sink.phases();
+        let ready_at = phases.iter().position(|p| *p == BootPhase::Ready).expect("要有 Ready");
+        let gw_at = phases
+            .iter()
+            .position(|p| *p == BootPhase::WaitingGateway)
+            .expect("要有 WaitingGateway");
+        assert!(ready_at > gw_at, "还没等网关监听就绿了：{phases:?}");
+    }
+
+    /// **反向**：网关没在监听（端口被占 / 绑定失败）→ 绝不转绿。
+    #[tokio::test]
+    async fn gateway_not_listening_never_turns_green() {
+        let kernel = FakeKernel::new();
+        kernel.configure(|f| f.post_start = KernelState::Ready);
+        let sink = RecordingSink::new();
+        let deps = KernelBootDeps::new(Some(kernel), sink.clone())
+            .with_sleeper(fast_sleeper())
+            .with_gateway(FakeGateway {
+                listening: false,
+                spawned: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            });
+
+        let out = BootOrchestrator::run(&deps, &StartupArgs::default(), READY_TIMEOUT).await;
+
+        assert_eq!(out.phase, BootPhase::Degraded);
+        assert!(!sink.phases().contains(&BootPhase::Ready), "网关没在监听就不许绿");
+        assert!(out.detail.expect("要有原因").contains("8787"));
     }
 
     #[tokio::test]

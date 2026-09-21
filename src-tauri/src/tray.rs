@@ -407,6 +407,33 @@ pub enum TrayAction {
     Unknown(String),
 }
 
+impl TrayAction {
+    /// 用户可读的中文动作名。
+    ///
+    /// 存在的理由（主管评审 B4）：给用户的文案里**不能用 `{action:?}`** ——
+    /// 那会把 `UsePolicy` / `SetChannelEnabled` 这种 Rust 枚举名直接显示出来。
+    /// 面向用户的托盘提示一律走这里。
+    pub fn label(&self) -> &'static str {
+        match self {
+            TrayAction::ToggleGateway => "暂停/继续网关",
+            TrayAction::UsePolicy(_) => "切换策略",
+            TrayAction::UseLane(_) => "切换出口节点",
+            TrayAction::RetestLanes => "重新测速",
+            TrayAction::SetChannelEnabled { .. } => "启用/停用通道",
+            TrayAction::ResetChannelQuota(_) => "清零额度",
+            TrayAction::Emergency(_) => "紧急开关",
+            TrayAction::CopyAccessInfo => "复制接入信息",
+            TrayAction::OpenPanel => "打开面板",
+            TrayAction::OpenLogs => "打开日志",
+            TrayAction::OpenConfigDir => "打开配置目录",
+            TrayAction::OpenSettings => "打开设置",
+            TrayAction::CheckUpdate => "检查更新",
+            TrayAction::Quit => "退出",
+            TrayAction::Unknown(_) => "未知操作",
+        }
+    }
+}
+
 /// 动作执行结果。**漂移/竞态要能被表达出来**（M0 实测：`PUT /configs?force=true`
 /// 热重载时 listener 会有一瞬间关闭重建）。
 #[derive(Debug, Clone, PartialEq, Eq)]

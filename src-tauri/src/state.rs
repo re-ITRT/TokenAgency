@@ -53,6 +53,14 @@ pub struct AppState {
     /// 它同时也是 `KernelController::apply()` 的输入 —— 两份必须指向**同一个**
     /// `GeneratedConfigSource`，否则"命令层改了配置、内核却按旧配置 reload"。
     pub kernel_source: RwLock<Option<Arc<ta_kernel::config_gen::GeneratedConfigSource>>>,
+    /// 内核 supervisor 的**具体类型**。
+    ///
+    /// 为什么除了 `kernel`（`Arc<dyn KernelController>`）还要存一份：网关的
+    /// `KernelProbe` 是**同步**接口（`/healthz` 每来一次请求就查一次），
+    /// 而 `KernelController::status()` 是异步的。存具体类型才能直接调
+    /// `KernelSupervisor::state()`，不必引入缓存 —— **缓存会让"/healthz 说 ready、
+    /// 内核其实已经死了"成为可能**。
+    pub kernel_supervisor: RwLock<Option<Arc<ta_kernel::process::KernelSupervisor>>>,
 }
 
 impl AppState {
@@ -85,6 +93,7 @@ impl AppState {
             gateway: RwLock::new(None),
             kernel: RwLock::new(None),
             kernel_source: RwLock::new(None),
+            kernel_supervisor: RwLock::new(None),
         })
     }
 
