@@ -3,6 +3,12 @@
 //! 存在的意义是"只有一条代码路径"：真实网关、托盘、策略模拟器都调用
 //! `Router::decide → Router::select`，不存在第二份实现。
 //!
+//! **装配也只有一份**：index / engine / selector 的构造只在
+//! [`Router::with_sticky`] 里写一次；[`Router::new`] 是它自造粘性表的特例。
+//! 网关的 `LiveRouter` 配置换代时**必须**调 `with_sticky` 注入同一份粘性表，
+//! 而不是自己再拼一遍那三件套 —— 否则"策略模拟器 = 真实决策"就会变成假话
+//! （详见 `with_sticky` 的文档）。
+//!
 //! 状态（粘性表、round_robin 计数）都在 `Router` 里。要可复现的回放
 //! （模拟器 / 单测）就用 `Router::from_doc` 每次新建 —— 状态从零开始。
 
@@ -44,23 +50,44 @@ pub struct Router {
     pub index: Arc<RoutingIndex>,
     pub engine: PolicyEngineImpl,
     pub selector: ChannelSelectorImpl,
-    /// 进程内粘性表（P4 换成 SQLite 后，这里换 `BackedStickyResolver<SqliteStickyStore>` 即可）
-    pub sticky: Arc<MemoryStickyResolver>,
+    /// 生效的粘性表。类型是 `dyn`：它**可能是外部注入的那一份**
+    /// （[`Router::with_sticky`]，网关跨配置换代就靠这个），也可能是 [`Router::new`] 自造的。
+    pub sticky: Arc<dyn StickyResolver>,
 }
 
 impl Router {
-    pub fn new(doc: &ConfigDoc, opts: RouterOptions) -> Self {
+    /// ★ **唯一的装配实现**：从一份配置绑出 index / engine / selector，并接上调用方给的粘性表。
+    ///
+    /// 为什么粘性表必须能**从外面给**（而不是永远自造一份）：
+    /// 粘性对用户是 **12 小时级**的可见语义，配置热更新（重建 index/engine/selector）
+    /// **不能**把它清零。`LiveRouter` 每次换代都要重建前三件套，但必须注入**同一份**粘性表。
+    /// 如果这里不接受外部 sticky，网关就只能自己再拼一遍这套装配 —— 于是出现两份
+    /// **手工同步**的装配：任何一侧加了新部件两边都不会红，而"策略模拟器 = 真实决策"
+    /// 这个论断会**静默变成假话**（[docs/13 §4.5 L21] 那类"含糊处长出两套系统"）。
+    ///
+    /// `opts.clock` 只在 [`Router::new`] 造内部粘性表时用到；外部注入时那份解析器自带时钟。
+    pub fn with_sticky(
+        doc: &ConfigDoc,
+        opts: RouterOptions,
+        sticky: Arc<dyn StickyResolver>,
+    ) -> Self {
         let index = Arc::new(RoutingIndex::build(doc));
-        let sticky = Arc::new(MemoryStickyResolver::with_clock(opts.clock.clone()));
-        let sticky_dyn: Arc<dyn StickyResolver> = sticky.clone();
         let mut selector = ChannelSelectorImpl::new(index.clone())
-            .with_sticky(sticky_dyn)
+            .with_sticky(sticky.clone())
             .with_options(opts.selector);
         if let Some(p) = opts.pricing {
             selector = selector.with_pricing(p);
         }
         let engine = PolicyEngineImpl::with_options(index.clone(), opts.engine);
         Self { index, engine, selector, sticky }
+    }
+
+    /// 自造粘性表的便利构造（进程内、状态从零开始）。**它是 [`Router::with_sticky`] 的特例** ——
+    /// 两条路径共用同一段装配代码，这就是"只有一条代码路径"的字面落实。
+    pub fn new(doc: &ConfigDoc, opts: RouterOptions) -> Self {
+        let sticky: Arc<dyn StickyResolver> =
+            Arc::new(MemoryStickyResolver::with_clock(opts.clock.clone()));
+        Self::with_sticky(doc, opts, sticky)
     }
 
     /// 默认运行时（系统时钟、无定价引擎、默认选项）。
@@ -178,7 +205,10 @@ policies:
     /// 命中 → 复用 → 额度耗尽释放 → 重选 → **同会话保持新通道**
     #[test]
     fn sticky_full_chain_hit_reuse_release_reselect_stick_to_new() {
-        let r = Router::from_doc(&doc());
+        // 用**注入**的粘性表（不是自造的那份）：这样 `releases()` 审计是对着
+        // Router 真正在用的那个对象断言的 —— 断言的对象与装配的对象是同一个事实。
+        let sticky = Arc::new(MemoryStickyResolver::with_clock(Arc::new(SystemClock)));
+        let r = Router::with_sticky(&doc(), RouterOptions::default(), sticky.clone());
         let c = ctx();
         let h = hints("sess-abc");
 
@@ -215,7 +245,7 @@ policies:
         assert_eq!(s3.channel.as_str(), "ch-relay-a");
         assert!(!s3.sticky_hit);
         assert_eq!(
-            r.sticky.releases(),
+            sticky.releases(),
             vec![(StickyKey::from("sess-abc"), ReleaseReason::QuotaExhausted)]
         );
 
@@ -271,5 +301,91 @@ policies:
         let (dec, sel) = other.route(&hints("s"), &ctx());
         assert!(dec.candidates.is_empty());
         assert!(sel.is_none());
+    }
+
+    // ------------------------------------------------ 装配只有一条路径（E5 的 bind 依赖它）
+
+    /// **两条路径合一**：`Router::new` 必须就是 `with_sticky` + 自造解析器的特例。
+    ///
+    /// 比较方式：`Debug` 输出逐字段比较（结构体自己的投影 —— 将来新增字段自动纳入，
+    /// 手写字段清单会漏）。再显式钉两个关键字段，让断言读得懂。
+    #[test]
+    fn new_is_the_self_resolver_special_case_of_with_sticky() {
+        let d = doc();
+        let a = Router::new(&d, RouterOptions::default());
+        let b = Router::with_sticky(
+            &d,
+            RouterOptions::default(),
+            Arc::new(MemoryStickyResolver::with_clock(Arc::new(SystemClock))),
+        );
+        for session in ["s-1", "s-2", "s-3"] {
+            let (da, sa) = a.route(&hints(session), &ctx());
+            let (db, sb) = b.route(&hints(session), &ctx());
+            assert_eq!(
+                format!("{da:?}"),
+                format!("{db:?}"),
+                "两次装配的 decide 必须逐字段相同（session={session}）"
+            );
+            assert_eq!(
+                sa.map(|s| format!("{s:?}")),
+                sb.map(|s| format!("{s:?}")),
+                "两次装配的 select 必须逐字段相同（session={session}）"
+            );
+            assert_eq!(da.candidates, db.candidates);
+            assert_eq!(
+                da.matched_policy.as_ref().map(|p| p.as_str()),
+                db.matched_policy.as_ref().map(|p| p.as_str())
+            );
+        }
+    }
+
+    /// [`Router::with_sticky`] **必须真的用注入的那一份**，而不是偷偷自造。
+    ///
+    /// 这条是 E5 的 `LiveRouter::bind` 的前提：换代时重建 index/engine/selector，
+    /// 但粘性表要跨代保留。做法：先往注入的解析器里写一条"上一代留下的粘性"，
+    /// 再拿一个**从没跑过请求的** Router 首轮求值 —— 命中就证明它用的是注入的那份。
+    #[test]
+    fn with_sticky_uses_the_injected_resolver() {
+        let sticky = Arc::new(MemoryStickyResolver::with_clock(Arc::new(SystemClock)));
+        let injected: Arc<dyn StickyResolver> = sticky.clone();
+        // 模拟"换代之前那次请求留下的记录"（组与通道都取自夹具配置）
+        injected.store(
+            StickyKey::from("sess-injected"),
+            ChannelGroupId::from("grp-gpt-4o"),
+            ChannelId::from("ch-relay-b"),
+            12 * 3_600_000,
+        );
+
+        let r = Router::with_sticky(&doc(), RouterOptions::default(), injected);
+        let (_, s) = r.route(&hints("sess-injected"), &ctx());
+        let s = s.unwrap();
+        assert!(s.sticky_hit, "注入的粘性表必须生效，否则配置换代会把 12h 粘性清零");
+        assert_eq!(s.channel.as_str(), "ch-relay-b", "命中的必须是注入记录里的那个通道");
+
+        // 反向：没注入那一份的 Router 不该看到它（证明上面命中的确是"注入"带来的）
+        let fresh = Router::from_doc(&doc());
+        let (_, s_fresh) = fresh.route(&hints("sess-injected"), &ctx());
+        assert!(!s_fresh.unwrap().sticky_hit, "另一份粘性表不该共享状态");
+    }
+
+    /// 跨**配置代次**保留粘性：同一份 sticky + 两次 `with_sticky`（两个不同配置代）。
+    ///
+    /// 这就是"配置换代重建 index/engine/selector，但粘性不清零"的字面测试。
+    #[test]
+    fn sticky_survives_a_config_generation_swap() {
+        let sticky: Arc<dyn StickyResolver> =
+            Arc::new(MemoryStickyResolver::with_clock(Arc::new(SystemClock)));
+
+        let gen1 = Router::with_sticky(&doc(), RouterOptions::default(), sticky.clone());
+        let (_, s1) = gen1.route(&hints("sess-gen"), &ctx());
+        assert_eq!(s1.unwrap().channel.as_str(), "ch-openai");
+
+        // 换代：换一份配置（结构相同即可 —— 关键是新建了 index/engine/selector）
+        let gen2 = Router::with_sticky(&doc(), RouterOptions::default(), sticky.clone());
+        let (_, s2) = gen2.route(&hints("sess-gen"), &ctx());
+        let s2 = s2.unwrap();
+        assert!(s2.sticky_hit, "换代不许把粘性丢掉（对用户是 12h 的可见语义）");
+        assert_eq!(s2.channel.as_str(), "ch-openai");
+        assert_eq!(s2.sticky_key.as_ref().unwrap().as_str(), "sess-gen");
     }
 }
