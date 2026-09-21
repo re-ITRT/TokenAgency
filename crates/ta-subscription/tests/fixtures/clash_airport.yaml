@@ -1,0 +1,48 @@
+# 脱敏的「机场」样例订阅（域名/密码全是编的，只为测试解析与计数）
+# 覆盖：顶层 proxies（含 3 个假节点）、proxy-providers 里内联的节点、5 个 proxy-groups
+port: 7890
+socks-port: 7891
+mixed-port: 7892
+allow-lan: false
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
+
+proxies:
+  - {name: "🇭🇰 香港 01", type: ss, server: hk01.example-airport.com, port: 443, cipher: aes-256-gcm, password: "pw-hk01", udp: true}
+  - {name: "🇭🇰 香港 02", type: ss, server: hk02.example-airport.com, port: 8443, cipher: chacha20-ietf-poly1305, password: "pw-hk02", udp: true}
+  - {name: "🇯🇵 日本 01", type: vmess, server: jp01.example-airport.com, port: 443, uuid: b831381d-6324-4d53-ad4f-8cda48b30811, alterId: 0, cipher: auto, tls: true, network: ws}
+  - {name: "🇯🇵 日本 02", type: vless, server: jp02.example-airport.com, port: 443, uuid: b831381d-6324-4d53-ad4f-8cda48b30812, tls: true, network: grpc}
+  - {name: "🇸🇬 新加坡 01", type: trojan, server: sg01.example-airport.com, port: 443, password: "pw-sg01", sni: sg01.example-airport.com}
+  - {name: "🇺🇸 美国 01", type: ss, server: us01.example-airport.com, port: 443, cipher: aes-128-gcm, password: "pw-us01"}
+  - {name: "🇺🇸 美国 02", type: vmess, server: us02.example-airport.com, port: 2053, uuid: b831381d-6324-4d53-ad4f-8cda48b30813, alterId: 0, cipher: auto, tls: true, network: ws}
+  - {name: "🇩🇪 德国 01", type: hysteria2, server: de01.example-airport.com, port: 443, password: "pw-de01", sni: de01.example-airport.com, skip-cert-verify: false}
+  - {name: "🇬🇧 英国 01", type: tuic, server: uk01.example-airport.com, port: 443, uuid: b831381d-6324-4d53-ad4f-8cda48b30814, password: "pw-uk01", congestion-controller: bbr}
+  - {name: "🇰🇷 韩国 01", type: ssr, server: kr01.example-airport.com, port: 1234, cipher: aes-256-cfb, password: "pw-kr01", protocol: auth_aes128_md5, obfs: plain}
+  # ↓ 假节点：机场把「剩余流量/到期时间/官网」也塞进 proxies，过滤是订阅级 filter 的活
+  - {name: "剩余流量：128.50GB", type: ss, server: fake-not-a-node.example-airport.com, port: 1, cipher: aes-256-gcm, password: "x"}
+  - {name: "套餐到期：2026-01-01", type: ss, server: fake-not-a-node.example-airport.com, port: 2, cipher: aes-256-gcm, password: "x"}
+  - {name: "官网：example-airport.com", type: ss, server: fake-not-a-node.example-airport.com, port: 3, cipher: aes-256-gcm, password: "x"}
+
+proxy-providers:
+  provider-tr:
+    type: http
+    url: "https://example-airport.com/api/v1/client/subscribe?token=REPLACE_ME"
+    interval: 3600
+    path: ./providers/provider-tr.yaml
+    health-check: {enable: true, url: "https://www.gstatic.com/generate_204", interval: 300}
+    # 少数机场会把节点内联在 provider 里
+    proxies:
+      - {name: "🇹🇷 土耳其 01", type: ss, server: tr01.example-airport.com, port: 443, cipher: aes-256-gcm, password: "pw-tr01"}
+      - {name: "🇹🇷 土耳其 02", type: trojan, server: tr02.example-airport.com, port: 443, password: "pw-tr02"}
+
+proxy-groups:
+  - {name: "🚀 节点选择", type: select, proxies: ["♻️ 自动选择", "🇭🇰 香港 01", "🇯🇵 日本 01", "🇸🇬 新加坡 01", DIRECT]}
+  - {name: "♻️ 自动选择", type: url-test, url: "https://www.gstatic.com/generate_204", interval: 300, tolerance: 50, proxies: ["🇭🇰 香港 01", "🇭🇰 香港 02", "🇯🇵 日本 01", "🇯🇵 日本 02", "🇸🇬 新加坡 01", "🇺🇸 美国 01", "🇺🇸 美国 02"]}
+  - {name: "🇭🇰 香港", type: url-test, url: "https://www.gstatic.com/generate_204", interval: 300, proxies: ["🇭🇰 香港 01", "🇭🇰 香港 02"]}
+  - {name: "🇯🇵 日本", type: select, proxies: ["🇯🇵 日本 01", "🇯🇵 日本 02"]}
+  - {name: "🎯 全球直连", type: select, proxies: [DIRECT]}
+
+rules:
+  - DOMAIN-SUFFIX,example-airport.com,DIRECT
+  - MATCH,🚀 节点选择
