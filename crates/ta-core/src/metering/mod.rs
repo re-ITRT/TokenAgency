@@ -104,7 +104,14 @@ fn source_of(has_details: bool) -> UsageSource {
 
 /// 某协议下 usage 容器的候选路径（**唯一落点**：`upstream_total` 与
 /// [`metered_usage_for`] 的"有没有 usage"判定共用同一份，避免两处各写一套）。
-fn usage_paths(protocol: Protocol) -> &'static [&'static str] {
+///
+/// **为什么放开成 `pub`**（第 11 轮）：Anthropic 的 usage **分散在两个事件**里
+/// （`message_start.message.usage` 给 input、`message_delta.usage` 给 output），
+/// 流式路径必须先把它们**合并成最终形态**、再调**一次** [`metered_usage_for`]。
+/// 合并时"哪些路径算 usage 容器"必须与本函数是**同一份口径** —— 网关自己另写一张表
+/// 就是第二套口径（[`metered_usage_for`] 文档第 3 条明令禁止）。放开可见性是为了让
+/// 网关**复用**这张表，而不是各写一张。
+pub fn usage_paths(protocol: Protocol) -> &'static [&'static str] {
     match protocol {
         Protocol::Openai | Protocol::Custom | Protocol::OpenaiResponses => {
             &["/usage", "/response/usage"]
