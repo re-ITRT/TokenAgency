@@ -549,6 +549,17 @@ impl MhConfigGen {
                     format!("url: {}", q(&g.probe_url)),
                     format!("interval: {}", g.interval_s),
                     format!("tolerance: {}", g.tolerance_ms),
+                    // ★ 宁可响亮地失败，也不要静默降级。
+                    //
+                    // 内核的默认 `empty-fallback` 是 `COMPATIBLE`（= 直连语义）：组里一个节点都没有时
+                    // 它会**静默**变成直连，而且**零 error / 零 warning**。两种情况都会踩到：
+                    //   1. `filter` 写错、或订阅更新后节点改名 → 筛选结果为空；
+                    //   2. 订阅还没拉完 / provider 加载失败 → `use: [provider]` 组为空。
+                    // 结果就是"本该走代理的 lane"把用户的境外流量裸奔出去 —— 比报错严重得多。
+                    // 显式 `REJECT` 之后，客户端拿到 502、内核日志里能看到 `using G-...-reject[REJECT]`。
+                    // 依据：主管 M0 spike 实测（K3）—— filter 匹配不到时默认 `all=[COMPATIBLE]`
+                    // 且无任何告警；改成 `REJECT` 后 `all=[REJECT]` 且请求明确失败。
+                    "empty-fallback: REJECT".to_string(),
                 ];
                 if let Some(f) = g.filter {
                     fields.push(format!("filter: {}", q(f)));
@@ -1210,6 +1221,62 @@ lanes:
             .find(|g| g.get("name").unwrap().as_str() == Some("LANE-lane-fallback"))
             .unwrap();
         assert_eq!(fb.get("type").unwrap().as_str(), Some("fallback"));
+    }
+
+    /// ★ **宁可响亮地失败，不可静默降级。**
+    ///
+    /// 内核 `proxy-groups[].empty-fallback` 的默认值是 `COMPATIBLE`（= 直连语义）：组里一个
+    /// 节点都没有时它会**静默**变成直连，且**零 error / 零 warning**。这会在两种情况下踩到：
+    /// 1. `filter` 写错、或订阅更新后节点改名 → 筛选结果为空（主管 M0 spike K3 实测）；
+    /// 2. 订阅还没拉完 / provider 加载失败 → `use: [provider]` 组为空。
+    ///
+    /// 后果是"本该走代理的 lane"把用户的境外流量**裸奔**出去，比报错严重得多。
+    /// 所以**我们生成的每一个组**都必须显式 `empty-fallback: REJECT`：组空了就让请求 502，
+    /// 内核日志里也会出现 `using G-...-reject[REJECT]`。
+    ///
+    /// 谁想删掉这一行，请先回答：**组为空时，你希望用户的境外流量走哪里？**
+    #[test]
+    fn every_generated_group_fails_loudly_when_empty() {
+        // 同时覆盖"带 filter 的组"和"只 use provider 的组"两种生成点
+        let yaml = gen()
+            .generate(
+                &doc(WITH_FILTER),
+                &ports(&[("lane-jp-only", 39100), ("lane-fallback", 39101)]),
+            )
+            .unwrap();
+        let v = parse(&yaml);
+        let groups = at(&v, "proxy-groups").as_sequence().unwrap();
+        assert!(!groups.is_empty(), "这个 fixture 应该至少生成一个组");
+        for g in groups {
+            let name = g.get("name").unwrap().as_str().unwrap();
+            assert_eq!(
+                g.get("empty-fallback").and_then(|x| x.as_str()),
+                Some("REJECT"),
+                "组 {name} 缺少 empty-fallback: REJECT —— 组为空时内核会静默走 COMPATIBLE(直连)"
+            );
+        }
+
+        // 订阅里声明了 filter 的组（`WITH_GROUPS` 里的 lane-jp-auto 没有 lane 级 filter，
+        // 但 provider 级 filter 仍然可能筛空）—— 同样要有
+        let yaml2 = gen()
+            .generate(
+                &doc(WITH_GROUPS),
+                &ports(&[
+                    ("lane-direct", 39100),
+                    ("lane-jp-auto", 39101),
+                    ("lane-jp-original", 39102),
+                    ("lane-us-fixed", 39103),
+                ]),
+            )
+            .unwrap();
+        let v2 = parse(&yaml2);
+        for g in at(&v2, "proxy-groups").as_sequence().unwrap() {
+            assert_eq!(
+                g.get("empty-fallback").and_then(|x| x.as_str()),
+                Some("REJECT"),
+                "每个生成的组都要显式拒绝空组"
+            );
+        }
     }
 
     // ------------------------------------------------------------ 引用校验

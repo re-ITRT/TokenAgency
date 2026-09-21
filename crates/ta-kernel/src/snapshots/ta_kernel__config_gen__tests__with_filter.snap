@@ -33,8 +33,8 @@ proxy-providers:
     health-check: {enable: true, url: "https://www.gstatic.com/generate_204", interval: 60}
 
 proxy-groups:
-  - {name: "LANE-lane-jp-only", type: url-test, use: ["sub-jp"], url: "https://www.gstatic.com/generate_204", interval: 60, tolerance: 100, filter: "(?i)(日本|JP)", exclude-filter: "(?i)(官网|剩余流量)"}
-  - {name: "LANE-lane-fallback", type: fallback, use: ["sub-jp"], url: "https://www.gstatic.com/generate_204", interval: 60, tolerance: 100}
+  - {name: "LANE-lane-jp-only", type: url-test, use: ["sub-jp"], url: "https://www.gstatic.com/generate_204", interval: 60, tolerance: 100, empty-fallback: REJECT, filter: "(?i)(日本|JP)", exclude-filter: "(?i)(官网|剩余流量)"}
+  - {name: "LANE-lane-fallback", type: fallback, use: ["sub-jp"], url: "https://www.gstatic.com/generate_204", interval: 60, tolerance: 100, empty-fallback: REJECT}
 
 listeners:
   - {name: "lane-lane-jp-only", type: mixed, listen: 127.0.0.1, port: 39100, proxy: "LANE-lane-jp-only", udp: false}

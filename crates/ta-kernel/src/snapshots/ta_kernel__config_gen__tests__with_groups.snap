@@ -35,7 +35,7 @@ proxy-providers:
     health-check: {enable: true, url: "https://api.openai.com/v1/models", interval: 60}
 
 proxy-groups:
-  - {name: "LANE-lane-jp-auto", type: url-test, use: ["sub-jp"], url: "https://api.openai.com/v1/models", interval: 60, tolerance: 100}
+  - {name: "LANE-lane-jp-auto", type: url-test, use: ["sub-jp"], url: "https://api.openai.com/v1/models", interval: 60, tolerance: 100, empty-fallback: REJECT}
 
 listeners:
   - {name: "lane-lane-direct", type: mixed, listen: 127.0.0.1, port: 39100, proxy: "DIRECT", udp: false}
