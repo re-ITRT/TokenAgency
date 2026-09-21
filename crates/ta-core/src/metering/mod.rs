@@ -102,21 +102,29 @@ fn source_of(has_details: bool) -> UsageSource {
     }
 }
 
-/// 某协议下 usage 容器的候选路径（**唯一落点**：`upstream_total` 与
-/// [`metered_usage_for`] 的"有没有 usage"判定共用同一份，避免两处各写一套）。
+/// 某协议下 usage 容器的候选路径（**唯一落点**：`upstream_total`、[`metered_usage_for`] 的
+/// "有没有 usage"判定、以及各协议的 `normalize_*` 共用同一份，避免几处各写一套）。
 ///
-/// **为什么放开成 `pub`**（第 11 轮）：Anthropic 的 usage **分散在两个事件**里
-/// （`message_start.message.usage` 给 input、`message_delta.usage` 给 output），
-/// 流式路径必须先把它们**合并成最终形态**、再调**一次** [`metered_usage_for`]。
-/// 合并时"哪些路径算 usage 容器"必须与本函数是**同一份口径** —— 网关自己另写一张表
-/// 就是第二套口径（[`metered_usage_for`] 文档第 3 条明令禁止）。放开可见性是为了让
-/// 网关**复用**这张表，而不是各写一张。
+/// **顺序即优先级**：`usage_container` 取**第一个命中的对象**，所以主路径必须排前面。
+///
+/// **Anthropic 为什么有两条**（第 12 轮补）：它的 usage **分散在流式的两个事件里** ——
+/// - `message_delta`：`{"usage":{…}}`（给最终 `output_tokens`）；
+/// - `message_start`：`{"message":{"usage":{…}}}`（给 `input_tokens` 与缓存 token）。
+///
+/// 只列 `/usage` 时，流式请求的 input / 缓存 token 会被**整份丢掉**（网关当初被迫在
+/// `container_of` 里加了一层"信封回退"绕过它）。把 `/message/usage` 补进这张表之后，
+/// 那层回退对这条形态就是冗余的；**判定与归一化仍然只在这里定口径**。
+///
+/// **放开成 `pub` 的理由**（第 11 轮）：流式路径必须先把分散的事件**合并成最终形态**、
+/// 再调**一次** [`metered_usage_for`]；"哪些路径算 usage 容器"必须与本函数同源，
+/// 网关自己另写一张表就是第二套口径。
 pub fn usage_paths(protocol: Protocol) -> &'static [&'static str] {
     match protocol {
         Protocol::Openai | Protocol::Custom | Protocol::OpenaiResponses => {
             &["/usage", "/response/usage"]
         }
-        Protocol::Anthropic => &["/usage"],
+        // `/usage` 在前：两条同时出现时以顶层为准（与合并口径"首个对象胜出"一致）
+        Protocol::Anthropic => &["/usage", "/message/usage"],
         Protocol::Gemini => &["/usageMetadata", "/response/usageMetadata"],
     }
 }
@@ -215,7 +223,10 @@ pub fn normalize_openai_responses(raw: &Value) -> MeteredUsage {
 /// **Anthropic 的 `input_tokens` 不含 cache read/write**，所以 `Input` 原样取用，不扣减。
 /// thinking token 已并入 `output_tokens`，因此没有 `OutputReasoning`（§6 表）。
 pub fn normalize_anthropic(raw: &Value) -> MeteredUsage {
-    let us = usage_container(raw, &["/usage"]);
+    // ★ 必须用 `usage_paths` 这张唯一口径表（而不是再写一份 `&["/usage"]`）：
+    // 判定侧（`usage_is_absent`）与归一化侧若不同源，会出现"判定说上游给了、
+    // 归一化读成 0"的**静默少记** —— 那比不认更糟。
+    let us = usage_container(raw, usage_paths(Protocol::Anthropic));
     let input = u(us, "/input_tokens");
     let output = u(us, "/output_tokens");
     let cache_read = u(us, "/cache_read_input_tokens");
@@ -1134,5 +1145,165 @@ mod tests {
         let m = metered_usage_for(Protocol::Openai, Some(&zero), &body);
         assert_eq!(m.source, UsageSource::UpstreamPartial, "数值型容器仍是上游数据");
         assert_eq!(m.usage.total(), 0, "上游明确说 0 就是 0");
+    }
+
+    // ------------------------------------------------ Anthropic 流式：usage 分散在两个事件里
+
+    /// 真实 Anthropic 流：**input / 缓存 token 只在 `message_start.message.usage`**，
+    /// `message_delta` 才给最终 `output_tokens`（形态取自 `ta-gateway/src/meter.rs` 的流式夹具）。
+    ///
+    /// 回归点：`usage_paths(Anthropic)` 若只列 `/usage`，这一条的 input 会被**整份丢掉**
+    /// （E5 在网关侧做过一层"信封回退"绕过去 —— 本测试就是把那张表补全后它该有的样子）。
+    #[test]
+    fn anthropic_message_start_usage_is_recognized() {
+        let body =
+            json!({"model": "claude-sonnet-4-5", "messages": [{"role": "user", "content": "hi"}]});
+        let start = json!({
+            "type": "message_start",
+            "message": {"id": "msg_1", "usage": {"input_tokens": 4000, "output_tokens": 1}}
+        });
+
+        // ① 归一化必须读到 input（不是 0 —— 0 就是"静默少记"）
+        let m = DefaultMeter.normalize(Protocol::Anthropic, &start);
+        assert_eq!(m.usage.get(&TokenKind::Input), 4000, "message_start 的 input 不许丢");
+        assert_eq!(m.usage.get(&TokenKind::Output), 1);
+
+        // ② "有没有 usage"的判定也必须认它，否则会被错判成 Estimated 去估算
+        let via_entry = metered_usage_for(Protocol::Anthropic, Some(&start), &body);
+        assert_eq!(via_entry.source, UsageSource::UpstreamPartial, "这是上游数据，不是我们的估算");
+        assert_eq!(via_entry.usage.get(&TokenKind::Input), 4000);
+    }
+
+    /// `message_delta` 的形态（`/usage`）不许因为补了路径就失效 —— 两条都要认。
+    #[test]
+    fn anthropic_message_delta_usage_still_works() {
+        let delta = json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                           "usage": {"output_tokens": 250}});
+        let m = DefaultMeter.normalize(Protocol::Anthropic, &delta);
+        assert_eq!(m.usage.get(&TokenKind::Output), 250);
+    }
+
+    /// 网关把两个事件合并后的**最终形态**必须给出"input 来自 `message_start`、
+    /// output 取 `message_delta` 的最终值" —— 这条把 `ta-gateway` 那条流式断言的**结果契约**
+    /// 钉在 ta-core 里，免得网关侧一重构就没人记得它对数字的要求。
+    #[test]
+    fn anthropic_stream_merged_container_keeps_input_and_final_output() {
+        let body = json!({"messages": []});
+        // 合并后的容器（= message_start.usage 深合并 message_delta.usage，后者覆盖标量）
+        let merged = json!({"usage": {"input_tokens": 4000, "output_tokens": 250}});
+        let m = metered_usage_for(Protocol::Anthropic, Some(&merged), &body);
+        assert_eq!(m.usage.get(&TokenKind::Input), 4000, "input 必须留下");
+        assert_eq!(m.usage.get(&TokenKind::Output), 250, "output 取 message_delta 的最终值");
+        assert_eq!(m.source, UsageSource::UpstreamPartial);
+    }
+
+    /// **非流式不许被改变**：整包响应里就是顶层 `usage`。
+    #[test]
+    fn anthropic_non_streaming_shape_is_unchanged() {
+        let full = json!({"id": "msg_1", "type": "message", "role": "assistant",
+                          "content": [{"type": "text", "text": "hi"}],
+                          "usage": {"input_tokens": 400, "output_tokens": 250,
+                                    "cache_read_input_tokens": 12000,
+                                    "cache_creation_input_tokens": 1000}});
+        let m = DefaultMeter.normalize(Protocol::Anthropic, &full);
+        assert_eq!(m.usage.get(&TokenKind::Input), 400);
+        assert_eq!(m.usage.get(&TokenKind::Output), 250);
+        assert_eq!(m.usage.get(&TokenKind::InputCached), 12000);
+        assert_eq!(m.usage.get(&TokenKind::InputCacheWrite), 1000);
+        assert_eq!(m.source, UsageSource::Upstream);
+    }
+
+    /// 两条路径同时出现时**取值必须与网关的合并口径一致（首个对象胜出）**：
+    /// `/usage` 排在 `/message/usage` 前面，所以顶层优先，不存在歧义。
+    #[test]
+    fn anthropic_usage_prefers_the_primary_path_when_both_exist() {
+        let both = json!({
+            "usage": {"input_tokens": 1, "output_tokens": 2},
+            "message": {"usage": {"input_tokens": 999, "output_tokens": 999}}
+        });
+        let m = DefaultMeter.normalize(Protocol::Anthropic, &both);
+        assert_eq!(
+            m.usage.get(&TokenKind::Input),
+            1,
+            "首条路径必须胜出（与 usage_container 一致）"
+        );
+        assert_eq!(m.usage.get(&TokenKind::Output), 2);
+        // 判定侧同样以首条为准：认出来是"上游给了"，不是估算
+        let body = json!({"messages": []});
+        assert_eq!(
+            metered_usage_for(Protocol::Anthropic, Some(&both), &body).source,
+            UsageSource::UpstreamPartial
+        );
+    }
+
+    /// 补路径**不许把"没有 usage"这件事判松**（主管明确要求复核这一条）。
+    #[test]
+    fn adding_the_message_path_does_not_loosen_absence_detection() {
+        let body = json!({"messages": [{"role": "user", "content": "x"}]});
+
+        // ① `message.usage` 是 null → 明确"没有数据" → 估算（不是"上游说 0"）
+        let null_usage = json!({"type": "message_start", "message": {"usage": null}});
+        let m = metered_usage_for(Protocol::Anthropic, Some(&null_usage), &body);
+        assert_eq!(m.source, UsageSource::Estimated, "`message.usage: null` 不是上游说 0");
+        assert!(m.usage.total() > 0);
+
+        // ② `message.usage` 是空对象 → 上游明确说 0（这条必须仍然成立）
+        let empty_usage = json!({"type": "message_start", "message": {"usage": {}}});
+        let m = metered_usage_for(Protocol::Anthropic, Some(&empty_usage), &body);
+        assert_eq!(m.source, UsageSource::UpstreamPartial, "显式空容器 = 上游说 0");
+        assert_eq!(m.usage.total(), 0);
+
+        // ③ `message` 里根本没有 usage、也没有 token 字样 → 不知道 → 估算
+        let no_usage = json!({"type": "message_start", "message": {"id": "msg_1"}});
+        let m = metered_usage_for(Protocol::Anthropic, Some(&no_usage), &body);
+        assert_eq!(m.source, UsageSource::Estimated, "没有证据就是不知道");
+    }
+
+    /// `usage_paths` 里**声明的每一条路径**都必须被对应的归一化认出来 ——
+    /// 这条把"表"与"归一化"钉在一起，防止以后只改一处（本文件的头号漂移风险）。
+    #[test]
+    fn every_declared_usage_path_is_recognized_by_its_normalizer() {
+        let body = json!({"messages": []});
+        for protocol in [
+            Protocol::Openai,
+            Protocol::Custom,
+            Protocol::OpenaiResponses,
+            Protocol::Anthropic,
+            Protocol::Gemini,
+        ] {
+            for path in usage_paths(protocol) {
+                let leaf = match protocol {
+                    Protocol::Gemini => json!({"promptTokenCount": 7, "candidatesTokenCount": 3}),
+                    _ => json!({"prompt_tokens": 7, "completion_tokens": 3,
+                                "input_tokens": 7, "output_tokens": 3}),
+                };
+                let payload = at_path(path, leaf);
+                let m = DefaultMeter.normalize(protocol, &payload);
+                assert_eq!(
+                    m.usage.get(&TokenKind::Input),
+                    7,
+                    "{protocol:?} 的声明路径 {path} 没被归一化读到（表与归一化漂了）"
+                );
+                assert_eq!(m.usage.get(&TokenKind::Output), 3, "{protocol:?} 的 {path}");
+                // 判定侧也要认
+                let via_entry = metered_usage_for(protocol, Some(&payload), &body);
+                assert_ne!(
+                    via_entry.source,
+                    UsageSource::Estimated,
+                    "{protocol:?} 的 {path} 被判成「没有 usage」"
+                );
+            }
+        }
+    }
+
+    /// 把 `/a/b` 这样的路径展开成嵌套对象（构造夹具用）。
+    fn at_path(path: &str, leaf: Value) -> Value {
+        let mut cur = leaf;
+        for seg in path.trim_start_matches('/').split('/').rev() {
+            let mut m = serde_json::Map::new();
+            m.insert(seg.to_string(), cur);
+            cur = Value::Object(m);
+        }
+        cur
     }
 }
