@@ -205,6 +205,17 @@ pub fn credentials_without_usable_limit<'a>(
     items.into_iter().filter(|(_, cfg)| limit_gap(cfg).is_some()).map(|(c, _)| c).collect()
 }
 
+/// 同 [`credentials_without_usable_limit`]，但连**缺口形态**一起给出，供 IPC/UI 直接渲染。
+///
+/// **不让 UI 自己去判**：一旦前端也写一遍 `limit.is_none()`，`0` / 负数 / `NaN` / `inf`
+/// 这几种就一定会漏（那是两个口径）。文案统一取 [`LimitGap::message`] 原文 ——
+/// 它是一句完整的话，**不含凭据名**（名字由调用方从自己的数据里带，ID 与名字都要有，[14 §5.2]）。
+pub fn credential_limit_gaps<'a>(
+    items: impl IntoIterator<Item = (&'a CredentialId, &'a QuotaConfig)>,
+) -> Vec<(&'a CredentialId, LimitGap)> {
+    items.into_iter().filter_map(|(c, cfg)| limit_gap(cfg).map(|g| (c, g))).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +376,30 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert!(listed.contains(&&b) && listed.contains(&&c));
         assert!(!listed.contains(&&a));
+    }
+
+    /// IPC/UI 用的那一版：一次拿到 `(凭据, 缺口)`，文案仍出自同一个 `message()`。
+    #[test]
+    fn ipc_listing_carries_the_reason_variant() {
+        let a = CredentialId::new("c-a");
+        let b = CredentialId::new("c-b");
+        let c = CredentialId::new("c-c");
+        let good = cfg_with_limit(Some(100.0));
+        let missing = cfg_with_limit(None);
+        let zero = cfg_with_limit(Some(0.0));
+
+        let rows = credential_limit_gaps([(&a, &good), (&b, &missing), (&c, &zero)]);
+        assert_eq!(rows.len(), 2, "只列有缺口的：{rows:?}");
+        assert_eq!(rows[0], (&b, LimitGap::Missing));
+        assert_eq!(rows[1], (&c, LimitGap::Unusable(0.0)));
+        // 两个入口的成员判定必须一致（同一个 limit_gap，不许分叉）
+        let ids: Vec<&CredentialId> = rows.iter().map(|(c, _)| *c).collect();
+        assert_eq!(
+            ids,
+            credentials_without_usable_limit([(&a, &good), (&b, &missing), (&c, &zero)])
+        );
+        for (_, gap) in rows {
+            assert!(!gap.message().is_empty(), "每一行都要能给出一句完整的话");
+        }
     }
 }
