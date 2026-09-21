@@ -177,10 +177,34 @@ if ($NoVerify) { $gitArgs += '--no-verify' }
 $gitArgs += @('-F', $msgFile, '--')
 $gitArgs += $Paths
 
-$maxTry = 6
+# 并行开发下 `.git/index.lock` 是**高频**竞争点：git 在执行 pre-commit 钩子期间
+# 会一直持有它，而钩子要跑 clippy —— 那一跑可能是几分钟。所以：
+#   * 重试预算要按"分钟级"给，不是"秒级"（原来 6 次 × 最多 2.4s ≈ 8s，实测不够，连续 6 次全撞）
+#   * 后退要加**抖动**，否则五个员工会同步重试、永远撞在一起
+#   * `git add` 的退出码**必须检查** —— 见下面的注释，这是"假绿"的入口
+$maxTry = 25
 for ($i = 1; $i -le $maxTry; $i++) {
-    # 只 add 自己的路径 —— 不动别人已暂存的内容
-    git add -- $Paths 2>&1 | Out-Null
+    # ⚠️ 只 add 自己的路径；且**必须检查退出码**。
+    #
+    # 若 `git add` 因锁竞争静默失败，而 `git commit -- <paths>` 仍然成功
+    # （它对给定路径走 partial commit，不依赖索引），那么 pre-commit 钩子读到的
+    # `git diff --cached --name-only` 会是**别人或空的暂存集** → 钩子检查了错误的东西
+    # → **门禁假绿**。这比提交失败危险得多，所以这里一旦 add 失败就重试，绝不继续。
+    $addOut = git add -- $Paths 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        if (($addOut | Out-String) -match 'index\.lock') {
+            $wait = [Math]::Min(300 * $i, 4000) + (Get-Random -Minimum 0 -Maximum 500)
+            Write-Host "  · 索引被占用（git add），重试 $i/$maxTry，等 $([Math]::Round($wait/1000,1))s ..." -ForegroundColor DarkGray
+            Start-Sleep -Milliseconds $wait
+            continue
+        }
+        Write-Host ""
+        $addOut | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+        Write-Host "✘ git add 失败（非锁竞争）。未提交。" -ForegroundColor Red
+        if ($tmpMsg) { Remove-Item $tmpMsg -Force -ErrorAction SilentlyContinue }
+        exit 1
+    }
+
     $out = git @gitArgs 2>&1
     if ($LASTEXITCODE -eq 0) {
         if ($tmpMsg) { Remove-Item $tmpMsg -Force -ErrorAction SilentlyContinue }
@@ -189,10 +213,11 @@ for ($i = 1; $i -le $maxTry; $i++) {
         Write-Host "✔ 提交成功（Work-Package: $As）" -ForegroundColor Green
         exit 0
     }
-    # index.lock 竞争：别的员工也在提交，等一会儿重试
+    # index.lock 竞争：别的员工也在提交（或某人的钩子正在跑 clippy）
     if (($out | Out-String) -match 'index\.lock') {
-        Write-Host "  · 索引被占用，重试 $i/$maxTry ..." -ForegroundColor DarkGray
-        Start-Sleep -Milliseconds (400 * $i)
+        $wait = [Math]::Min(300 * $i, 4000) + (Get-Random -Minimum 0 -Maximum 500)
+        Write-Host "  · 索引被占用，重试 $i/$maxTry，等 $([Math]::Round($wait/1000,1))s ..." -ForegroundColor DarkGray
+        Start-Sleep -Milliseconds $wait
         continue
     }
     Write-Host ""
@@ -203,6 +228,8 @@ for ($i = 1; $i -le $maxTry; $i++) {
     exit 1
 }
 
-Write-Host "✘ 索引持续被占用，稍后重试" -ForegroundColor Red
+Write-Host "✘ 索引持续被占用（已重试 $maxTry 次，约 1 分钟）。" -ForegroundColor Red
+Write-Host "  5 人并行提交时这是正常的 —— 别的同事的钩子可能正在跑 clippy。" -ForegroundColor DarkGray
+Write-Host "  稍等片刻重跑本命令即可，你的改动还在工作区，不会丢。" -ForegroundColor DarkGray
 if ($tmpMsg) { Remove-Item $tmpMsg -Force -ErrorAction SilentlyContinue }
 exit 1
