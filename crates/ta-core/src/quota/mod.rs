@@ -16,6 +16,7 @@ pub use ledger::{window_bounds, window_bounds_local, QuotaEffect, QuotaLedgerImp
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::QuotaConfig;
 use crate::types::*;
 
 #[derive(
@@ -141,6 +142,69 @@ pub fn looks_like_invalid_credential(status: u16, body: &str) -> bool {
     }
 }
 
+// ---------------------------------------------------------------- B2：未配额度的显式提醒
+
+/// 一个可用的额度上限（`Some` 才代表"配了"）。
+///
+/// "可用"的定义与账本一致（[`ledger`]）：**有限的正数**。
+/// `0` / 负数 / `NaN` / `inf` 都算"没配" —— 它们无法参与 `used / limit` 这个比例口径。
+pub fn usable_limit(cfg: &QuotaConfig) -> Option<f64> {
+    cfg.limit.filter(|l| l.is_finite() && *l > 0.0)
+}
+
+/// 套餐缺额度的那两种形态。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LimitGap {
+    /// 完全没填 `limit`
+    Missing,
+    /// 填了，但不是可用的正数（原样带出来给 UI 显示）
+    Unusable(f64),
+}
+
+impl LimitGap {
+    /// 给用户看的说明（[15]：不写 emoji）。**不要把这条改写成"不影响使用"** ——
+    /// 静默会让用户以为"用完自动切"坏了（[06 §10.1 B2] 的原话）。
+    pub const fn message(&self) -> &'static str {
+        match self {
+            LimitGap::Missing => {
+                "该套餐没有填额度上限（limit）：本地累计用量无法触发耗尽判定，只有上游响应头报告耗尽时才会自动切换；请填写 limit"
+            }
+            LimitGap::Unusable(_) => {
+                "该套餐的额度上限（limit）不是一个有效的正数：无法按比例判定耗尽；请改成大于 0 的数值"
+            }
+        }
+    }
+}
+
+/// 【B2】这个套餐的额度配置有没有缺口。`None` = 配了可用的 limit。
+///
+/// **为什么这是一个"判定函数"而不是 UI 自己判断 `limit.is_none()`**：
+/// ① "0 / 负数 / NaN" 也是没配，UI 各自判断一定会漏掉这几种；
+/// ② 三处 UI（套餐列表、通道矩阵、首启向导）必须给出**同一句话**（[06 §10.1 B2] 要求"三处一致提示"）。
+pub fn limit_gap(cfg: &QuotaConfig) -> Option<LimitGap> {
+    match cfg.limit {
+        None => Some(LimitGap::Missing),
+        Some(l) if l.is_finite() && l > 0.0 => None,
+        Some(l) => Some(LimitGap::Unusable(l)),
+    }
+}
+
+/// "用完自动切"能不能由**本地累计**驱动。
+///
+/// 缺 limit 时为 `false`：账本在"既没 limit 也没响应头"时按可用处理
+/// （[`ledger`] 第 354 行附近），也就是说**没有可量化的耗尽信号**。
+/// 上游响应头仍可单独报耗尽，所以这里是"缺一条腿"，不是"绝不可能切"。
+pub fn local_exhaustion_is_drivable(cfg: &QuotaConfig) -> bool {
+    limit_gap(cfg).is_none()
+}
+
+/// 一次扫出所有缺额度的凭据 —— 套餐列表 / 通道矩阵 / 首启向导三处共用同一判定。
+pub fn credentials_without_usable_limit<'a>(
+    items: impl IntoIterator<Item = (&'a CredentialId, &'a QuotaConfig)>,
+) -> Vec<&'a CredentialId> {
+    items.into_iter().filter(|(_, cfg)| limit_gap(cfg).is_some()).map(|(c, _)| c).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +316,54 @@ mod tests {
         assert!(!st.is_usable());
         st.kind = QuotaStateKind::Soft;
         assert!(st.is_usable(), "soft 只是告警，仍可路由");
+    }
+
+    // ------------------------------------------------ B2：未配额度的显式提醒
+
+    fn cfg_with_limit(limit: Option<f64>) -> QuotaConfig {
+        QuotaConfig { limit, ..Default::default() }
+    }
+
+    #[test]
+    fn missing_limit_is_reported_not_silently_ignored() {
+        let gap = limit_gap(&cfg_with_limit(None)).expect("不填 limit 必须有缺口");
+        assert_eq!(gap, LimitGap::Missing);
+        assert!(gap.message().contains("limit"), "{}", gap.message());
+        assert!(gap.message().contains("自动切换") || gap.message().contains("耗尽"));
+        assert!(!local_exhaustion_is_drivable(&cfg_with_limit(None)));
+    }
+
+    #[test]
+    fn zero_negative_and_non_finite_limits_count_as_missing() {
+        // 这三种 UI 各自判断 `is_none()` 时一定会漏 —— 所以判定必须在这里
+        for bad in [0.0, -1.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let cfg = cfg_with_limit(Some(bad));
+            assert!(limit_gap(&cfg).is_some(), "{bad} 应当算作没有可用额度");
+            assert!(!local_exhaustion_is_drivable(&cfg));
+            assert_eq!(usable_limit(&cfg), None);
+        }
+        assert!(matches!(limit_gap(&cfg_with_limit(Some(0.0))), Some(LimitGap::Unusable(0.0))));
+    }
+
+    #[test]
+    fn a_usable_limit_closes_the_gap() {
+        let cfg = cfg_with_limit(Some(1_000_000.0));
+        assert_eq!(limit_gap(&cfg), None);
+        assert_eq!(usable_limit(&cfg), Some(1_000_000.0));
+        assert!(local_exhaustion_is_drivable(&cfg));
+    }
+
+    #[test]
+    fn the_three_ui_places_share_one_listing_helper() {
+        let a = CredentialId::new("c-a");
+        let b = CredentialId::new("c-b");
+        let c = CredentialId::new("c-c");
+        let good = cfg_with_limit(Some(100.0));
+        let missing = cfg_with_limit(None);
+        let zero = cfg_with_limit(Some(0.0));
+        let listed = credentials_without_usable_limit([(&a, &good), (&b, &missing), (&c, &zero)]);
+        assert_eq!(listed.len(), 2);
+        assert!(listed.contains(&&b) && listed.contains(&&c));
+        assert!(!listed.contains(&&a));
     }
 }
