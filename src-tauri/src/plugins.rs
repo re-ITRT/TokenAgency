@@ -1,4 +1,4 @@
-//! 插件注册（[12 §5 T2] ③）—— 12 个插件在这里**统一**注册，顺序有意。
+//! 插件注册（[12 §5 T2] ③）—— 11 个插件在这里**统一**注册，顺序有意。
 //!
 //! 为什么单独一个文件而不是散在 `lib.rs` 里：注册顺序、以及"哪些插件**故意不授予权限**"
 //! 都是要长期维护的决策，散在 builder 链上没人看得见（见 [`PLUGINS`] 与
@@ -26,7 +26,7 @@
 //! 绕过 `app_get_autostart` 的真读逻辑（[10 §2.2] 规则 1）和 E3/E4。
 //!
 //! 因此：
-//! * 注册它是为了插件清单完整（[12 §5 T2] ③ 的 12 个），**不调用它的 manager**；
+//! * 注册它是为了插件清单完整（[12 §5 T2] ③ 去 log 后的 11 个），**不调用它的 manager**；
 //! * `capabilities/` 里**不授予**任何 `autostart:*` 权限（未授予 = 前端调不到）；
 //! * 单元测试 `capabilities_never_grant_the_autostart_plugin` 会守住这条线，
 //!   谁以后手滑加了权限，测试立刻红。
@@ -109,7 +109,7 @@ pub const PLUGINS: [PluginSpec; 11] = [
     },
 ];
 
-/// 把 12 个插件注册进 builder。
+/// 把 11 个插件注册进 builder。
 ///
 /// 调用方式（`lib.rs`）：
 /// ```ignore
@@ -123,26 +123,26 @@ pub fn register<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
         }))
         // 2) 窗口位置记忆
         .plugin(tauri_plugin_window_state::Builder::default().build())
-        // 4) 系统通知
+        // 3) 系统通知
         .plugin(tauri_plugin_notification::init())
-        // 5) 深链（不主动写注册表，见注记）
+        // 4) 深链（不主动写注册表，见注记）
         .plugin(tauri_plugin_deep_link::init())
-        // 6) 打开目录/链接
+        // 5) 打开目录/链接
         .plugin(tauri_plugin_opener::init())
-        // 7) 文件对话框
+        // 6) 文件对话框
         .plugin(tauri_plugin_dialog::init())
-        // 8) 文件访问
+        // 7) 文件访问
         .plugin(tauri_plugin_fs::init())
-        // 9) 进程控制
+        // 8) 进程控制
         .plugin(tauri_plugin_process::init())
-        // 10) 剪贴板
+        // 9) 剪贴板
         .plugin(tauri_plugin_clipboard_manager::init())
-        // 11) 自启动插件：注册但永不调用（理由见模块文档）
+        // 10) 自启动插件：注册但永不调用（理由见模块文档）
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
-        // 12) shell：能力面最大，放最后
+        // 11) shell：能力面最大，放最后
         .plugin(tauri_plugin_shell::init())
 }
 
@@ -158,8 +158,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn twelve_plugins_with_unique_ids() {
-        assert_eq!(PLUGINS.len(), 12, "[12 §5 T2] 要求注册 12 个插件");
+    fn eleven_plugins_with_unique_ids() {
+        // [12 §5 T2] ③ 原列 12 个；`tauri-plugin-log` 已按"单一日志路径"决策移除
+        // （模块文档第 2 条），故 11 个。这个数字是**决策的结果**，不是随手改的常量。
+        assert_eq!(PLUGINS.len(), 11, "插件数量与 [12 §5 T2] 的当前基线不一致");
         let mut ids: Vec<&str> = PLUGINS.iter().map(|p| p.id).collect();
         ids.sort_unstable();
         let before = ids.len();
@@ -190,6 +192,30 @@ mod tests {
                     "Cargo.toml 里的 {krate} 没有出现在 PLUGINS 注册表里"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn no_second_logging_system() {
+        // 模块文档第 2 条的强制化：`tracing_subscriber` 是**唯一**日志路径。
+        // 谁把 `tauri-plugin-log` 加回来，日志就变成两套并行系统（[14 §1.1]），
+        // 而且它的默认行为会再 `log::set_logger` 一次 → 启动即 panic。
+        // 这条守卫比"数量 == 11"更能表达真实意图：数量只是它的结果。
+        assert!(
+            !PLUGINS.iter().any(|p| p.krate == "tauri-plugin-log"),
+            "PLUGINS 里出现了 tauri-plugin-log：会与 tracing_subscriber 形成两套日志系统"
+        );
+        let cargo = include_str!("../Cargo.toml");
+        for line in cargo.lines() {
+            let line = line.trim();
+            if line.starts_with('#') {
+                // Cargo.toml 里保留了"为什么不用它"的注记，那是文字不是依赖
+                continue;
+            }
+            assert!(
+                !line.contains("tauri-plugin-log"),
+                "Cargo.toml 重新引入了 tauri-plugin-log：{line}"
+            );
         }
     }
 

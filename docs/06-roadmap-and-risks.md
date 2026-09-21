@@ -461,12 +461,13 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 
 # 11. 已知遗留（第 10 轮收口时确认，**交接给新团队**）
 
-这两条都是**诊断清楚、但没修完**的。写在这里是为了让接手的人不必从零复现 ——
-**尤其"已排除项"那一栏，它省掉的是最贵的那段时间。**
+> **第 11 轮更新：§11.1 与 §11.2 均已解决。**
+> 原文与"已排除项"表**刻意保留** —— 那张表省掉的是最贵的那段时间，
+> 也是下次遇到同类问题时的第一手材料；同时它记录了一次**判错方向**的完整过程。
 
-## 11.1 `tokenagency` 的 lib 测试目标无法运行（Windows）
+## 11.1 ✅ 已解决：`tokenagency` 的 lib 测试目标无法运行（Windows）
 
-**症状**：`cargo test -p tokenagency --lib` 的 harness 在**加载阶段**就崩，
+**症状（原文保留）**：`cargo test -p tokenagency --lib` 的 harness 在**加载阶段**就崩，
 `exit code: 0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND)`，一个测试都没跑。
 
 **影响**：`cargo test --workspace` 因此永远红。丢掉的测试是
@@ -486,15 +487,49 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 | 依赖版本被顺带升级 | 逐行读 `Cargo.lock` 的 diff | **只新增了一行 `"sqlx"`**，无版本变更 |
 | 应用本身也起不来 | `TA_EXPORT_BINDINGS=1 cargo run -p tokenagency` | **能正常加载并执行** —— 只有 lib 测试 harness 不行 |
 
-**关键线索**：能跑的旧 harness 是 **3.6 MB**（T1 之前，00:15 构建，`--list` 正常），
-现在是 **15.9 MB**（T1 把 `sqlx`/`specta`/`commands` 拉进来之后）。
-**所以触发条件是 T1 引入的那批依赖** —— 从那条线往下查应该会更快。
+**根因（第 11 轮查明，可复现）**：
 
-**建议的调查入口**：`dumpbin /imports <harness.exe>` 对比新旧两个 exe 的导入表
-（本机没找到 `dumpbin`，需要先走 `vcvars64.bat` 或装 VS 的 C++ 工具）。
+`dumpbin /imports <harness.exe>` 逐符号与系统 DLL 的 `/exports` 比对后，
+**唯一**缺失的入口点是 `comctl32.dll ! TaskDialogIndirect`，其余 23 个 DLL 全部解析成功。
+
+`TaskDialogIndirect` **只由 `ComCtl32` v6 导出**，而 v6 必须靠应用程序清单里的
+`<dependentAssembly>` 才会被激活；没有清单时 Windows 加载 v5 → 该符号不存在 →
+进程在加载期以 `0xc0000139` 退出。**这不是构建问题，是激活上下文问题。**
+
+清单只有 bin 有：`tauri-build` 把它塞进
+`cargo:rustc-link-arg-bins=...\out\resource.lib`。T1 引入 `tauri-plugin-dialog`
+（→ `rfd` → `TaskDialogIndirect`）后，lib 测试 harness 第一次需要 v6，
+于是"**旧 harness 能跑、新 harness 不能**"。
+
+**为什么之前一直没找到**：把"加载即崩"当成了**构建产物/环境**问题去试
+（清缓存、换 `crate-type`、找同名 DLL、找 `WebView2Loader`）—— 而它们与导入表无关。
+正确入口是**读导入表并逐个符号去系统 DLL 里验证是否存在**，
+而不是在构建系统里排列组合。
+
+**修法**（`src-tauri/build.rs`、`src-tauri/windows-app-manifest.xml`）：
+
+1. `build.rs` 用 `cargo:rustc-link-arg=/MANIFEST:EMBED /MANIFESTINPUT:<清单>`
+   把清单供给**所有**可链接目标；
+2. 同时用 `tauri_build::WindowsAttributes::new_without_app_manifest()` 让
+   `tauri-build` **停止**往 `resource.lib` 里放清单资源 —— 否则 bin 会同时拿到
+   `resource.lib` 和链接参数两份 MANIFEST，链接期直接
+   `CVTRES CVT1100（资源重复）+ LNK1123`。图标与版本信息仍来自 `resource.lib`，
+   不受影响；
+3. 清单文件**必须纯 ASCII**：`mt.exe` 把无 BOM 的 UTF-8 当 ANSI 解析，
+   注释里有中文就报 `c1010070 Failed to load and parse the manifest`；
+4. `cargo:rustc-link-arg-tests` **覆盖不到** lib 单元测试 harness（它的 target kind
+   是 `lib`，不是 `[[test]]`），只有通用 `rustc-link-arg` 能到达 —— 这也是为什么
+   必须走第 2 步。
+5. 新增 `src-tauri/tests/runtime_manifest.rs`：从自身映像读 `RT_MANIFEST`，
+   断言其中声明了 Common-Controls 6.0 —— 谁再把清单弄丢，门禁会直接红，
+   而不是等到某个测试 harness 神秘地加载失败。
+
+**这条经历真正值得记住的**：`--exclude tokenagency` 一解开，
+**第一个跑起来的测试就是红的** —— `plugins::tests::twelve_plugins_with_unique_ids`
+的数字还停在"移除 `tauri-plugin-log` 之前"。**被绕过的门禁不会变绿，只会积累。**
 
 **不要**用 `[lib] test = false` 把它藏起来 —— 那会让上面那些测试**静默地永不运行**，
-比一个已知会红的门禁更危险。
+比一个已知会红的门禁更危险。（第 11 轮已彻底解决，此条从"遗留"转为"已关闭"。）
 
 ## 11.2 ✅ 已解决：绑定导出被 specta 的两条限制拦住
 

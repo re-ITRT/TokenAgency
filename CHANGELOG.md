@@ -5,6 +5,57 @@
 
 ---
 
+## v0.2.1-w2fix · 门禁收口（第 11 轮）
+
+> **目标只有一个：把"已知但没修完"的门禁缺口关掉，让 `cargo test --workspace`
+> 不再需要任何 `--exclude`。** —— 这是开始 Agent Team 并行开发前的前提：
+> 带着一个被绕过的门禁开工，等于让五个人把新 bug 堆在被掩盖的旧 bug 上。
+
+### 修好了什么
+
+**`tokenagency` 的 lib 测试目标无法运行（加载期 `0xc0000139`）—— 已根治**
+
+- **根因（可复现）**：`dumpbin /imports` 逐符号与系统 DLL 的 `/exports` 比对后，
+  **唯一**缺失的入口点是 `comctl32.dll ! TaskDialogIndirect`（其余 23 个 DLL 全部解析成功）。
+  `TaskDialogIndirect` **只由 Common-Controls v6 导出**，v6 必须靠应用程序清单里的
+  `<dependentAssembly>` 激活；没有清单就加载 v5 → 符号不存在 → 加载期直接死。
+- **为什么只有 harness 中招**：`tauri-build` 把清单塞进
+  `cargo:rustc-link-arg-bins=.../resource.lib`，**只有 bin 有**。
+  T1 引入 `tauri-plugin-dialog`（→ `rfd` → `TaskDialogIndirect`）后，
+  lib 测试 harness 第一次需要 v6。
+- **修法**：`build.rs` 用 `cargo:rustc-link-arg=/MANIFEST:EMBED /MANIFESTINPUT:<清单>`
+  供给**所有**目标，并用 `WindowsAttributes::new_without_app_manifest()` 让
+  `tauri-build` 停止嵌清单（否则 bin 拿到两份 MANIFEST → `CVTRES CVT1100` + `LNK1123`）。
+  清单文件必须**纯 ASCII**：`mt.exe` 把无 BOM 的 UTF-8 当 ANSI，中文注释会让它报
+  `c1010070`。新增 `src-tauri/tests/runtime_manifest.rs` 作为回归守卫
+  （从自身映像读 `RT_MANIFEST` 并断言声明了 Common-Controls 6.0）。
+- **顺带证明的事**：`cargo:rustc-link-arg-tests` **覆盖不到** lib 单元测试 harness
+  （其 target kind 是 `lib` 而非 `[[test]]`）—— 实测过，这也是必须走"让 tauri-build 闭嘴"
+  这条路的原因。详见 [docs/06 §11.1](docs/06-roadmap-and-risks.md)。
+
+**门禁一解开，立刻抓出一个真 bug**
+
+- `plugins::tests::twelve_plugins_with_unique_ids` 断言 12，而 `PLUGINS` 早已是 11
+  —— 数字停在"移除 `tauri-plugin-log`"之前。已改为 11，并把它升级成
+  **带理由的守卫**：新增 `no_second_logging_system`，同时禁止 `PLUGINS` 与
+  `Cargo.toml` 重新引入 `tauri-plugin-log`（两套日志系统 [docs/14 §1.1]）。
+- **教训**：被绕过的门禁不会变绿，只会积累。第一个跑起来的测试就是红的。
+
+### 门禁状态（本基线实测，**无任何 --exclude**）
+
+```
+cargo check   --workspace --all-targets                → exit 0
+cargo clippy  --workspace --all-targets -D warnings    → exit 0
+cargo test    --workspace                              → 778 passed / 0 failed
+cargo fmt     --all --check                            → exit 0
+```
+
+其中 `tokenagency` 的 lib 测试目标现在真的跑起来了：**63 个测试全绿**
+（此前为 0 个 —— 它整个加载不起来）。
+
+---
+
+
 ## v0.2.0-w2 · W2 收口基线（2026-09-22）
 
 > **这是"代码库整理完毕、门禁全绿"的基线，不是 M1 完成。**
@@ -122,18 +173,21 @@ TS 侧因此拿到 `header_diff?: HeaderDiff | null`，而不是 `any`。
 | 2 | **事件桥接**：`TaEvent` 10 个变体，前端一个都收不到 | 未接线 |
 | 3 | **启动编排**：`BootOrchestrator::run` 从未被调用 → 内核不会被拉起 | 未接线 |
 | 4 | ~~绑定导出的第二个冲突~~ | ✅ **已解决**（见下） |
-| 5 | **`tokenagency` 的 lib 测试目标无法运行**（`STATUS_ENTRYPOINT_NOT_FOUND`） | 见 [docs/06 §11](docs/06-roadmap-and-risks.md) |
+| 5 | ~~`tokenagency` 的 lib 测试目标无法运行（`STATUS_ENTRYPOINT_NOT_FOUND`）~~ | ✅ **已解决**（v0.2.1-w2fix，见 [docs/06 §11.1](docs/06-roadmap-and-risks.md)） |
 | 6 | 前端 F1 视觉重做（按 [docs/15](docs/15-visual-design.md)） | 未开始 |
 | 7 | W5 打包与三条不变量验收 | 未开始 |
 
-### 门禁状态（本基线实测）
+### 门禁状态（v0.2.0-w2 基线实测）
 
 ```
-cargo check   --workspace --all-targets        → exit 0
+cargo check   --workspace --all-targets            → exit 0
 cargo clippy  --workspace --all-targets -D warnings → exit 0
 cargo test    --workspace --exclude tokenagency     → 712 passed / 0 failed
 ```
 
-> ⚠️ **`--exclude tokenagency` 不是偷懒，是第 5 条那个已知问题**：
+> ⚠️ **`--exclude tokenagency` 当时是第 5 条那个已知问题**：
 > 该 crate 的 lib 测试目标在本机加载即崩（`0xc0000139`），与代码无关
-> （正式应用 exe 能正常启动），已排除的项见下一条。
+> （正式应用 exe 能正常启动）。
+>
+> **该绕法已在 v0.2.1-w2fix 退役** —— 根因是缺 Common-Controls v6 清单资源，
+> 已修；现在 `cargo test --workspace` 不带任何 `--exclude`，778 passed / 0 failed。

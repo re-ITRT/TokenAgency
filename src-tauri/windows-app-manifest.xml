@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Application manifest, supplied to EVERY linked target via build.rs
+  (cargo:rustc-link-arg=/MANIFEST:EMBED /MANIFESTINPUT:<this file>).
+
+  Why: comctl32.dll exports TaskDialogIndirect from Common-Controls v6 only, and v6 is
+  activated by this <dependentAssembly> entry. tauri-build used to embed the same manifest
+  into the bin target alone (cargo:rustc-link-arg-bins=.../resource.lib), so every test
+  image fell back to comctl32 v5 and died at load with 0xc0000139
+  (STATUS_ENTRYPOINT_NOT_FOUND), before a single test could run.
+
+  tauri-build is now built with WindowsAttributes::new_without_app_manifest() so it stops
+  embedding a manifest resource: otherwise the bin would receive a manifest twice
+  (resource.lib + this link arg) and link.exe would fail with
+  CVTRES CVT1100 (duplicate resource MANIFEST) / LNK1123.
+  Icons and version info still come from tauri-build's resource.lib.
+
+  Keep this file ASCII-only: mt.exe parses BOM-less UTF-8 as ANSI and then fails with
+  c1010070 "Failed to load and parse the manifest" on any non-ASCII byte.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>
