@@ -103,11 +103,29 @@ if [ -n "$rs_files" ]; then
 fi
 
 # ---------------------------------------------------------------- 5) Clippy（仅受影响的 crate）
+#
+# ⚠️ `--no-deps` 不是可选项。
+#
+# 不加它时 `cargo clippy -p <crate>` 会**连带 lint 整个依赖图**，于是
+# "我的代码干净"被升级成"所有人的代码都干净" —— 而团队是并行开发的，
+# 任何一个人手上有在途代码（哪怕只是别人范围里的一处 `unnecessary_mut_passed`），
+# 就会把**不相干的人**的提交全部卡死。
+#
+# 这个坑真实发生过两次（docs/13 L16）：一次是 ta-subscription 让 workspace 变红，
+# 一次是 ta-subscription 的 M3 在途告警卡住了主管的 docs 提交。
+#
+# 契约是：**每个人为自己的 crate 负责**。`--no-deps` 仍然会**编译**依赖
+# （所以"我错误地使用了上游 API"照样会被抓住），只是不去 lint 别人的代码 ——
+# 那由他们自己的门禁负责。
 if [ -n "$crates" ]; then
     for c in $crates; do
-        info "cargo clippy -p $c --all-targets -- -D warnings"
-        cargo clippy -p "$c" --all-targets --quiet -- -D warnings \
-            || fail "clippy 未通过（$c）。修复告警后重试；如果是别人在途的代码导致的，请只提交你自己的文件。"
+        info "cargo clippy -p $c --all-targets --no-deps -- -D warnings"
+        if ! cargo clippy -p "$c" --all-targets --no-deps --quiet -- -D warnings 2>&1; then
+            fail "clippy 未通过（$c）。
+  若报错文件**在 $c 里** —— 是你自己的问题，修掉再提交。
+  若报错文件**不在 $c 里** —— 说明某个依赖当前编不过（别人在途）。
+  那不是你的错，但你也没法在树不完整时验证自己：请等对方修好，或只提交不依赖 Rust 的文件。"
+        fi
     done
 elif [ "$has_toml" -eq 1 ]; then
     # ⚠️ 必须带 --all-targets：`cargo check --workspace` 是**非 test** 编译，

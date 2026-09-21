@@ -32,13 +32,13 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 
 | # | 假设 | 错了会怎样 | 验法 |
 |---|---|---|---|
-| K1 | **`listeners` 增删可靠 `PUT /configs?force=true` 生效**，不必重启进程 | 当前 `apply()` 策略是"能 reload 就 reload，报错才 restart"。**若 reload 静默成功但 listener 陈旧，则策略是错的** —— 会出现"通道指向一个已关闭的端口"，且没有任何报错 | 改端口 / 加删 lane → reload → 断言**新端口在 listen 且旧端口已关** |
-| K2 | 首次拉订阅未完成时创建指向 `use: [provider]` 的组与 listener 不会失败/空组报错 | 启动即失败，或通道静默不可用 | 冷启动（无缓存）直接起，看日志与 `GET /proxies` |
+| K1 | ✅ **已验证（见 §1.6）：成立** —— `listeners` 增删可靠 `PUT /configs?force=true` 生效**且进程不重启**（PID 不变） | 当前 `apply()` 策略是"能 reload 就 reload，报错才 restart"。**若 reload 静默成功但 listener 陈旧，则策略是错的** —— 会出现"通道指向一个已关闭的端口"，且没有任何报错 | 改端口 / 加删 lane → reload → 断言**新端口在 listen 且旧端口已关** |
+| K2 | ✅ **已验证（见 §1.6）：成立** —— 冷启动创建指向 `use: [provider]` 的组**不失败**，组当场可用（节点以 `alive:false` 存在） | 启动即失败，或通道静默不可用 | 冷启动（无缓存）直接起，看日志与 `GET /proxies` |
 | K3 | `proxy-groups` 上的 `filter` / `exclude-filter` 与 `use`（provider）可同时用 | `filter` lane 全部失效 | 生成一个带 filter 的组，看节点数与正则是否吻合 |
 | K4 | `listeners[].proxy` 可直接指**裸节点名**与**订阅自带组名（含 emoji）** | 线路分配的核心机制失效（docs/04 §7.1 全靠这条） | 两种各配一条 lane，`curl -x` 验证出口 |
 | K5 | 严格解码：`select` 组多余的 `url/interval/tolerance`、`header` 用列表形式 `User-Agent: [...]`、`find-process-mode: off`、空集合 `proxy-providers: {}` / `proxy-groups: []` / `listeners: []` 都被接受 | 内核启动失败（当前按模板逐字写，未证实空集合） | 逐项最小配置试起 |
 | K6 | `mixed-port: 0` 确实等于"关闭默认入站" | 会多一个监听端口 → 违反 I1 入口唯一 | `netstat` 断言 |
-| K7 | **`snapshot()` 的 JSON 形态**：`proxies[].type/now/all/history[].time\|delay`、`providers[].name/vehicleType/updatedAt/proxies[]` | 我的 wiremock 测的是"我以为的内核"。**这是全清单里最需要重验的一条** —— UI 的线路下拉完全依赖它 | 用 P5 提供的 `RawSnapshot::fetch` dump 真 JSON，与假设逐字段对比 |
+| K7 | ⚠️ **已验证（见 §1.6）：字段名全部真实存在，但有 4 处偏差会让 `parse_snapshot` 解析错误** —— `providers` 是**对象不是数组**、`type` 是**大写** `Selector`/`Shadowsocks`、**provider 节点不在 `/proxies` 顶层**（组 `all` 会悬空）、内置伪节点 `DIRECT/REJECT/PASS/COMPATIBLE…` 混在列表里 | 我的 wiremock 测的是"我以为的内核"。**这是全清单里最需要重验的一条** —— UI 的线路下拉完全依赖它 | 用 P5 提供的 `RawSnapshot::fetch` dump 真 JSON，与假设逐字段对比 |
 | K8 | Windows `taskkill /PID x /T`（不带 `/F`）对控制台程序基本无效 → 实际是 2s 后强杀 | 若 `profile.store-selected: true` 的选中项需优雅退出才落盘，**强杀会导致重启后选中的节点丢失** —— 直接破坏"线路分配"的用户体验 | 切节点 → 杀 → 重启 → 看选中是否保留 |
 | K9 | `AssignProcessToJobObject` 在受限沙箱里可用 | 失败会降级为 warn + `taskkill /T` 兜底，孤儿进程风险 ↑ | 在有沙箱的机器上确认 |
 
@@ -48,6 +48,86 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 
 1. **`listeners` 变更的 apply 策略**：若能 reload → 保持现状；若必须重启 → 需要"请求排队 + direct 通道降级放行"
 2. **两段式 apply**（若 K2 成立）：先等 provider 有节点，再 reload listener
+
+## 1.6 M0 实机验证结果（**主管亲跑**，真 mihomo，2026-09-21）
+
+> 被验证对象：`Mihomo Meta v1.19.31 windows amd64 with go1.26.8`
+> 方法：在 `C:\Users\19404\workspace\.ta-tools\m0\` 起一个真内核（REST `127.0.0.1:39090`、
+> 混合入站 `127.0.0.1:39100`，**不启用 tun/dns**），用真 HTTP 打它，原始 JSON 存为夹具。
+> **K1/K2/K7 三条阻塞项就此结案。** 另：起停前后跑了 `scripts/check-invariants.ps1` 的 I2 对比 → **exit 0**。
+
+### K1 ✅ **成立（结论对我们有利）—— reload 是进程内热重载，不重启进程**
+
+| 观测 | 值 |
+|---|---|
+| `PUT /configs?force=true {"path":"<abs>"}` | **HTTP 204** |
+| reload 前监听 | `127.0.0.1:39100`（mixed 入站）+ `127.0.0.1:39090`（REST） |
+| reload 后（端口改 39100→39150） | **`39100` 已关、`39150` 在听** |
+| **进程身份** | **PID `11956` 与 StartTime `23:43:21` 全程未变** |
+| 可逆性 | 切回原配置 → `39150` 关、`39100` 开 ✓ |
+
+日志只有 `Start initial configuration in progress` + `Mixed(http+socks) proxy listening at: 127.0.0.1:39150`，
+**没有重启痕迹**。
+
+**裁决：`apply()` 现有策略（"能 reload 就 reload，报错才 restart"）成立，不需要"重启内核 + 请求排队"。**
+注意"进程内 reload"不等于"无中断"—— listener 仍有一瞬间的关闭/重建，**G2 的失败链要能把这一瞬间的 `connection refused` 当作可重试**。
+
+### K2 ✅ **成立 —— 冷启动时 `use: [provider]` 的组不会失败，也不需要两段式 apply**
+
+冷启动日志：`Start initial provider ta-lane-provider` → 无任何 error/warn。
+且组 `TA-LANE-mixed` 的 `all` **当场就含 3 个 provider 节点**（`prov-node-a/b/c-vmess`），
+即**组在首拉订阅未完成时也是可用的**（节点先以 `alive:false` 存在）。
+
+**裁决：两段式 apply 不是必需的**（"先等 provider 有节点再 reload listener"可以省掉）。
+但**通道不可用 ≠ 启动失败**：节点 `alive:false` 时通道应报 `TA-3002 lane_unavailable`，而不是静默走直连。
+
+### K7 ⚠️ **形态大体符合，但有 4 处偏差会让 `parse_snapshot` 解析错误 —— 必须改**
+
+假设写的 `proxies[].type/now/all/history[].time|delay` 与 `providers[].name/vehicleType/updatedAt/proxies[]`
+**这些字段名全部真实存在**。但：
+
+| # | 偏差 | 后果 | 修法 |
+|---|---|---|---|
+| **7-a** | **`/providers/proxies` 里的 `providers` 是「对象」**（按 provider 名索引：`providers.ta-lane-provider.*`），**不是数组**。假设写 `providers[].name` 暗示数组 | 按数组反序列化 → **整个 snapshot 解析失败** | 按 `BTreeMap<String, ProviderView>` 解析；`name` 从**键**或字段两者取（字段里也有 `name`） |
+| **7-b** | **`type` 是 mihomo 内部首字母大写名**：`Selector` / `Shadowsocks` / `Vmess`，**不是** `select`/`ss`/`vmess` | 按小写匹配 → 节点类型显示为空/错、组识别不出来 | `parse_snapshot` 做**大小写无关**映射，且**保留未知类型原样**（`Other(String)`），不丢弃 |
+| **7-c** | **provider 提供的节点不出现在 `/proxies` 顶层**（顶层只有 `fake-hk-01/jp-01` 与组），但它们**确实出现在组的 `all` 里** | 用 `/proxies` 的键去解析 `all` → **悬空引用**，UI 线路下拉会缺节点或报错 | 节点索引必须**合并** `/proxies` 与 `/providers/proxies` 两个来源后再解析 `all` |
+| **7-d** | **内置伪节点混在 `/proxies` 里**：`DIRECT`、`REJECT`、`REJECT-DROP`、`PASS`、`PASS-RULE`、`COMPATIBLE`、`GLOBAL` | 节点列表 UI 会把它们当用户节点显示 | 分类处理：`DIRECT` 是 lane 的合法目标（直连），其余按"内部/不可选"过滤或置灰 |
+
+**额外拿到的（原假设没写，但很有用 —— 不要再自己算）**：
+
+- **`alive: bool` 每个节点/组都有** → 这就是我们要的健康信号，**不必另做探测**。
+- **`history[].delay` 单位是毫秒**；**不可达时 `delay = 0` 且 `alive = false`**（不是负数、也不是缺字段）→ 判"坏节点"要同时看两者，`delay == 0` 单独不可靠（真 0ms 不可能但别写死）。
+- **`id`**：每个真实节点有稳定 UUID（如 `a061268b-…`），可用于跨重启识别同一节点。
+- **`extra`**：按健康检查 URL 索引的对象，形如 `{"http://…generate_204": {alive, history}}`。
+- **provider 的 `updatedAt` 对 `vehicleType: File` 是「文件 mtime」**（观测到 `23:42:34`，早于内核启动的 `23:43:21`），**不是拉取时刻** → 订阅"最后更新时间"的语义要按 vehicleType 区分：`File` = 文件时间，远程 = 拉取时间。
+- **组节点的 `history` 是 `[]`**，健康历史挂在**被选中的那个节点**上，不在组上。
+- 组节点额外字段：`emptyFallback`、`testUrl`、`hidden`、`icon`、`provider-name`。
+
+### 附带验证
+
+- `PUT /proxies/{组}` body `{"name":"<节点>"}` → **204**，随即 `GET` 该组 `now` 已变 ✓
+- **非法节点名 → `400` + `{"message":"Selector update error: proxy not exist"}`**（英文原文，UI 需翻成人话）
+- `GET /version` → `{"meta":true,"version":"v1.19.31"}`
+- **I2 通过**：起停 + 改端口前后，系统代理 / 路由表 / DNS / 虚拟网卡**逐字段一致**（`check-invariants.ps1 -Mode Compare` → exit 0）。未启用 TUN，未碰系统代理。
+
+### ⚠️ 一个与内核无关、但会影响交付的产品发现
+
+**mihomo v1.19.31 的 release 里没有 `checksums.txt`（HTTP 404）。**
+→ **将来若做内核自动下载，不能假设上游提供校验和。** 可选路径：(a) 只支持"用户自备二进制"，
+(b) 我们维护一份允许的 sha256 白名单，(c) 首次运行时把观测到的哈希记下来、之后不一致才告警。
+**不要写成"下载后去取 checksums.txt 校验"** —— 那是会当场 404 的设计。
+
+### 仍未验（M0 剩余）
+
+**K3 / K4 / K5 / K6 / K8 / K9** 本轮未跑完（K6 `mixed-port: 0`、K4 裸节点名+emoji 组名做 lane `proxy`、
+K8 强杀后选中项是否落盘，这三条对 lane 机制影响最大）。**判据与验法见上表，M1 联调时补。**
+
+### 原始证据（真 JSON）
+
+**未提交**（属 E4 范围，由 E4 收入测试夹具）：`C:\Users\19404\workspace\.ta-tools\m0\fixtures\`
+—— `version.json`、`configs.json`、`proxies.json`、`providers-proxies.json`，
+以及 `config.yaml` / `config2.yaml` / `providers/lane.yaml` 与 `before.json`（I2 基线）。
+`ta-kernel` 的 `parse_snapshot` 应当**直接对这四份真 JSON 做往返测试**，而不是继续用"我以为的内核"。
 
 ## 2. M1 · 可用 MVP（约 2 周）
 

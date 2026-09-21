@@ -30,8 +30,6 @@ fn init_tracing() {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,ta_gateway=debug,ta_kernel=debug"));
-    let _ = tracing_subscriber::registry()
-        .with(filter)
-        .with(fmt::layer().with_target(true))
-        .try_init();
+    let _ =
+        tracing_subscriber::registry().with(filter).with(fmt::layer().with_target(true)).try_init();
 }
