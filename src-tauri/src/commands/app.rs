@@ -149,10 +149,9 @@ fn gate_of(state: &AppState) -> IpcResult<Arc<ta_gateway::ingress::GatewayGate>>
 #[specta::specta]
 pub async fn app_pause_gateway(state: State<'_, AppState>) -> IpcResult<AppStatus> {
     gate_of(&state)?.pause();
-    tracing::info!(
-        gateway = gateway_label(Some(ta_gateway::ingress::GatewayRunState::Paused), true),
-        "用户暂停了网关"
-    );
+    // `gateway` 不在 [14 §5] 的字段白名单里：按"自由文本不进字段"的裁决写进 message，
+    // 而不是为了好看去开一个新字段（字段一旦散出去就收不回来）。
+    tracing::info!("用户暂停了网关：不再接受新请求（在途不取消，/healthz 不受影响）");
     build_status(&state).await
 }
 
@@ -161,10 +160,7 @@ pub async fn app_pause_gateway(state: State<'_, AppState>) -> IpcResult<AppStatu
 #[specta::specta]
 pub async fn app_resume_gateway(state: State<'_, AppState>) -> IpcResult<AppStatus> {
     gate_of(&state)?.resume();
-    tracing::info!(
-        gateway = gateway_label(Some(ta_gateway::ingress::GatewayRunState::Running), true),
-        "用户恢复了网关"
-    );
+    tracing::info!("用户恢复了网关：重新开始接受请求");
     build_status(&state).await
 }
 
