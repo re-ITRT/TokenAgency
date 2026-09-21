@@ -88,6 +88,47 @@ function Get-OurProcesses {
     return @($rows | ForEach-Object { "$($_.ProcessName)#$($_.Id)" } | Sort-Object)
 }
 
+# 开机自启动条目（docs/09 §1.2 E5：唯一会写 OS 状态的功能，列为观察项）
+#
+# 语义：**允许它存在**（那是用户开的），但任何变化都必须能在应用日志里
+# 找到对应的用户操作。所以 Compare 模式只报告，Run 模式视为违规
+# —— 自动化跑测期间不可能有用户去点开关。
+function Get-AutostartEntries {
+    $out = @()
+    if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+        # HKCU Run 键：当前用户级，免提权（与我们的免提权承诺一致）
+        foreach ($key in @(
+                "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run",
+                "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce")) {
+            $p = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+            if ($null -eq $p) { continue }
+            $p.PSObject.Properties |
+                Where-Object { $_.Name -notmatch '^PS' } |
+                ForEach-Object { $out += "$key :: $($_.Name)=$($_.Value)" }
+        }
+    }
+    elseif ($IsMacOS) {
+        $dir = Join-Path $HOME "Library/LaunchAgents"
+        if (Test-Path $dir) {
+            Get-ChildItem $dir -Filter *.plist -ErrorAction SilentlyContinue |
+                ForEach-Object { $out += "~/Library/LaunchAgents/$($_.Name)" }
+        }
+    }
+    else {
+        $dir = Join-Path $HOME ".config/autostart"
+        if (Test-Path $dir) {
+            Get-ChildItem $dir -Filter *.desktop -ErrorAction SilentlyContinue |
+                ForEach-Object { $out += "~/.config/autostart/$($_.Name)" }
+        }
+    }
+    return @($out | Sort-Object)
+}
+
+# 我们自己写的自启动条目长什么样（用于在报告里高亮，不是判据）
+function Test-IsOurAutostartEntry($line) {
+    return ($line -match 'TokenAgency' -or $line -match 'tokenagency')
+}
+
 function Take-Snapshot {
     return [pscustomobject]@{
         TakenAt   = (Get-Date).ToString("o")
@@ -98,8 +139,28 @@ function Take-Snapshot {
         Dns       = Get-DnsServers
         TunIfaces = Get-TunAdapters
         Processes = Get-OurProcesses
+        Autostart = Get-AutostartEntries
         Listeners = Get-ListeningSockets
     }
+}
+
+# 自启动条目对比：返回变化描述（观察项，不是 I2 违规）
+function Compare-Autostart($before, $after) {
+    $a = @($before.Autostart | Sort-Object)
+    $b = @($after.Autostart | Sort-Object)
+    $added = @($b | Where-Object { $a -notcontains $_ })
+    $removed = @($a | Where-Object { $b -notcontains $_ })
+    if ($added.Count -eq 0 -and $removed.Count -eq 0) { return @() }
+    $out = @()
+    foreach ($x in $added) {
+        $mark = if (Test-IsOurAutostartEntry $x) { "【我们的】" } else { "" }
+        $out += "新增 ${mark}$x"
+    }
+    foreach ($x in $removed) {
+        $mark = if (Test-IsOurAutostartEntry $x) { "【我们的】" } else { "" }
+        $out += "移除 ${mark}$x"
+    }
+    return $out
 }
 
 function Test-Invariants($snap) {
@@ -208,6 +269,26 @@ switch ($Mode) {
         }
         $r.Notes | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
 
+        $autoChanges = Compare-Autostart $before $after
+        Write-Host ""
+        Write-Host "=== 开机自启动条目（观察项，非 I2 违规）===" -ForegroundColor Cyan
+        if ($autoChanges.Count -eq 0) {
+            Write-Host "  ✔ 与启动前一致" -ForegroundColor Green
+            $ours = @($after.Autostart | Where-Object { Test-IsOurAutostartEntry $_ })
+            if ($ours.Count -gt 0) {
+                Write-Host "  当前存在我们的启动项（应是用户在设置里开的）：" -ForegroundColor DarkGray
+                $ours | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+            }
+            else {
+                Write-Host "  当前没有我们的启动项（默认状态，符合 E1）" -ForegroundColor DarkGray
+            }
+        }
+        else {
+            Write-Host "  ⚠ 自启动条目发生变化 —— 请确认这是你在设置里操作的结果：" -ForegroundColor Yellow
+            $autoChanges | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
+            Write-Host "  （按 E5：允许变化，但必须能在应用日志里找到对应的用户操作）" -ForegroundColor DarkGray
+        }
+
         Write-Host ""
         Write-Host "=== 当前我们的进程 ===" -ForegroundColor DarkGray
         if ($after.Processes.Count -eq 0) { Write-Host "  （无）" -ForegroundColor DarkGray }
@@ -249,13 +330,19 @@ switch ($Mode) {
         $leftover = $after.Processes
         $diffs = Compare-Snapshots $before $after
         $r = Test-Invariants $after
+        # 自动化跑测期间不可能有人去点"开机自启动"开关 —— 所以这里出现变化就是违规（E5）
+        $autoChanges = @(Compare-Autostart $before $after | Where-Object { Test-IsOurAutostartEntry $_ })
 
         Write-Host ""
         if ($leftover.Count -gt 0) {
             Write-Host "  I2 违反：退出后仍有残留进程 —— $($leftover -join ', ')" -ForegroundColor Red
         }
-        if ($diffs.Count -eq 0 -and $r.Violations.Count -eq 0 -and $leftover.Count -eq 0) {
-            Write-Host "✔ 端到端不变量检查通过（I1 + I2）" -ForegroundColor Green
+        if ($autoChanges.Count -gt 0) {
+            Write-Host "  I2/E5 违反：自动化跑测期间自启动条目被改动（无人操作却变化）：" -ForegroundColor Red
+            $autoChanges | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        }
+        if ($diffs.Count -eq 0 -and $r.Violations.Count -eq 0 -and $leftover.Count -eq 0 -and $autoChanges.Count -eq 0) {
+            Write-Host "✔ 端到端不变量检查通过（I1 + I2 + 自启动 E5）" -ForegroundColor Green
             exit 0
         }
         $diffs | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }

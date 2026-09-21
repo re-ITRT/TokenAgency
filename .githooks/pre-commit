@@ -110,8 +110,11 @@ if [ -n "$crates" ]; then
             || fail "clippy 未通过（$c）。修复告警后重试；如果是别人在途的代码导致的，请只提交你自己的文件。"
     done
 elif [ "$has_toml" -eq 1 ]; then
-    info "仅 Cargo.toml 变更，跑 cargo check --workspace"
-    cargo check --workspace --quiet || fail "workspace 检查未通过"
+    # ⚠️ 必须带 --all-targets：`cargo check --workspace` 是**非 test** 编译，
+    # `#[cfg(test)]` 里的错误（include_str! 路径、类型错）它完全看不见。
+    # 员工 P5 就是因为这个洞，让一个坏掉的测试目标藏了很久（docs/13 L18）。
+    info "仅 Cargo.toml 变更，跑 cargo check --workspace --all-targets"
+    cargo check --workspace --all-targets --quiet || fail "workspace 检查未通过（含 test target）"
 fi
 
 # ---------------------------------------------------------------- 6) 前端类型
