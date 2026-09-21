@@ -69,12 +69,23 @@ foreach ($f in $files) {
     $wtHash = (git hash-object -- $f).Trim()
 
     if ($onBranch) {
-        if ($wtHash -ne $branchHash.Trim()) {
-            $mismatch += "$f  (工作区 $($wtHash.Substring(0,8)) ≠ 分支 $($branchHash.Trim().Substring(0,8)))"
-        } else {
-            # 内容一致 → 可安全让 merge 接管
+        # 内联取值（本脚本没有 gate.ps1 里那个 GitText 助手）
+        $headHashRaw = (& git rev-parse --verify -q "HEAD:$f" 2>$null)
+        $headHash = if ($headHashRaw) { "$headHashRaw".Trim() } else { '' }
+        if ($wtHash -eq $branchHash.Trim()) {
+            # 工作区 == 分支内容 → 清掉它，让 merge 接管
             $tracked = (git ls-files --error-unmatch -- $f 2>$null)
             if ($LASTEXITCODE -eq 0) { $cleanupTracked += $f } else { $cleanupUntracked += $f }
+        } elseif ($headHash -and $wtHash -eq $headHash) {
+            # 工作区 == HEAD 内容 → **本来就干净**，merge 会正常更新它，什么都不用做。
+            #
+            # ⚠️ 这一格是踩坑后补的：原来只比"工作区 vs 分支"，于是**派生文件**会被误判。
+            # 典型是 `Cargo.lock` —— 作者改了自己的 `Cargo.toml`（合法，例如加 dev-dependency），
+            # 于是分支上的锁与工作区不同；而工作区那份其实与 master **逐字节一致**（干净）。
+            # 旧逻辑会报"作者在提交后又改了文件"并拒绝合并，**把主管卡死在自己工具的误报上**。
+            continue
+        } else {
+            $mismatch += "$f  (工作区 $($wtHash.Substring(0,8)) ≠ 分支 $($branchHash.Trim().Substring(0,8))，也 ≠ HEAD)"
         }
     } else {
         # 分支上删除了这个文件：工作区若还有内容且与 HEAD 不同 → 说明有人在改它
@@ -108,11 +119,26 @@ if ($DryRun) {
     return
 }
 
-# ---------------------------------------------------------------- 3) 清理阻碍（内容已验证一致）
+# ---------------------------------------------------------------- 3) 先**只读预演**合并
+#
+# ⚠️ 这一步是踩坑之后加的：清理工作区（回退/删除文件）**发生在前**，如果随后合并因为
+# 冲突或别的原因失败，工作区就停在"和 PR 分支不一致"的状态 —— 而本脚本下一次运行
+# 会因此判定"作者在提交后又改了文件"并拒绝，**把人卡住**（真实发生过：wp/e5）。
+# 所以：先确认能合（只读、不动任何文件），再动工作区。
+& git merge-tree --write-tree $base $ref > $null 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "`n✘ 只读预演发现合并会冲突（工作区未被改动）：" -ForegroundColor Red
+    & git merge-tree --write-tree $base $ref 2>&1 | Select-Object -First 20 | ForEach-Object { Write-Host "    $_" }
+    Write-Host "  请作者按新基点重建（`-Reset`）或人工解冲突 —— **不要**用 -X theirs/ours。" -ForegroundColor Yellow
+    exit 5
+}
+Ok "只读预演：可干净合并（工作区尚未改动）"
+
+# ---------------------------------------------------------------- 4) 清理阻碍（内容已验证一致）
 foreach ($f in $cleanupTracked) { git checkout -- $f; if ($LASTEXITCODE -ne 0) { Fail "checkout $f 失败" } }
 foreach ($f in $cleanupUntracked) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
 
-# ---------------------------------------------------------------- 4) 合并
+# ---------------------------------------------------------------- 5) 合并
 $pat = $short
 if ($Message) { & git merge --no-ff --no-edit -m $Message $pat }
 else {
@@ -121,10 +147,14 @@ else {
     & git merge --no-ff --no-edit -m "Merge ${short}: $lastMsg" $pat
 }
 if ($LASTEXITCODE -ne 0) {
+    # 合并失败 → **把工作区还原成 PR 分支的内容**，不留一个"和分支不一致"的树
+    Write-Host "⚠ 合并失败 —— 正在把工作区恢复为 PR 分支的内容（避免留下不一致的树）" -ForegroundColor Yellow
+    & git checkout $ref -- @($files) 2>$null
+    & git reset --quiet 2>$null
     Fail "git merge 失败（可能有冲突）。请人工处理：git status 看冲突文件，**不要**用 -X theirs/ours。"
 }
 
-# ---------------------------------------------------------------- 5) 复核内容没被改坏
+# ---------------------------------------------------------------- 6) 复核内容没被改坏
 $bad = @()
 foreach ($f in $files) {
     $branchHash = (git rev-parse --verify -q "$ref`:$f" 2>$null)
