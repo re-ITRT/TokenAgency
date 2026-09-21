@@ -81,6 +81,37 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 **裁决：两段式 apply 不是必需的**（"先等 provider 有节点再 reload listener"可以省掉）。
 但**通道不可用 ≠ 启动失败**：节点 `alive:false` 时通道应报 `TA-3002 lane_unavailable`，而不是静默走直连。
 
+> ### ⚠️ K2 的重要细化（第 9 轮补充实测）—— 别把 K2 读成"provider 组永远是安全的"
+>
+> **`use: [provider]` 的组在两种情况下确实会空，而且会静默降级成 `[COMPATIBLE]`：**
+>
+> | 场景 | 内核 | 内核日志 | 组的 `all` |
+> |---|---|---|---|
+> | provider 文件**不存在** | **照常启动** | `level=error initial proxy provider … cannot find the file specified` | **`[COMPATIBLE]`** |
+> | provider 文件**存在但为空**（`proxies: []`） | **照常启动** | `level=error … file doesn't have any proxy` | **`[COMPATIBLE]`** |
+> | 同上 + `empty-fallback: REJECT` | 照常启动 | 同上 | **`[REJECT]`** ✅ |
+>
+> **K2 当初测的是"文件存在、只是还没跑健康检查"→ 节点以 `alive:false` 存在、组不空。**
+> "provider **加载失败**"是**另一个场景**，结论相反。**两条都要记住，不要只记一条。**
+>
+> ### ★★ 由此引出的最严重问题：「就绪」判定会被骗
+>
+> 上表最危险的一格是**"内核照常启动"**。它意味着：
+>
+> **如果我们写 provider 文件失败（或写空了），内核会起来、REST 会通、进程健康 ——
+> 而所有 lane 正在静默走 `COMPATIBLE`。而"进程活着 + REST 响应"式的就绪判定会报"已就绪"。**
+>
+> 这是"静默降级"的最严重版本：**不是某条 lane 降级，是整个内核降级而我们对外报了绿。**
+>
+> **裁决：「内核就绪」的判据必须包含"provider 真的加载了节点"**，不能只问"进程在不在"：
+> 1. 启动 / reload 后，`GET /providers/proxies`，对我们生成的**每一个** provider 断言 `proxies[]` 非空；
+> 2. 任一为空 → **不报就绪**，报一个说得清的错；
+> 3. **判定必须可重查** —— 订阅同步完成后 provider 才可能有效，不能"启动时查一次就锁死"。
+>
+> **配套要求**：内核**已经在 `level=error` 报出来了**，信息是有的，只是在我们看不见的地方。
+> 所以 `KernelSupervisor` 必须把内核的 stdout/stderr **转发进我们的 `tracing`**（带区分来源的 target）。
+> 否则排查时会得出错误结论："我们的代码没有报错"。这条与 [14]（OB1 可观测性）正好对接。
+
 ### K7 ⚠️ **形态大体符合，但有 4 处偏差会让 `parse_snapshot` 解析错误 —— 必须改**
 
 假设写的 `proxies[].type/now/all/history[].time|delay` 与 `providers[].name/vehicleType/updatedAt/proxies[]`
@@ -209,6 +240,11 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 > **裁决：`config_gen` 生成的每一个 `filter` 组都必须显式写 `empty-fallback: REJECT`。**
 > 理由：一条"本该走代理的 lane"静默变成直连，是**把用户的境外流量裸奔出去**，
 > 比报错严重得多。**宁可失败，不可静默降级。** 这与 K4(d) 是同一类问题的同一个处置原则。
+>
+> **第 9 轮扩大（员工 E4 提出，主管实测批准）**：E4 主张**推广到我们生成的所有组**（含 `use: [provider]` 的组），
+> 理由是"provider 加载失败时 `use:` 组同样会空"。主管起初以 K2 数据（"组当场有节点、不空"）存疑，
+> **实测后确认 E4 正确**（见上文的 K2 细化表）：provider **加载失败**是另一个场景，组真的会空。
+> **裁决：所有生成的组都写 `empty-fallback: REJECT`。** 只保护 filter 组会在同一个原则上留口子。
 
 #### K5 ✅ **成立 —— 严格解码比担心的宽松，空集合全部被接受**
 
