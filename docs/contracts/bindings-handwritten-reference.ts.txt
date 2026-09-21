@@ -1049,6 +1049,7 @@ export type CommandMap = {
   model_bulk_update: { args: { ids: ModelId[]; patch: ModelPatch }; result: ApplyResult };
 
   // ---- channel / group
+  channel_list: { args: undefined; result: Channel[] };
   channel_matrix: { args: undefined; result: MatrixView };
   channel_upsert: { args: { channel: Channel }; result: Channel };
   channel_delete: { args: { id: ChannelId }; result: void };
@@ -1126,12 +1127,20 @@ export type CommandMap = {
   };
   pricing_import_builtin: { args: undefined; result: ApplyResult };
   pricing_unpriced_models: { args: undefined; result: string[] };
+  quota_limit_gaps: { args: undefined; result: { credential_id: CredentialId; message: string }[] };
   log_query: { args: { query: LogQuery }; result: LogPage };
   log_get_trace: { args: { request_id: RequestId }; result: TraceDetail };
   log_set_mode: { args: { mode: LogMode }; result: void };
   log_set_retention: { args: { retention: Retention }; result: void };
   log_storage_stats: { args: undefined; result: StorageStats };
   log_clear: { args: { mode: ClearMode }; result: void };
+  log_query_capabilities: {
+    args: undefined;
+    result: {
+      retried: { enabled: boolean; reason: string | null };
+      outcome: { enabled: boolean; reason: string | null };
+    };
+  };
   log_export: { args: { query: LogQuery; path: string }; result: void };
 
   // ---- onboarding / tray
