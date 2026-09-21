@@ -278,6 +278,7 @@ policies:
         assert!(!doc.net.tun, "绝不接管整机流量");
         assert!(!doc.system_integration.enable_tun);
         assert!(!doc.system_integration.enable_system_proxy);
+        assert!(!doc.system_integration.autostart, "会写 OS 状态的开关一律默认关（09 §1.2 E1）");
         assert!(!doc.system_integration.file_watch_mode, "换真源属于 opt-in");
         assert!(!doc.gateway.metering.inject_stream_usage, "会修改客户端请求");
         assert!(!doc.gateway.retry.retry_after_first_byte, "已输出字节后重试 = 重复计费");
@@ -289,8 +290,81 @@ policies:
         assert!(doc.gateway.passthrough.verify_no_diff);
         assert!(doc.gateway.passthrough.strip_hop_by_hop);
         assert!(doc.net.health.url_by_provider);
-        assert!(doc.system_integration.autostart);
         assert!(doc.system_integration.tray_show_latency);
+    }
+
+    /// **[09 §1.2] E1**：三个"会写操作系统状态"的开关，省略时**必须全部为 false**。
+    ///
+    /// 放在一条测试里成组断言：将来有人（或某个 agent）只改错其中一个，
+    /// 这条会连带报出来 —— 单个开关各写一条测试时，改错一个反而容易漏。
+    #[test]
+    fn os_state_writing_switches_default_off() {
+        let doc = from_yaml("version: 1").expect("应当能读");
+        assert!(!doc.system_integration.autostart, "autostart 默认必须是关的");
+        assert!(!doc.system_integration.enable_tun, "enable_tun 默认必须是关的");
+        assert!(!doc.system_integration.enable_system_proxy, "enable_system_proxy 默认必须是关的");
+
+        // 显式打开仍然生效（我们是 opt-in，不是禁用）
+        let on = from_yaml(
+            "version: 1\nsystem_integration: { autostart: true, enable_tun: true, enable_system_proxy: true }\n",
+        )
+        .expect("应当能读");
+        assert!(on.system_integration.autostart);
+        assert!(on.system_integration.enable_tun);
+        assert!(on.system_integration.enable_system_proxy);
+
+        // 手写的 `Default` 也必须与 serde 字段默认逐字段一致（别踩"省略整节 ≠ 写空节"的坑）
+        let manual = SystemIntegration::default();
+        assert!(!manual.autostart);
+        assert!(!manual.enable_tun);
+        assert!(!manual.enable_system_proxy);
+        assert!(manual.tray_show_latency);
+    }
+
+    /// 开机自启动的三个字段：省略走默认，显式值必须被尊重。
+    #[test]
+    fn autostart_fields_default_and_explicit() {
+        // 省略 → false / Tray / 0
+        let doc = from_yaml("version: 1\nsystem_integration: {}\n").expect("应当能读");
+        assert!(!doc.system_integration.autostart);
+        assert_eq!(doc.system_integration.autostart_mode, AutostartMode::Tray);
+        assert_eq!(doc.system_integration.autostart_delay_s, 0);
+        // 整节都不写，结果必须一样
+        let omitted = from_yaml("version: 1\n").expect("应当能读");
+        assert!(!omitted.system_integration.autostart);
+        assert_eq!(omitted.system_integration.autostart_mode, AutostartMode::Tray);
+        assert_eq!(omitted.system_integration.autostart_delay_s, 0);
+
+        // 显式值 → 生效
+        let doc = from_yaml(
+            "version: 1\nsystem_integration: { autostart: true, autostart_mode: window, autostart_delay_s: 30 }\n",
+        )
+        .expect("应当能读");
+        assert!(doc.system_integration.autostart);
+        assert_eq!(doc.system_integration.autostart_mode, AutostartMode::Window);
+        assert_eq!(doc.system_integration.autostart_delay_s, 30);
+
+        // 显式写回默认值也要能读（示例配置会这么写）
+        let doc = from_yaml(
+            "version: 1\nsystem_integration: { autostart: false, autostart_mode: tray, autostart_delay_s: 0 }\n",
+        )
+        .expect("应当能读");
+        assert!(!doc.system_integration.autostart);
+        assert_eq!(doc.system_integration.autostart_mode, AutostartMode::Tray);
+        assert_eq!(doc.system_integration.autostart_delay_s, 0);
+    }
+
+    /// `AutostartMode` 的枚举取值与默认值（[02 §2.10]）。
+    #[test]
+    fn autostart_mode_values_and_default() {
+        assert_eq!(AutostartMode::default(), AutostartMode::Tray);
+        // 序列化成 snake_case，前端 bindings 依赖这个取值
+        assert_eq!(serde_json::to_value(AutostartMode::Tray).unwrap(), serde_json::json!("tray"));
+        assert_eq!(
+            serde_json::to_value(AutostartMode::Window).unwrap(),
+            serde_json::json!("window")
+        );
+        assert!(from_yaml("version: 1\nsystem_integration: { autostart_mode: bogus }\n").is_err());
     }
 
     /// 自查的第二条（防同类事故）：
@@ -299,7 +373,8 @@ policies:
     /// 必须得到**逐字段等价**的结果 —— 否则就是第二处默认值不一致。
     ///
     /// （这条测试曾经抓到 `SystemIntegration`：serde 说 `autostart: true`，
-    /// 而 `#[derive(Default)]` 给的是 `false`。）
+    /// 而 `#[derive(Default)]` 给的是 `false`。加 `autostart_mode` /
+    /// `autostart_delay_s` 两个新字段时，同样靠它守住。）
     #[test]
     fn empty_section_equals_omitted_section() {
         let omitted = from_yaml("version: 1\n").expect("应当能读");
@@ -313,9 +388,21 @@ policies:
             A = to_yaml(&omitted).unwrap(),
             B = to_yaml(&empty_sections).unwrap()
         );
-        assert!(omitted.system_integration.autostart);
-        assert!(omitted.system_integration.tray_show_latency);
-        assert!(!omitted.system_integration.enable_tun);
+
+        // 逐字段核对 system_integration 的每一个字段（含本次新增的三个）
+        for (label, si) in [
+            ("omitted", &omitted.system_integration),
+            ("empty_section", &empty_sections.system_integration),
+        ] {
+            assert!(!si.autostart, "{label}: autostart");
+            assert_eq!(si.autostart_mode, AutostartMode::Tray, "{label}: autostart_mode");
+            assert_eq!(si.autostart_delay_s, 0, "{label}: autostart_delay_s");
+            assert!(!si.enable_tun, "{label}: enable_tun");
+            assert!(!si.enable_system_proxy, "{label}: enable_system_proxy");
+            assert!(si.tray_show_latency, "{label}: tray_show_latency");
+            assert!(!si.file_watch_mode, "{label}: file_watch_mode");
+            assert!(si.file_watch_path.is_none(), "{label}: file_watch_path");
+        }
     }
 
     // ------------------------------------------------------------ YAML / JSON 往返

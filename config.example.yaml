@@ -609,7 +609,9 @@ policies:
 system_integration:
   enable_tun: false
   enable_system_proxy: false
-  autostart: true
+  autostart: false
+  autostart_mode: tray
+  autostart_delay_s: 0
   tray_show_latency: true
   file_watch_mode: false
   file_watch_path: null

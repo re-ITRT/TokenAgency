@@ -1286,17 +1286,53 @@ pub enum PriceSource {
 
 // ================================================================ 系统集成
 
+/// 开机自启动后的行为（见 [02 §2.10]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AutostartMode {
+    /// 静默进托盘（默认）—— autostart 的目的是让网关在后台待命，
+    /// 客户端连 `127.0.0.1:8787` 不需要用户开窗口。
+    #[default]
+    Tray,
+    /// 显示窗口（调试，或用户就想看见）。
+    Window,
+}
+
+/// 系统集成开关。
+///
+/// **三类开关的默认值规则**（[09 §1.2] E1）：
+/// - **会写操作系统状态的开关一律默认关**：`autostart` / `enable_tun` / `enable_system_proxy`；
+/// - **"实体启用"语义的开关默认开**：见 `Provider.enabled` 等（列出来就是要用）；
+/// - **无损 / 自检类默认开**：`tray_show_latency`。
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SystemIntegration {
-    /// **例外：默认关。** 接管整机网络（TUN）是实验性高级模式，需要管理员权限；
+    /// **例外：默认关**（同 `autostart`：会写 OS 状态的开关一律默认关，[09 §1.2] E1）。
+    /// 接管整机网络（TUN）是实验性高级模式，需要管理员权限；
     /// "默认不接管整机流量"是本产品的核心承诺，所以这里与"实体 enabled"的规则相反。
     #[serde(default)]
     pub enable_tun: bool,
-    /// **例外：默认关。** 同 `enable_tun`：绝不主动碰系统代理。
+    /// **例外：默认关**（同 `autostart`）。绝不主动碰系统代理。
     #[serde(default)]
     pub enable_system_proxy: bool,
-    #[serde(default = "default_true")]
+    /// 开机自启动：**本项目唯一会写操作系统状态的功能**
+    /// （Windows `Run` 键 / macOS `LaunchAgent` / Linux XDG autostart，见 [09 §1.2]）。
+    ///
+    /// **默认 false** —— 凡是会写 OS 状态的开关一律默认关：装完就静默加一个开机启动项，
+    /// 正是用户最反感的那种"副作用"。与 `enable_tun` / `enable_system_proxy` 同属
+    /// "核心承诺的例外"（显式 opt-in，E1）。
+    ///
+    /// ⚠️ 这里只是**期望状态**，不是事实：系统实际状态才是真源。用户手动禁用后
+    /// **绝不静默改回**，只在 UI 里提示漂移并提供「重新注册 / 清除」（E2–E4）。
+    #[serde(default)]
     pub autostart: bool,
+    /// 启动后静默进托盘（默认）还是显示窗口。
+    /// 默认 `tray`：autostart 的目的是让网关在后台待命。
+    #[serde(default)]
+    pub autostart_mode: AutostartMode,
+    /// 启动延迟秒数（0–300）。由**我们自己**实现（autostart 插件不支持延迟）：
+    /// 开机时磁盘/网络繁忙，延迟可减少"内核首次就绪失败 → 退避重试"。
+    #[serde(default)]
+    pub autostart_delay_s: u32,
     #[serde(default = "default_true")]
     pub tray_show_latency: bool,
     /// 文件监听模式：以 YAML 为真源（GUI 写回会覆盖，需警告）。
@@ -1313,13 +1349,16 @@ pub struct SystemIntegration {
 /// ⚠️ **不要改用 `#[derive(Default)]`**：`ConfigDoc.system_integration` 上的
 /// `#[serde(default)]` 在"整节缺失"时用的是**这个** `Default`，而"写了空节"
 /// 用的是各字段的 `#[serde(default = ...)]`；两者必须逐字段一致
-/// （`autostart` / `tray_show_latency` 是 `default_true`）。
+/// （`tray_show_latency` 是 `default_true`，三个 OS 状态开关是 `false`）。
+/// 由 `config::tests::empty_section_equals_omitted_section` 守着。
 impl Default for SystemIntegration {
     fn default() -> Self {
         Self {
             enable_tun: false,
             enable_system_proxy: false,
-            autostart: true,
+            autostart: false,
+            autostart_mode: AutostartMode::Tray,
+            autostart_delay_s: 0,
             tray_show_latency: true,
             file_watch_mode: false,
             file_watch_path: None,

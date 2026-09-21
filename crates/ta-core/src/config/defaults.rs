@@ -35,9 +35,13 @@ pub(crate) fn build_default_doc() -> ConfigDoc {
         channel_groups: channel_groups(),
         policies: policies(),
         system_integration: SystemIntegration {
+            // ★ 会写操作系统状态的三个开关一律默认关（[09 §1.2] E1）：
+            //   装完就静默加一个开机启动项 / 接管整机网络，都是用户最反感的"副作用"。
             enable_tun: false,
             enable_system_proxy: false,
-            autostart: true,
+            autostart: false,
+            autostart_mode: AutostartMode::Tray,
+            autostart_delay_s: 0,
             tray_show_latency: true,
             file_watch_mode: false,
             file_watch_path: None,
@@ -465,6 +469,14 @@ mod tests {
         assert!(doc.channels.iter().all(|c| c.enabled));
         assert!(doc.lanes.iter().all(|l| l.enabled));
         assert!(doc.proxy_subscriptions.iter().all(|s| s.enabled));
+
+        // 但"会写操作系统状态"的三个开关默认必须是关的（09 §1.2 E1）：
+        // 首启向导绝不能替用户静默注册开机启动项。
+        assert!(!doc.system_integration.autostart);
+        assert!(!doc.system_integration.enable_tun);
+        assert!(!doc.system_integration.enable_system_proxy);
+        assert_eq!(doc.system_integration.autostart_mode, AutostartMode::Tray);
+        assert_eq!(doc.system_integration.autostart_delay_s, 0);
 
         // ch-claude-official 不写 lane，靠 credential.lane 继承
         let claude = doc.channel("ch-claude-official").unwrap();
