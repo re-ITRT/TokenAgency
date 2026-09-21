@@ -48,6 +48,11 @@ pub struct AppState {
     pub gateway: RwLock<Option<Arc<ta_gateway::GatewayDeps>>>,
     /// 内核控制器，由 T2 注入
     pub kernel: RwLock<Option<Arc<dyn ta_kernel::KernelController>>>,
+    /// 生成内核配置的真源（`kernel_apply` / 配置变更后要 `set_doc`/`set_ports`）。
+    ///
+    /// 它同时也是 `KernelController::apply()` 的输入 —— 两份必须指向**同一个**
+    /// `GeneratedConfigSource`，否则"命令层改了配置、内核却按旧配置 reload"。
+    pub kernel_source: RwLock<Option<Arc<ta_kernel::config_gen::GeneratedConfigSource>>>,
 }
 
 impl AppState {
@@ -79,6 +84,7 @@ impl AppState {
             clock,
             gateway: RwLock::new(None),
             kernel: RwLock::new(None),
+            kernel_source: RwLock::new(None),
         })
     }
 
@@ -124,6 +130,14 @@ impl AppState {
 
     pub fn kernel_slot(&self) -> Option<Arc<dyn ta_kernel::KernelController>> {
         self.kernel.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_kernel_source(&self, source: Arc<ta_kernel::config_gen::GeneratedConfigSource>) {
+        *self.kernel_source.write().unwrap_or_else(|e| e.into_inner()) = Some(source);
+    }
+
+    pub fn kernel_source_slot(&self) -> Option<Arc<ta_kernel::config_gen::GeneratedConfigSource>> {
+        self.kernel_source.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn gateway_ready(&self) -> bool {
