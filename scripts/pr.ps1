@@ -48,7 +48,18 @@ param(
     # 从基点重新开始，丢弃分支上已有的提交。用于改基点、或修掉 PR 里不该有的东西
     # （例如隐式带上来的 Cargo.lock）。不加就是**追加**一个提交。
     [switch]$Reset,
+
+    # 我（主管）之外的**同行评审人**：必须是另一个员工，不能是作者自己。
+    # 会写进 trailer 并出现在 -List 里 —— 评审不是"有人会看"，而是**指派人**。
+    [ValidateSet('E1', 'E2', 'E3', 'E4', 'E5')]
+    [string]$Reviewer,
+
     [switch]$List,
+
+    # 同步状态：master 走到哪、你的 PR 基点落后多少、你范围内有没有未提交改动、
+    # 最近 master 上落在你范围内的文件。**每次动手前先跑这个。**
+    [switch]$Status,
+
     [string]$Show
 )
 
@@ -60,9 +71,76 @@ function Info($msg) { Write-Host "› $msg" -ForegroundColor Cyan }
 function Ok($msg)   { Write-Host "✔ $msg" -ForegroundColor Green }
 function Head($msg) { Write-Host "`n=== $msg ===" -ForegroundColor Magenta }
 
+# git 的**文本**输出收成字符串。空输出在 PowerShell 里会变成 `$null`，
+# 直接 `.Trim()` 会抛 "不能对值为 Null 的表达式调用方法"。
+#
+# 这个坑是 E2 实测抓到的：`pr.ps1 -List` 在没有 `Reviewer:` trailer 的分支上崩，
+# 而崩的恰恰是"没有评审人"的那几个 —— **最该被这条新规则暴露的对象反而看不见**。
+# 同族风险：`git diff --shortstat` 在无差异时也是空输出。
+function GitText {
+    param([string[]]$GitArgs)
+    $out = @(& git @GitArgs 2>$null) -join "`n"
+    return "$out".Trim()
+}
+
 $root = (git rev-parse --show-toplevel).Trim()
 Set-Location $root
 $base = (git rev-parse $BaseBranch).Trim()
+
+if ($Reviewer -and $Reviewer -eq $As) {
+    Fail "评审人不能是作者自己（$As）—— 同行评审的全部意义就是「另一个人看」"
+}
+
+# ================================================================= -Status
+if ($Status) {
+    if (-not $As) { Fail '-Status 需要 -As E1..E5' }
+    $branch = Get-PrBranch $As
+    $scopes = Get-ScopeFor $As
+    Head "同步状态：$As（分支 $branch）"
+
+    $headShort = (git log -1 --format='%h %s' master).Trim()
+    Write-Host "  master 现在：$headShort" -ForegroundColor White
+
+    $tipRaw = (git rev-parse --verify -q "refs/heads/$branch")
+    if (-not $tipRaw) {
+        Write-Host '  你还没有 PR 分支 —— 工作区的改动还没提过 PR' -ForegroundColor Yellow
+    } else {
+        $tip = $tipRaw.Trim()
+        $baseSha = (git merge-base master $tip).Trim()
+        $behind = (git rev-list --count "$tip..master").Trim()
+        $ahead = (git rev-list --count "$baseSha..$tip").Trim()
+        Write-Host "  你的 PR 基点：$($baseSha.Substring(0,7))"
+        Write-Host "  你的分支：$ahead 个提交"
+        if ($behind -ne '0') {
+            Write-Host "  ⚠ master 已经往前走了 $behind 个提交 —— 下次 pr.ps1 会自动基于新 master 快照，但你**必须重新读一遍你依赖的文件**" -ForegroundColor Yellow
+            Write-Host '    master 上落在你范围内的改动：'
+            $touched = @(git diff --name-only "$baseSha..master" -- $scopes)
+            if ($touched.Count -eq 0) { Write-Host '      （无）' -ForegroundColor DarkGray }
+            else { $touched | ForEach-Object { Write-Host "      $_" } }
+        } else {
+            Write-Host '  ✔ 你的基点就是当前 master' -ForegroundColor Green
+        }
+    }
+
+    # master 上所有与你相关的改动（跨范围也算：依赖方向上的别人）
+    $allTouched = @(git diff --name-only master~20..master 2>$null)
+    $relevant = @($allTouched | Where-Object { Test-InScope $_ $scopes })
+    if ($relevant.Count -gt 0) {
+        Write-Host '  最近 20 个提交里落在你范围内的文件：'
+        $relevant | Select-Object -First 12 | ForEach-Object { Write-Host "      $_" }
+    }
+
+    $dirty = @(git status --porcelain --untracked-files=all -- $scopes)
+    if ($dirty.Count -gt 0) {
+        Write-Host "  你范围内有 $($dirty.Count) 个未提交改动：" -ForegroundColor Yellow
+        $dirty | Select-Object -First 15 | ForEach-Object { Write-Host "      $($_.Substring(0, [Math]::Min(2, $_.Length))) $($_.Substring(3))" }
+        Write-Host '      提示：提交过的里程碑要提 PR；未提交的改动会在"合并"时挡住主管（merge 拒绝覆盖工作区）' -ForegroundColor DarkGray
+    } else {
+        Write-Host '  ✔ 你范围内没有未提交改动' -ForegroundColor Green
+    }
+    Write-Host ''
+    return
+}
 
 # ================================================================= -List
 if ($List) {
@@ -72,16 +150,20 @@ if ($List) {
     foreach ($b in $branches) {
         $ahead = (git rev-list --count "$base..$b").Trim()
         $behind = (git rev-list --count "$b..$base").Trim()
-        $stat = (git diff --shortstat "$base...$b").Trim()
-        $last = (git log -1 --format='%h %s' $b).Trim()
-        $who = (git log -1 --format='%an' $b).Trim()
+        $stat = GitText @('diff', '--shortstat', "$base...$b")
+        $last = GitText @('log', '-1', '--format=%h %s', $b)
+        $who = GitText @('log', '-1', '--format=%an', $b)
+        $rev = GitText @('log', '-1', '--format=%(trailers:key=Reviewer,valueonly)', $b)
         Write-Host ""
         Write-Host "  $b" -ForegroundColor White
         Write-Host "    提交 $ahead 个，落后 $behind 个 | $stat"
         Write-Host "    最后：$last"
         Write-Host "    作者：$who"
+        if ($rev) { Write-Host "    同行评审：$rev" -ForegroundColor Cyan }
+        else { Write-Host "    ⚠ 未指派同行评审（提 PR 时加 -Reviewer E?）" -ForegroundColor Yellow }
     }
     Write-Host ''
+    Write-Host '  提示：主管合并前会核「同行评审意见 → 作者回应 → 合并门禁」三样。' -ForegroundColor DarkGray
     return
 }
 
@@ -225,6 +307,7 @@ $trailers = @(
     "Scoped-Paths: $($requested -join ' ')"
 )
 if ($AgentId) { $trailers += "Agent: $AgentId" }
+if ($Reviewer) { $trailers += "Reviewer: $Reviewer" }
 if ($Override) { $trailers += "Override: $Override" }
 
 $fullMsg = if ($body) { "$Title`n`n$body`n$($trailers -join "`n")" } else { "$Title`n$($trailers -join "`n")" }
