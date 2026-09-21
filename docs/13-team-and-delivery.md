@@ -23,14 +23,19 @@
 
 ## 1.2 固定 5 人（长期名册）
 
-| 员工 | 主岗 | 独占文件范围 | 副岗 |
+> **第 11 轮按实际运行状态校正过一次**：原表把 `src-tauri` 放在 E5 的副岗，但 T1/T2 全在
+> `src-tauri`，与 `ta-store` 同属"数据 → 桌面"一条链 —— 交给两个人必然在同一个目录里抢文件
+> （[docs/12 §1.1] 的纪律）。现改为 E3 独占 `src-tauri`，E5 专心守关键路径网关。
+> **实例名**一栏是 `send_message` 用的地址；员工长期在位、不换岗，上下文持续累积。
+
+| 员工（岗位） | 主岗 | 独占文件范围 | 实例名 |
 |---|---|---|---|
-| **E1 领域官** | 领域与配置 | `crates/ta-core/src/{domain,config}/**` | 前端外壳 F1 |
-| **E2 决策官** | 决策与账本 | `crates/ta-core/src/{routing,sticky,quota,pricing,metering}/**` | 前端 看板+日志 F2 |
-| **E3 数据官** | 数据与密钥 | `crates/ta-store/**`、`crates/ta-secrets/**` | 前端 配置类页面 F3 |
-| **E4 网络官** | 网络接入 | `crates/ta-kernel/**`、`crates/ta-subscription/**` | 前端 网络+成本 F4 |
-| **E5 网关官** | 网关（关键路径 Owner） | `crates/ta-gateway/**` | Tauri 层 T1+T2 |
-| 技术主管 | 根配置、契约文档、集成、打包 | 根 `Cargo.toml`、`docs/**`、`scripts/**`、`src-tauri`/`src` 的骨架 | — |
+| **E1 前端与领域官** | 前端 + 领域与配置 | `src/**`、`crates/ta-core/src/{domain,config}/**` | `e1-ui` |
+| **E2 决策与可观测官** | 决策/账本 + 可观测 | `crates/ta-core/src/{routing,sticky,quota,pricing,metering}/**`、`crates/ta-core/src/diag/**` | `e2-decision` |
+| **E3 数据与桌面官** | 数据/密钥 + 桌面层 T1/T2 | `crates/ta-store/**`、`crates/ta-secrets/**`、`src-tauri/**` | `e3-desktop` |
+| **E4 网络官** | 网络接入（内核 + 订阅） | `crates/ta-kernel/**`、`crates/ta-subscription/**` | `e4-network` |
+| **E5 网关官** | 网关（关键路径 Owner） | `crates/ta-gateway/**` | `e5-gateway` |
+| 技术主管 | 契约文档、集成、打包、门禁 | 根 `Cargo.toml`、`docs/**`、`scripts/**`、`.githooks/**` | `lead` |
 
 一人一层，正好对应架构的依赖方向（[09 §3.3](09-architecture-design.md)），**边界天然不重叠**，这是把协作成本压到最低的分法。
 
@@ -382,3 +387,47 @@ pwsh -File scripts/who.ps1 -Uncommitted                     # 在途未提交的
 | **保守过滤** | 提醒 P3 "不要为了过测试把 403 一律判为 true" —— 403 也可能是地区/IP 限制，混淆会误禁用有效 key |
 | **提前预警** | 给 P4 提前说两条硬约束，把返工前置到它还在写的时候 |
 | **不打断** | P1/P2/P5/P7 在途状态健康，不做无谓干预 |
+
+---
+
+## 8.6 第 11 轮 · Agent Team 重开（在岗名册与派工）
+
+> **背景**：前一批是**后台子代理**（一次性、上下文用完即弃），由用户强制关停。用户明确要求
+> 转为 **Agent Team**：员工长期在位、主岗固定、上下文持续累积 —— **养成，不是消耗**。
+> 所以从这一轮起不再"一个包招一个人"，而是**一个岗位固定一名员工**，任务在岗位上滚动。
+
+### 前置：先把门禁的洞堵上（主管亲自做，`5c0b5c4`）
+
+开 Team 之前必须先确认"基线是绿的，没有遗留"。实际查下去发现门禁**一直在被绕过**：
+
+| 事实 | 影响 |
+|---|---|
+| `cargo test -p tokenagency --lib` 从 T1 起就在**加载期崩溃**（`0xc0000139`） | 该 crate 的 63 个测试（含自启动漂移四条分支）**从未运行过**；门禁靠 `--exclude tokenagency` 伪装成全绿 |
+| 根因 | 缺 Common-Controls v6 清单资源：`TaskDialogIndirect` 只由 v6 导出，而 `tauri-build` 只把清单给 bin |
+| 顺带抓到 | 门禁一解开，**第一个跑起来的测试就是红的** —— `plugins.rs` 的插件计数停在"移除 `tauri-plugin-log`"之前（12 vs 11） |
+
+**已修**：清单改由 `cargo:rustc-link-arg` 供给所有目标 + `new_without_app_manifest()` 让 tauri-build 停止嵌清单；新增 `src-tauri/tests/runtime_manifest.rs` 作回归守卫。现在 `cargo test --workspace` **不带任何 `--exclude`** → 778 passed / 0 failed。详见 [06 §11.1](06-roadmap-and-risks.md)、[13 L24]。
+
+### 在岗名册与派工（本轮）
+
+| 岗位 | 实例 | 任务 | 负责面 | 状态 |
+|---|---|---|---|---|
+| E5 网关官 | `e5-gateway` | `task-7` GW-M1 | G2/G3/G4 收口 + A2 全透传保真 | 已派发 |
+| E4 网络官 | `e4-network` | `task-8` NET-M1 | B1–B4 响亮失败 + 内核 stdout → tracing | 已派发 |
+| E3 数据与桌面官 | `e3-desktop` | `task-9` DESK-M1 → `task-12` OBS-WIRE | 启动编排 → 事件桥接 → 命令面 31→105 | 已派发 |
+| E2 决策与可观测官 | `e2-decision` | `task-10` OBS-CORE | C1–C4 判定方 + diag 契约 | 已派发 |
+| E1 前端与领域官 | `e1-ui` | `task-11` FE-M1 | F1 视觉重做 → 绑定迁移 T1b | 已派发 |
+
+### 两条流程决定（本轮新增）
+
+1. **岗位固定、任务滚动。** 员工的"入职材料"只在**第一次**给（[§2](#2-员工的入职材料每包必读)）；
+   之后每轮只给 `task id` 与增量。目的：让上下文可复用、命中缓存，员工越做越懂这个系统。
+2. **实例换代要记账。** 第一次创建 `e2-observability` / `e1-frontend` 时撞到并发上限，**出生即失败、
+   零工作**。为不丢岗位，换代实例 `e2-decision` / `e1-ui` 承接原主岗；`e5-gateway` / `e4-network` /
+   `e3-desktop` 是原有实例，**cold-resume 继续用，不重启**（重启 = 上下文清零，那正是要避免的）。
+
+### 主管本轮并行做的事
+
+- 修门禁（见上）+ 把"被绕过的门禁不会变绿，只会积累"写进 [13 L24]
+- 校正 §1.2 名册（`src-tauri` 归属 E3）
+- 守住 `docs/**`、`scripts/**`、`.githooks/**` 与最终打包验收（W5、[06 §2.1] A3/A4）
