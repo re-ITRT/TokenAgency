@@ -395,8 +395,7 @@ subscription / subscription_version
 | TA-2001 | `tokenagency_model_not_found` | 404 | 逻辑模型不存在 | 否 |
 | TA-2002 | `tokenagency_no_route` | 400 | 通配路径无法确定模型 | 否 |
 | TA-2003 | `tokenagency_no_viable_channel` | 415 | 候选被策略/标签全部排除 | 否 |
-| TA-2004 | `tokenagency_all_channels_exhausted` | 402 | 全部候选额度耗尽 | 否 |
-| TA-2005 | `tokenagency_all_channels_failed` | 502 | 全部候选失败 | 是（客户端层面） |
+| TA-2004 | `tokenagency_all_channels_exhausted` | 402 | 全部候选额度耗尽 | 否 || TA-2005 | `tokenagency_all_channels_failed` | 502 | 全部候选失败 | 是（客户端层面） |
 | TA-2006 | `tokenagency_capability_loss` | 415 | 跨协议转换会丢内容（拒绝转发） | 否 |
 | TA-3001 | `tokenagency_kernel_not_ready` | 503 | 内核未就绪且无 direct 通道 | 是 |
 | TA-3002 | `tokenagency_lane_unavailable` | 503 | 该 lane 无可用节点 | 是 |
@@ -420,6 +419,22 @@ subscription / subscription_version
 >
 > 与之配套的失败转移边界：只有在"**没拿到响应**"或"上游明确表示可重试"（429 / 5xx）时才换通道；
 > 一旦已经开始向客户端输出字节，**绝不重试**（与 §5.1 管线的既有约束一致）。
+
+### `TA-2004` 的可达性（第 11 轮实测澄清）
+
+这条规则落地时发现一个**真实的语义缺口**（E5 报的）：代码**没有区分**"本地耗尽"与"上游回 402"，
+而且本地那条**走错了分支** —— 返回 `TA-2003`/415 而不是 `TA-2004`/402。已修（按淘汰原因分流）。
+现在三条事实各自对应：
+
+| 事实 | 客户端收到 |
+|---|---|
+| **本地账本**判定候选全部耗尽、**根本没问过上游** | **我们的** `TA-2004`（402） |
+| 每个候选都问了、**上游都回了 402** | **上游的** 402（原样透传，不再是 `TA-2004`） |
+| 全部候选都**没拿到响应** | `TA-2005`（502，`retryable`） |
+
+> 判据刻意是"**全部**候选的理由都是额度耗尽"而不是"其中有一个是" —— 后者会把用户
+> **骗去充值**（反向控制测试钉住了这条）。代码位置：`all_quota_exhausted`（本地那条）、
+> 失败链的 `last_upstream` 透传（上游 402 那条）、`dispatch::classify_send_error`（没拿到响应那条）。
 
 > **⚠️ 第 9 轮补注（G1 实现后发现）：`TA-1002` 目前不可达。**
 > 员工 E5 实现入站限流时指出：配置里**根本没有** `gateway.rpm_limit` 这个字段
