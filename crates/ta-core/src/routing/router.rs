@@ -135,7 +135,8 @@ impl Router {
 mod tests {
     use super::*;
     use crate::config;
-    use crate::domain::{ConfigDoc, ReleaseReason};
+    use crate::domain::{ConfigDoc, ReleaseReason, Selector};
+    use crate::pricing::{PriceSourceKind, PricingEngine, ResolvedPrice};
     use crate::routing::{ChannelRuntimeState, EliminateReason};
     use crate::types::*;
 
@@ -318,11 +319,24 @@ policies:
     ///    手写字段清单会漏。**但它不是契约**：哪天有人给这些类型手写/精简 `Debug`
     ///    （例如为了日志只打摘要），两个**不同**的值会比出相等，这条断言就会**静默失效**。
     /// 2. 显式字段断言（主证据）—— 把对用户可见的语义钉死，牙齿不依赖 `Debug` 的实现。
+    ///    只收**用户可观察的字段**（候选/策略/淘汰/pin/线路覆盖/兜底码/选中/粘性/失败转移），
+    ///    不收内部计数器 —— 否则测试会变成实现的镜像。
     ///
     /// **选项必须是非默认值**（评审 E1 之后补的红-绿教训）：全用 `default()` 时，
     /// "某条路径漏注入一个部件"根本看不出来 —— 漏掉 `.with_options` 会悄悄退回
     /// `sticky_write = true`，而默认值恰好也是 `true`。夹具因此显式设
     /// `sticky_write = false` 并**每会话跑两轮**：第二轮"不命中"就是这条漏注入的探针。
+    ///
+    /// **这条测试证明的范围（别高估它）**：它只证明"**本夹具覆盖到的决策面上**两条装配
+    /// 路径产出相同"。效果在夹具里不可见的部件需要**自己的一格探针**。目前：
+    ///
+    /// - **已有探针**：`selector.sticky_write`（本测试的两轮夹具）、
+    ///   `opts.pricing`（[`pricing_option_is_not_silently_dropped`]）；
+    /// - **已知未覆盖（具名残留）**：`engine.local_offset_minutes`（只影响 `time_window`
+    ///   类策略）、`engine.no_viable_channel_status`（只影响无候选场景）。
+    ///   **触发条件**：等 `LiveRouter::bind` 真的开始传非默认 engine options（即有调用方
+    ///   依赖这两个字段）时补上那两格 —— 那时"漏注入"的后果才从"理论不可见"变成用户可见。
+    ///   在此之前**具名登记**，比含糊地写"有些部件没覆盖"可管理。
     #[test]
     fn new_is_the_self_resolver_special_case_of_with_sticky() {
         let d = doc();
@@ -362,6 +376,7 @@ policies:
 
                 // ---- 主证据：显式字段（不依赖 Debug 实现）
                 assert_eq!(da.candidates, db.candidates, "候选集不同（session={session}）");
+                assert_eq!(da.selector, db.selector, "选择策略不同（session={session}）");
                 assert_eq!(
                     da.matched_policy.as_ref().map(|p| p.as_str()),
                     db.matched_policy.as_ref().map(|p| p.as_str()),
@@ -370,7 +385,20 @@ policies:
                 assert_eq!(da.eliminated, db.eliminated, "淘汰集与原因不同（session={session}）");
                 assert_eq!(da.pinned, db.pinned, "pin 不同（session={session}）");
                 assert_eq!(da.lane_override, db.lane_override, "线路覆盖不同（session={session}）");
+                assert_eq!(
+                    da.on_no_candidate, db.on_no_candidate,
+                    "无候选时的动作不同（session={session}）"
+                );
                 assert_eq!(da.error_code, db.error_code, "兜底状态码不同（session={session}）");
+                // 失败转移三要素 + 触发集 + backoff（计划语义，用户能观察到）
+                assert_eq!(da.failover.on, db.failover.on, "failover 触发集不同");
+                assert_eq!(
+                    da.failover.max_attempts, db.failover.max_attempts,
+                    "failover 最大尝试次数不同"
+                );
+                assert_eq!(da.failover.cooldown_s, db.failover.cooldown_s, "failover 冷却时间不同");
+                assert_eq!(da.failover.backoff, db.failover.backoff, "failover backoff 不同");
+                assert_eq!(da.failover.extra, db.failover.extra, "failover extra 不同");
 
                 assert_eq!(
                     sa.is_some(),
@@ -417,6 +445,73 @@ policies:
         let fresh = Router::from_doc(&doc());
         let (_, s_fresh) = fresh.route(&hints("sess-injected"), &ctx());
         assert!(!s_fresh.unwrap().sticky_hit, "另一份粘性表不该共享状态");
+    }
+
+    /// 只给 `p-relay` 定价的替身：让 `Cheapest` 真的按价格排序。
+    /// `p-openai` 未定价 → `price_score == +∞`（[`crate::routing::selector::price_score`] 的口径），
+    /// 于是"有 pricing"会把未定价通道排到最后，与"没有 pricing"（所有分数 0、稳定按候选序）**选出不同通道**。
+    struct RelayIsCheaper;
+
+    impl PricingEngine for RelayIsCheaper {
+        fn resolve(
+            &self,
+            _model: &str,
+            provider: &ProviderId,
+            _cred: &CredentialId,
+        ) -> ResolvedPrice {
+            if provider.as_str() == "p-relay" {
+                ResolvedPrice {
+                    rates: [(TokenKind::Input, 1.0)].into_iter().collect(),
+                    source: PriceSourceKind::Manual,
+                    ..ResolvedPrice::unpriced("USD", 1.0)
+                }
+            } else {
+                ResolvedPrice::unpriced("USD", 1.0)
+            }
+        }
+    }
+
+    /// `opts.pricing` 也要有红法：`cheapest` 组 + "只给一个 provider 定价"的替身。
+    ///
+    /// 为什么单独一条：主测试的夹具里 pricing **不影响结果**（组是 `sticky_then_priority`），
+    /// 所以哪天 `with_sticky` 漏掉 `.with_pricing(opts.pricing)`，那条测试照样全绿。
+    /// 这里补上"效果在夹具里可见"的那一格。
+    ///
+    /// **它证明的不变量其实是第三条：「选项真的被尊重」** —— 而不是"两条路径一致"。
+    /// 因为 `Router::new` 现在也委托给 `with_sticky`，漏注入时两条路径**一起**退化，
+    /// 主断言（两侧相等）对此天然免疫；所以这条探针的红点必然落在**夹具前提自检**
+    /// 那条 `assert_ne!` 上（E1 复核确认）。**别把它读成"路径一致"那一类。**
+    #[test]
+    fn pricing_option_is_not_silently_dropped() {
+        let mut d = doc();
+        d.channel_groups[0].selector = Selector::Cheapest;
+        let opts = || RouterOptions {
+            pricing: Some(Arc::new(RelayIsCheaper)),
+            ..RouterOptions::default()
+        };
+        let a = Router::new(&d, opts());
+        let b = Router::with_sticky(
+            &d,
+            opts(),
+            Arc::new(MemoryStickyResolver::with_clock(Arc::new(SystemClock))),
+        );
+
+        let (_, sa) = a.route(&hints("price-1"), &ctx());
+        let (_, sb) = b.route(&hints("price-1"), &ctx());
+        let sa = sa.expect("cheapest 应当能选出通道");
+        let sb = sb.expect("cheapest 应当能选出通道");
+
+        // 夹具前提自检：pricing 真的生效时，未定价的 ch-openai 不该被选中。
+        // （少了这条，"漏注入 pricing" 可能只是悄悄退化而没人发现）
+        assert_ne!(
+            sa.channel.as_str(),
+            "ch-openai",
+            "夹具前提：有 pricing 时 cheapest 不该选未定价通道（否则这一格探针没有意义）"
+        );
+        assert_eq!(
+            sa.channel, sb.channel,
+            "漏注入 pricing 会让 cheapest 悄悄退化成配置顺序（一个有价格、一个没有）"
+        );
     }
 
     /// 跨**配置代次**保留粘性：同一份 sticky + 两次 `with_sticky`（两个不同配置代）。
