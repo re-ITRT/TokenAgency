@@ -142,10 +142,34 @@ pub struct PipelineDeps {
 struct Runtime {
     /// 通道 → 冷却结束时间（ms）
     cooling_until_ms: BTreeMap<ChannelId, i64>,
+    /// 通道 → **连续**失败次数（退避阶梯用）。成功一次清零（[docs/03 §5.3]）。
+    channel_failures: BTreeMap<ChannelId, u32>,
     /// lane → 不可用**截止时间**（ms）。不是永久拉黑，见 [`LANE_RECOVERY_MS`]。
     lane_down_until_ms: BTreeMap<LaneId, i64>,
     /// lane → **连续**连接失败次数。成功一次清零（[docs/03 §5.3]）。
     lane_failures: BTreeMap<LaneId, u32>,
+}
+
+/// 冷却退避的上限（[docs/03 §5.3]：1 小时）。
+const COOLDOWN_CAP_S: u32 = 3_600;
+
+/// 第 `failures` 次连续失败后该冷却多久（[docs/03 §5.3] 的指数退避）。
+///
+/// 文档给的阶梯是 **`120s → 300s → 900s`，上限 1h**。这里把它写成"相对配置的
+/// `cooldown_s`"：base=120 时逐级得到 120 / 300 / 900（正是文档那串），再往上每级 ×3
+/// （900 → 2700 → 8100），撞到 1h 上限为止。
+///
+/// **为什么不写成 `base * 2^n`**：那样 base=120 时第二级是 240 而不是文档的 300；
+/// 文档给的是三个具体值，照抄这三个值比"看起来更数学"更重要 —— 用户与 UI 是照着
+/// 那几个秒数建立预期的。
+fn cooldown_seconds(base_s: u32, failures: u32) -> u32 {
+    let base = base_s.max(1) as f64;
+    let raw = match failures.max(1) {
+        1 => base,
+        2 => base * 2.5,
+        n => base * 7.5 * 3f64.powi((n - 3) as i32),
+    };
+    (raw.min(COOLDOWN_CAP_S as f64).max(1.0)) as u32
 }
 
 /// 连续失败多少次才把一条 lane 判为降级（[docs/03 §5.3]：连续 3 次）。
@@ -231,11 +255,28 @@ impl Pipeline {
             .unwrap_or(false)
     }
 
-    /// 通道级失败（429/402/5xx）：冷却该通道。
+    /// 通道级失败（429/402/5xx/传输失败）：冷却该通道，**按连续失败次数退避**
+    /// （[docs/03 §5.3] 的 120s → 300s → 900s → … → 上限 1h）。
     fn cool_channel(&self, channel_id: &ChannelId, cooldown_s: u32, now_ms: i64) {
-        self.lock_runtime()
-            .cooling_until_ms
-            .insert(channel_id.clone(), now_ms + (cooldown_s as i64) * 1000);
+        let mut guard = self.lock_runtime();
+        let failures = {
+            let count = guard.channel_failures.entry(channel_id.clone()).or_insert(0);
+            *count = count.saturating_add(1);
+            *count
+        };
+        let seconds = cooldown_seconds(cooldown_s, failures);
+        guard.cooling_until_ms.insert(channel_id.clone(), now_ms + (seconds as i64) * 1000);
+    }
+
+    /// 通道级成功：清掉连续失败计数并立即解除冷却
+    /// （[docs/03 §5.3]「成功一次 → 冷却计时器清零」）。
+    ///
+    /// 不这么做的话，"偶发 429 的通道"会被自己的历史一次次推得更远 ——
+    /// 那正是 [docs/03 §6.2] 说的"自动学习降级比不降级更糟"。
+    fn record_channel_success(&self, channel_id: &ChannelId) {
+        let mut guard = self.lock_runtime();
+        guard.channel_failures.remove(channel_id);
+        guard.cooling_until_ms.remove(channel_id);
     }
 
     /// lane 级失败：记一次**连续**失败；到阈值才降级（[docs/03 §5.3]）。
@@ -632,6 +673,12 @@ impl RequestPipeline for Pipeline {
                         continue;
                     }
 
+                    // 上游给了**非换通道**状态（2xx/其它 4xx）→ 这个通道是通的：
+                    // 连续失败计数清零、冷却立即解除（[docs/03 §5.3]「成功一次 → 清零」）。
+                    // 放在这里而不是"读完 body"之后：状态码已经证明它服务正常，
+                    // 后面 body 读坏了属于传输层问题（那条路径有自己的处理）。
+                    self.record_channel_success(&channel_id);
+
                     if prepared.stream {
                         // **已经向客户端交出流**：从这里开始任何失败都只记录，绝不重试
                         let record = self.attempt(&prepared, &channel, &lane, attempt).record(
@@ -998,6 +1045,34 @@ mod tests {
             dialer,
             passthrough: FullPassthrough::shared(),
             sink,
+            meter: None,
+        }))
+    }
+
+    /// 与 [`pipeline`] 同义，但注入**可控时钟**并固定单候选 ch-a ——
+    /// 冷却/退避类测试需要推进时间才看得到"下一级"。
+    fn pipeline_with_clock(
+        cfg: ConfigDoc,
+        dialer: Arc<dyn OutboundDialer>,
+        clock: Arc<ManualClock>,
+    ) -> Pipeline {
+        let cfg = Arc::new(arc_swap::ArcSwap::from_pointee(cfg));
+        Pipeline::new(Arc::new(PipelineDeps {
+            cfg: cfg.clone(),
+            clock,
+            planner: Arc::new(crate::runtime::PolicySelectorPlanner::new(
+                cfg,
+                Arc::new(FixedPolicy {
+                    candidates: vec!["ch-a"],
+                    on_no_candidate: NoCandidateAction::Error,
+                }),
+                Arc::new(ChainSelector),
+            )),
+            quota: Arc::new(NoQuota),
+            secrets: Arc::new(StaticSecrets::new([("${secret:a}", SECRET)])),
+            dialer,
+            passthrough: FullPassthrough::shared(),
+            sink: Arc::new(RecordingSink::default()),
             meter: None,
         }))
     }
@@ -1566,6 +1641,108 @@ mod tests {
         }
         // **只有 1 次上游请求**（DoD 原文：输出 3 个 chunk 后断连 → 只有 1 次上游请求）
         assert_eq!(upstream.connection_count(), 1, "已输出字节后绝不允许重试");
+    }
+
+    // ---------------------------------------------------------- 冷却退避（[docs/03 §5.3]）
+
+    /// 同一通道连续失败时，冷却必须按文档的阶梯退避：`120s → 300s → 900s → … → 上限 1h`。
+    ///
+    /// 断言写成"冷却结束前 1ms 仍不可用、结束那一刻可用"，把每一级的**秒数**钉死；
+    /// 不能只断言"有冷却"（那对固定 `cooldown_s` 的旧实现也成立）。
+    #[tokio::test]
+    async fn cooldown_backs_off_per_the_documented_ladder() {
+        let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+        let ladder: [i64; 5] = [120, 300, 900, 2_700, 3_600];
+        let dialer = Arc::new(ScriptedDialer::with(
+            (0..ladder.len())
+                .map(|_| Scripted::Ok { status: 429, headers: vec![], body: "{}" })
+                .collect(),
+        ));
+        let pipeline = pipeline_with_clock(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            dialer.clone(),
+            clock.clone(),
+        );
+
+        let channel = ChannelId::new("ch-a");
+        let lane = LaneId::new("lane-jp");
+        let mut now = 1_700_000_000_000;
+        for (round, expected_s) in ladder.iter().enumerate() {
+            let prepared =
+                pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+            let _ = pipeline.execute(prepared).await.expect_err("429 会被换通道，最终失败");
+            let until = now + expected_s * 1000;
+            assert!(
+                !pipeline.is_available(&channel, Some(&lane), until - 1),
+                "第 {} 轮：冷却必须覆盖到 {}s",
+                round + 1,
+                expected_s
+            );
+            assert!(
+                pipeline.is_available(&channel, Some(&lane), until),
+                "第 {} 轮：冷却必须恰好是 {}s（[docs/03 §5.3] 的阶梯）",
+                round + 1,
+                expected_s
+            );
+            now = until;
+            clock.advance(expected_s * 1000);
+        }
+        assert_eq!(dialer.calls(), ladder.len() as u32, "每轮都要真的打到同一个通道");
+    }
+
+    /// 成功一次必须把"连续失败计数"与冷却一起清零：否则偶发 429 的通道会被自己的历史
+    /// 越推越远（[docs/03 §6.2]「自动学习降级比不降级更糟」）。
+    ///
+    /// 可观测点：成功后的下一次失败应当**从阶梯第一级（120s）重新开始**，
+    /// 而不是接着上一级（300s）。
+    #[tokio::test]
+    async fn a_success_clears_the_channel_backoff() {
+        let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+        let dialer = Arc::new(ScriptedDialer::with(vec![
+            Scripted::Ok { status: 429, headers: vec![], body: "{}" },
+            Scripted::Ok { status: 200, headers: vec![], body: r#"{"ok":true}"# },
+            Scripted::Ok { status: 429, headers: vec![], body: "{}" },
+        ]));
+        let pipeline = pipeline_with_clock(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            dialer,
+            clock.clone(),
+        );
+        let channel = ChannelId::new("ch-a");
+        let lane = LaneId::new("lane-jp");
+        let start = 1_700_000_000_000;
+
+        // 第 1 轮：429 → 120s
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let _ = pipeline.execute(prepared).await.expect_err("429");
+        assert!(!pipeline.is_available(&channel, Some(&lane), start + 119_000));
+        assert!(pipeline.is_available(&channel, Some(&lane), start + 120_000));
+
+        // 第 2 轮：冷却过期后成功 → 计数清零
+        clock.advance(120_000);
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let response = pipeline.execute(prepared).await.expect("应当成功");
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert!(
+            pipeline.is_available(&channel, Some(&lane), start + 120_000),
+            "成功后不该还留着冷却"
+        );
+
+        // 第 3 轮：再 429 → 必须回到第一级 120s（若计数没清零，这里会是 300s）
+        let after_success = start + 120_000;
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let _ = pipeline.execute(prepared).await.expect_err("429");
+        assert!(
+            !pipeline.is_available(&channel, Some(&lane), after_success + 119_000),
+            "第 3 轮：冷却内必须不可用"
+        );
+        assert!(
+            pipeline.is_available(&channel, Some(&lane), after_success + 120_000),
+            "成功必须把退避计数清零：第 3 轮应回到 120s，而不是 300s"
+        );
     }
 
     // ---------------------------------------------------------- 降级窗口的正向控制
