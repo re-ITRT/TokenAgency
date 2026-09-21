@@ -1,148 +1,23 @@
 #!/bin/sh
-# TokenAgency pre-commit —— 只检查本次提交涉及的东西。
+# TokenAgency pre-commit —— **直接提交**（git commit）的检查入口。
+#
+# 真正的检查逻辑在 **scripts/gate.ps1**（唯一真相源）。
+#
+# 为什么钩子只做转发：员工现在走 `scripts/pr.ps1` 提 PR，它用「临时 index +
+# git commit-tree」组装分支提交 —— 而 `git commit-tree` **不触发任何钩子**。
+# 如果钩子自带一套检查、pr.ps1 再自带一套，两套门禁迟早漂移，
+# 那正是 docs/13 L21 记的那类问题（含糊/重复的地方会各自长出一套，且都不报错）。
+#
 # 安装：pwsh -File scripts/install-hooks.ps1
 # 绕过：git commit --no-verify（仅限紧急情况）
-#
-# 设计原则：**只检查暂存的文件**，不做全仓库检查。
-# 原因：多人并行开发时，全仓库检查会被别人未完成的在途代码挡住，
-#       最终逼所有人用 --no-verify —— 那等于门禁失效。门禁要大家都愿意用才有意义。
 
-fail() {
-    printf '\033[31m\n✘ %s\033[0m\n\n' "$1"
+if command -v pwsh >/dev/null 2>&1; then
+    exec pwsh -NoProfile -File scripts/gate.ps1
+elif command -v powershell.exe >/dev/null 2>&1; then
+    exec powershell.exe -NoProfile -File scripts/gate.ps1
+else
+    printf '\033[31m\n✘ 找不到 pwsh / powershell，无法运行门禁 scripts/gate.ps1\033[0m\n'
+    printf '  装了 PowerShell 7 之后重试。**不要用 --no-verify 绕过**——\n'
+    printf '  那等于门禁失效，而门禁只在大家都愿意用时才有意义。\n\n'
     exit 1
-}
-info() { printf '\033[36m› %s\033[0m\n' "$1"; }
-ok() { printf '\033[32m✔ %s\033[0m\n' "$1"; }
-
-staged=$(git diff --cached --name-only --diff-filter=ACMR)
-[ -z "$staged" ] && exit 0
-
-# ---------------------------------------------------------------- 1) 明文密钥守卫
-#
-# 分级策略（重要的设计取舍）：
-#   生产代码里出现疑似真 key  → 拦（失败）
-#   测试/夹具/文档里出现假 key → 只警告
-#
-# 为什么分级：员工 P7 反馈说它写的假 key 夹具会被这个守卫直接拦住，
-# 只能把夹具改成更短的形式。这是**门禁误伤合法代码** ——
-# 后果是大家学会用 --no-verify，门禁就废了。守卫要拦住真问题，不能拦住写测试的人。
-#
-# 另外支持行内豁免标记：`ta-allow-fake-secret`（用于确实需要长字符串的夹具，
-# 以及本文件这种"文档里必须举例"的场合）。
-leak_fail=""
-leak_warn=""
-for f in $staged; do
-    [ -f "$f" ] || continue
-    added=$(git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++')
-    [ -z "$added" ] && continue
-    hits=$(printf '%s\n' "$added" | grep -nE '(sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' | grep -v 'ta-allow-fake-secret' || true)
-    [ -z "$hits" ] && continue
-    case "$f" in
-        */tests/* | */test/* | *fixture* | *mock* | *.md | */examples/* | .githooks/*)
-            leak_warn="$leak_warn\n  $f"
-            ;;
-        *)
-            leak_fail="$leak_fail\n  $f"
-            printf '%s\n' "$hits" | sed 's/^/      /'
-            ;;
-    esac
-done
-if [ -n "$leak_warn" ]; then
-    printf '\033[33m! 以下文件（测试/夹具/文档）含疑似密钥形态的字符串，已放行 —— 请确认是假值：\033[0m'
-    printf '%b\n' "$leak_warn"
 fi
-if [ -n "$leak_fail" ]; then
-    fail "以下生产代码文件含疑似明文密钥。请改用 \${secret:name} 或 \${env:VAR}（见 docs/02 §5）。"
-fi
-
-# ---------------------------------------------------------------- 2) 大文件守卫
-big=""
-for f in $staged; do
-    [ -f "$f" ] || continue
-    sz=$(wc -c <"$f" 2>/dev/null || echo 0)
-    if [ "$sz" -gt 1048576 ]; then
-        big="$big\n  $f ($((sz / 1024)) KB)"
-    fi
-done
-if [ -n "$big" ]; then
-    printf '%b\n' "$big"
-    fail "以上文件超过 1MB。确认是否该入库；运行时数据已在 .gitignore 中。"
-fi
-
-# ---------------------------------------------------------------- 3) 分类暂存文件
-rs_files=""
-ts_files=""
-crates=""
-has_toml=0
-
-for f in $staged; do
-    case "$f" in
-        *.rs)
-            rs_files="$rs_files $f"
-            case "$f" in
-                crates/*/*) c="$f"; c=${c#crates/}; c=${c%%/*}; crates="$crates $c" ;;
-                src-tauri/*) crates="$crates tokenagency" ;;
-            esac
-            ;;
-        *.ts | *.tsx) ts_files="$ts_files $f" ;;
-        Cargo.toml) has_toml=1 ;;
-    esac
-done
-
-# 去重
-crates=$(printf '%s\n' $crates | sort -u | tr '\n' ' ')
-
-# ---------------------------------------------------------------- 4) Rust 格式（仅暂存文件）
-if [ -n "$rs_files" ]; then
-    info "rustfmt --check（仅本次暂存的 .rs）"
-    for f in $rs_files; do
-        [ -f "$f" ] || continue
-        rustfmt --edition 2021 --check "$f" >/dev/null 2>&1 \
-            || fail "格式不合格：$f\n  修复：rustfmt --edition 2021 $f   或   cargo fmt --all"
-    done
-fi
-
-# ---------------------------------------------------------------- 5) Clippy（仅受影响的 crate）
-#
-# ⚠️ `--no-deps` 不是可选项。
-#
-# 不加它时 `cargo clippy -p <crate>` 会**连带 lint 整个依赖图**，于是
-# "我的代码干净"被升级成"所有人的代码都干净" —— 而团队是并行开发的，
-# 任何一个人手上有在途代码（哪怕只是别人范围里的一处 `unnecessary_mut_passed`），
-# 就会把**不相干的人**的提交全部卡死。
-#
-# 这个坑真实发生过两次（docs/13 L16）：一次是 ta-subscription 让 workspace 变红，
-# 一次是 ta-subscription 的 M3 在途告警卡住了主管的 docs 提交。
-#
-# 契约是：**每个人为自己的 crate 负责**。`--no-deps` 仍然会**编译**依赖
-# （所以"我错误地使用了上游 API"照样会被抓住），只是不去 lint 别人的代码 ——
-# 那由他们自己的门禁负责。
-if [ -n "$crates" ]; then
-    for c in $crates; do
-        info "cargo clippy -p $c --all-targets --no-deps -- -D warnings"
-        if ! cargo clippy -p "$c" --all-targets --no-deps --quiet -- -D warnings 2>&1; then
-            fail "clippy 未通过（$c）。
-  若报错文件**在 $c 里** —— 是你自己的问题，修掉再提交。
-  若报错文件**不在 $c 里** —— 说明某个依赖当前编不过（别人在途）。
-  那不是你的错，但你也没法在树不完整时验证自己：请等对方修好，或只提交不依赖 Rust 的文件。"
-        fi
-    done
-elif [ "$has_toml" -eq 1 ]; then
-    # ⚠️ 必须带 --all-targets：`cargo check --workspace` 是**非 test** 编译，
-    # `#[cfg(test)]` 里的错误（include_str! 路径、类型错）它完全看不见。
-    # 员工 P5 就是因为这个洞，让一个坏掉的测试目标藏了很久（docs/13 L18）。
-    info "仅 Cargo.toml 变更，跑 cargo check --workspace --all-targets"
-    cargo check --workspace --all-targets --quiet || fail "workspace 检查未通过（含 test target）"
-fi
-
-# ---------------------------------------------------------------- 6) 前端类型
-if [ -n "$ts_files" ]; then
-    if [ -d node_modules ]; then
-        info "tsc --noEmit"
-        npx --no-install tsc --noEmit || fail "TypeScript 类型检查失败。"
-    else
-        printf '\033[33m! 跳过 tsc：node_modules 不存在（先 npm install）\033[0m\n'
-    fi
-fi
-
-ok "pre-commit 通过"

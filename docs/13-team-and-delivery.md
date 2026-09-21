@@ -267,6 +267,76 @@ pwsh -File scripts/who.ps1 -Uncommitted                     # 在途未提交的
 
 ---
 
+# 7.6 PR 流程：员工不再直提 master（第 11 轮，用户要求）
+
+> 用户原话："后续的过程中可以用PR形式，你的每个员工自己fork出去，自己commit，
+> 最后确认之后提PR，给你审核，越来越像真实团队。"
+
+## 7.6.1 为什么要改
+
+直提 master 有两个真实的痛，都发生过：
+
+1. **在途半成品落在主干上。** E2 写 `diag` 的那段时间 ta-core 编不过，
+   E4 / E5 / E3 全被挡住一轮（[L16](#45-经验教训边做边学持续累积)）。
+   根因不是 E2 写得慢，而是"**在途状态**"和"**主干状态**"是同一个东西。
+2. **没有评审点。** main 变成"谁的活干到哪算哪"，而不是"过审的东西"。
+
+## 7.6.2 怎么用（员工）
+
+```powershell
+# 提 PR（可反复调用：每次往自己的分支上追加一个提交，保留里程碑粒度）
+pwsh -File scripts/pr.ps1 -As E4 -Paths crates/ta-kernel -Title "B4：内核 stdout/stderr 转发进 tracing" -MessageFile msg.txt
+
+# 看所有在提的 PR / 看某一个 PR 的完整 diff
+pwsh -File scripts/pr.ps1 -List
+pwsh -File scripts/pr.ps1 -Show wp/e4
+```
+
+- `-Paths` 必须落在你的独占范围内（权威定义：`scripts/_team.ps1` 的 `$Scopes`）。
+  确需范围外文件：`-Override "一句话原因"`（写进 trailer，可审计）。
+- 多行中文**必须**用 `-MessageFile`（PowerShell 会把多行参数切碎）。
+- 提交前会跑 **`scripts/gate.ps1`** —— 与 git 钩子**同一份**检查；不过就不产生提交。
+- `Cargo.lock` 是每个员工的**隐式范围**：改任何 crate 的 `Cargo.toml` 都会连带改它，
+  不带上的话 PR 会并入新依赖却留下不一致的锁文件。
+
+## 7.6.3 怎么实现的（为什么不影响并行）
+
+关键点：**不需要第二个 worktree，也不动工作区**。
+
+`pr.ps1` 用一个**临时 index**（`GIT_INDEX_FILE`）从基点 `read-tree`，只把该员工范围内的
+改动 `git add` 进去，再 `git write-tree` + `git commit-tree` 造出提交，最后
+`git update-ref refs/heads/wp/<员工>` 挪分支指针。**全程不切分支、不动 HEAD、
+不动真实索引、不动工作区文件。**
+
+所以五个员工仍在同一棵树上并行干活，而 `master` 只接收过审的东西。
+分支名 `wp/<员工>` 就是身份，`git log` 直接可溯源。
+
+> **为什么不用 worktree：** 员工的文件工具按**会话工作区根**解析相对路径。
+> 给每人一个 worktree 就等于要求所有人在所有工具里改用绝对路径 ——
+> 一次疏忽就会**静默**改到主树，隔离变成假象。用临时 index 拿到同样的
+> "分支隔离 + 评审点"，却没有这个失败模式。**能用一个便宜机制消掉的失败模式，
+> 不要用纪律去防。**
+
+## 7.6.4 怎么评审（主管）
+
+1. `pwsh -File scripts/pr.ps1 -Show wp/e4` —— 读 diff。
+2. **门禁必须在"合并后的结果"上跑**，而不是只在 PR 分支上跑：
+   PR 之间可能有接口依赖（E5 的装配函数要等 E2 的契约），
+   只测单个 PR 会漏掉组合态。
+3. 合并：`git merge --no-ff wp/e4`（保留 PR 边界，便于回滚）。
+   注意 `git merge` **不触发 `pre-commit`**（git 只跑 `pre-merge-commit`），
+   所以**主管的门禁就是唯一门禁** —— 这就是第 2 步不能省的原因。
+4. 评审不通过：主管给回"现象 → 为什么是问题 → 期望 → 验收方式"，
+   员工在同一条 PR 分支上追加提交（不新开分支，讨论留在原地）。
+5. 合并后删除分支并保留提交信息里的 `PR-Branch:` trailer 作为溯源线索。
+
+## 7.6.5 主管仍可直提
+
+`scripts/commit.ps1` 只允许 `lead` / `mech` 使用（员工调用会被拒绝并提示转 `pr.ps1`）。
+主管直提用于：契约文档、脚本、`.githooks`、根 `Cargo.toml`、以及**合并 PR**。
+
+---
+
 # 8. 交付与事件记录
 
 > 每次交付/故障/整改都记一行。一年后还能查"谁做过什么、我判过什么"。

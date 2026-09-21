@@ -63,47 +63,40 @@ if ($Message -and $MessageFile) {
     throw "-Message 与 -MessageFile 只能给一个"
 }
 
-# ---------------------------------------------------------------- 身份
-$Identities = @{
-    'lead' = @{ Name = '技术主管'; Email = 'lead@tokenagency.local'; Desc = '骨架/契约/集成/打包' }
-    'E1'   = @{ Name = 'E1 前端与领域官'; Email = 'e1@tokenagency.local'; Desc = '前端 + 领域与配置' }
-    'E2'   = @{ Name = 'E2 决策与可观测官'; Email = 'e2@tokenagency.local'; Desc = '决策/账本 + 可观测' }
-    'E3'   = @{ Name = 'E3 数据与桌面官'; Email = 'e3@tokenagency.local'; Desc = '数据/密钥 + 桌面层' }
-    'E4'   = @{ Name = 'E4 网络官'; Email = 'e4@tokenagency.local'; Desc = '网络接入（内核 + 订阅）' }
-    'E5'   = @{ Name = 'E5 网关官'; Email = 'e5@tokenagency.local'; Desc = '网关（关键路径）' }
-    'mech' = @{ Name = '机动岗'; Email = 'mech@tokenagency.local'; Desc = 'spike/补强/支援' }
+# ---------------------------------------------------------------- 身份与文件范围
+#
+# **唯一真相源在 scripts/_team.ps1**（commit.ps1 与 pr.ps1 共用同一份）。
+# 原来这里自带一份、docs/13 §1.2 又抄一份，两处不一致让 E1 每提交一次前端
+# 都要 `-Override`。同一事实有两个真相源，就会漂移。
+. "$PSScriptRoot\_team.ps1"
+
+# ---------------------------------------------------------------- 谁可以直提 master
+#
+# 第 11 轮改的流程：**员工不再直提 master**，改为在自己分支上提 PR
+# （scripts/pr.ps1），由主管评审后合并。
+#
+# 起因是真实的痛：员工直提让"在途的半成品"落在 main 上 —— E2 写 diag 的那段时间
+# ta-core 编不过，E4/E5/E3 全被挡住一轮（docs/13 L16）；而且 main 因此没有评审点，
+# 变成"谁的活干到哪算哪"，而不是"过审的东西"。
+if ($As -ne 'lead' -and $As -ne 'mech') {
+    Write-Host ""
+    Write-Host "✘ 员工不再直接提交 master（$As）。" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  改成提 PR —— 你自己的分支，主管评审后合并：" -ForegroundColor Yellow
+    Write-Host "    pwsh -File scripts/pr.ps1 -As $As -Paths <你的范围> -Title ""..."" -MessageFile <临时文件>"
+    Write-Host "    pwsh -File scripts/pr.ps1 -List                 # 看所有在提的 PR"
+    Write-Host ""
+    Write-Host "  为什么：main 只接收过审的东西。你在途的半成品不该挡住别人的编译，" -ForegroundColor Cyan
+    Write-Host "  也不该在没过评审时就成为「主干」。你的工作一点都不会丢 ——" -ForegroundColor Cyan
+    Write-Host "  pr.ps1 用临时索引造提交，**不切分支、不动工作区**，可反复调用追加提交。" -ForegroundColor Cyan
+    Write-Host ""
+    exit 1
 }
 
 # ---------------------------------------------------------------- 文件范围
 #
-# ⚠️ **这里才是"独占文件范围"的权威定义** —— 它是机械执行的检查（越界直接拒），
-# docs/13 §1.2 的表格只是它的可读版本。两处若不一致，**以本表为准并立刻改表格**。
-#
-# 第 11 轮修过一次：原表把前端路径挂在 E5 名下、且 E3 没有 `src-tauri`，
-# 与校正后的名册（docs/13 §1.2）不符，导致 E1 每提交一次前端都要 `-Override`。
-# 只有一处真相源还不够 —— 还要让不一致**尽早暴露**：改这里时请顺手看 §1.2。
-$Scopes = @{
-    'lead' = @('*')
-    'E1'   = @('src', 'crates/ta-core/src/domain', 'crates/ta-core/src/config', 'config.example.yaml')
-    'E2'   = @(
-        'crates/ta-core/src/routing', 'crates/ta-core/src/sticky',
-        'crates/ta-core/src/quota', 'crates/ta-core/src/pricing',
-        'crates/ta-core/src/metering', 'crates/ta-core/src/diag'
-    )
-    'E3'   = @('crates/ta-store', 'crates/ta-secrets', 'src-tauri')
-    'E4'   = @('crates/ta-kernel', 'crates/ta-subscription')
-    'E5'   = @('crates/ta-gateway')
-    'mech' = @('*')
-}
-
-function Test-InScope($path, $scopes) {
-    if ($scopes -contains '*') { return $true }
-    $p = $path -replace '\\', '/'
-    foreach ($s in $scopes) {
-        if ($p -eq $s -or $p.StartsWith("$s/")) { return $true }
-    }
-    return $false
-}
+# `$Scopes` / `$Identities` / `Test-InScope` 全部来自上面 dot-source 的
+# `scripts/_team.ps1` —— 那是唯一真相源，本文件**不再自带一份**。
 
 $id = $Identities[$As]
 $scope = $Scopes[$As]
