@@ -102,19 +102,25 @@ fn source_of(has_details: bool) -> UsageSource {
     }
 }
 
+/// 某协议下 usage 容器的候选路径（**唯一落点**：`upstream_total` 与
+/// [`metered_usage_for`] 的"有没有 usage"判定共用同一份，避免两处各写一套）。
+fn usage_paths(protocol: Protocol) -> &'static [&'static str] {
+    match protocol {
+        Protocol::Openai | Protocol::Custom | Protocol::OpenaiResponses => {
+            &["/usage", "/response/usage"]
+        }
+        Protocol::Anthropic => &["/usage"],
+        Protocol::Gemini => &["/usageMetadata", "/response/usageMetadata"],
+    }
+}
+
 /// 上游自报的 token 总数（用于对账 / 断言归一化不重复计数）。
 ///
 /// - OpenAI Chat / Responses：`total_tokens`
 /// - Gemini：`totalTokenCount`
 /// - Anthropic：**不提供总数**（input / output / cache 各自独立），返回 `None`
 pub fn upstream_total(protocol: Protocol, raw: &Value) -> Option<u64> {
-    let us = match protocol {
-        Protocol::Openai | Protocol::Custom | Protocol::OpenaiResponses => {
-            usage_container(raw, &["/usage", "/response/usage"])
-        }
-        Protocol::Anthropic => usage_container(raw, &["/usage"]),
-        Protocol::Gemini => usage_container(raw, &["/usageMetadata", "/response/usageMetadata"]),
-    };
+    let us = usage_container(raw, usage_paths(protocol));
     match protocol {
         Protocol::Anthropic => None,
         Protocol::Gemini => us.pointer("/totalTokenCount").and_then(|x| x.as_u64()),
@@ -319,28 +325,66 @@ pub fn estimated_usage(body: &Value) -> MeteredUsage {
 
 /// ★ 用量口径的**唯一决策点**：上游到底给没给 usage —— 这个事实只在这里被判定一次。
 ///
-/// | 入参 | 含义 | 结果 |
+/// 判定**不靠调用方给的 `Some`/`None`**，而是看**有没有 usage 数据的证据**：
+///
+/// | 入参形态 | 事实 | 结果 |
 /// |---|---|---|
-/// | `raw = None` | 上游响应里**根本没有** usage 字段 | [`estimated_usage`] → `UsageSource::Estimated` |
-/// | `raw = Some(v)` | 上游确实给了（哪怕内容为空对象） | 对应协议的归一化 → `Upstream` / `UpstreamPartial` |
+/// | `None` | 响应里根本没有这个字段 | [`estimated_usage`] → `Estimated` |
+/// | `Some(Null)` | 字段存在但值是 `null`（流式不带 `include_usage` 的常见形态） | `Estimated` |
+/// | `Some({"usage": null})` | 同上，只是我们在整包里看 | `Estimated` |
+/// | `Some({"usage": {}})` | 上游**明确给了**一个空的 usage 对象 | 归一化 → `UpstreamPartial`（total 0） |
+/// | `Some({"usage": {…}})` / 容器本身 | 上游给了数据 | 归一化 → `Upstream` / `UpstreamPartial` |
+/// | `Some({"choices": []})` | 整包里没有 usage 的任何证据 | `Estimated` |
 ///
-/// **为什么必须把 `None` 与 `Some(json!({}))` 分开**（这是这个函数存在的全部理由）：
-/// 两者看起来都是"没有可用的 token 数"，但事实完全不同 ——
-/// `None` 是"我们不知道"，只能估算并**如实标 `Estimated`**；`Some({})` 是"上游说 0"，
-/// 那是上游的数据，标 `Estimated` 反而把上游的账改成了我们的估计。
-/// 一旦让调用方（网关）自己用 `is_null()` / `is_empty()` 去猜，这两件事就会在**第二个地方**
-/// 被重新解释一次 —— 于是同一份响应的口径取决于谁先判的。**判定只做一次，就在这里。**
+/// **三条不许含糊的理由**：
+/// 1. `null` **不是** 0。把 `"usage": null` 记成"上游说 0 token"是**静默少记账** ——
+///    成本中心显示 0，而事实是"我们不知道"，正是 [11 §6] 铁律 4 要挡的那种冒充。
+///    （这条是 E1 的同行评审抓出来的：我原实现只按 `Some`/`None` 分，`null` 会落进
+///    `UpstreamPartial`；实证输出 `PROBE raw={"usage":null} -> source=UpstreamPartial total=0`。）
+/// 2. `Some(v)` 本身**不证明**上游给了 usage —— 调用方完全可能把整包响应塞进来。
+///    所以这里再验一次"有没有证据"：空对象 `{}` 只有在**协议路径上**（`{"usage": {}}`）
+///    才算"上游说 0"；一个既没有 `usage`、也没有任何 token 字段的整包 → 我们不知道。
+/// 3. 判定只做一次、只在这里 —— 让网关自己用 `is_null()`/`is_empty()` 猜，就会在第二个地方
+///    把同一份响应重新解释一遍（第二套口径）。
 ///
-/// `v` 可以是整包响应（`{"usage":{…}}`），也可以就是 usage 容器本身
-/// （[`usage_container`] 两者都认），各协议（OpenAI / Anthropic / Gemini）的嵌套差异由
-/// 对应的 `normalize_*` 负责。
+/// `v` 可以是整包响应（`{"usage":{…}}`），也可以就是 usage 容器本身；各协议
+/// （OpenAI / Anthropic / Gemini）的嵌套差异由各自的 `normalize_*` 负责。
 ///
-/// **不猜不估算**（[11 §6] 铁律 4）：本函数**只会**在"上游没给"时估算，且估算必带 `Estimated`。
+/// **调用纪律**：一次请求**只调用一次**（用最终形态，不要在流式每个分片上各调一次）。
 pub fn metered_usage_for(protocol: Protocol, raw: Option<&Value>, body: &Value) -> MeteredUsage {
     match raw {
+        Some(v) if usage_is_absent(protocol, v) => estimated_usage(body),
         Some(v) => DefaultMeter.normalize(protocol, v),
         None => estimated_usage(body),
     }
+}
+
+/// 上游响应里"到底有没有 usage 数据"——**只看证据，不看调用方给了 `Some` 还是 `None`**。
+fn usage_is_absent(protocol: Protocol, raw: &Value) -> bool {
+    if raw.is_null() {
+        return true; // `usage: null` = 上游说"没有"，与"说 0"是两回事
+    }
+    for path in usage_paths(protocol) {
+        match raw.pointer(path) {
+            // 路径上是 null → 明确没有数据
+            Some(v) if v.is_null() => return true,
+            // 路径上是对象（**含空对象**）→ 上游给了容器，空对象就是"上游说 0"
+            Some(v) if v.is_object() => return false,
+            // 非对象也非 null（`{"usage": 5}` 这种脏数据）→ 不能当数据用，继续看别的路径
+            _ => {}
+        }
+    }
+    // 协议路径一条都没命中：调用方可能直接给了 usage 容器本身。
+    // 只有"看起来就是 usage 容器"才认 —— 否则就是"整包里没有 usage 的证据"。
+    !looks_like_usage_container(raw)
+}
+
+/// 一个对象自己是不是 usage 容器（**不依赖协议表**：四家的键名拼写里都带 `token`）。
+///
+/// 只用于"整包里没走到任何协议路径"的兜底判断，所以它宁可**保守**：
+/// 认不出来就当"没有数据"，走估算（诚实），而不是当成"上游说 0"（冒充）。
+fn looks_like_usage_container(v: &Value) -> bool {
+    v.as_object().is_some_and(|m| m.keys().any(|k| k.to_ascii_lowercase().contains("token")))
 }
 
 // ---------------------------------------------------------------- 测试
@@ -986,5 +1030,73 @@ mod tests {
         let m = metered_usage_for(Protocol::Openai, Some(&container), &body);
         assert_eq!(m.source, UsageSource::UpstreamPartial);
         assert_eq!(m.usage.total(), 10);
+
+        // 四家的 bare 容器拼写都要认（判据是"键名里带 token"，不依赖协议表）
+        let gemini = json!({"promptTokenCount": 4, "totalTokenCount": 4});
+        let m = metered_usage_for(Protocol::Gemini, Some(&gemini), &body);
+        assert_eq!(m.source, UsageSource::UpstreamPartial, "Gemini 裸容器要认");
+        assert_eq!(m.usage.total(), 4);
+    }
+
+    // ------------------------------------------------ 评审 A1：null 不是 0
+
+    /// E1 的同行评审阻塞项：`"usage": null` 不能被记成"上游说 0 token"。
+    ///
+    /// 修前实证（真实输出，评审时跑的）：
+    /// `PROBE raw=Null -> source=UpstreamPartial total=0`
+    /// `PROBE raw={"usage":null} -> source=UpstreamPartial total=0`
+    #[test]
+    fn usage_null_is_not_upstream_zero() {
+        let body = json!({"messages": [{"role": "user", "content": "x"}]});
+        let m = metered_usage_for(Protocol::Openai, Some(&Value::Null), &body);
+        assert_eq!(m.source, UsageSource::Estimated, "null 是「不知道」，不是「上游说 0」");
+        assert!(m.usage.total() > 0, "不知道 → 估算并如实标注，而不是记 0");
+    }
+
+    #[test]
+    fn a_null_usage_field_inside_the_response_is_not_zero() {
+        let body = json!({"messages": [{"role": "user", "content": "x"}]});
+        for protocol in [Protocol::Openai, Protocol::Anthropic, Protocol::Gemini] {
+            let raw = match protocol {
+                Protocol::Gemini => json!({"usageMetadata": null}),
+                Protocol::OpenaiResponses => json!({"response": {"usage": null}}),
+                _ => json!({"usage": null}),
+            };
+            let m = metered_usage_for(protocol, Some(&raw), &body);
+            assert_eq!(
+                m.source,
+                UsageSource::Estimated,
+                "{protocol:?}：usage 为 null 时不许冒充「上游说 0」（raw={raw}）"
+            );
+            assert!(m.usage.total() > 0);
+        }
+        // Responses 的嵌套路径单独走一遍（上面循环里那个分支没被枚举到）
+        let raw = json!({"response": {"usage": null}});
+        let m = metered_usage_for(Protocol::OpenaiResponses, Some(&raw), &body);
+        assert_eq!(m.source, UsageSource::Estimated);
+    }
+
+    /// `Some(v)` 本身不证明"上游给了"：整包响应里没有任何 usage 证据时也应该走估算。
+    #[test]
+    fn a_response_without_any_usage_evidence_is_not_upstream_zero() {
+        let body = json!({"messages": [{"role": "user", "content": "x"}]});
+        for raw in [json!({"choices": []}), json!({}), json!({"usage": 5})] {
+            let m = metered_usage_for(Protocol::Openai, Some(&raw), &body);
+            assert_eq!(
+                m.source,
+                UsageSource::Estimated,
+                "没有 usage 证据就只能估算，不能记成「上游说 0」（raw={raw}）"
+            );
+            assert!(m.usage.total() > 0, "raw={raw}");
+        }
+    }
+
+    /// 反例护栏：**明确给了容器**时不许退化成估算（否则"宁可估算"会变成另一头的错账）。
+    #[test]
+    fn an_explicit_empty_container_still_means_upstream_zero() {
+        let body = json!({"messages": [{"role": "user", "content": "x"}]});
+        let m = metered_usage_for(Protocol::Openai, Some(&json!({"usage": {}})), &body);
+        assert_eq!(m.source, UsageSource::UpstreamPartial, "显式的空 usage 对象 = 上游说 0");
+        assert_eq!(m.usage.total(), 0);
     }
 }
