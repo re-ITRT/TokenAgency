@@ -190,6 +190,13 @@ pub trait PhaseSink: Send + Sync {
 ///
 /// 这是"就绪"的**唯一对外口径**：谁想知道应用能不能用，都读这里，
 /// 而不是各自去猜（否则托盘绿、看板灰这种事一定会出现）。
+///
+/// ⚠️ **已知待办（评审 A2）**：本 holder 是**一次性收敛**的 —— 编排 `Ready` 之后
+/// 没有任何东西再更新它，所以内核在那之后崩溃/被杀时，它会继续报 `Ready`
+/// （**陈旧绿灯**，是"内核静默降级"的镜像：这次是我们的 UI 静默说谎）。
+/// 补看护循环（`supervisor.supervise(&token)` + 一条"由 `Ready` 回落"的反向写回路径，
+/// `token` 与退出路径绑定）是已知待办，登记在主管的后续工作包。
+/// 在那之前，"唯一对外口径"这句话**只覆盖收敛那一刻**，不是持续保证。
 #[derive(Debug)]
 pub struct BootPhaseHolder {
     inner: RwLock<HolderInner>,
@@ -482,6 +489,9 @@ fn kernel_label(state: &KernelState) -> &'static str {
 /// **这是"转绿"的唯一定义**：只有编排收敛到 `Ready`（= 内核与网关都真的就绪）
 /// 才可能出现 `Normal`（绿）。启动中一律 `Paused`（灰），降级 `Degraded`（黄），
 /// 失败 `Error`（红）。绝不在"还没编排完"时先报绿。
+///
+/// ⚠️ 它映射的是**编排当时的结论**。收敛之后没人复检内核，所以内核后来崩溃时
+/// 这里仍会返回绿色（评审 A2 的陈旧绿灯）—— 修法见 [`BootPhaseHolder`] 的注记。
 pub fn tray_status_for(phase: BootPhase) -> TrayStatus {
     match phase {
         BootPhase::Ready => TrayStatus::Normal,
