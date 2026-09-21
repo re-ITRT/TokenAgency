@@ -392,10 +392,12 @@ subscription / subscription_version
 | TA-1002 | `tokenagency_rate_limited` | 429 | 本机 RPM 超限 | 是 |
 | TA-1003 | `tokenagency_body_too_large` | 413 | 超过 `max_body_mb` | 否 |
 | TA-1004 | `tokenagency_malformed_request` | 400 | body 不是合法 JSON / 缺 model | 否 |
+| TA-1005 | `tokenagency_gateway_paused` | 503 | **用户主动暂停了网关**（不是故障） | 否 |
 | TA-2001 | `tokenagency_model_not_found` | 404 | 逻辑模型不存在 | 否 |
 | TA-2002 | `tokenagency_no_route` | 400 | 通配路径无法确定模型 | 否 |
 | TA-2003 | `tokenagency_no_viable_channel` | 415 | 候选被策略/标签全部排除 | 否 |
-| TA-2004 | `tokenagency_all_channels_exhausted` | 402 | 全部候选额度耗尽 | 否 || TA-2005 | `tokenagency_all_channels_failed` | 502 | 全部候选失败 | 是（客户端层面） |
+| TA-2004 | `tokenagency_all_channels_exhausted` | 402 | 全部候选额度耗尽 | 否 |
+| TA-2005 | `tokenagency_all_channels_failed` | 502 | 全部候选失败 | 是（客户端层面） |
 | TA-2006 | `tokenagency_capability_loss` | 415 | 跨协议转换会丢内容（拒绝转发） | 否 |
 | TA-3001 | `tokenagency_kernel_not_ready` | 503 | 内核未就绪且无 direct 通道 | 是 |
 | TA-3002 | `tokenagency_lane_unavailable` | 503 | 该 lane 无可用节点 | 是 |

@@ -53,6 +53,15 @@ pub enum TaError {
     PlaintextSecret,
 
     // ---- 存储 / 内部 ----
+    /// **用户主动暂停了网关** —— 不是故障，也不是"上游没了"。
+    ///
+    /// 为什么要单独一个码（而不是复用 3001/9001）：这个错误是**用户自己按出来的**，
+    /// 必须一眼可辨。三条候选都被否掉：
+    /// `TA-3001 KernelNotReady`(503) 会让用户以为内核坏了；`TA-1002 RateLimited`(429) 是
+    /// `retryable=true`，**客户端会对着暂停的网关猛重试**；`TA-9001 Internal` 的对外 type
+    /// 叫 `tokenagency_internal`，读起来像"我们崩了"。所以给 503 + **不可重试** + 自己的 type。
+    #[error("网关已被暂停：这是你自己的操作，不是故障。点「恢复网关」即可继续。")]
+    GatewayPaused,
     #[error("存储错误：{0}")]
     Store(String),
     #[error("内核错误：{0}")]
@@ -81,6 +90,7 @@ impl TaError {
             RateLimited => "TA-1002",
             BodyTooLarge { .. } => "TA-1003",
             MalformedRequest(_) => "TA-1004",
+            GatewayPaused => "TA-1005",
             ModelNotFound(_) => "TA-2001",
             NoRoute => "TA-2002",
             NoViableChannel { .. } => "TA-2003",
@@ -106,6 +116,7 @@ impl TaError {
             RateLimited => "tokenagency_rate_limited",
             BodyTooLarge { .. } => "tokenagency_body_too_large",
             MalformedRequest(_) => "tokenagency_malformed_request",
+            GatewayPaused => "tokenagency_gateway_paused",
             ModelNotFound(_) => "tokenagency_model_not_found",
             NoRoute => "tokenagency_no_route",
             NoViableChannel { .. } => "tokenagency_no_viable_channel",
@@ -134,7 +145,7 @@ impl TaError {
             NoViableChannel { .. } | CapabilityLoss(_) => 415,
             AllChannelsExhausted => 402,
             AllChannelsFailed { .. } => 502,
-            KernelNotReady | LaneUnavailable { .. } => 503,
+            KernelNotReady | LaneUnavailable { .. } | GatewayPaused => 503,
             CredentialInvalid { .. } => 401,
             Referenced { .. } => 409,
             ConfigInvalid { .. } | PlaintextSecret => 400,
