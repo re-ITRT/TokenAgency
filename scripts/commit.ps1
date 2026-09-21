@@ -4,7 +4,7 @@
 #   1. 主管排查"谁动了 X"时，之前只能靠文件时间戳**推断**，结果推错了人（docs/13 L17）。
 #      不同提交身份能从根上解决：`git log --format='%an'` 直接出答案。
 #   2. 越界修改（改了不属于自己的文件）以前只能靠人工看 diff。
-#      这里把 docs/12 §1.2 的编制表变成**机械检查** —— 路径不在你的范围内直接拒绝。
+#      这里把 docs/13 §1.2 的编制表变成**机械检查** —— 路径不在你的范围内直接拒绝。
 #
 # 用法：
 #   pwsh -File scripts/commit.ps1 -As E4 -Paths crates/ta-subscription -MessageFile msg.txt -AgentId <id>
@@ -66,26 +66,33 @@ if ($Message -and $MessageFile) {
 # ---------------------------------------------------------------- 身份
 $Identities = @{
     'lead' = @{ Name = '技术主管'; Email = 'lead@tokenagency.local'; Desc = '骨架/契约/集成/打包' }
-    'E1'   = @{ Name = 'E1 领域官'; Email = 'e1@tokenagency.local'; Desc = '领域与配置' }
-    'E2'   = @{ Name = 'E2 决策官'; Email = 'e2@tokenagency.local'; Desc = '决策与账本' }
-    'E3'   = @{ Name = 'E3 数据官'; Email = 'e3@tokenagency.local'; Desc = '数据与密钥' }
-    'E4'   = @{ Name = 'E4 网络官'; Email = 'e4@tokenagency.local'; Desc = '网络接入' }
+    'E1'   = @{ Name = 'E1 前端与领域官'; Email = 'e1@tokenagency.local'; Desc = '前端 + 领域与配置' }
+    'E2'   = @{ Name = 'E2 决策与可观测官'; Email = 'e2@tokenagency.local'; Desc = '决策/账本 + 可观测' }
+    'E3'   = @{ Name = 'E3 数据与桌面官'; Email = 'e3@tokenagency.local'; Desc = '数据/密钥 + 桌面层' }
+    'E4'   = @{ Name = 'E4 网络官'; Email = 'e4@tokenagency.local'; Desc = '网络接入（内核 + 订阅）' }
     'E5'   = @{ Name = 'E5 网关官'; Email = 'e5@tokenagency.local'; Desc = '网关（关键路径）' }
     'mech' = @{ Name = '机动岗'; Email = 'mech@tokenagency.local'; Desc = 'spike/补强/支援' }
 }
 
-# ---------------------------------------------------------------- 文件范围（源自 docs/12 §1.2）
+# ---------------------------------------------------------------- 文件范围
+#
+# ⚠️ **这里才是"独占文件范围"的权威定义** —— 它是机械执行的检查（越界直接拒），
+# docs/13 §1.2 的表格只是它的可读版本。两处若不一致，**以本表为准并立刻改表格**。
+#
+# 第 11 轮修过一次：原表把前端路径挂在 E5 名下、且 E3 没有 `src-tauri`，
+# 与校正后的名册（docs/13 §1.2）不符，导致 E1 每提交一次前端都要 `-Override`。
+# 只有一处真相源还不够 —— 还要让不一致**尽早暴露**：改这里时请顺手看 §1.2。
 $Scopes = @{
     'lead' = @('*')
-    'E1'   = @('crates/ta-core/src/domain', 'crates/ta-core/src/config', 'config.example.yaml')
+    'E1'   = @('src', 'crates/ta-core/src/domain', 'crates/ta-core/src/config', 'config.example.yaml')
     'E2'   = @(
         'crates/ta-core/src/routing', 'crates/ta-core/src/sticky',
         'crates/ta-core/src/quota', 'crates/ta-core/src/pricing',
-        'crates/ta-core/src/metering'
+        'crates/ta-core/src/metering', 'crates/ta-core/src/diag'
     )
-    'E3'   = @('crates/ta-store', 'crates/ta-secrets')
+    'E3'   = @('crates/ta-store', 'crates/ta-secrets', 'src-tauri')
     'E4'   = @('crates/ta-kernel', 'crates/ta-subscription')
-    'E5'   = @('crates/ta-gateway', 'src-tauri', 'src/pages', 'src/app', 'src/stores', 'src/shared')
+    'E5'   = @('crates/ta-gateway')
     'mech' = @('*')
 }
 
@@ -115,7 +122,7 @@ if ($outside.Count -gt 0) {
         Write-Host "  你的范围：" -ForegroundColor DarkGray
         $scope | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         Write-Host ""
-        Write-Host "  这是 docs/12 §1.2 的编制表。确实需要提交范围外的文件时：" -ForegroundColor Yellow
+        Write-Host "  这是 docs/13 §1.2 的编制表。确实需要提交范围外的文件时：" -ForegroundColor Yellow
         Write-Host "    -Override ""一句话说明原因""" -ForegroundColor Yellow
         Write-Host "  （会写进提交 trailer，可审计）" -ForegroundColor DarkGray
         exit 2
