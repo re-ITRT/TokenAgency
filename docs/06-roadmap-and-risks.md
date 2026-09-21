@@ -34,13 +34,13 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 |---|---|---|---|
 | K1 | ✅ **已验证（见 §1.6）：成立** —— `listeners` 增删可靠 `PUT /configs?force=true` 生效**且进程不重启**（PID 不变） | 当前 `apply()` 策略是"能 reload 就 reload，报错才 restart"。**若 reload 静默成功但 listener 陈旧，则策略是错的** —— 会出现"通道指向一个已关闭的端口"，且没有任何报错 | 改端口 / 加删 lane → reload → 断言**新端口在 listen 且旧端口已关** |
 | K2 | ✅ **已验证（见 §1.6）：成立** —— 冷启动创建指向 `use: [provider]` 的组**不失败**，组当场可用（节点以 `alive:false` 存在） | 启动即失败，或通道静默不可用 | 冷启动（无缓存）直接起，看日志与 `GET /proxies` |
-| K3 | `proxy-groups` 上的 `filter` / `exclude-filter` 与 `use`（provider）可同时用 | `filter` lane 全部失效 | 生成一个带 filter 的组，看节点数与正则是否吻合 |
+| K3 | ✅ **已验证（见 §1.6）：成立** —— `filter`/`exclude-filter` 与 `use` 可同用。**但 filter 匹配不到节点时会静默变 `[COMPATIBLE]`** → `config_gen` 必须显式写 `empty-fallback: REJECT` | `filter` lane 全部失效 | 生成一个带 filter 的组，看节点数与正则是否吻合 |
 | K4 | ✅ **已验证（见 §1.6）：成立** —— `listeners[].proxy` 可指**裸节点名**、**带 emoji 的组名**、`DIRECT`，路由日志确认按目标走。**但内核不校验**：指不存在的名字也照样绑定成功、只在请求时炸 → `config_gen` 必须自己校验 | 线路分配的核心机制失效（docs/04 §7.1 全靠这条） | 两种各配一条 lane，`curl -x` 验证出口 |
-| K5 | 严格解码：`select` 组多余的 `url/interval/tolerance`、`header` 用列表形式 `User-Agent: [...]`、`find-process-mode: off`、空集合 `proxy-providers: {}` / `proxy-groups: []` / `listeners: []` 都被接受 | 内核启动失败（当前按模板逐字写，未证实空集合） | 逐项最小配置试起 |
+| K5 | ✅ **已验证（见 §1.6）：成立且比担心的大度** —— 多余字段、`header` 列表形式、`find-process-mode: off`、空集合（`proxy-providers: {}` / `proxy-groups: []` / `listeners: []`）**全部被接受**。但反过来说明"内核不报错 ≠ 配置正确" | 内核启动失败（当前按模板逐字写，未证实空集合） | 逐项最小配置试起 |
 | K6 | ✅ **已验证（见 §1.6）：成立** —— `mixed-port: 0` 确实关闭默认入站（只剩 REST + 我们显式开的 lane）→ **生成配置永远写 0**，I1 由结构保证而非靠检查 | 会多一个监听端口 → 违反 I1 入口唯一 | `netstat` 断言 |
 | K7 | ⚠️ **已验证（见 §1.6）：字段名全部真实存在，但有 4 处偏差会让 `parse_snapshot` 解析错误** —— `providers` 是**对象不是数组**、`type` 是**大写** `Selector`/`Shadowsocks`、**provider 节点不在 `/proxies` 顶层**（组 `all` 会悬空）、内置伪节点 `DIRECT/REJECT/PASS/COMPATIBLE…` 混在列表里 | 我的 wiremock 测的是"我以为的内核"。**这是全清单里最需要重验的一条** —— UI 的线路下拉完全依赖它 | 用 P5 提供的 `RawSnapshot::fetch` dump 真 JSON，与假设逐字段对比 |
 | K8 | ✅ **已验证（见 §1.6）：担心的坏事没发生** —— 强杀（`Stop-Process -Force`）后重启，**选中项仍保留**（`store-selected` 在选择变更时就写 `cache.db`，不是退出时写）→ **不需要为它做优雅退出** | 若 `profile.store-selected: true` 的选中项需优雅退出才落盘，**强杀会导致重启后选中的节点丢失** —— 直接破坏"线路分配"的用户体验 | 切节点 → 杀 → 重启 → 看选中是否保留 |
-| K9 | `AssignProcessToJobObject` 在受限沙箱里可用 | 失败会降级为 warn + `taskkill /T` 兜底，孤儿进程风险 ↑ | 在有沙箱的机器上确认 |
+| K9 | ⏸ **本轮无法验证** —— 需要一台有沙箱限制的机器，当前开发环境是 full-access，测了也不代表受限场景。M1 联调时在真实安装环境（普通用户权限）里补 | 失败会降级为 warn + `taskkill /T` 兜底，孤儿进程风险 ↑ | 在有沙箱的机器上确认 |
 
 **K1 / K2 / K7 是三条阻塞项**；K7 若形态不同，只是改 `parse_snapshot`；**K1 若成立性不满足，会改动 `apply()` 的整体策略**（可能要"重启内核 + 请求排队"）。
 
@@ -181,6 +181,59 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 **裁决：不需要为"保住选中项"做优雅退出。**
 `KernelSupervisor` 的强杀兜底（K9 降级路径）**不会**破坏用户的线路选择 ——
 所以退出路径可以继续以"能杀掉就行"为目标，不必引入关闭握手。**这条省掉了一个复杂度。**
+
+### 第三批实机验证（K3 / K5，2026-09-21 同一次 spike）
+
+#### K3 ✅ **成立 —— `filter` / `exclude-filter` 与 `use`（provider）可同时用**
+
+| 组配置 | 实测 `all` | 判定 |
+|---|---|---|
+| `use` + `filter: "(?i)prov-node-[ab]"` | `[prov-node-a, prov-node-b]` | ✅ filter 生效（正确排除 `prov-node-c-vmess`） |
+| `use` + `filter` + 显式 `proxies: [own-node-01, DIRECT]` | `[own-node-01, DIRECT, prov-node-a, prov-node-b, prov-node-c-vmess]` | ✅ 两者叠加：显式节点 + filter 后的 provider 节点 |
+| `use` + `exclude-filter: "vmess"` | `[prov-node-a, prov-node-b]` | ✅ exclude-filter 生效 |
+
+> ⚠️ **K3(d)：`filter` 匹配不到任何节点时，组会静默变成 `[COMPATIBLE]`，零报错。**
+>
+> 实测：`filter: "(?i)^zzz-never-matches"` → `all = [COMPATIBLE]`，内核启动与运行**都没有任何 error/warning**。
+> 若我们的 `filter` 正则写错、或订阅更新后节点改名，**这条 lane 会静默走成 `COMPATIBLE`**，
+> 而用户完全不知道自己的流量没走代理。
+>
+> **但好消息：`empty-fallback` 是可配置的**（实测四种取值）：
+
+| `empty-fallback` | 实测 `all` | 路由行为 |
+|---|---|---|
+| 不写（默认） | `[COMPATIBLE]` | 静默降级 |
+| `REJECT` | `[REJECT]` | ✅ **客户端得到 502，内核日志 `using G-nomatch-reject[REJECT]` —— 响亮地失败** |
+| `DIRECT` | `[DIRECT]` | 走直连 |
+
+> **裁决：`config_gen` 生成的每一个 `filter` 组都必须显式写 `empty-fallback: REJECT`。**
+> 理由：一条"本该走代理的 lane"静默变成直连，是**把用户的境外流量裸奔出去**，
+> 比报错严重得多。**宁可失败，不可静默降级。** 这与 K4(d) 是同一类问题的同一个处置原则。
+
+#### K5 ✅ **成立 —— 严格解码比担心的宽松，空集合全部被接受**
+
+实测一份刻意"不合规"的配置，内核启动**零 error / 零 warning**：
+
+| 项 | 结果 |
+|---|---|
+| `find-process-mode: off` | ✅ 接受 |
+| `proxy-providers: {}`（空对象） | ✅ 接受 |
+| `listeners: []`（空数组） | ✅ 接受 |
+| `proxy-groups: []`（空数组）+ `rules: [MATCH,DIRECT]` | ✅ 接受 |
+| `select` 组上多余的 `url` / `interval` / `tolerance` / `lazy` | ✅ 接受（不报错） |
+| `header` 用**列表形式**的值（`User-Agent: [curl/8.0, Mozilla/5.0]`） | ✅ 接受 |
+
+**结论：我们按模板逐字生成配置时，不必为空集合做特殊处理** ——
+"没有订阅"就写 `proxy-providers: {}`、"没有 lane"就写 `listeners: []`，内核照收。
+**但"多余字段被接受"是双刃的**：它也意味着**我们写错字段名时内核不会报错**
+（与 K4(d)/K3(d) 同一个教训：**内核的沉默不等于配置正确**）。
+所以 `config_gen` 的**自校验不能省**。
+
+#### K9 ⏸ **本轮无法验证**
+
+`AssignProcessToJobObject` 在**受限沙箱**下是否可用，需要一台有沙箱限制的机器。
+当前开发环境是 danger-full-access，**在这里测出来的结果不能代表受限场景**。
+**保留为未验项**，M1 联调时在真实安装后的环境（NSIS 装的、普通用户权限）里补。
 
 ### 原始证据（真 JSON）
 

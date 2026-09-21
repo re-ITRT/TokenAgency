@@ -75,6 +75,7 @@
 | [docs/04-network-core.md](docs/04-network-core.md) | 网络模型（内嵌内核 sidecar）、`OutboundDialer` 抽象、**Clash 订阅兼容**、**线路分配（手动指定谁走哪条线或直连）**、DNS、隔离性验证、许可证 |
 | [docs/05-ui-tray.md](docs/05-ui-tray.md) | 托盘菜单逐项设计、页面导航、通道矩阵、策略模拟器、通知策略 |
 | [docs/07-ui-pages-and-cost.md](docs/07-ui-pages-and-cost.md) | **首页看板**（用户想知道什么 + 怎么展示美观）、**请求日志**（三档开关/保留时长/脱敏）、Provider 渠道设置、模型目录、路由策略、**成本中心**（token 类型归一化 + 定价表 + 任意维度统计） |
+| **[docs/14-observability.md](docs/14-observability.md)** | ★ **日志、错误追踪与诊断**：应用日志（落文件）与请求日志（入 SQLite）的分工、字段命名约定、**错误日志必须带 TA 码**、脱敏规则与三条证据测试、panic/崩溃文件、级别热更新、**诊断包导出（可放心发给他人）**、自保要求 |
 | [docs/06-roadmap-and-risks.md](docs/06-roadmap-and-risks.md) | M0–M5 里程碑、可测验收标准、spike 清单、风险登记表 |
 | [docs/08-tech-stack.md](docs/08-tech-stack.md) | **技术选型评审**：逐项 ✅保留/⚠️调整/➕新增/❌去掉、Rust workspace 结构、IPC 契约、单一真源、打包分发、测试策略、性能预算、一页速查表 |
 | [config.example.yaml](config.example.yaml) | 一份可直接照着改的完整配置示例 |
