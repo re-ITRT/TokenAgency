@@ -486,7 +486,9 @@ mod tests {
             .respond_with(move |_req: &Request| {
                 let n = counter.fetch_add(1, Ordering::SeqCst);
                 if n < fail_times {
-                    ResponseTemplate::new(status)
+                    // ★ 带 body：hyper 对「408 且 body 为空」会自己内部重试一次，
+                    //   那会让"重试次数/退避序列"的断言变成不稳定的。
+                    ResponseTemplate::new(status).set_body_string("upstream error")
                 } else {
                     ResponseTemplate::new(200).set_body_string(body)
                 }

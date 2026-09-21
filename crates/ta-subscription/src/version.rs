@@ -87,9 +87,18 @@ impl StoredVersion {
     }
 }
 
+/// 保留的**被拒绝**版本数上限。
+///
+/// ★ 为什么单独算：`keep_versions` 是"保留几份**好**版本"。如果坏更新也占配额，
+/// 连续几次坏更新就会把最后一份好版本挤掉 —— 那时"保留上版"这句承诺就成了空话，
+/// 用户会真的丢掉所有线路。所以坏更新额外只留最近几份（用于解释"为什么没采纳"）。
+pub const MAX_REJECTED_KEPT: usize = 2;
+
 /// 版本存储。真实应用落 SQLite；这里不依赖 ta-store（[11 §1.1] 不跨 crate 用具体类型）。
 pub trait VersionStore: Send + Sync {
-    /// 追加一版，并把该订阅的历史裁剪到最近 `keep` 份（`keep == 0` 表示不裁剪）
+    /// 追加一版，并把该订阅的历史裁剪到：最近 `keep` 份**已采纳** + 最近
+    /// [`MAX_REJECTED_KEPT`] 份被拒绝的。
+    /// `keep == 0` 表示不限量保留已采纳版本。
     fn append(&self, sub: &SubscriptionId, v: StoredVersion, keep: u32) -> Result<()>;
     /// 版本元数据，**新的在前**
     fn list(&self, sub: &SubscriptionId) -> Result<Vec<VersionMeta>>;
@@ -105,8 +114,29 @@ pub trait VersionStore: Send + Sync {
             None => Ok(None),
         }
     }
-    /// 清理到只剩最近 `keep` 份，返回删掉的份数
+    /// 裁剪历史，返回删掉的份数
     fn prune(&self, sub: &SubscriptionId, keep: u32) -> Result<usize>;
+}
+
+/// 保留哪些版本：新的在前时，逐条判断"这条该不该留"。
+///
+/// 规则：已采纳的最多 `keep` 份（`keep == 0` = 不限），被拒绝的最多 [`MAX_REJECTED_KEPT`] 份。
+fn keep_versions(metas: &[VersionMeta], keep: u32) -> Vec<VersionMeta> {
+    let mut accepted = 0u32;
+    let mut rejected = 0usize;
+    let mut kept = Vec::new();
+    for m in metas {
+        if m.accepted {
+            if keep == 0 || accepted < keep {
+                accepted += 1;
+                kept.push(m.clone());
+            }
+        } else if rejected < MAX_REJECTED_KEPT {
+            rejected += 1;
+            kept.push(m.clone());
+        }
+    }
+    kept
 }
 
 // ================================================================ 内存实现
@@ -128,11 +158,11 @@ impl VersionStore for MemoryVersionStore {
         let entry = guard.entry(sub.to_string()).or_default();
         entry.push(v);
         entry.sort_by_key(|x| x.meta.version);
-        if keep > 0 {
-            while entry.len() > keep as usize {
-                entry.remove(0);
-            }
-        }
+        // 新的在前 → 决定留谁 → 反推该删的版本号
+        let newest_first: Vec<VersionMeta> = entry.iter().rev().map(|x| x.meta.clone()).collect();
+        let keep_set: std::collections::BTreeSet<u64> =
+            keep_versions(&newest_first, keep).into_iter().map(|m| m.version).collect();
+        entry.retain(|x| keep_set.contains(&x.meta.version));
         Ok(())
     }
 
@@ -156,11 +186,10 @@ impl VersionStore for MemoryVersionStore {
         let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let Some(entry) = guard.get_mut(sub.as_str()) else { return Ok(0) };
         let before = entry.len();
-        if keep > 0 {
-            while entry.len() > keep as usize {
-                entry.remove(0);
-            }
-        }
+        let newest_first: Vec<VersionMeta> = entry.iter().rev().map(|x| x.meta.clone()).collect();
+        let keep_set: std::collections::BTreeSet<u64> =
+            keep_versions(&newest_first, keep).into_iter().map(|m| m.version).collect();
+        entry.retain(|x| keep_set.contains(&x.meta.version));
         Ok(before - entry.len())
     }
 }
@@ -264,9 +293,7 @@ impl VersionStore for FileVersionStore {
         let raw_gz = gzip(&v.raw)?;
         Self::write_atomic(&self.meta_path(sub, v.meta.version), &meta_json)?;
         Self::write_atomic(&self.raw_path(sub, v.meta.version), &raw_gz)?;
-        if keep > 0 {
-            self.prune(sub, keep)?;
-        }
+        self.prune(sub, keep)?;
         Ok(())
     }
 
@@ -296,24 +323,28 @@ impl VersionStore for FileVersionStore {
     }
 
     fn prune(&self, sub: &SubscriptionId, keep: u32) -> Result<usize> {
-        if keep == 0 {
-            return Ok(0);
-        }
         let versions = self.read_versions(sub)?;
-        let mut removed = 0;
-        if versions.len() > keep as usize {
-            for version in &versions[..versions.len() - keep as usize] {
-                for path in [self.meta_path(sub, *version), self.raw_path(sub, *version)] {
-                    match std::fs::remove_file(&path) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => {
-                            return Err(store_err(format!("删除 {} 失败：{e}", path.display())))
-                        }
-                    }
-                }
-                removed += 1;
+        let mut newest_first = Vec::new();
+        for version in versions.iter().rev() {
+            if let Some(h) = self.read_header(sub, *version)? {
+                newest_first.push(h.meta);
             }
+        }
+        let keep_set: std::collections::BTreeSet<u64> =
+            keep_versions(&newest_first, keep).into_iter().map(|m| m.version).collect();
+        let mut removed = 0;
+        for version in &versions {
+            if keep_set.contains(version) {
+                continue;
+            }
+            for path in [self.meta_path(sub, *version), self.raw_path(sub, *version)] {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(store_err(format!("删除 {} 失败：{e}", path.display()))),
+                }
+            }
+            removed += 1;
         }
         Ok(removed)
     }
@@ -391,11 +422,23 @@ impl<S: VersionStore> VersionKeeper<S> {
 
     /// 回到"上一个被采纳的版本"（最新的那份若被拒，就再往前找）。
     pub fn rollback_latest_accepted(&self, sub: &SubscriptionId) -> Result<FetchOutcome> {
+        let (_, outcome) = self
+            .latest_accepted(sub)?
+            .ok_or_else(|| store_err(format!("订阅 {sub} 没有任何可回滚的已采纳版本")))?;
+        Ok(outcome)
+    }
+
+    /// 最近一版**被采纳**的版本号 + 内容（坏更新拦截要拿它当基准）。
+    pub fn latest_accepted(
+        &self,
+        sub: &SubscriptionId,
+    ) -> Result<Option<(VersionMeta, FetchOutcome)>> {
         let versions = self.store.list(sub)?;
-        let Some(meta) = versions.iter().find(|m| m.accepted) else {
-            return Err(store_err(format!("订阅 {sub} 没有任何可回滚的已采纳版本")));
+        let Some(meta) = versions.into_iter().find(|m| m.accepted) else {
+            return Ok(None);
         };
-        self.rollback_to(sub, meta.version)
+        let outcome = self.rollback_to(sub, meta.version)?;
+        Ok(Some((meta, outcome)))
     }
 
     /// 手动清理（保留最近 `keep` 份）
@@ -523,6 +566,61 @@ mod tests {
         // 只有被拒版本时也不给回滚
         k.record(&s, &outcome("<!DOCTYPE html><html></html>"), 3, false).unwrap();
         assert!(k.rollback_latest_accepted(&s).is_err());
+    }
+
+    /// ★ 灾难场景：连续多次坏更新之后，"上一份好版本"必须还在。
+    ///
+    /// 如果坏更新也占 `keep_versions` 的配额，连续 3 次坏更新就会把好版本挤掉 ——
+    /// 那时"保留上版"这句承诺就是空话，用户会真的丢掉所有线路。
+    #[test]
+    fn repeated_bad_updates_never_evict_the_last_good_version() {
+        for keep in [1u32, 2, 3] {
+            let k = keeper(MemoryVersionStore::new());
+            let s = sub("sub-jp");
+            // 一份好版本：40 个节点
+            let good_v = k.record(&s, &outcome(&yaml_with_nodes(40)), keep, true).unwrap();
+            // 之后连续 5 次坏更新
+            for i in 0..5 {
+                let v =
+                    k.record(&s, &outcome("<!DOCTYPE html><html>502</html>"), keep, false).unwrap();
+                assert_eq!(v, good_v + i as u64 + 1);
+            }
+            // 好版本必须还在，而且能回滚
+            let history = k.history(&s).unwrap();
+            assert!(
+                history.iter().any(|m| m.version == good_v && m.accepted),
+                "keep={keep} 时好版本被坏更新挤掉了：{history:?}"
+            );
+            let back = k.rollback_latest_accepted(&s).unwrap();
+            assert_eq!(back.nodes.len(), 40, "keep={keep}");
+            // 坏更新只留最近 MAX_REJECTED_KEPT 份
+            let rejected = history.iter().filter(|m| !m.accepted).count();
+            assert_eq!(rejected, MAX_REJECTED_KEPT, "keep={keep}：{history:?}");
+        }
+    }
+
+    #[test]
+    fn keep_versions_rule_is_explicit() {
+        let meta = |version: u64, accepted: bool| VersionMeta {
+            version,
+            fetched_at_ms: 0,
+            format: DetectedFormat::ClashYaml,
+            node_count: 1,
+            group_count: 0,
+            bytes: 1,
+            accepted,
+        };
+        // 新的在前：a(3) r(2) a(1) r(0)
+        let metas = vec![meta(3, true), meta(2, false), meta(1, true), meta(0, false)];
+        // keep=1：只留 1 个好版本（3），坏版本留最近 2 个（2 和 0）
+        let kept: Vec<u64> = keep_versions(&metas, 1).into_iter().map(|m| m.version).collect();
+        assert_eq!(kept, vec![3, 2, 0]);
+        // keep=0：好版本不限量（3、1），坏版本仍只留 MAX_REJECTED_KEPT=2 个（2、0）
+        let kept: Vec<u64> = keep_versions(&metas, 0).into_iter().map(|m| m.version).collect();
+        assert_eq!(kept, vec![3, 2, 1, 0]);
+        // keep=2：两版好版本都留着
+        let kept: Vec<u64> = keep_versions(&metas, 2).into_iter().map(|m| m.version).collect();
+        assert_eq!(kept, vec![3, 2, 1, 0]);
     }
 
     #[test]

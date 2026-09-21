@@ -11,6 +11,7 @@
 pub mod detect;
 pub mod fetch;
 pub mod parse;
+pub mod sync;
 pub mod validate;
 pub mod version;
 
