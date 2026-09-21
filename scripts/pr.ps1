@@ -318,7 +318,11 @@ if ($tree -eq $parentTree) {
 # ---------------------------------------------------------------- 4) 门禁（与钩子同一份）
 if (-not $NoGate) {
     Head '门禁 scripts/gate.ps1（与 git 钩子同一份检查）'
-    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'gate.ps1') -IndexFile $idx
+    # ⚠️ 必须传 `-Against $parent`：不传就是拿索引与 HEAD 比，**基点落后时会把
+    # "master 上新增、而分支里还是旧版"的文件也算成本次改动** → 门禁去给别人的文件
+    # 跑 rustfmt/clippy 并红掉（E1 与 E4 各自实测撞到过）。传父提交后，
+    # 文件集恰好等于"这一个 PR 的改动"。
+    & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'gate.ps1') -IndexFile $idx -Against $parent
     if ($LASTEXITCODE -ne 0) {
         Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
         Fail "门禁未通过 —— **没有产生任何提交**。修好后重新跑同一条命令即可。"

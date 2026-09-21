@@ -22,10 +22,29 @@
 [CmdletBinding()]
 param(
     # 要检查的索引文件；不传则用仓库真实索引。
-    [string]$IndexFile
+    [string]$IndexFile,
+
+    # 拿索引与哪个提交比 —— 决定"本次改动"的文件集。
+    #
+    # ⚠️ 不传 = 与 HEAD 比。**PR 的追加模式必须传父提交**，否则会算错文件集：
+    # E1 实测 —— 它的分支基点是旧 master，而 master 已经前进过，于是
+    # `git diff --cached`（vs HEAD）把"master 上新增、而分支里还是旧版"的文件
+    # 也算成"本次改动"，门禁去给**别人的文件**跑 rustfmt 并红掉（`✘ 格式不合格`），
+    # 与它的改动无关却让它的 PR 提不出去。**门禁的作用域必须等于责任的作用域**
+    # （docs/13 L20 的同一条教训，换了个位置又咬了一次）。
+    [string]$Against
 )
 
 $ErrorActionPreference = 'Stop'
+
+# git 的文本输出收成字符串（空输出在 PowerShell 里是 $null，`.Trim()` 会抛）
+function GitText {
+    param([string[]]$GitArgs)
+    $out = @(& git @GitArgs 2>$null) -join "`n"
+    return "$out".Trim()
+}
+
+$diffBase = if ($Against) { @($Against) } else { @() }
 
 function Fail($msg) { Write-Host "`n✘ $msg`n" -ForegroundColor Red; exit 1 }
 function Info($msg) { Write-Host "› $msg" -ForegroundColor Cyan }
@@ -44,7 +63,7 @@ if ($IndexFile) {
 }
 
 try {
-    $staged = @(git diff --cached --name-only --diff-filter=ACMR 2>$null)
+    $staged = @(& git diff --cached @diffBase --name-only --diff-filter=ACMR 2>$null)
     if ($staged.Count -eq 0) { Ok '没有暂存文件，跳过'; exit 0 }
 
     # ------------------------------------------------------------ 1) 明文密钥守卫
@@ -53,7 +72,7 @@ try {
     $secretPattern = '(sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
     foreach ($f in $staged) {
         if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { continue }
-        $added = @(git diff --cached -U0 -- $f 2>$null |
+        $added = @(& git diff --cached @diffBase -U0 -- $f 2>$null |
             Where-Object { $_ -like '+*' -and $_ -notlike '+++*' } |
             Where-Object { $_ -notmatch 'ta-allow-fake-secret' } |
             Select-String -Pattern $secretPattern -ErrorAction SilentlyContinue)
