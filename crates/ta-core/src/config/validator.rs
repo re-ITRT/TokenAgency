@@ -17,6 +17,7 @@ use regex::Regex;
 
 use super::migrate::CURRENT_CONFIG_VERSION;
 use super::{ConfigValidator, ValidationReport};
+use crate::domain::behavior::MAX_AUTOSTART_DELAY_S;
 use crate::domain::*;
 
 /// `FieldError.code` 的取值。前端按 code 做文案与"跳到哪个字段"。
@@ -793,6 +794,20 @@ fn check_lanes(doc: &ConfigDoc, r: &mut ValidationReport) {
 }
 
 fn check_system_integration(si: &SystemIntegration, r: &mut ValidationReport) {
+    // 启动延迟范围由 [02 §2.10] 写死为 0–300 秒（下界不用管：字段是 u32）。
+    // 写成 3000 不会报错、只会让用户"开机后快一小时才启动"然后怀疑软件坏了 ——
+    // 属于"不报错但不生效"那一类，必须在配置层拦住。
+    if si.autostart_delay_s > MAX_AUTOSTART_DELAY_S {
+        r.push_error(
+            "system_integration.autostart_delay_s",
+            codes::INVALID_VALUE,
+            format!(
+                "启动延迟必须在 0 ~ {MAX_AUTOSTART_DELAY_S} 秒之间，实际 {}（写这么大只会让开机后很久才启动）",
+                si.autostart_delay_s
+            ),
+        );
+    }
+
     let path_ok = si.file_watch_path.as_deref().map(|p| !p.trim().is_empty()).unwrap_or(false);
     if si.file_watch_mode && !path_ok {
         r.push_error(
@@ -1726,6 +1741,33 @@ mod tests {
         let report = check(&d);
         assert_no_error_at(&report, "system_integration.file_watch_path");
         assert!(report.warnings.is_empty(), "{:#?}", report.warnings);
+    }
+
+    /// `autostart_delay_s` 的范围由 [02 §2.10] 写死为 0–300 秒。
+    /// 写大了不会报错、只会让用户"开机后很久才启动"——必须在配置层拦住。
+    #[test]
+    fn autostart_delay_range_is_enforced() {
+        let path = "system_integration.autostart_delay_s";
+
+        // 正例：下界、上界、中间值都通过
+        for ok in [0u32, 1, 120, MAX_AUTOSTART_DELAY_S] {
+            let mut d = doc();
+            d.system_integration.autostart_delay_s = ok;
+            assert_no_error_at(&check(&d), path);
+        }
+
+        // 反例：越界一个就报错，路径精确到字段
+        for bad in [MAX_AUTOSTART_DELAY_S + 1, 3000, u32::MAX] {
+            let mut d = doc();
+            d.system_integration.autostart_delay_s = bad;
+            assert_error(&check(&d), path, codes::INVALID_VALUE);
+        }
+
+        // 下界不用管（字段是 u32，负数根本读不进来）
+        let err =
+            crate::config::from_yaml("version: 1\nsystem_integration: { autostart_delay_s: -1 }\n")
+                .expect_err("负延迟必须解析失败");
+        assert!(matches!(err, crate::error::TaError::ConfigInvalid { .. }));
     }
 
     // ------------------------------------------------------------ 警告

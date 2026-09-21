@@ -863,6 +863,76 @@ impl NetConfig {
     }
 }
 
+// ================================================================ 开机自启动（[09 §1.2] E1–E5）
+
+/// 启动延迟上限（秒）。见 [02 §2.10]（0–300）。
+///
+/// 由 `config::validator` 强制：一个手滑写成 `3000` 的配置不会报错，
+/// 只会让用户看到"开机后快一小时才启动"，然后怀疑软件坏了。
+pub const MAX_AUTOSTART_DELAY_S: u32 = 300;
+
+/// 自启动的**期望状态**（配置）与**系统实际状态**的比对结果（[09 §1.2] E3/E4）。
+///
+/// 对应 `AutostartState.drifted`（[10 §2.2]）。
+///
+/// ⚠️ **只是判定结果，不带任何动作**：`MissingOnSystem` 不等于"该去注册"、
+/// `UnexpectedOnSystem` 不等于"该去删除"。动作只能由用户点击
+/// `app_set_autostart` / `app_repair_autostart` 触发 —— 用户手动禁用后
+/// 我们**绝不偷偷加回来**（E3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutostartDrift {
+    /// 期望与实际一致。
+    InSync,
+    /// 期望开、系统里没有 —— UI 必须提示，**绝不自动注册**。
+    MissingOnSystem,
+    /// 期望关、系统里却有 —— UI 必须提示，**绝不自动删除**。
+    UnexpectedOnSystem,
+    /// 平台不支持（Linux 无桌面会话等）—— 开关置灰 + 显示原因。
+    Unsupported,
+}
+
+impl AutostartDrift {
+    /// 配置与系统不一致（直接对应 `AutostartState.drifted`）。
+    pub fn is_drifted(&self) -> bool {
+        matches!(self, AutostartDrift::MissingOnSystem | AutostartDrift::UnexpectedOnSystem)
+    }
+
+    /// 平台不支持 —— UI 置灰，**不报成"漂移"**。
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, AutostartDrift::Unsupported)
+    }
+
+    /// 日志 / 事件（`TaEvent`）用的稳定字符串。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AutostartDrift::InSync => "in_sync",
+            AutostartDrift::MissingOnSystem => "missing_on_system",
+            AutostartDrift::UnexpectedOnSystem => "unexpected_on_system",
+            AutostartDrift::Unsupported => "unsupported",
+        }
+    }
+}
+
+/// 判定自启动的期望状态与系统实际状态是否漂移（[09 §1.2] E3/E4）。
+///
+/// **纯函数：只判定，不做任何动作。** 调用方（T2）也不得据此自动写注册表或删条目：
+/// 用户手动禁用后我们绝不偷偷加回来（E3），用户配了没生效也不替他做主（E4）——
+/// 只在 UI 里显示漂移并给「重新注册 / 清除」按钮。
+///
+/// `supported = false`（Linux 无桌面会话、非桌面环境等）**优先于一切**：
+/// 此时既不返回 `MissingOnSystem` 也不返回 `UnexpectedOnSystem`，否则 UI 会显示
+/// "系统里没有 → 点重新注册"，而用户点了也不会成功（[10 §2.2] 规则 5）。
+pub fn evaluate_autostart_drift(desired: bool, actual: bool, supported: bool) -> AutostartDrift {
+    if !supported {
+        return AutostartDrift::Unsupported;
+    }
+    match (desired, actual) {
+        (true, true) | (false, false) => AutostartDrift::InSync,
+        (true, false) => AutostartDrift::MissingOnSystem,
+        (false, true) => AutostartDrift::UnexpectedOnSystem,
+    }
+}
+
 // ================================================================ ConfigDoc 索引
 
 impl ConfigDoc {
@@ -1072,5 +1142,51 @@ mod tests {
         let retry = RetryConfig::default();
         assert_eq!(retry.attempts_for(false), 3);
         assert_eq!(retry.attempts_for(true), 2);
+    }
+
+    // ------------------------------------------------------------ 自启动漂移判定（E3/E4）
+
+    #[test]
+    fn autostart_drift_four_branches() {
+        // 期望与实际一致（两种都算一致）
+        assert_eq!(evaluate_autostart_drift(true, true, true), AutostartDrift::InSync);
+        assert_eq!(evaluate_autostart_drift(false, false, true), AutostartDrift::InSync);
+        // 期望开、系统里没有 → 提示，但绝不自动注册
+        assert_eq!(evaluate_autostart_drift(true, false, true), AutostartDrift::MissingOnSystem);
+        // 期望关、系统里却有 → 提示，但绝不自动删除
+        assert_eq!(evaluate_autostart_drift(false, true, true), AutostartDrift::UnexpectedOnSystem);
+    }
+
+    #[test]
+    fn autostart_drift_unsupported_wins_over_everything() {
+        // 平台不支持优先于一切：否则 UI 会显示"系统里没有 → 点重新注册"，而点了也不会成功。
+        for (desired, actual) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(
+                evaluate_autostart_drift(desired, actual, false),
+                AutostartDrift::Unsupported,
+                "desired={desired} actual={actual} 都应当是 Unsupported"
+            );
+        }
+    }
+
+    #[test]
+    fn autostart_drift_helpers_and_labels() {
+        let cases = [
+            (AutostartDrift::InSync, false, false, "in_sync"),
+            (AutostartDrift::MissingOnSystem, true, false, "missing_on_system"),
+            (AutostartDrift::UnexpectedOnSystem, true, false, "unexpected_on_system"),
+            (AutostartDrift::Unsupported, false, true, "unsupported"),
+        ];
+        for (drift, drifted, unsupported, label) in cases {
+            assert_eq!(drift.is_drifted(), drifted, "{label}");
+            assert_eq!(drift.is_unsupported(), unsupported, "{label}");
+            assert_eq!(drift.as_str(), label);
+        }
+    }
+
+    #[test]
+    fn autostart_delay_max_matches_doc() {
+        // [02 §2.10]：0–300 秒。校验器引用这个常量，别各自写死。
+        assert_eq!(MAX_AUTOSTART_DELAY_S, 300);
     }
 }
