@@ -15,7 +15,9 @@ use serde_json::json;
 
 use ta_core::error::{FieldError, Result, TaError};
 
-use crate::{DelaySample, ProviderEntry, ProvidersSnapshot, ProxyEntry};
+use crate::{
+    DanglingRef, DelaySample, NodeRef, NodeSource, ProviderEntry, ProvidersSnapshot, ProxyEntry,
+};
 
 /// 测速默认探测 URL。`docs/04` §7.2 建议**优先用该 lane 真实会用到的上游端点**，
 /// 调用方通过 [`KernelRest::with_probe_url`] 覆盖。
@@ -218,6 +220,14 @@ impl KernelRest {
 // ================================================================ 纯解析
 
 /// 把内核两个端点的响应拼成 [`ProvidersSnapshot`]。纯函数，便于用 fixture 测。
+///
+/// 三件事按顺序做（[docs/06 §1.6] 7-a ~ 7-d）：
+/// 1. `/proxies` 顶层进索引，来源标 [`NodeSource::TopLevel`]；
+/// 2. `/providers/proxies` 里每个 provider 的节点**补进**索引（来源 `Provider(key)`）——
+///    **顶层优先**，因为 provider 那边还会把组镜射一遍；
+/// 3. 索引建好**之后**才解析组的 `all`，解析不到的名字进 [`ProvidersSnapshot::dangling`]。
+///
+/// 顺序很关键：先算 `all` 再合并，就会把 provider 节点全判成悬空（这正是 7-c）。
 pub fn parse_snapshot(
     proxies: &serde_json::Value,
     providers: &serde_json::Value,
@@ -227,11 +237,20 @@ pub fn parse_snapshot(
     let providers_env = ProvidersEnvelope::deserialize(providers)
         .map_err(|e| TaError::Kernel(format!("GET /providers/proxies 形态不符：{e}")))?;
 
+    // ---- 1) /proxies 顶层
+    let mut nodes: BTreeMap<String, NodeRef> = BTreeMap::new();
     let mut out_proxies = Vec::with_capacity(proxies_env.proxies.len());
     for (name, raw) in proxies_env.proxies {
+        nodes.entry(name.clone()).or_insert_with(|| NodeRef {
+            name: name.clone(),
+            kind: raw.kind.clone(),
+            alive: raw.alive,
+            source: NodeSource::TopLevel,
+        });
         out_proxies.push(ProxyEntry {
             name,
             kind: raw.kind,
+            alive: raw.alive,
             now: raw.now,
             all: raw.all.unwrap_or_default(),
             history: raw
@@ -243,17 +262,42 @@ pub fn parse_snapshot(
         });
     }
 
+    // ---- 2) providers（7-a：是个**对象**；7-c：它们的节点不在 `/proxies` 顶层）
     let mut out_providers = Vec::with_capacity(providers_env.providers.len());
     for (key, raw) in providers_env.providers {
+        let mut provider_nodes = Vec::with_capacity(raw.proxies.len());
+        for node in raw.proxies {
+            let node_ref = NodeRef {
+                name: node.name,
+                kind: node.kind,
+                alive: node.alive,
+                source: NodeSource::Provider(key.clone()),
+            };
+            // ★ 顶层优先：provider 侧的镜射项不许覆盖已有来源（真机上 DIRECT / TA-LANE-* 两边都有）
+            nodes.entry(node_ref.name.clone()).or_insert_with(|| node_ref.clone());
+            provider_nodes.push(node_ref);
+        }
         out_providers.push(ProviderEntry {
             name: raw.name.unwrap_or_else(|| key.clone()),
+            key,
             vehicle_type: raw.vehicle_type.unwrap_or_default(),
             updated_at: raw.updated_at,
-            node_count: raw.proxies.len(),
+            node_count: provider_nodes.len(),
+            nodes: provider_nodes,
         });
     }
 
-    Ok(ProvidersSnapshot { proxies: out_proxies, providers: out_providers })
+    // ---- 3) 索引建好之后才解析 `all`：解析不到的**不静默丢**
+    let mut dangling = Vec::new();
+    for p in &out_proxies {
+        for member in &p.all {
+            if !nodes.contains_key(member) {
+                dangling.push(DanglingRef { group: p.name.clone(), name: member.clone() });
+            }
+        }
+    }
+
+    Ok(ProvidersSnapshot { proxies: out_proxies, providers: out_providers, nodes, dangling })
 }
 
 /// `GET /providers/proxies` → provider key → 节点数。
@@ -277,6 +321,9 @@ struct ProxiesEnvelope {
 struct ProxyRaw {
     #[serde(rename = "type", default)]
     kind: String,
+    /// ★ 内核给的健康信号。真机上**每个节点与组都有**（[docs/06 §1.6] 附带验证）。
+    #[serde(default)]
+    alive: bool,
     #[serde(default)]
     now: Option<String>,
     #[serde(default)]
@@ -308,7 +355,19 @@ struct ProviderRaw {
     #[serde(rename = "updatedAt", default)]
     updated_at: Option<String>,
     #[serde(default)]
-    proxies: Vec<serde_json::Value>,
+    proxies: Vec<ProviderNodeRaw>,
+}
+
+/// provider 里带的节点。字段与 [`ProxyRaw`] 同源（同一个 mihomo 节点结构），
+/// 但这里只需要索引要用的三个 —— 其余字段由 serde 忽略，**不多写就是不多猜**。
+#[derive(Debug, Deserialize)]
+struct ProviderNodeRaw {
+    #[serde(default)]
+    name: String,
+    #[serde(rename = "type", default)]
+    kind: String,
+    #[serde(default)]
+    alive: bool,
 }
 
 // ================================================================ 工具

@@ -1,0 +1,19 @@
+mixed-port: 0
+external-controller: 127.0.0.1:39090
+secret: ""
+log-level: info
+mode: rule
+proxy-providers:
+  missing-provider:
+    type: file
+    path: ./providers/DOES-NOT-EXIST.yaml
+proxy-groups:
+  - name: "G-use-missing"
+    type: select
+    use: [missing-provider]
+  - name: "G-use-missing-reject"
+    type: select
+    use: [missing-provider]
+    empty-fallback: REJECT
+rules:
+  - MATCH,G-use-missing

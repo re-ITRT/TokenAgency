@@ -1,0 +1,22 @@
+# K2 用的 provider 文件：模拟"机场订阅解析后的节点列表"
+# 故意混入一个不可达节点，观察 health-check 后的 history 形态（K7）
+proxies:
+  - name: "prov-node-a"
+    type: ss
+    server: 127.0.0.1
+    port: 3
+    cipher: aes-128-gcm
+    password: "spike-not-a-real-secret"
+  - name: "prov-node-b"
+    type: ss
+    server: 127.0.0.1
+    port: 4
+    cipher: aes-128-gcm
+    password: "spike-not-a-real-secret"
+  - name: "prov-node-c-vmess"
+    type: vmess
+    server: 127.0.0.1
+    port: 5
+    uuid: "00000000-0000-0000-0000-000000000000"
+    alterId: 0
+    cipher: auto

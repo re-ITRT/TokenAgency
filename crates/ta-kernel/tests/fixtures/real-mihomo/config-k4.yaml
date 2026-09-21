@@ -1,0 +1,67 @@
+# M0 spike 第二批：K4（listeners[].proxy 指向裸节点名 / 带 emoji 的组名）、
+# K6（mixed-port: 0 是否等于关闭默认入站）、K8（强杀后选中项是否落盘）
+mixed-port: 0          # ← K6：验证它真的关闭默认入站，而不是又开一个端口
+external-controller: 127.0.0.1:39090
+secret: ""
+log-level: info
+mode: rule
+
+profile:
+  store-selected: true   # ← K8：选中项落盘
+  store-fake-ip: false
+
+proxies:
+  - name: "裸节点-香港01"
+    type: ss
+    server: 127.0.0.1
+    port: 1
+    cipher: aes-128-gcm
+    password: "spike-not-a-real-secret"
+  - name: "裸节点-日本01"
+    type: ss
+    server: 127.0.0.1
+    port: 2
+    cipher: aes-128-gcm
+    password: "spike-not-a-real-secret"
+
+proxy-groups:
+  # K4 (b)：组名带 emoji —— 真实机场订阅的组名普遍长这样
+  - name: "🚀 节点选择"
+    type: select
+    proxies:
+      - "裸节点-香港01"
+      - "裸节点-日本01"
+      - DIRECT
+  - name: "🎯 全球直连"
+    type: select
+    proxies:
+      - DIRECT
+
+listeners:
+  # K4 (a)：proxy 直接指**裸节点名**（不是组名）
+  - name: ta-lane-bare
+    type: mixed
+    listen: 127.0.0.1
+    port: 39101
+    proxy: "裸节点-香港01"
+  # K4 (b)：proxy 指**带 emoji 的组名**
+  - name: ta-lane-emoji
+    type: mixed
+    listen: 127.0.0.1
+    port: 39102
+    proxy: "🚀 节点选择"
+  # K4 (c)：proxy 指内建 DIRECT —— 验证"直连 lane"
+  - name: ta-lane-direct
+    type: mixed
+    listen: 127.0.0.1
+    port: 39103
+    proxy: DIRECT
+  # K4 (d)：反例 —— 指一个不存在的名字，看是启动失败还是静默可用
+  - name: ta-lane-bogus
+    type: mixed
+    listen: 127.0.0.1
+    port: 39104
+    proxy: "这个节点不存在"
+
+rules:
+  - MATCH,🚀 节点选择
