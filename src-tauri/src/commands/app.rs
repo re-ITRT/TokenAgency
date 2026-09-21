@@ -2,6 +2,8 @@
 //!
 //! 契约：`docs/10-interface-spec.md` §2.2 `app / 应用`。
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -64,9 +66,31 @@ pub struct AppStatus {
     pub current_node: Option<String>,
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn app_status(state: State<'_, AppState>) -> IpcResult<AppStatus> {
+/// 网关对外状态标签（纯函数，可离线断言）。
+///
+/// **为什么闸门优先于 `gateway_ready()`**：`gateway_ready()` 只说"装配过了没有"，
+/// 装配过之后一直是 `true`。暂停是**运行态**，必须读闸门 —— 否则用户点了暂停，
+/// 状态条还显示"运行中"（[10 §2.2] 的 `gateway: Running|Paused`）。
+///
+/// 顺带一条语义（E5 接缝第 4 条）：暂停**不影响** `/healthz`，所以"暂停"绝不能
+/// 被读成"失联/故障" —— 这也是为什么暂停要显示成 `paused` 而不是 `stopped`。
+pub fn gateway_label(
+    gate: Option<ta_gateway::ingress::GatewayRunState>,
+    deps_present: bool,
+) -> &'static str {
+    use ta_gateway::ingress::GatewayRunState;
+    match gate {
+        Some(GatewayRunState::Paused) => "paused",
+        Some(GatewayRunState::Running) => "running",
+        // 没有闸门（网关没装配）：退回"装配过即 running"，否则如实 stopped
+        None if deps_present => "running",
+        None => "stopped",
+    }
+}
+
+/// `app_status` 的实现体（抽出来是为了让暂停/恢复两条命令共用同一份状态组装，
+/// 否则三处各拼一遍 `AppStatus`，字段一改就会分叉）。
+async fn build_status(state: &AppState) -> IpcResult<AppStatus> {
     let kernel = match state.kernel_slot() {
         Some(k) => KernelStatusView::from_kernel(k.status().await),
         None => KernelStatusView::stopped(),
@@ -90,7 +114,8 @@ pub async fn app_status(state: State<'_, AppState>) -> IpcResult<AppStatus> {
         None => None,
     };
     Ok(AppStatus {
-        gateway: if state.gateway_ready() { "running".into() } else { "stopped".into() },
+        gateway: gateway_label(state.gateway_gate().map(|g| g.state()), state.gateway_ready())
+            .to_string(),
         kernel,
         version: ta_core::CORE_VERSION.to_string(),
         uptime_s: state.uptime_s(),
@@ -98,6 +123,49 @@ pub async fn app_status(state: State<'_, AppState>) -> IpcResult<AppStatus> {
         default_lane_id,
         current_node,
     })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn app_status(state: State<'_, AppState>) -> IpcResult<AppStatus> {
+    build_status(&state).await
+}
+
+/// 取闸门；没装配就**如实报错**，而不是静默什么都不做
+/// （静默会让用户以为"暂停成功了"，而请求照旧被接单）。
+fn gate_of(state: &AppState) -> IpcResult<Arc<ta_gateway::ingress::GatewayGate>> {
+    state.gateway_gate().ok_or_else(|| {
+        IpcError::from(ta_core::error::TaError::Internal(
+            "网关尚未装配，无法暂停或恢复（启动编排可能失败了）".into(),
+        ))
+    })
+}
+
+/// 暂停网关：**只关准入**，不取消在途请求、不影响配置与 `/healthz`。
+///
+/// 拒绝新请求由闸门在 ingress 内完成（错误码 TA-1005 / 503，
+/// 文案让用户看出"是自己按的暂停，不是故障"）—— 本层不自己造拒绝逻辑。
+#[tauri::command]
+#[specta::specta]
+pub async fn app_pause_gateway(state: State<'_, AppState>) -> IpcResult<AppStatus> {
+    gate_of(&state)?.pause();
+    tracing::info!(
+        gateway = gateway_label(Some(ta_gateway::ingress::GatewayRunState::Paused), true),
+        "用户暂停了网关"
+    );
+    build_status(&state).await
+}
+
+/// 恢复网关：重新开始接单。
+#[tauri::command]
+#[specta::specta]
+pub async fn app_resume_gateway(state: State<'_, AppState>) -> IpcResult<AppStatus> {
+    gate_of(&state)?.resume();
+    tracing::info!(
+        gateway = gateway_label(Some(ta_gateway::ingress::GatewayRunState::Running), true),
+        "用户恢复了网关"
+    );
+    build_status(&state).await
 }
 
 /// 打开应用目录（日志 / 配置 / 数据）。
@@ -134,5 +202,30 @@ pub async fn app_clipboard_access_info(state: State<'_, AppState>) -> IpcResult<
         // 本地密钥本身**不是**上游 key，属于用户要粘给客户端的信息，可以出现在这里
         Some(k) if !k.is_empty() => Ok(format!("BASE_URL={base}/v1\nAPI_KEY={k}")),
         _ => Ok(format!("BASE_URL={base}/v1\nAPI_KEY=(未设置本地密钥)")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ta_gateway::ingress::GatewayRunState;
+
+    #[test]
+    fn paused_is_reported_as_paused_not_stopped_or_running() {
+        // 这是这一笔最要紧的一断言：用户主动暂停**不能**显示成"故障/未启动"，
+        // 也不能显示成"运行中"（那等于骗用户）。
+        assert_eq!(gateway_label(Some(GatewayRunState::Paused), true), "paused");
+        assert_ne!(gateway_label(Some(GatewayRunState::Paused), true), "stopped");
+        assert_ne!(gateway_label(Some(GatewayRunState::Paused), true), "running");
+    }
+
+    #[test]
+    fn running_and_unassembled_states_are_distinguished() {
+        // 闸门存在且已恢复 → running
+        assert_eq!(gateway_label(Some(GatewayRunState::Running), true), "running");
+        // 没有闸门（网关没装配）+ 依赖也没有 → stopped
+        assert_eq!(gateway_label(None, false), "stopped");
+        // 兼容旧路径：装配过但没有闸门句柄（本笔之前的调用方）→ 仍报 running
+        assert_eq!(gateway_label(None, true), "running");
     }
 }

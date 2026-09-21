@@ -61,6 +61,12 @@ pub struct AppState {
     /// `KernelSupervisor::state()`，不必引入缓存 —— **缓存会让"/healthz 说 ready、
     /// 内核其实已经死了"成为可能**。
     pub kernel_supervisor: RwLock<Option<Arc<ta_kernel::process::KernelSupervisor>>>,
+    /// 网关准入闸门（`app_pause_gateway` / `app_resume_gateway`）。
+    ///
+    /// 与 `gateway` 槽位分开：那个是"装配过了没有"，这个是"现在接不接单"。
+    /// **暂停不影响 `/healthz`**（E5 接缝语义第 4 条），所以两者不能互相替代 ——
+    /// 把"暂停"读成"失联"会让托盘显示成故障。
+    pub gateway_gate: RwLock<Option<Arc<ta_gateway::ingress::GatewayGate>>>,
 }
 
 impl AppState {
@@ -94,6 +100,7 @@ impl AppState {
             kernel: RwLock::new(None),
             kernel_source: RwLock::new(None),
             kernel_supervisor: RwLock::new(None),
+            gateway_gate: RwLock::new(None),
         })
     }
 
@@ -151,5 +158,13 @@ impl AppState {
 
     pub fn gateway_ready(&self) -> bool {
         self.gateway.read().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
+    pub fn set_gateway_gate(&self, gate: Arc<ta_gateway::ingress::GatewayGate>) {
+        *self.gateway_gate.write().unwrap_or_else(|e| e.into_inner()) = Some(gate);
+    }
+
+    pub fn gateway_gate(&self) -> Option<Arc<ta_gateway::ingress::GatewayGate>> {
+        self.gateway_gate.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }

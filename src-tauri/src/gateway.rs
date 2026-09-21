@@ -245,6 +245,15 @@ impl GatewayBoot {
         &self.listen
     }
 
+    /// 暂停/恢复闸门（[10 §2.2] `app_pause_gateway` / `app_resume_gateway`）。
+    ///
+    /// 闸门来自**唯一装配路径**：`build_runtime` 把同一个 `Arc<GatewayGate>` 同时交给
+    /// 运行时与 `IngressState`，所以本层只是把它取出来交给命令层 ——
+    /// **不在 ingress 外面另包一层准入逻辑**（那会是第二条请求路径，[docs/13 L21]）。
+    pub fn gate(&self) -> Arc<ta_gateway::ingress::GatewayGate> {
+        self.runtime.gate.clone()
+    }
+
     /// 按 [docs/12 §5 T2] 的"唯一装配入口"装配（不自己拼管线）。
     pub fn assemble(app: AppHandle<tauri::Wry>, state: &AppState, ports: PortMap) -> Self {
         let doc = state.doc();

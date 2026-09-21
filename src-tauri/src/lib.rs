@@ -131,6 +131,9 @@ pub fn run() {
             // 5) 网关装配：走 E5 的 `build_runtime`（**唯一**装配入口，
             //    我们不自己拼管线）。网关与内核是两件事：没配内核时它照样该起来服务直连通道。
             let gateway = gateway::GatewayBoot::assemble(handle.clone(), &app_state, port_map);
+            // 闸门交给命令层（`app_pause_gateway` / `app_resume_gateway`）与 `app_status`。
+            // **暂停不影响 `/healthz`**，所以状态读取必须分两路：健康看探针、暂停看闸门。
+            app_state.set_gateway_gate(gateway.gate());
             tracing::info!(port = %gateway.listen(), "网关已装配（尚未开始服务）");
 
             app.manage(app_state);
