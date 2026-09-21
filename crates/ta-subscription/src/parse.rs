@@ -618,8 +618,14 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(s.as_bytes())
     }
 
+    /// ⚠️ 这个夹具是**合成的** —— `tests/fixtures/clash_airport.yaml` 自己的头部就写着
+    /// "域名/密码全是编的，只为测试解析与计数"。
+    ///
+    /// **它不是真实机场订阅**，所以 [docs/06 §2.1] 的 **D2（真实形态脱敏样本）仍未闭**。
+    /// 名字里带 `synthetic_` 就是为了不让后来人看到 "airport_fixture" 就以为已经闭了 ——
+    /// [docs/13 L19]：从断言反推出来的夹具只能证明"代码与断言自洽"。
     #[test]
-    fn clash_yaml_airport_fixture() {
+    fn clash_yaml_synthetic_airport_fixture() {
         let r = parse_clash_yaml(YAML);
         assert_eq!(r.group_count(), 5, "分组数");
         assert_eq!(r.node_count(), 15, "节点数，skipped={:?}", r.skipped);
@@ -636,6 +642,83 @@ mod tests {
         // DIRECT 不算节点
         let sel = r.groups.iter().find(|g| g.name == "🚀 节点选择").unwrap();
         assert!(sel.node_count >= 3);
+    }
+
+    // ---------------------------------------------------------- D2：真实形态样本
+
+    const REAL_AIRPORT: &str = include_str!("../tests/fixtures/real-airport/airport.yaml");
+
+    /// **独立**抽出文件里出现过的 `type:` 取值。
+    ///
+    /// 刻意不复用解析器的任何东西：这正是 [docs/13 L19] 的判据 ——
+    /// 数字必须能"从文件直接数出来"，独立于实现；否则测试就退化成同义反复。
+    fn types_in_text(text: &str) -> std::collections::BTreeSet<String> {
+        let re = regex::Regex::new(r#"type:\s*['"]?([a-z0-9][a-z0-9-]*)['"]?"#).expect("正则");
+        re.captures_iter(text).map(|c| c[1].to_string()).collect()
+    }
+
+    /// [docs/06 §2.1] **D2**：真实机场订阅（脱敏）的解析一致性。
+    ///
+    /// 夹具是**真实形态**的（`tests/fixtures/real-airport/README.md` 记了来源、脱敏脚本与
+    /// 第一版脚本的翻车教训）。**不断言节点数量** —— 数量不代表任何真实值，
+    /// 只断言解析与分类的**行为**。
+    ///
+    /// 这份样本带来的、合成夹具**没有**的三个形态：**flow 风格**（`- { … }`）、
+    /// 协议 **`anytls`**、16 个 `select` + 1 个 `url-test` 的嵌套分组。
+    #[test]
+    fn real_airport_fixture_parses_without_dropping_anything() {
+        let r = parse_clash_yaml(REAL_AIRPORT);
+
+        // ① 一个都不能静默丢：真实订阅里没有任何一条该被跳过
+        assert!(r.skipped.is_empty(), "真实订阅不该有被丢的条目：{:?}", r.skipped);
+        assert!(r.node_count() > 0, "真实订阅必须解析出节点");
+
+        // ② 协议分类：文件里出现的协议（独立抽出）必须都出现在解析结果里
+        let mut expected = types_in_text(REAL_AIRPORT);
+        for group_kind in ["select", "url-test", "fallback", "load-balance", "relay"] {
+            expected.remove(group_kind);
+        }
+        assert!(
+            expected.contains("anytls"),
+            "这份真样本应当含 anytls（否则夹具被换过）：{expected:?}"
+        );
+        let got: std::collections::BTreeSet<String> =
+            r.nodes.iter().map(|n| n.kind.clone()).collect();
+        for proto in &expected {
+            assert!(got.contains(proto), "文件里有 {proto} 节点，解析结果却没有：{got:?}");
+        }
+
+        // ③ flow 风格确实存在（脱敏脚本第一版就是在这儿翻车的），而解析器吃住了
+        assert!(REAL_AIRPORT.contains("- {"), "这份样本应当是 flow 风格");
+
+        // ④ 每个节点的端点都可用（解析没有把服务端字段搞丢）
+        for n in &r.nodes {
+            assert!(!n.server.is_empty(), "节点 {} 的 server 为空", n.name);
+            assert!(n.port > 0, "节点 {} 的 port 非法：{}", n.name, n.port);
+        }
+
+        // ⑤ 分组：真样本两种组都有，且组名不会被当成节点
+        assert!(r.groups.iter().any(|g| g.kind == "select"), "应有 select 组");
+        assert!(r.groups.iter().any(|g| g.kind == "url-test"), "应有 url-test 组");
+        let node_names: std::collections::BTreeSet<&str> =
+            r.nodes.iter().map(|n| n.name.as_str()).collect();
+        for g in &r.groups {
+            assert!(!node_names.contains(g.name.as_str()), "组名 {} 被当成了节点", g.name);
+        }
+
+        // ⑥ **边界**（写进测试，防止把"这一份样本"当成"全覆盖"）：
+        //    这份真实订阅没有 `proxy-providers` / `use:`，也没有 ss/vless/trojan/tuic/ssr
+        //    —— 那几类形态**仍然只有合成夹具覆盖**。真样本是补充，不是替代。
+        assert!(
+            !REAL_AIRPORT.contains("proxy-providers:"),
+            "边界变了：真样本开始有 provider 了，请更新本条注释与 README"
+        );
+        for absent in ["ss", "vless", "trojan", "tuic", "ssr"] {
+            assert!(
+                !expected.contains(absent),
+                "边界变了：真样本开始有 {absent} 了，请更新本条注释与 README"
+            );
+        }
     }
 
     #[test]
