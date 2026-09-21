@@ -189,6 +189,72 @@
 
 ---
 
+# 7.5 提交协议：身份 + 范围强制
+
+> 起因是 L17 —— 主管排查"谁动了 `ta-subscription`"时只能靠文件时间戳**推断**，还推错了人。
+> 不同提交身份能从根上消除这类问题：`git log --format='%an'` 直接给答案。
+
+## 7.5.1 只能用 `scripts/commit.ps1` 提交
+
+```powershell
+pwsh -File scripts/commit.ps1 -As E4 -Paths crates/ta-subscription -MessageFile msg.txt -AgentId <你的 id>
+```
+
+| 参数 | 说明 |
+|---|---|
+| `-As` | 你的身份：`lead` / `E1`…`E5` / `mech` |
+| `-Paths` | **只提交这些路径**。不会影响别人已暂存的内容 |
+| `-Message` / `-MessageFile` | 多行中文用 `-MessageFile`（PowerShell 传多行参数不可靠） |
+| `-AgentId` | agent 实例 id，写进 trailer 便于交叉核对 |
+| `-Override "原因"` | 提交范围外文件时必填，写进 trailer，可审计 |
+
+提交后会自动追加 trailer：
+
+```
+Work-Package: E4
+Agent-Id: 5eebd5cb
+```
+
+## 7.5.2 范围检查是**机械的**，不是靠自觉
+
+脚本内置了 §1.2 的编制表。E4 去提交 `docs/` 会被直接拒绝：
+
+```
+✘ 越界：以下路径不在 E4（网络接入）的范围内
+    docs/06-roadmap-and-risks.md
+  你的范围：
+    crates/ta-kernel
+    crates/ta-subscription
+  确实需要提交范围外的文件时：-Override "一句话说明原因"
+```
+
+**这把"不许越界"从口头约定变成了工具约束。** 拒绝时退出码为 `2`，与"门禁未过"（`1`）区分开。
+
+## 7.5.3 溯源：`scripts/who.ps1`
+
+```powershell
+pwsh -File scripts/who.ps1                                  # 各身份改了多少文件
+pwsh -File scripts/who.ps1 -Path crates/ta-subscription     # 这个目录谁在改
+pwsh -File scripts/who.ps1 -File crates/ta-core/src/types.rs # 单文件历史
+pwsh -File scripts/who.ps1 -Author E4                       # 某身份改了什么
+pwsh -File scripts/who.ps1 -Uncommitted                     # 在途未提交的（按范围粗归因）
+```
+
+## 7.5.4 ⚠️ 这条约定成立的前提：**勤提交**
+
+**`git` 无法归属未提交的改动。** 如果一名员工的活儿只在工作区躺着，任何溯源工具都帮不上忙 —— 这恰恰是 L17 的场景。
+
+所以配套要求：
+
+> **每完成一个"可编译的里程碑"就提交一次**，让在途窗口尽量短。
+>
+> 具体到实践：写完一个模块能 `cargo check` 通过 → 提交；改完一组测试全绿 → 提交。
+> **不要攒到最后一次性提交** —— 那样你在途期间，别人既无法溯源，也可能被你的半成品挡住（L16）。
+
+`commit.ps1` 对 `index.lock` 竞争做了重试（最多 6 次退避），所以多人同时提交不会互相失败。
+
+---
+
 # 8. 交付与事件记录
 
 > 每次交付/故障/整改都记一行。一年后还能查"谁做过什么、我判过什么"。
@@ -263,6 +329,10 @@
 | L11 | **"测试通过"只证明"它符合你以为的行为"** | P5 的 66 个测试全绿，但 `snapshot()` 的 JSON 形态是**推断**的 —— 测的是"它以为的内核"。它主动标注了这点，所以清单有价值；若它没说，我们会带着错误假设一路做到 UI |
 | L12 | **失败提交会留下残留暂存区，污染后续提交** | 连续几次 commit 失败后，之前 `git add` 的文件仍在索引里，导致后续"只提交 ta-core"实际带上了 ta-gateway，触发不相关的 clippy 失败。**教训：每次提交前用 `git reset` 清索引 + `git diff --cached --name-only` 确认** |
 | L13 | **依赖链会让下游客被上游在途状态挡住** | `clippy -p ta-gateway` 需要 ta-kernel / ta-store / ta-secrets 都干净。这不是门禁的缺陷（编译本身就要求依赖可用），但排期上要意识到：**上游员工没交付，下游员工连提交都做不到** |
+| L14 | **异步运行时的资源不能跨 runtime 用（会挂死，不是报错）** | 员工 P4 第一版用"专用线程 + 自己的 runtime"桥接同步 trait，**挂死**。根因：sqlx 每条连接的后台任务绑定在创建它的 runtime 上，跨 runtime 用 pool 会卡住。它被自己的测试 `sync_trait_is_safe_inside_tokio_and_from_plain_threads` 抓到，改成"内存快照 + 同 runtime 后台写入 + `flush()` 屏障" | 
+| L15 | **`cargo check` 通过 ≠ 格式合格 —— 两条独立门禁** | 员工 P5 交付 ta-kernel 时贴了 `check --all-targets`（零 warning）与 66 passed，但 6 个文件全都没过 `rustfmt`。**"我检查过了"必须指明检查了哪一条** |
+| L16 | **员工会在职责范围内主动开新工作包 —— 这是好事，但必须报备** | P5（E4）按职责接手了 ta-subscription（P6 失败后的范围），写着写着让 workspace 变红（`lib.rs` 声明了还不存在的 `version` 模块），挡住了 P4 与 E5。**职责范围内 ≠ 不用报备** —— 报备的目的不是审批，是让主管能**排期**（避免一个员工同时扛两件关键路径的活） |
+| L17 | **⚠️ 主管自己也会"用推断冒充确定"—— 这次是我犯的** | `ta-subscription` 被人在途写入并让 workspace 变红。我据"时间段重叠 + E4 职责含订阅"**推断是 P5 干的，并发消息批评了它**。P5 用可复现的证据反驳：它本次会话所有 write/edit 的目标只有 `crates/ta-kernel/**`，且时间线是交错的（它 22:58–23:01 在写 `config_gen.rs`，不可能同时在写 35KB 的 `parse.rs`）。**它是对的，我错了。**<br>**这正是我反复要求员工避免的错误**（P5 自己就因为主动区分"确定 vs 推断"而被表扬过）。得出教训：**定位责任必须有直接证据**（agent 自述的调用目标 / git 记录 / 文件内容指纹）；时间线重叠只是"不排除"，**不是"证明"**。<br>已固化为流程：**怀疑某人之前，先让他自证**（一句"请贴你的 `git status --short` 范围"就能避免这次误判）|
 
 **这不是交付验收，是我在员工还在写的时候做的抽样体检。** 目的是提前发现会被集成阶段放大 10 倍的问题。
 

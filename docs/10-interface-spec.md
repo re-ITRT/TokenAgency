@@ -147,6 +147,41 @@ type IpcError = {
 | `app_open_dir` | `kind: "logs"\|"config"\|"data"` | `void` |
 | `app_clipboard_access_info` | — | `string`（含 base_url 与 local_key 的可粘贴文本） |
 | `app_check_update` | — | `UpdateInfo?` |
+| `app_get_autostart` | — | `AutostartState`（见下） |
+| `app_set_autostart` | `enabled: bool, mode?: "tray"\|"window", delay_s?: u32` | `AutostartState` |
+| `app_repair_autostart` | — | `AutostartState`（把系统状态重新对齐到期望状态） |
+
+### 开机自启动的 IPC 语义（特别说明）
+
+**这个功能的接口设计有个关键点：配置值 ≠ 系统实际状态。** 用户可能在任务管理器里禁用了启动项，注册表条目也可能被别的清理软件删掉。
+
+```ts
+type AutostartState = {
+  /** 配置里的期望状态 */
+  desired: boolean;
+  /** 从操作系统读到的实际状态 —— UI 开关显示的是这个 */
+  actual: boolean;
+  /** 两者不一致 */
+  drifted: boolean;
+  /** 平台机制：windows-run-key | macos-launch-agent | linux-xdg | unsupported */
+  mechanism: string;
+  /** 实际注册的命令行（便于排查"指向了一个已经不存在的 exe"） */
+  registered_command?: string;
+  mode: "tray" | "window";
+  delay_s: number;
+  /** 平台不支持时的可读原因（Linux 无桌面环境等） */
+  unsupported_reason?: string;
+};
+```
+
+规则（对应 [09 §1.2](09-architecture-design.md) 的 E1–E5）：
+
+1. **`app_get_autostart` 的 `actual` 必须真的去读操作系统**，不许直接回显配置值。
+2. **`app_set_autostart(true)`** = 写系统 + 写配置；失败时**回滚配置**，返回错误，不留"配置说开、系统没开"的假象。
+3. **`app_set_autostart(false)`** = 删系统条目 + 写配置。
+4. `drifted: true` 时 UI 必须显式提示，并提供 `app_repair_autostart`，**绝不自动改回**（E3）。
+5. `unsupported` 时开关置灰并显示 `unsupported_reason`，而不是假装成功。
+6. `app_set_autostart` 成功后要**重新读一次系统状态**填 `actual`，而不是假定写入成功。
 | `app_set_autostart` | `enabled: bool` | `void` |
 
 ### config / 配置

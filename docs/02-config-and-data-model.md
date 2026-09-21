@@ -10,18 +10,28 @@
 
 ## 1. 领域模型关系
 
+> ### ⚠️ 两种"订阅"必须先分清（早期文档的坑）
+>
+> | 说法 | 实体 | 是什么 | 例子 |
+> |---|---|---|---|
+> | **机场订阅** | `proxy_subscriptions` | 一堆**节点**的来源（Clash 格式 yaml / 链接列表） | 你买的那个机场 |
+> | **套餐 / tokenplan** | `credentials` | 一份 **API 额度**（key + 额度 + 重置周期） | 字节方舟、command code、OpenAI 个人订阅 |
+>
+> **出网方式挂在"套餐"上**（`credential.lane`）；lane 再指向机场订阅里的某个组/节点，或直接是直连。
+> 所以"一个模型、两个套餐、两种出网方式"是完全自然的一等场景 —— 见 [03 §0 基准场景](03-routing-and-policy.md)。
+
 ```
-ProxySubscription (机场订阅 / 手写节点)
+ProxySubscription (机场订阅：一堆节点)
         │ 1..n
         ▼
       Lane  ────────────────┐   (网络通道：直连 / 某订阅的某策略组 / 固定节点)
         ▲                   │
         │                   │
-   Provider ──1..n──> Credential (一个 key = 一份 tokenplan)
+   Provider ──1..n──> Credential (套餐：一个 key = 一份 tokenplan)
         ▲                   │
         └────────┬──────────┘
                  │
-              Channel  (一条可发送的出网方案 = 协议 + 凭据 + 线路 + 模型名映射)
+              Channel  (一条可发送的出网方案 = 协议 + 套餐 + 线路 + 模型名映射)
                  ▲
                  │ n..1
             ChannelGroup (同一个逻辑模型的多个候选 + 选择器 + 粘性策略)
@@ -34,6 +44,9 @@ ProxySubscription (机场订阅 / 手写节点)
 ```
 
 一句话记忆：**Model 是对外的脸，Channel 是干活的手，Credential 是钱包，Lane 是路，Policy 是规矩。**
+
+**跨厂商切换是本设计的核心场景**：同一个 Model 挂多个 Channel，每个 Channel 用不同 Credential（套餐）、走不同 Lane。
+选通道时线路**自动跟着变** —— 这是"切套餐"与"切线路"为同一动作的原因（管线第 8 步，见 [09 §5.1](09-architecture-design.md)）。
 
 ## 2. 实体定义
 
@@ -214,6 +227,44 @@ policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.defau
 
 见 [config.example.yaml](../config.example.yaml) 顶部。
 
+### 2.10 SystemIntegration（开机自启动与系统集成）
+
+```yaml
+system_integration:
+  # ── 开机自启动（本项目唯一会写操作系统状态的功能，见 docs/09 §1.2）──
+  autostart: false            # ★ 默认 false：显式 opt-in，绝不默认写入系统
+  autostart_mode: tray        # tray（启动后静默进托盘）| window（启动后显示窗口）
+  autostart_delay_s: 0        # 0–300 秒。开机时磁盘/网络繁忙，延迟启动可避免内核首次就绪失败
+
+  # ── 实验性开关，默认关（核心承诺：不接管整机网络）──
+  enable_tun: false
+  enable_system_proxy: false
+
+  # ── 其它 ──
+  tray_show_latency: true
+  file_watch_mode: false      # 文件监听模式：以 YAML 为真源（GUI 写回会覆盖，需警告）
+  file_watch_path: null
+```
+
+**字段语义（三条容易搞错的）：**
+
+| 项 | 语义 |
+|---|---|
+| `autostart` vs 系统实际状态 | `autostart` 是**期望状态**，不是事实。UI 开关显示的是**系统实际状态**（读注册表 / LaunchAgent）。两者漂移时 UI 要显示出来并提供「重新注册 / 清除」，**绝不静默改回**（见 docs/09 §1.2 E3/E4） |
+| `autostart_mode` | `tray`（默认）：启动后只进托盘、不弹窗 —— autostart 的目的是让网关在后台待命，客户端连 `127.0.0.1:8787` 不需要用户开窗口。`window`：调试或想让用户看见时用 |
+| `autostart_delay_s` | 由**我们自己**实现（Tauri 的 autostart 插件不支持延迟）：通过命令行参数把延迟传给自身，启动后先睡再拉内核。避开开机高峰，减少"内核首次就绪失败→退避重试" |
+| 网关是否随之启动 | **是**。App 启动即为网关启动（同一进程）。「暂停网关」是**会话级**状态、不持久化：重启后恢复运行 —— 暂停是应急动作，不该被记住 |
+
+**跨平台实现：**
+
+| 平台 | 机制 | 说明 |
+|---|---|---|
+| Windows | 注册表 `HKCU\...\CurrentVersion\Run` | 当前用户级，**不需要管理员权限**（与我们的免提权承诺一致）。卸载时由 NSIS 钩子删除 |
+| macOS | `~/Library/LaunchAgents/*.plist` | Tauri autostart 插件的 `MacosLauncher::LaunchAgent` |
+| Linux | `~/.config/autostart/*.desktop` | XDG autostart，无需 root |
+
+**卸载清理（必须在 W5 落实）：** 安装包卸载时若不删 Run 键，会留下指向已删除 exe 的孤儿项 —— 这是最讨厌的一类残留。Windows 用 NSIS 的 `un.onInit` 或 `!macro customUnInstall` 删除。
+
 ## 3. SQLite 表结构
 
 > 用量与成本相关的表（`usage_request` / `usage_daily` / token 类型归一化）见 [07 §6.5](07-ui-pages-and-cost.md)；请求日志的开关与保留策略见 [07 §2](07-ui-pages-and-cost.md)。
@@ -228,6 +279,10 @@ CREATE TABLE usage_request (
   status INTEGER, error_type TEXT, latency_ms INTEGER, ttfb_ms INTEGER,
   token_kinds TEXT,          -- JSON: {"input":1204,"input_cached":51200,"output":386,...}
   usage_raw TEXT,            -- JSON: 上游原始 usage，用于对账
+  -- 第 9 轮增补（P4）：标注这份 usage 的可信度，落实 docs/11 §6 铁律 4"不猜不估算"。
+  -- upstream = 上游给了完整细分；upstream_partial = 只给了总数；estimated = 完全没给，本地估算。
+  -- 没有这一列，成本中心就无法诚实标注"该通道未提供细分"。
+  usage_source TEXT,
   total_tokens INTEGER, cost REAL, currency TEXT, price_snapshot TEXT
 );
 CREATE INDEX ix_usage_ts ON usage_request(ts);

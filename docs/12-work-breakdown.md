@@ -204,7 +204,8 @@
 | 项 | 内容 |
 |---|---|
 | **拥有** | `src-tauri/src/tray.rs`、`src-tauri/src/plugins.rs`、`src-tauri/src/lifecycle.rs`、`capabilities/` |
-| **做** | ① 托盘状态色图标（4 态 + 实验模式角标）② 动态菜单（策略/节点/额度/紧急开关，[05 §1.2]）③ 12 个插件注册 ④ 关窗退托盘、单实例、开机自启、通知去重 ⑤ 启动编排（骨架屏 → 内核就绪 → 转绿） |
+| **做** | ① 托盘状态色图标（4 态 + 实验模式角标）② 动态菜单（策略/节点/额度/紧急开关，[05 §1.2]）③ 12 个插件注册 ④ 关窗退托盘、单实例、通知去重 ⑤ 启动编排（骨架屏 → 内核就绪 → 转绿）⑥ **开机自启动**（见下） |
+| **开机自启动（本包必做，不是可选）** | ① `tauri-plugin-autostart` 接线，`MacosLauncher::LaunchAgent`；Windows 走 HKCU Run 键（免提权）② **`app_get_autostart` 必须真的去读系统状态**，不许回显配置值；填 `AutostartState` 全部字段（[10 §2.2](10-interface-spec.md)）③ 启动模式 `tray`（默认，静默进托盘）/ `window` ④ 启动延迟由我们自己实现（命令行传参 → 启动后先睡再拉内核）⑤ **卸载钩子删除系统条目**（NSIS `customUnInstall`）⑥ 漂移检测：`desired != actual` 时不自动改回，交给 UI 提示 ⑦ 边界规则见 [09 §1.2](09-architecture-design.md) E1–E5 |
 | **DoD** | 手动/自动验证：托盘菜单能切策略与节点；关窗不退进程；二次启动只唤起已有窗口 |
 
 ---
@@ -218,7 +219,7 @@
 | **F1** 外壳 | `src/app/**`、`src/stores/**`、`src/shared/**` | 路由、主题（MUI CSS 变量 + 深色优先）、i18n、布局、侧边栏 |
 | **F2** 看板 + 日志 | `src/pages/dashboard/**`、`src/pages/logs/**` | [07 §1] 看板（4 数字卡 + ECharts 趋势 + 实时流 + 额度条）、[07 §2] 日志（DataGrid + 详情抽屉 + 耗时瀑布） |
 | **F3** 配置类 | `src/pages/providers/**`、`models/**`、`channels/**`、`policies/**` | Provider（含 echo 测试页）、模型目录（一键导入）、通道矩阵（线路下拉）、策略（条件构造器 + 模拟器） |
-| **F4** 网络 + 成本 + 设置 | `src/pages/network/**`、`cost/**`、`settings/**`、`onboarding/**` | 订阅管理、节点列表、分配 Tab、反向视图、成本中心查询构建器、设置、首启向导 |
+| **F4** 网络 + 成本 + 设置 | `src/pages/network/**`、`cost/**`、`settings/**`、`onboarding/**` | 订阅管理、节点列表、分配 Tab、反向视图、成本中心查询构建器、首启向导、**设置页（含开机自启动开关 + 漂移提示，UI 规格见 [07 §7.2](07-ui-pages-and-cost.md)）** |
 
 **共同 DoD**：`npm run build` 通过；页面用 mock 数据可渲染（Rust 未就绪时不阻塞开发）。
 

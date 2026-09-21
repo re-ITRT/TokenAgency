@@ -1,5 +1,97 @@
 # 03 · 路由、策略与透传
 
+> ## §0 基准场景（先读这个，后面全是它的实现细节）
+>
+> **本项目的一切设计都以这个场景为准绳。** 它来自用户的真实需求，不是举例。
+>
+> ### 场景
+>
+> 用户有两份**套餐**（tokenplan），都提供**同一个模型** `deepseek-v4.1flash`：
+>
+> | 套餐 | 厂商 | 网络 | 额度 |
+> |---|---|---|---|
+> | A | 字节方舟 | **直连**（国内可达，不需要梯子） | 500 万 token/月，1 号重置 |
+> | B | command code | **走梯子**（国外，必须经代理） | 按量计费 |
+>
+> **期望行为**：平时用 A 走直连；A 的额度用完之后**自动**切到 B 走梯子；同一次对话不要来回跳。
+>
+> ### 为什么这个场景决定了整个架构
+>
+> 它同时压住了三条设计主线，任何一条做错都不成立：
+>
+> | 主线 | 这个场景的要求 | 对应章节 |
+> |---|---|---|
+> | **出网方式属于"套餐"而非"模型"** | A 走直连、B 走梯子，同一个模型两种走法 | §3（通道）、[04 §8](04-network-core.md)（线路分配） |
+> | **切换必须自动且带粘性** | 用完自动切，且同一会话不来回跳 | §3.3（粘性）、§4（额度账本） |
+> | **路由层与网络层必须同一处决策** | 切套餐时线路**跟着**切，不能"切了套餐还走原来那条线" | §2 + [09 §5.1](09-architecture-design.md) 管线第 8 步 |
+>
+> 第三条是用户对 TokenHub 的核心抱怨 —— **它的路由层与网络层互不知道彼此**，所以"挂了梯子痛点照旧"。
+>
+> ### 术语（两种"订阅"必须分清）
+>
+> | 说法 | 实体 | 是什么 | 本场景对应 |
+> |---|---|---|---|
+> | **机场订阅** | `proxy_subscriptions` | 一堆**节点**的来源（Clash 格式） | 用户买的那个机场 |
+> | **套餐 / tokenplan** | `credentials` | 一份 **API 额度**（key + 额度 + 重置周期） | 字节方舟、command code |
+>
+> **出网方式挂在"套餐"上**（`credential.lane`），lane 再指向机场订阅里的某个组/节点、或直连。
+> 早期文档把两者都叫"订阅"，是最容易读错的地方，现已统一。
+>
+> ### 配置（就三处，其余全省略）
+>
+> ```yaml
+> credentials:
+>   - id: c-bytedance
+>     provider: p-bytedance
+>     label: 字节 · 500万 token/月
+>     secret: "${secret:bytedance}"
+>     lane: lane-direct              # ★ A 走直连
+>     quota: { metric: tokens, limit: 5000000, window: month, reset_day: 1,
+>              soft_limit: 0.8, hard_limit: 0.98 }
+>
+>   - id: c-commandcode
+>     provider: p-commandcode
+>     label: command code · 按量
+>     secret: "${secret:commandcode}"
+>     lane: lane-jp                  # ★ B 走梯子
+>     quota: { metric: cost, limit: 20, currency: CNY, window: month }
+>
+> channel_groups:
+>   - model: deepseek-v4.1flash
+>     members: [ch-bytedance, ch-commandcode]   # 顺序即优先级：先用 A
+>     selector: sticky_then_priority
+>     sticky: { enabled: true, ttl_h: 12 }
+>     release_on: [quota_exhausted]
+> ```
+>
+> 通道上**不必再写 lane** —— 它继承 `credential.lane`（五级继承见 [04 §8.1](04-network-core.md)）。
+> 想给某个通道单独改线路时才在通道上写，那叫覆盖。
+>
+> ### 运行时（这是验收时要能逐步复现的）
+>
+> ```
+> 请求 → 选通道 ch-bytedance → 该通道的 lane = lane-direct → 直连到字节
+> 请求 → 粘性命中 → 仍是 ch-bytedance → 仍走直连
+>   ⋮
+> 账本累计到 500 万 → c-bytedance 标记 exhausted
+> 请求 → 候选剔除字节 → 选 ch-commandcode → 它的 lane = lane-jp → 经日本节点出去
+> 请求 → 粘性已重写 → 继续 command code（不会来回跳）
+>   ⋮
+> 下月 1 号 → 窗口滚动 → 字节复活 → 新会话重新优先字节
+> ```
+>
+> **管线顺序是关键**：先选出通道（步骤 5–7），**再**由通道决定 lane（步骤 8）。
+> 所以"切套餐"和"切线路"物理上就是同一个动作，不可能脱节。
+>
+> ### 这个场景的两个前提（做不到就退化成手动）
+>
+> | 前提 | 说明 |
+> |---|---|
+> | **A 的额度必须可知** | 字节的 API 不一定在响应头给剩余量，主要靠"用户在套餐上填 `limit` + 本地累计"。**不填 limit 就无法自动切换** —— 所以 UI 必须在套餐缺额度配置时**显式提醒**，不能静默 |
+> | **直连/走梯子目前手配** | 本场景两种走法很明确，手配没问题。5 个套餐里 3 个能直连时容易漏 → 已进 backlog：lane 增加 `auto_reachable`（先试直连，失败自动走代理并缓存结果） |
+
+---
+
 本章是产品的"大脑"。核心目标：**同一个逻辑模型挂了多个 tokenplan 时，自动、有粘性、可解释地挑一个用，用完换下一个，并且不改变请求语义。**
 
 ---
