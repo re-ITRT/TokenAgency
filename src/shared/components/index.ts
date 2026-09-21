@@ -8,7 +8,8 @@
  * - 进度/额度：`<QuotaBar>`（<70% 成功 / 70–90% 警告 / >90% 失败并脉动；未设上限显式提示）
  * - 状态灯：`<StatusDot>`（绿=正常 黄=警告 红=失败 强调=进行中 灰=未启用；6px 圆点 + 文字）
  * - 趋势：`<Sparkline>`（纯 SVG，零依赖）
- * - 诚实显示层（[06 §10.1 B2] / [06 §10.2 D2]）：`<LimitGapNotice>`、`<DisabledReason>`、`outcomeDisplay()`
+ * - 诚实显示层（[06 §10.1 B2] / [06 §10.2 D2]）：`<LimitGapNotice>`、`<DisabledReason>`（非列表控件）、
+ *   `<DisabledMenuItem>`（菜单选项）、`outcomeDisplay()`
  *   —— 判定在后端，**前端只消费原文**，不许自己重判、也不许自己写第二份文案。
  *
  * 约束：**组件里不许写颜色字面量、不许写刻度外间距、不许出现 emoji**
@@ -22,7 +23,12 @@ export {
   dataGridSx,
   useDataGridPreset,
 } from "./dataGrid";
-export { DisabledReason, type DisabledReasonProps } from "./DisabledReason";
+export {
+  DisabledMenuItem,
+  DisabledReason,
+  type DisabledMenuItemProps,
+  type DisabledReasonProps,
+} from "./DisabledReason";
 export { LimitGapNotice, type LimitGapNoticeProps } from "./LimitGapNotice";
 export { outcomeDisplay, type OutcomeDisplay, type OutcomeDisplayArgs } from "./honestDisplay";
 

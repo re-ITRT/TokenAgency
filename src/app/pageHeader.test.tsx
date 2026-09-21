@@ -38,11 +38,19 @@ describe("[15 §4.2] PageHeader：页面标题只有一档", () => {
     renderHeader({ title: "服务商" });
     const title = screen.getByText("服务商");
 
-    // 一页最多一个 hero（[15 §4.2]）—— 页头不许抢看板主数字的地位
-    expect(title.className).toContain("MuiTypography-h2");
-    expect(title.className).not.toContain("MuiTypography-h1");
+    // 一页最多一个 hero（[15 §4.2]）—— 字号只到 `text.page`，页头不许抢看板主数字的地位
+    // （不再断言内部类名：那是把实现抄一遍；断言可观察到的字号与 DOM 语义）
     expect(getComputedStyle(title).fontSize).toBe(`${typography.size.page}px`);
     expect(getComputedStyle(title).fontWeight).toBe(`${typography.weight.medium}`);
+  });
+
+  it("[B-7] 页面标题是文档里的第一个标题：渲染成 `<h1>`（字号仍是 text.page）", () => {
+    renderHeader({ title: "服务商" });
+    const title = screen.getByText("服务商");
+
+    // 全站此前没有任何 <h1>：读屏按标题层级导航时，页面主标题只能撞到 <h2>（B-7）
+    expect(title.tagName).toBe("H1");
+    expect(getComputedStyle(title).fontSize).toBe(`${typography.size.page}px`);
   });
 
   it("标题下方只能是正文/元信息层级：说明用 body1（13px），出处用 caption（12px）", () => {

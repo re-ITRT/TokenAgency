@@ -50,7 +50,9 @@ export function PageHeader({ title, description, badge, actions, docRef }: PageH
     >
       <Box sx={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
-          <Typography variant="h2" noWrap>
+          {/* 页面标题是文档里的第一个标题 → 必须是 `<h1>`（[B-7]）；
+              字号仍由 `variant="h2"`（= `text.page` 20/500）决定，两者互不冲突 */}
+          <Typography variant="h2" component="h1" noWrap>
             {title}
           </Typography>
           {badge}
