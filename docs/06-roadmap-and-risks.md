@@ -15,6 +15,40 @@
 | S7 | 许可证 | 核实所选 Rust 协议库（rustls / shadowsocks crate / quinn 等）的 LICENSE；确认不再需要任何 GPL 内核 | 换等价的宽松许可库 |
 | S8 | Tauri 托盘 | 动态菜单、图标切换、tooltip 刷新、左键显窗 | — |
 
+## 1.5 内核行为不确定项（M0 **必验**，由员工 P5 交付时主动列出）
+
+> **这条清单本身就是一次高质量交付。** 我要求 P5 明确区分"我确定的"与"我推断的"，
+> 它给出了 9 条 —— 每条都说明了自己的假设与"如果我错了会怎样"。
+> **这些不是待办事项，是必须在真 mihomo 上证伪的假设。** 在验完之前，
+> `ta-kernel` 的通过测试只证明"它符合 P5 以为的内核行为"。
+
+### 已确定（有文档依据 + 代码/测试覆盖，不必重验）
+
+YAML 模板字段与隔离项 · `Bearer` 鉴权 · `PUT /configs?force=true {"path":abs}` · `PUT /proxies/{g} {"name":n}` ·
+`GET /proxies/{n}/delay?timeout&url` · `PUT /providers/proxies/{k}` · 启动命令 `-d <dir> -f <file>` ·
+Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走）· 退避序列 `[1,2,4,8]` + 上限 30s
+
+### 必须真机验证（按"如果我错了会怎样"排序）
+
+| # | 假设 | 错了会怎样 | 验法 |
+|---|---|---|---|
+| K1 | **`listeners` 增删可靠 `PUT /configs?force=true` 生效**，不必重启进程 | 当前 `apply()` 策略是"能 reload 就 reload，报错才 restart"。**若 reload 静默成功但 listener 陈旧，则策略是错的** —— 会出现"通道指向一个已关闭的端口"，且没有任何报错 | 改端口 / 加删 lane → reload → 断言**新端口在 listen 且旧端口已关** |
+| K2 | 首次拉订阅未完成时创建指向 `use: [provider]` 的组与 listener 不会失败/空组报错 | 启动即失败，或通道静默不可用 | 冷启动（无缓存）直接起，看日志与 `GET /proxies` |
+| K3 | `proxy-groups` 上的 `filter` / `exclude-filter` 与 `use`（provider）可同时用 | `filter` lane 全部失效 | 生成一个带 filter 的组，看节点数与正则是否吻合 |
+| K4 | `listeners[].proxy` 可直接指**裸节点名**与**订阅自带组名（含 emoji）** | 线路分配的核心机制失效（docs/04 §7.1 全靠这条） | 两种各配一条 lane，`curl -x` 验证出口 |
+| K5 | 严格解码：`select` 组多余的 `url/interval/tolerance`、`header` 用列表形式 `User-Agent: [...]`、`find-process-mode: off`、空集合 `proxy-providers: {}` / `proxy-groups: []` / `listeners: []` 都被接受 | 内核启动失败（当前按模板逐字写，未证实空集合） | 逐项最小配置试起 |
+| K6 | `mixed-port: 0` 确实等于"关闭默认入站" | 会多一个监听端口 → 违反 I1 入口唯一 | `netstat` 断言 |
+| K7 | **`snapshot()` 的 JSON 形态**：`proxies[].type/now/all/history[].time\|delay`、`providers[].name/vehicleType/updatedAt/proxies[]` | 我的 wiremock 测的是"我以为的内核"。**这是全清单里最需要重验的一条** —— UI 的线路下拉完全依赖它 | 用 P5 提供的 `RawSnapshot::fetch` dump 真 JSON，与假设逐字段对比 |
+| K8 | Windows `taskkill /PID x /T`（不带 `/F`）对控制台程序基本无效 → 实际是 2s 后强杀 | 若 `profile.store-selected: true` 的选中项需优雅退出才落盘，**强杀会导致重启后选中的节点丢失** —— 直接破坏"线路分配"的用户体验 | 切节点 → 杀 → 重启 → 看选中是否保留 |
+| K9 | `AssignProcessToJobObject` 在受限沙箱里可用 | 失败会降级为 warn + `taskkill /T` 兜底，孤儿进程风险 ↑ | 在有沙箱的机器上确认 |
+
+**K1 / K2 / K7 是三条阻塞项**；K7 若形态不同，只是改 `parse_snapshot`；**K1 若成立性不满足，会改动 `apply()` 的整体策略**（可能要"重启内核 + 请求排队"）。
+
+### 由此引出的两条待决设计（M0 一并定）
+
+1. **`listeners` 变更的 apply 策略**：若能 reload → 保持现状；若必须重启 → 需要"请求排队 + direct 通道降级放行"
+2. **两段式 apply**（若 K2 成立）：先等 provider 有节点，再 reload listener
+
 ## 2. M1 · 可用 MVP（约 2 周）
 
 - 单协议网关（OpenAI Chat Completions）+ 全透传保真

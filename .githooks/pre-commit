@@ -1,7 +1,11 @@
 #!/bin/sh
-# TokenAgency pre-commit —— 只检查本次提交涉及的东西，尽量快。
+# TokenAgency pre-commit —— 只检查本次提交涉及的东西。
 # 安装：pwsh -File scripts/install-hooks.ps1
-# 绕过：git commit --no-verify（仅限紧急情况，别养成习惯）
+# 绕过：git commit --no-verify（仅限紧急情况）
+#
+# 设计原则：**只检查暂存的文件**，不做全仓库检查。
+# 原因：多人并行开发时，全仓库检查会被别人未完成的在途代码挡住，
+#       最终逼所有人用 --no-verify —— 那等于门禁失效。门禁要大家都愿意用才有意义。
 
 fail() {
     printf '\033[31m\n✘ %s\033[0m\n\n' "$1"
@@ -14,11 +18,41 @@ staged=$(git diff --cached --name-only --diff-filter=ACMR)
 [ -z "$staged" ] && exit 0
 
 # ---------------------------------------------------------------- 1) 明文密钥守卫
-# 只扫"新增的行"，避免历史误报。key 一律走 ${secret:name} / ${env:VAR}。
-leak=$(git diff --cached -U0 | grep -E '^\+' | grep -nE '(sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' || true)
-if [ -n "$leak" ]; then
-    printf '%s\n' "$leak"
-    fail "检测到疑似明文密钥。请改用 \${secret:name} 或 \${env:VAR}（见 docs/02-config-and-data-model.md §5）"
+#
+# 分级策略（重要的设计取舍）：
+#   生产代码里出现疑似真 key  → 拦（失败）
+#   测试/夹具/文档里出现假 key → 只警告
+#
+# 为什么分级：员工 P7 反馈说它写的假 key 夹具会被这个守卫直接拦住，
+# 只能把夹具改成更短的形式。这是**门禁误伤合法代码** ——
+# 后果是大家学会用 --no-verify，门禁就废了。守卫要拦住真问题，不能拦住写测试的人。
+#
+# 另外支持行内豁免标记：`ta-allow-fake-secret`（用于确实需要长字符串的夹具，
+# 以及本文件这种"文档里必须举例"的场合）。
+leak_fail=""
+leak_warn=""
+for f in $staged; do
+    [ -f "$f" ] || continue
+    added=$(git diff --cached -U0 -- "$f" 2>/dev/null | grep -E '^\+' | grep -v '^+++')
+    [ -z "$added" ] && continue
+    hits=$(printf '%s\n' "$added" | grep -nE '(sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' | grep -v 'ta-allow-fake-secret' || true)
+    [ -z "$hits" ] && continue
+    case "$f" in
+        */tests/* | */test/* | *fixture* | *mock* | *.md | */examples/* | .githooks/*)
+            leak_warn="$leak_warn\n  $f"
+            ;;
+        *)
+            leak_fail="$leak_fail\n  $f"
+            printf '%s\n' "$hits" | sed 's/^/      /'
+            ;;
+    esac
+done
+if [ -n "$leak_warn" ]; then
+    printf '\033[33m! 以下文件（测试/夹具/文档）含疑似密钥形态的字符串，已放行 —— 请确认是假值：\033[0m'
+    printf '%b\n' "$leak_warn"
+fi
+if [ -n "$leak_fail" ]; then
+    fail "以下生产代码文件含疑似明文密钥。请改用 \${secret:name} 或 \${env:VAR}（见 docs/02 §5）。"
 fi
 
 # ---------------------------------------------------------------- 2) 大文件守卫
@@ -32,36 +66,56 @@ for f in $staged; do
 done
 if [ -n "$big" ]; then
     printf '%b\n' "$big"
-    fail "以上文件超过 1MB。确认是否该入库；运行时数据（*.sqlite / logs / providers）已在 .gitignore 中。"
+    fail "以上文件超过 1MB。确认是否该入库；运行时数据已在 .gitignore 中。"
 fi
 
-# ---------------------------------------------------------------- 3) 分类
-has_rs=0
-has_ts=0
+# ---------------------------------------------------------------- 3) 分类暂存文件
+rs_files=""
+ts_files=""
+crates=""
 has_toml=0
+
 for f in $staged; do
     case "$f" in
-        *.rs) has_rs=1 ;;
-        *.ts | *.tsx) has_ts=1 ;;
+        *.rs)
+            rs_files="$rs_files $f"
+            case "$f" in
+                crates/*/*) c="$f"; c=${c#crates/}; c=${c%%/*}; crates="$crates $c" ;;
+                src-tauri/*) crates="$crates tokenagency" ;;
+            esac
+            ;;
+        *.ts | *.tsx) ts_files="$ts_files $f" ;;
         Cargo.toml) has_toml=1 ;;
     esac
 done
 
-# ---------------------------------------------------------------- 4) Rust 格式
-if [ "$has_rs" -eq 1 ] || [ "$has_toml" -eq 1 ]; then
-    info "cargo fmt --all --check"
-    cargo fmt --all -- --check || fail "Rust 格式不合格。运行：cargo fmt --all"
+# 去重
+crates=$(printf '%s\n' $crates | sort -u | tr '\n' ' ')
+
+# ---------------------------------------------------------------- 4) Rust 格式（仅暂存文件）
+if [ -n "$rs_files" ]; then
+    info "rustfmt --check（仅本次暂存的 .rs）"
+    for f in $rs_files; do
+        [ -f "$f" ] || continue
+        rustfmt --edition 2021 --check "$f" >/dev/null 2>&1 \
+            || fail "格式不合格：$f\n  修复：rustfmt --edition 2021 $f   或   cargo fmt --all"
+    done
 fi
 
-# ---------------------------------------------------------------- 5) Clippy
-if [ "$has_rs" -eq 1 ]; then
-    info "cargo clippy --workspace --all-targets -- -D warnings"
-    cargo clippy --workspace --all-targets --quiet -- -D warnings \
-        || fail "clippy 未通过（已按 -D warnings 处理）。修复告警后重试。"
+# ---------------------------------------------------------------- 5) Clippy（仅受影响的 crate）
+if [ -n "$crates" ]; then
+    for c in $crates; do
+        info "cargo clippy -p $c --all-targets -- -D warnings"
+        cargo clippy -p "$c" --all-targets --quiet -- -D warnings \
+            || fail "clippy 未通过（$c）。修复告警后重试；如果是别人在途的代码导致的，请只提交你自己的文件。"
+    done
+elif [ "$has_toml" -eq 1 ]; then
+    info "仅 Cargo.toml 变更，跑 cargo check --workspace"
+    cargo check --workspace --quiet || fail "workspace 检查未通过"
 fi
 
 # ---------------------------------------------------------------- 6) 前端类型
-if [ "$has_ts" -eq 1 ]; then
+if [ -n "$ts_files" ]; then
     if [ -d node_modules ]; then
         info "tsc --noEmit"
         npx --no-install tsc --noEmit || fail "TypeScript 类型检查失败。"

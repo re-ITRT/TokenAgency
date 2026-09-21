@@ -229,11 +229,18 @@ pub trait PassthroughPolicy: Send + Sync {
 
 | 阶段 | 约定 |
 |---|---|
-| 启动 | `mihomo -d <appdata>/kernel -f kernel.generated.yaml`，**绑定 Job Object**（Windows）防孤儿 |
+| 启动 | `mihomo -d <appdata>/kernel -f kernel.generated.yaml`，**绑定 Job Object**（Windows `KILL_ON_JOB_CLOSE`）防孤儿 |
 | 就绪 | 轮询 `GET /version`（带 secret），超时 5s |
 | 失败 | 指数退避重启 1s→2s→4s→8s→16s（上限 30s），连续 5 次 → `state=failed`，托盘红，通道降级为仅 direct |
 | 停止 | 先 `SIGTERM`/`taskkill`，等 2s，再强杀 |
 | 状态机 | `stopped → starting → ready → (restarting → ready)* | failed` |
+
+> **契约更正（第 8 轮）**：本节原先写的 `apply(&self, cfg: &KernelConfig)` 与冻结的 `lib.rs` 不一致
+> （`lib.rs` 里是 `apply(&self)`，且没有 `set_select`）。这是**我的文档与代码不同步**，员工 P5 没有擅自改 `lib.rs` 是对的。
+>
+> 定稿：**配置由构造时注入的 `KernelConfigSource` 提供**（`write_generated` + `lane_targets`），
+> `apply()` 不带参数；`set_select(lane, node)` 提升为 trait 方法 —— 因为
+> **lane 级节点钉住（`select` 组）是网关的常规操作**（docs/04 §8.2 的线路下拉），不该藏在固有方法里。
 
 ## 2.2 我们生成的配置（唯一真源格式）
 
