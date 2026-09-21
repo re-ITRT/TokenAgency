@@ -48,6 +48,19 @@ pub struct AppState {
     pub gateway: RwLock<Option<Arc<ta_gateway::GatewayDeps>>>,
     /// 内核控制器，由 T2 注入
     pub kernel: RwLock<Option<Arc<dyn ta_kernel::KernelController>>>,
+    /// 生成内核配置的真源（`kernel_apply` / 配置变更后要 `set_doc`/`set_ports`）。
+    ///
+    /// 它同时也是 `KernelController::apply()` 的输入 —— 两份必须指向**同一个**
+    /// `GeneratedConfigSource`，否则"命令层改了配置、内核却按旧配置 reload"。
+    pub kernel_source: RwLock<Option<Arc<ta_kernel::config_gen::GeneratedConfigSource>>>,
+    /// 内核 supervisor 的**具体类型**。
+    ///
+    /// 为什么除了 `kernel`（`Arc<dyn KernelController>`）还要存一份：网关的
+    /// `KernelProbe` 是**同步**接口（`/healthz` 每来一次请求就查一次），
+    /// 而 `KernelController::status()` 是异步的。存具体类型才能直接调
+    /// `KernelSupervisor::state()`，不必引入缓存 —— **缓存会让"/healthz 说 ready、
+    /// 内核其实已经死了"成为可能**。
+    pub kernel_supervisor: RwLock<Option<Arc<ta_kernel::process::KernelSupervisor>>>,
 }
 
 impl AppState {
@@ -79,6 +92,8 @@ impl AppState {
             clock,
             gateway: RwLock::new(None),
             kernel: RwLock::new(None),
+            kernel_source: RwLock::new(None),
+            kernel_supervisor: RwLock::new(None),
         })
     }
 
@@ -124,6 +139,14 @@ impl AppState {
 
     pub fn kernel_slot(&self) -> Option<Arc<dyn ta_kernel::KernelController>> {
         self.kernel.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_kernel_source(&self, source: Arc<ta_kernel::config_gen::GeneratedConfigSource>) {
+        *self.kernel_source.write().unwrap_or_else(|e| e.into_inner()) = Some(source);
+    }
+
+    pub fn kernel_source_slot(&self) -> Option<Arc<ta_kernel::config_gen::GeneratedConfigSource>> {
+        self.kernel_source.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn gateway_ready(&self) -> bool {

@@ -7,11 +7,18 @@
 //!
 //! ```text
 //! on_setup()            解析命令行 → 隐藏窗口（mode=tray）→ 装 QuitGuard/通知中心 → 广播 Skeleton
-//!   ↓ (T1 建好 AppState 后)
-//! tray::init() + tray::set_source()   托盘先亮起来（此刻状态来自真实数据）
 //!   ↓
-//! BootOrchestrator::run()             延迟 → 拉内核 → 等就绪 → Ready/Degraded（广播每个阶段）
+//! tray::init() + tray::set_source()   托盘先亮起来（此刻状态来自真实数据源）
+//!   ↓
+//! BootOrchestrator::run()             延迟 → 拉内核 → 等内核就绪 → 拉网关 → 等网关监听 → Ready
 //! ```
+//!
+//! **本文件只有编排逻辑**（顺序 / 超时 / 降级），所以它能用假依赖离线测。
+//! 生产装配（怎么造内核、阶段怎么广播、托盘数据从哪来）在 [`crate::boot`]。
+//!
+//! **转绿的判据是"真的就绪"，不是"调用过函数"**：`wait_kernel_ready` 只认内核自己给出的
+//! `Ready`（那已经是带 provider 判据的状态），`wait_gateway_ready` 只认网关**真的在监听**。
+//! 任何一环没就绪都收敛成 `Degraded` 并把可读原因交给 UI —— 绝不先亮绿灯。
 //!
 //! # 启动延迟为什么由我们自己做
 //!
@@ -576,6 +583,10 @@ pub enum BootPhase {
     StartingKernel,
     /// 等内核就绪（就绪探测）
     WaitingKernel,
+    /// 正在启动本地网关（只绑回环，[09 §1.2] I1）
+    StartingGateway,
+    /// 等网关就绪 —— 判据是"真的在监听 8787"，不是"调用过启动函数"
+    WaitingGateway,
     /// 全绿
     Ready,
     /// 降级可用（内核没起来，但直连还能用）
@@ -591,6 +602,8 @@ impl BootPhase {
             BootPhase::Delaying => "delaying",
             BootPhase::StartingKernel => "starting_kernel",
             BootPhase::WaitingKernel => "waiting_kernel",
+            BootPhase::StartingGateway => "starting_gateway",
+            BootPhase::WaitingGateway => "waiting_gateway",
             BootPhase::Ready => "ready",
             BootPhase::Degraded => "degraded",
             BootPhase::Failed => "failed",
@@ -615,9 +628,26 @@ pub trait BootDeps: Send + Sync {
     async fn start_kernel(&self) -> Result<(), String>;
     /// 等内核就绪（内部做就绪探测；超时返回 Err）
     async fn wait_kernel_ready(&self, timeout: Duration) -> Result<(), String>;
+    /// 启动本地网关（只绑回环）。
+    ///
+    /// 默认实现 = **明确暴露缺口**：网关的生产装配入口由 E5 在 `ta-gateway` 里提供
+    /// （`build_runtime` 一类）。在他落地之前，这里如实返回"未接线"，
+    /// 编排因而落到 `Degraded` 并把这句原因显示给用户 —— **绝不假装网关已就绪**，
+    /// 也**不在我们这边另造一条装配路径**（两套构造方式必然漂移，见 docs/13 L21）。
+    async fn start_gateway(&self) -> Result<(), String> {
+        Err(GATEWAY_NOT_WIRED.to_string())
+    }
+    /// 等网关**真的在监听**（不是"调用过启动函数"）
+    async fn wait_gateway_ready(&self, _timeout: Duration) -> Result<(), String> {
+        Err(GATEWAY_NOT_WIRED.to_string())
+    }
     /// 阶段变化（广播事件 + 更新托盘色）
     fn on_phase(&self, phase: BootPhase, detail: &str);
 }
+
+/// 网关装配入口缺位时的统一文案（`BootDeps` 默认实现与装配层共用，避免两处措辞漂移）。
+pub const GATEWAY_NOT_WIRED: &str =
+    "网关装配入口尚未接线（等 ta-gateway 的 build_runtime 落地）—— 网关还没有在监听 8787";
 
 /// 编排结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -639,6 +669,12 @@ impl BootOrchestrator {
     /// "内核未就绪，且没有可用的直连通道" 才算失败）。所以这里落到 `Degraded`
     /// 并带上可读原因，让用户自己决定。
     pub async fn run(deps: &dyn BootDeps, args: &StartupArgs, timeout: Duration) -> BootOutcome {
+        let delayed_s = args.effective_delay_s();
+        let degraded = |detail: String| -> BootOutcome {
+            deps.on_phase(BootPhase::Degraded, &detail);
+            BootOutcome { phase: BootPhase::Degraded, delayed_s, detail: Some(detail) }
+        };
+
         deps.on_phase(BootPhase::Skeleton, "界面已就绪，正在准备网关");
 
         let delay = args.delay();
@@ -650,38 +686,32 @@ impl BootOrchestrator {
             deps.wait(delay).await;
         }
 
+        // ---- 内核：先拉起，再等它**真的**就绪
         deps.on_phase(BootPhase::StartingKernel, "正在启动网络内核");
         if let Err(e) = deps.start_kernel().await {
-            let detail = format!("网络内核未能启动：{e}（直连通道仍可用）");
-            deps.on_phase(BootPhase::Degraded, &detail);
-            return BootOutcome {
-                phase: BootPhase::Degraded,
-                delayed_s: args.effective_delay_s(),
-                detail: Some(detail),
-            };
+            return degraded(format!("网络内核未能启动：{e}（直连通道仍可用）"));
+        }
+        deps.on_phase(BootPhase::WaitingKernel, "等待内核就绪");
+        if let Err(e) = deps.wait_kernel_ready(timeout).await {
+            return degraded(format!(
+                "内核在 {} 秒内没有就绪：{e}（直连通道仍可用）",
+                timeout.as_secs()
+            ));
         }
 
-        deps.on_phase(BootPhase::WaitingKernel, "等待内核就绪");
-        match deps.wait_kernel_ready(timeout).await {
-            Ok(()) => {
-                deps.on_phase(BootPhase::Ready, "网关已就绪");
-                BootOutcome {
-                    phase: BootPhase::Ready,
-                    delayed_s: args.effective_delay_s(),
-                    detail: None,
-                }
-            }
-            Err(e) => {
-                let detail =
-                    format!("内核在 {} 秒内没有就绪：{e}（直连通道仍可用）", timeout.as_secs());
-                deps.on_phase(BootPhase::Degraded, &detail);
-                BootOutcome {
-                    phase: BootPhase::Degraded,
-                    delayed_s: args.effective_delay_s(),
-                    detail: Some(detail),
-                }
-            }
+        // ---- 网关：内核之后再拉起本地网关（只绑回环，[09 §1.2] I1）
+        deps.on_phase(BootPhase::StartingGateway, "正在启动本地网关");
+        if let Err(e) = deps.start_gateway().await {
+            return degraded(format!("本地网关未能启动：{e}"));
         }
+        deps.on_phase(BootPhase::WaitingGateway, "等待网关开始监听");
+        if let Err(e) = deps.wait_gateway_ready(timeout).await {
+            return degraded(format!("网关在 {} 秒内没有开始监听：{e}", timeout.as_secs()));
+        }
+
+        // ---- 两个依赖都**真的**就绪，才转绿
+        deps.on_phase(BootPhase::Ready, "内核与网关均已就绪");
+        BootOutcome { phase: BootPhase::Ready, delayed_s, detail: None }
     }
 }
 
@@ -955,6 +985,8 @@ mod tests {
         waits: Mutex<Vec<Duration>>,
         start_result: Result<(), String>,
         ready_result: Result<(), String>,
+        start_gateway_result: Result<(), String>,
+        wait_gateway_result: Result<(), String>,
     }
 
     impl Default for FakeDeps {
@@ -964,6 +996,10 @@ mod tests {
                 waits: Mutex::new(Vec::new()),
                 start_result: Ok(()),
                 ready_result: Ok(()),
+                // 默认"网关也能起来"，这样内核相关的既有断言不被网关噪音干扰；
+                // 网关自己的分支由下面两个专门的测试覆盖。
+                start_gateway_result: Ok(()),
+                wait_gateway_result: Ok(()),
             }
         }
     }
@@ -994,6 +1030,12 @@ mod tests {
         async fn wait_kernel_ready(&self, _timeout: Duration) -> Result<(), String> {
             self.ready_result.clone()
         }
+        async fn start_gateway(&self) -> Result<(), String> {
+            self.start_gateway_result.clone()
+        }
+        async fn wait_gateway_ready(&self, _timeout: Duration) -> Result<(), String> {
+            self.wait_gateway_result.clone()
+        }
         fn on_phase(&self, phase: BootPhase, detail: &str) {
             self.phases.lock().unwrap().push((phase, detail.to_string()));
         }
@@ -1014,6 +1056,8 @@ mod tests {
                 BootPhase::Skeleton,
                 BootPhase::StartingKernel,
                 BootPhase::WaitingKernel,
+                BootPhase::StartingGateway,
+                BootPhase::WaitingGateway,
                 BootPhase::Ready
             ]
         );
@@ -1036,6 +1080,8 @@ mod tests {
                 BootPhase::Delaying,
                 BootPhase::StartingKernel,
                 BootPhase::WaitingKernel,
+                BootPhase::StartingGateway,
+                BootPhase::WaitingGateway,
                 BootPhase::Ready
             ],
             "延迟必须夹在骨架屏与拉内核之间"
@@ -1077,14 +1123,53 @@ mod tests {
         assert_eq!(deps.phases().last(), Some(&BootPhase::Degraded), "最后一个阶段必须是收敛态");
     }
 
+    #[tokio::test]
+    async fn missing_gateway_wiring_degrades_and_never_turns_green() {
+        // 这就是"不能只说调用了函数"的那条：网关没接线 → 绝不转绿，
+        // 而且原因要能在 UI 上读到（用户才知道为什么没有绿灯）。
+        let deps = FakeDeps {
+            start_gateway_result: Err(GATEWAY_NOT_WIRED.to_string()),
+            ..Default::default()
+        };
+        let out = BootOrchestrator::run(&deps, &StartupArgs::default(), KERNEL_READY_TIMEOUT).await;
+
+        assert_eq!(out.phase, BootPhase::Degraded);
+        assert!(!deps.phases().contains(&BootPhase::Ready), "网关没起来就不许转绿");
+        assert!(!deps.phases().contains(&BootPhase::WaitingGateway), "起不来就别再等");
+        let detail = out.detail.expect("要有可读原因");
+        assert!(detail.contains("8787"), "要说清网关没在监听：{detail}");
+        assert_eq!(deps.phases().last(), Some(&BootPhase::Degraded));
+    }
+
+    #[tokio::test]
+    async fn gateway_started_but_not_listening_times_out_without_green() {
+        // 进程起来了但端口没在听（绑定失败 / 端口被占）→ 同样是 Degraded，不是绿。
+        let deps = FakeDeps {
+            wait_gateway_result: Err("8787 上没有监听".to_string()),
+            ..Default::default()
+        };
+        let timeout = Duration::from_secs(3);
+        let out = BootOrchestrator::run(&deps, &StartupArgs::default(), timeout).await;
+
+        assert_eq!(out.phase, BootPhase::Degraded);
+        assert!(!deps.phases().contains(&BootPhase::Ready));
+        let detail = out.detail.expect("要有可读原因");
+        assert!(detail.contains('3'), "要把超时秒数说清楚：{detail}");
+        assert!(detail.contains("8787"), "{detail}");
+    }
+
     #[test]
     fn boot_phase_labels_are_stable_for_the_frontend() {
         // 前端按这些字符串分支，改名就是 breaking change
         assert_eq!(BootPhase::Skeleton.as_str(), "skeleton");
         assert_eq!(BootPhase::Ready.as_str(), "ready");
         assert_eq!(BootPhase::Degraded.as_str(), "degraded");
+        assert_eq!(BootPhase::StartingGateway.as_str(), "starting_gateway");
+        assert_eq!(BootPhase::WaitingGateway.as_str(), "waiting_gateway");
         assert!(!BootPhase::Skeleton.is_terminal());
         assert!(!BootPhase::Delaying.is_terminal());
+        assert!(!BootPhase::StartingGateway.is_terminal(), "网关还没就绪，骨架屏不能撤");
+        assert!(!BootPhase::WaitingGateway.is_terminal());
         assert!(BootPhase::Failed.is_terminal());
         assert!(BootPhase::Degraded.is_terminal());
         let payload = BootPhasePayload { phase: BootPhase::Ready, detail: "ok".to_string() };
