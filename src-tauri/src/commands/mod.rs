@@ -139,6 +139,8 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         .dangerously_cast_bigints_to_number()
         .commands(tauri_specta::collect_commands![
             app::app_status,
+            app::app_pause_gateway,
+            app::app_resume_gateway,
             app::app_open_dir,
             app::app_clipboard_access_info,
             config::config_get,
