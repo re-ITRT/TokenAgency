@@ -29,7 +29,9 @@ use crate::sticky::{MemoryStickyResolver, StickyResolver};
 pub struct RouterOptions {
     pub engine: EngineOptions,
     pub selector: SelectorOptions,
-    /// 注入式时钟：粘性 TTL 与冷却判定都走它
+    /// 注入式时钟。**只用于粘性 TTL**（[`Router::new`] 造内部粘性表时用）。
+    /// 冷却判定**不经过它** —— 那读的是 `RouteContext.channel_state`（由调用方填）。
+    /// 外部注入 sticky（[`Router::with_sticky`]）时本字段不参与装配：那份解析器自带时钟。
     pub clock: Arc<dyn Clock>,
     /// 可选定价引擎（`cheapest` 选择器需要它；缺失时退化为配置顺序）
     pub pricing: Option<Arc<dyn PricingEngine>>,
