@@ -7,11 +7,17 @@
 #      这里把 docs/12 §1.2 的编制表变成**机械检查** —— 路径不在你的范围内直接拒绝。
 #
 # 用法：
-#   pwsh -File scripts/commit.ps1 -As E4 -Paths crates/ta-subscription -MessageFile msg.txt
+#   pwsh -File scripts/commit.ps1 -As E4 -Paths crates/ta-subscription -MessageFile msg.txt -AgentId <id>
 #   pwsh -File scripts/commit.ps1 -As E1 -Paths crates/ta-core/src/domain,config.example.yaml -Message "feat(core): ..."
+#   pwsh -File scripts/commit.ps1 -As E1 -Paths @('a','b','c') -Message "..."    # 数组写法也可
 #   pwsh -File scripts/commit.ps1 -As lead -Paths docs -Message "docs: ..."
+#   加 -DryRun 先干跑（**不写任何文件、不提交**，只打印最终提交信息）
 #
-# 只提交自己范围外的东西时会被拒绝；确实需要时用 -Override "原因" 显式承担。
+# 约定：
+#   * `-Paths` 支持逗号串联，也支持数组（`pwsh -File` 会把 `a,b,c` 合成一个字符串，脚本内部会拆）
+#   * `-MessageFile` 是**输入**，脚本不会改写它（trailer 只写进临时文件）
+#   * 多行中文**必须**用 `-MessageFile`（PowerShell 传多行参数会被切碎，提交信息会被截断成 pathspec）
+#   * 只提交自己范围外的东西时会被拒绝；确实需要时用 `-Override "原因"` 显式承担
 
 [CmdletBinding()]
 param(
@@ -129,25 +135,27 @@ if ($missing.Count -gt 0) {
     exit 2
 }
 
-# ---------------------------------------------------------------- trailer
+# ---------------------------------------------------------------- trailer 与消息
+#
+# 设计约定：**`-MessageFile` 是输入，不是输出。** 我们不改调用方的文件。
+# （早期版本把 trailer 原地追加回 `-MessageFile`，导致"先干跑再正式提交"用同一个文件时
+#   trailer 会重复 —— 员工 P1 反馈的 bug，已修。）
 $trailers = @()
 $trailers += "Work-Package: $As"
 if ($AgentId) { $trailers += "Agent-Id: $AgentId" }
 if ($Override) { $trailers += "Scope-Override: $Override" }
 
-$msgFile = $MessageFile
-$tmpMsg = $null
-if (-not $msgFile) {
-    $tmpMsg = Join-Path $env:TEMP "ta-commit-msg-$([guid]::NewGuid().ToString('N').Substring(0,8)).txt"
-    $body = $Message + "`n`n" + ($trailers -join "`n") + "`n"
-    [System.IO.File]::WriteAllText($tmpMsg, $body, (New-Object System.Text.UTF8Encoding($false)))
-    $msgFile = $tmpMsg
+$base = if ($MessageFile) { (Get-Content $MessageFile -Raw).TrimEnd() } else { $Message.TrimEnd() }
+$body = $base + "`n`n" + ($trailers -join "`n") + "`n"
+
+if ($DryRun) {
+    Write-Host "`n(干跑，未写任何文件、未提交) 将使用的提交信息：" -ForegroundColor Yellow
+    $body -split "`n" | ForEach-Object { Write-Host "  | $_" -ForegroundColor DarkGray }
+    exit 0
 }
-else {
-    # 追加 trailer 到已有的消息文件
-    $body = (Get-Content $MessageFile -Raw).TrimEnd() + "`n`n" + ($trailers -join "`n") + "`n"
-    [System.IO.File]::WriteAllText($MessageFile, $body, (New-Object System.Text.UTF8Encoding($false)))
-}
+
+$msgFile = Join-Path $env:TEMP "ta-commit-msg-$([guid]::NewGuid().ToString('N').Substring(0,8)).txt"
+[System.IO.File]::WriteAllText($msgFile, $body, (New-Object System.Text.UTF8Encoding($false)))
 
 # ---------------------------------------------------------------- 暂存 + 提交（带 index.lock 重试）
 Write-Host "以 $($id.Name) <$($id.Email)> 提交：" -ForegroundColor Cyan
