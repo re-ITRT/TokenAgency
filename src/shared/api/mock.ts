@@ -560,9 +560,42 @@ export function registerBaselineMocks(): void {
     { name: "东京-03", type: "vmess", group: "🇯🇵 日本", latency_ms: 82, ok: true },
   ]);
 
-  mockCommand("log_query", () => {
-    const rows = traceRows();
-    return { rows, total: rows.length } satisfies LogPage;
+  // 日志查询：**按条件过滤**（不是每次返回全量）—— 否则浏览器开发时日志页的筛选看起来像坏的，
+  // 而"看起来在用、其实没生效"的筛选正是我们要避免的那类假象。
+  // 语义是 Rust `ta_store::trace_filter_sql` 的**子集**：时间窗 / 模型 / 通道 / 客户端 / 状态 / 检索串。
+  // 凭据过滤走 usage 关联、TA 码不在行里 —— 这两件 mock 不做，也就**不假装**做到了。
+  mockCommand("log_query", (args) => {
+    const q = ((args as unknown as { q?: Record<string, unknown> } | undefined)?.q ??
+      {}) as Record<string, unknown>;
+    const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+    const strs = (v: unknown): string[] => (Array.isArray(v) ? (v as string[]) : []);
+    const from = num(q["from_ms"]);
+    const to = num(q["to_ms"]);
+    const limit = num(q["limit"]) ?? 100;
+    const status = strs(q["status"]);
+    const model = strs(q["model"]);
+    const channel = strs(q["channel"]);
+    const client = strs(q["client"]);
+    const search = typeof q["search"] === "string" ? q["search"].toLowerCase() : undefined;
+
+    const rows = traceRows().filter((r) => {
+      if (from !== undefined && r.ts_ms < from) return false;
+      if (to !== undefined && r.ts_ms >= to) return false;
+      if (status.length > 0 && !status.includes(r.outcome)) return false;
+      if (model.length > 0 && !model.includes(r.model)) return false;
+      if (channel.length > 0 && !channel.includes(r.channel_id)) return false;
+      if (client.length > 0 && !client.includes(r.client ?? "")) return false;
+      if (search !== undefined) {
+        const hay = [r.request_id, r.model, r.client, r.error_type]
+          .filter((v): v is string => typeof v === "string")
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      return true;
+    });
+
+    return { rows: rows.slice(0, limit), total: rows.length } satisfies LogPage;
   });
   mockCommand("log_get_trace", () => {
     const rows = traceRows();
@@ -595,6 +628,15 @@ export function registerBaselineMocks(): void {
     oldest_ts: now() - 30 * 24 * HOUR,
     newest_ts: now(),
   }));
+
+  // 日志页的三个**写**命令 + 打开目录：mock 里补上，浏览器开发时按钮才不会报"未注册 mock"
+  // （真机上它们都已注册：`src-tauri/src/commands/mod.rs` 的 collect_commands!）。
+  mockCommand("log_set_mode", () => undefined);
+  mockCommand("log_set_retention", () => undefined);
+  // 真机 `log_clear` 返回删除条数（u64，`commands/log.rs:59`），而冻结契约写的是 `void` ——
+  // 这里照真机返回，前端按"number 或 undefined"两种都处理（`pages/logs/index.tsx` 的 onClear）。
+  mockCommand("log_clear", () => traceRows().length as unknown as void);
+  mockCommand("app_open_dir", () => undefined);
 
   mockCommand("pricing_unpriced_models", () => ["command-code-preview"]);
   mockCommand("pricing_list", () => []);

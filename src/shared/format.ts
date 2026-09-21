@@ -68,6 +68,24 @@ export function formatPercent(ratio: number, digits?: number): string {
   return `${pct.toFixed(d)}%`;
 }
 
+/**
+ * 字节数：`386 MB` / `1.2 GB`（**1024 进制**，与库里 `max_size_mb` / `StorageStats.bytes` 同口径）。
+ * 日志/库文件大小的唯一格式化出口（别在页面里手写除法拼单位）。
+ */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"] as const;
+  let value = bytes / 1024;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i += 1;
+  }
+  // 大数不再给小数位（386.0 MB 是噪声）；小数位只用于 100 以下
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+}
+
 /** 延迟：`82ms` / `1.2s`。 */
 export function formatLatency(ms: number | null | undefined): string {
   if (ms === null || ms === undefined) return "—";
