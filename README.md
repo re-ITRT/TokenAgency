@@ -105,3 +105,66 @@ ANTHROPIC_API_KEY=ta-local-xxxxxxxx
 ```
 
 模型名随便填客户端里已有的（`gpt-4o`、`claude-sonnet-4-5`…），网关按 `models/channels` 映射到真实上游。想换套餐？在托盘里点一下。
+
+---
+
+## 7. 开发与构建
+
+### 环境要求
+
+| 组件 | 版本 | 备注 |
+|---|---|---|
+| Rust | 1.82+（`rust-toolchain.toml` 已锁定 stable） | target `x86_64-pc-windows-msvc` |
+| MSVC Build Tools | 2022 | Windows 链接器 |
+| Node.js | 20+（本机验证于 v24） | **使用 npm**，见下方说明 |
+| WebView2 Runtime | 任意 | Windows 10/11 通常已内置 |
+| mihomo | 自行获取 | `net.kernel.provider: external`，不随包分发（GPL 合规） |
+
+> ⚠️ **本仓库用 npm，不用 pnpm。** pnpm 会向上层目录寻找 workspace 根，而父目录存在一个 0 字节的 `package.json` 会导致 JSON 解析失败。
+
+### 首次准备
+
+```powershell
+pwsh -File scripts/install-hooks.ps1   # 安装 git 钩子 + 仓库级 git 配置
+npm install
+node scripts/make-icon.mjs             # 生成 app-icon.png（1024×1024，无三方依赖）
+cargo tauri icon app-icon.png          # 生成 src-tauri/icons 全套
+```
+
+### 日常命令
+
+```powershell
+pwsh -File scripts/dev.ps1             # 开发模式（Vite + Tauri，带热重载）
+pwsh -File scripts/build.ps1           # 出安装包：绑定 → 前端 → 测试 → NSIS
+cargo check --workspace                # 只要类型检查（最快）
+cargo test  --workspace                # 全量测试
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+产物位置：`target/release/bundle/nsis/*.exe`
+
+### 代码质量门禁
+
+钩子随仓库走（`core.hooksPath = .githooks`），不依赖 husky / lefthook：
+
+| 钩子 | 做什么 |
+|---|---|
+| `pre-commit` | 明文密钥扫描 · 大文件守卫 · `cargo fmt --check` · `cargo clippy -D warnings` · `tsc --noEmit`（按改动文件类型选择性执行） |
+| `pre-push` | `cargo test --workspace` + `npm run build` |
+| `commit-msg` | 约定式提交格式（`feat(gateway): ...`） |
+
+紧急绕过用 `git commit --no-verify`，但**不要养成习惯**。
+
+### 目录速览
+
+```
+crates/ta-core           领域模型、配置校验、路由引擎、额度、定价、计量（纯逻辑，无 IO）
+crates/ta-store          SQLite：配置、账本、trace、粘性、额度状态
+crates/ta-kernel         mihomo sidecar：进程看护、配置生成、REST 控制、lane 端口分配
+crates/ta-subscription   订阅下载、格式嗅探、坏更新拦截、版本回滚
+crates/ta-secrets        系统钥匙串封装与 ${secret:...} 引用解析
+crates/ta-gateway        本地网关：入站、全透传、路由管线、分发、协议适配、trace
+src-tauri                Tauri 壳：命令层、托盘、插件、生命周期（薄）
+src                      前端：React 19 + MUI v7（10 个页面）
+docs                     设计文档 01–12（09 是架构基线，10/11 是接口契约）
+```
