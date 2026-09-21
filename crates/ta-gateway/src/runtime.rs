@@ -35,8 +35,8 @@ use std::sync::{Arc, Mutex};
 use ta_core::domain::ConfigDoc;
 use ta_core::pricing::PricingEngine;
 use ta_core::routing::{
-    ChannelSelector, ChannelSelectorImpl, EngineOptions, PolicyEngine, PolicyEngineImpl,
-    RouteContext, RouteDecision, RouteHints, RoutingIndex, Selection, SelectorOptions,
+    ChannelSelector, EngineOptions, PolicyEngine, RouteContext, RouteDecision, RouteHints, Router,
+    RouterOptions, Selection, SelectorOptions,
 };
 use ta_core::sticky::{MemoryStickyResolver, StickyResolver};
 
@@ -91,6 +91,18 @@ impl RuntimeParts {
 
     pub fn with_meter(mut self, meter: Arc<dyn ResponseMeter>) -> Self {
         self.meter = Some(meter);
+        self
+    }
+
+    /// 接上**生产计量器**（G4 ④）：响应 usage → 额度账本 / 价格快照 / `usage` 表。
+    ///
+    /// 为什么不给空实现、也不默认接上：`meter: None` 的语义是"**计量没接线**"，
+    /// 此时成本中心永远是 0 —— 静默地"接了但没数据"比没接更糟（[docs/13 §4.5 L10]），
+    /// 所以由装配方显式调这一句，而不是让 [`build_runtime`] 替它猜。
+    ///
+    /// **必须在 tokio 运行时里装配**：落库是 `spawn` 出去的。
+    pub fn with_usage_meter(mut self, deps: &Arc<GatewayDeps>) -> Self {
+        self.meter = Some(Arc::new(crate::meter::UsageMeter::from_deps(deps)));
         self
     }
 
@@ -185,12 +197,18 @@ pub struct LiveRouter {
     current: Mutex<Current>,
 }
 
-/// 与某一版配置绑定的 engine/selector。
+/// 与某一版配置绑定的路由器。
+///
+/// **装配实现只有一处**：`ta_core::routing::Router::with_sticky`（B1 收口）。
+/// 这里曾经自己拼一遍 index / engine / selector —— 那是两份**手工同步**的装配，
+/// 任何一侧加了新部件两边都不会红，而"策略模拟器 = 真实决策"这个论断会**静默变成假话**
+/// （[docs/13 §4.5 L21]）。现在 `LiveRouter` 只负责"换代即重建 + 一把锁内同代求值"，
+/// 装配细节全部交给 ta-core。
 struct Current {
     /// 缓存这一版的 `Arc`：`Arc::ptr_eq` 判定比"指针值"安全（旧分配不会被复用）
     doc: Arc<ConfigDoc>,
-    engine: PolicyEngineImpl,
-    selector: ChannelSelectorImpl,
+    /// ta-core 装配出来的路由器（唯一装配点）
+    router: Router,
     generation: u64,
 }
 
@@ -230,15 +248,16 @@ impl LiveRouter {
         engine_options: &EngineOptions,
         selector_options: &SelectorOptions,
     ) -> Current {
-        let index = Arc::new(RoutingIndex::build(doc));
-        let mut selector = ChannelSelectorImpl::new(index.clone())
-            .with_sticky(sticky.clone())
-            .with_options(selector_options.clone());
-        if let Some(pricing) = pricing {
-            selector = selector.with_pricing(pricing);
-        }
-        let engine = PolicyEngineImpl::with_options(index, engine_options.clone());
-        Current { doc: doc.clone(), engine, selector, generation }
+        // `opts.clock` 在**注入外部 sticky** 的这条路径上不参与装配（那份解析器自带时钟，
+        // 见 `RouterOptions::clock` 的说明）；这里给系统时钟只是为了填满字段。
+        let opts = RouterOptions {
+            engine: engine_options.clone(),
+            selector: selector_options.clone(),
+            clock: Arc::new(ta_core::clock::SystemClock),
+            pricing,
+        };
+        let router = Router::with_sticky(doc, opts, sticky.clone());
+        Current { doc: doc.clone(), router, generation }
     }
 
     /// 取"与当前配置同代"的 engine/selector；配置换代就地重建。
@@ -275,10 +294,10 @@ impl RoutingPlanner for LiveRouter {
     }
 
     fn plan(&self, hints: &RouteHints, ctx: &RouteContext) -> RoutePlan {
-        // **一把锁内跑完** decide + select：配置换代不可能插进两者之间
+        // **一把锁内跑完** decide + select：配置换代不可能插进两者之间。
+        // `Router::route` 就是 ta-core 的"完整一次路由"，也保证两者用同一个 router 实例。
         let guard = self.current();
-        let decision = guard.engine.decide(hints, ctx);
-        let selection = guard.selector.select(&decision, hints, ctx);
+        let (decision, selection) = guard.router.route(hints, ctx);
         RoutePlan { cfg: guard.doc.clone(), decision, selection }
     }
 }
@@ -290,7 +309,7 @@ impl RoutingPlanner for LiveRouter {
 /// `RouteDecision`）；管线一律走 [`RoutingPlanner::plan`]。
 impl PolicyEngine for LiveRouter {
     fn decide(&self, hints: &RouteHints, ctx: &RouteContext) -> RouteDecision {
-        self.current().engine.decide(hints, ctx)
+        self.current().router.decide(hints, ctx)
     }
 }
 
@@ -301,7 +320,7 @@ impl ChannelSelector for LiveRouter {
         hints: &RouteHints,
         ctx: &RouteContext,
     ) -> Option<Selection> {
-        self.current().selector.select(decision, hints, ctx)
+        self.current().router.selector.select(decision, hints, ctx)
     }
 }
 
@@ -382,13 +401,19 @@ pub(crate) mod tests {
 
     use async_trait::async_trait;
     use bytes::Bytes;
+    use std::collections::BTreeMap;
     use ta_core::clock::ManualClock;
-    use ta_core::domain::{ChannelConfig, Credential, Lane, LaneKind, Model, Provider};
+    use ta_core::domain::{
+        ChannelConfig, ChannelGroup, Credential, Lane, LaneKind, Model, Policy, PolicyAction,
+        PolicyMatch, Provider, Selector, StickyConfig,
+    };
     use ta_core::error::Result;
-    use ta_core::pricing::ResolvedPrice;
+    use ta_core::pricing::{PriceSourceKind, ResolvedPrice};
     use ta_core::quota::{QuotaLedger, QuotaObservation, QuotaState, QuotaStateKind};
+    use ta_core::routing::ChannelRuntimeState;
     use ta_core::types::{
-        ChannelId, CredentialId, LaneId, Money, Protocol, RequestSummary, TokenUsage, UsageRecord,
+        ChannelGroupId, ChannelId, CredentialId, LaneId, Money, PolicyId, Protocol, RequestSummary,
+        TokenKind, TokenUsage, UsageRecord,
     };
 
     use crate::dispatch::{HealthReport, StaticLanePorts, UpstreamRequest, UpstreamResponse};
@@ -475,6 +500,30 @@ pub(crate) mod tests {
         }
         fn cost(&self, _usage: &TokenUsage, price: &ResolvedPrice) -> Money {
             Money::new(0.0, price.currency.clone())
+        }
+    }
+
+    /// ch-a 贵、ch-b 便宜。用途只有一个：逼出"`cheapest` 选择器**到底有没有拿到**定价引擎"
+    /// —— 少传 pricing 时 ta-core 会退化为配置顺序（选 ch-a），正确装配选 ch-b，必然分叉。
+    struct TwoTierPricing;
+
+    impl PricingEngine for TwoTierPricing {
+        fn resolve(
+            &self,
+            _model: &str,
+            provider: &ta_core::types::ProviderId,
+            _cred: &CredentialId,
+        ) -> ResolvedPrice {
+            let rate = if provider.as_str() == "p-b" { 1.0 } else { 3.0 };
+            ResolvedPrice {
+                rates: BTreeMap::from([(TokenKind::Input, rate), (TokenKind::Output, rate)]),
+                multiplier: 1.0,
+                currency: "USD".into(),
+                divisor: 1_000_000.0,
+                source: PriceSourceKind::Manual,
+                plan_fee: None,
+                entry_index: 0,
+            }
         }
     }
 
@@ -606,6 +655,253 @@ pub(crate) mod tests {
         );
         // 配置也是同一份 ArcSwap（管理 API 改配置，网关立刻看到）
         assert!(Arc::ptr_eq(&deps.config, &runtime.state.cfg));
+    }
+
+    /// 生产计量器的装配入口：`with_usage_meter` 之后装配里**真的有**计量器。
+    ///
+    /// 这条挡的是"忘了装配"这类**静默**故障：`meter: None` 不会报任何错，
+    /// 只会让成本中心永远 0（[docs/13 §4.5 L10]）。计量本身对不对由
+    /// `meter::tests` 与 `pipeline::tests::production_meter_*` 证明。
+    #[tokio::test]
+    async fn usage_meter_is_wired_through_runtime_parts() {
+        let deps = test_deps(cfg_with_channels(0), Arc::new(NoDialer));
+        let parts = test_parts().with_usage_meter(&deps);
+        assert!(parts.meter.is_some(), "with_usage_meter 必须真的接上计量器");
+        // 装配也必须照常成功（计量器不会给装配引入新的前置条件）
+        let _runtime = build_runtime(&deps, parts);
+    }
+
+    /// B1：`LiveRouter` 与 ta-core 的 `Router::with_sticky` **逐字段一致**。
+    ///
+    /// 为什么必须机器证明：`LiveRouter` 曾经自己拼一遍 index / engine / selector。
+    /// 只要存在两份装配，"策略模拟器 = 真实决策"就可能悄悄变成假话
+    /// （[docs/13 §4.5 L21]）。现在调用方与实现合一，这条测试把一致性钉成可回归的事实。
+    ///
+    /// 覆盖四种形态：粘性命中、粘性未命中（priority）、`cheapest`（定价）、无候选模型。
+    /// 它们各自逼出**一类参数级漂移**，例如"选择器根本没接上粘性表"（② 会选 ch-a）、
+    /// "没把定价引擎传进选择器"（⑤ 会退化成 ch-a）。
+    ///
+    /// 它挡不住的是**结构性**漂移（有人把同一段装配再抄一遍，而当前配置下两份恰好同结果）——
+    /// 那由 [`runtime_has_no_second_router_assembly`] 的源码守卫负责。
+    ///
+    /// 两边各用一份**独立但同构**的粘性表：共享一份会让"谁先被调用"改变对方的输入
+    /// （先调的那次会写下粘性），比较就不再是"同一串请求序列下的行为"。
+    ///
+    /// 比较用 `Debug` 字符串：`RouteDecision` / `Selection` 只 derive 了 `Debug`（没有
+    /// `PartialEq`），而 `Debug` 会打印**全部字段**（含 Vec 的顺序与内容）—— 字符串相等
+    /// ⇔ 字段相等。手写字段断言反而会在 ta-core 新增字段时**静默漏掉**它。
+    #[tokio::test]
+    async fn live_router_matches_ta_core_router_field_by_field() {
+        const NOW: i64 = 1_700_000_000_000;
+        let mut cfg = cfg_with_channels(1);
+        cfg.channel_groups.push(ChannelGroup {
+            id: ChannelGroupId::new("grp"),
+            model: MODEL.into(),
+            members: vec![ChannelId::new("ch-a"), ChannelId::new("ch-b")],
+            selector: Selector::StickyThenPriority,
+            sticky: StickyConfig {
+                enabled: true,
+                ttl_h: 12,
+                key: vec!["session_id".into()],
+                extra: Default::default(),
+            },
+            release_on: vec![],
+            extra: Default::default(),
+        });
+        let doc = Arc::new(cfg.clone());
+        // 两份**独立但同构**的粘性表：同一起点、各自演进。共享一份会让"谁先被调用"改变
+        // 对方的输入（先调的那次会写下粘性），比较就不再是"同一串请求序列下的行为"。
+        let clock = Arc::new(ManualClock::new(NOW));
+        let sticky_live: Arc<dyn StickyResolver> =
+            Arc::new(MemoryStickyResolver::with_clock(clock.clone()));
+        let sticky_ref: Arc<dyn StickyResolver> =
+            Arc::new(MemoryStickyResolver::with_clock(clock.clone()));
+        let pricing: Arc<dyn PricingEngine> = Arc::new(NoPricing);
+
+        let live = LiveRouter::new(
+            Arc::new(arc_swap::ArcSwap::from(doc.clone())),
+            Some(pricing.clone()),
+            sticky_live,
+        );
+        let reference = <Router>::with_sticky(
+            &cfg,
+            RouterOptions {
+                engine: EngineOptions::default(),
+                selector: SelectorOptions::default(),
+                clock: Arc::new(ta_core::clock::SystemClock),
+                pricing: Some(pricing),
+            },
+            sticky_ref,
+        );
+
+        let both_free = RouteContext { now_ms: NOW, ..Default::default() };
+        // ① 预热：ch-a 耗尽 → 候选只剩 ch-b，粘性因此写成 `sess-1 → ch-b`
+        let mut ch_a_down = RouteContext { now_ms: NOW, ..Default::default() };
+        ch_a_down.channel_state.insert(
+            ChannelId::new("ch-a"),
+            ChannelRuntimeState { enabled: true, exhausted: true, ..Default::default() },
+        );
+        let hints = RouteHints {
+            model: Some(MODEL.into()),
+            session_id: Some("sess-1".into()),
+            ..Default::default()
+        };
+        let warm_live = live.plan(&hints, &ch_a_down);
+        let warm_ref = reference.route(&hints, &ch_a_down);
+        assert_eq!(
+            warm_live.decision.candidates,
+            vec![ChannelId::new("ch-b")],
+            "预热时 ch-a 应当被淘汰，只剩 ch-b"
+        );
+        assert_eq!(
+            warm_ref.1.as_ref().map(|s| s.channel.clone()),
+            Some(ChannelId::new("ch-b")),
+            "预热必须真的写下粘性"
+        );
+
+        // ② 两个候选都可用：粘性必须压过 priority，**两边都要**选 ch-b
+        let plan = live.plan(&hints, &both_free);
+        let (decision, selection) = reference.route(&hints, &both_free);
+        assert_eq!(
+            selection.as_ref().map(|s| (s.channel.clone(), s.sticky_hit)),
+            Some((ChannelId::new("ch-b"), true)),
+            "命中粘性才选 ch-b —— 这条同时证明本测试有区分力"
+        );
+        assert_eq!(
+            plan.selection.as_ref().map(|s| (s.channel.clone(), s.sticky_hit)),
+            Some((ChannelId::new("ch-b"), true)),
+            "LiveRouter 也必须命中粘性语义（优先级顺序会选 ch-a）"
+        );
+        assert_eq!(
+            format!("{:?}", plan.decision),
+            format!("{decision:?}"),
+            "decide 必须逐字段一致（粘性命中形态）"
+        );
+        assert_eq!(
+            format!("{:?}", plan.selection),
+            format!("{selection:?}"),
+            "select 必须逐字段一致（粘性命中形态）"
+        );
+
+        // ③ 另一个会话：粘性未命中 → 按 priority（顺序敏感）
+        let fresh = RouteHints {
+            model: Some(MODEL.into()),
+            session_id: Some("sess-2".into()),
+            ..Default::default()
+        };
+        let plan_fresh = live.plan(&fresh, &both_free);
+        let (decision_fresh, selection_fresh) = reference.route(&fresh, &both_free);
+        assert_eq!(
+            selection_fresh.as_ref().map(|s| (s.channel.clone(), s.sticky_hit)),
+            Some((ChannelId::new("ch-a"), false)),
+            "未命中粘性时按 priority 选 ch-a —— 与 ② 的 ch-b 相反，这就是区分力所在"
+        );
+        assert_eq!(
+            format!("{:?}", plan_fresh.decision),
+            format!("{decision_fresh:?}"),
+            "decide 必须逐字段一致（粘性未命中形态）"
+        );
+        assert_eq!(
+            format!("{:?}", plan_fresh.selection),
+            format!("{selection_fresh:?}"),
+            "select 必须逐字段一致（粘性未命中形态）"
+        );
+
+        // ④ 全模型无候选：淘汰清单（含理由）也必须一致
+        let missing = RouteHints { model: Some("no-such-model".into()), ..Default::default() };
+        let plan_missing = live.plan(&missing, &both_free);
+        let (decision_missing, selection_missing) = reference.route(&missing, &both_free);
+        assert_eq!(
+            format!("{:?}", plan_missing.decision),
+            format!("{decision_missing:?}"),
+            "decide 必须逐字段一致（无候选形态）"
+        );
+        assert_eq!(
+            format!("{:?}", plan_missing.selection),
+            format!("{selection_missing:?}"),
+            "select 必须逐字段一致（无候选形态）"
+        );
+
+        // ⑤ `cheapest` 形态：专盯"定价引擎有没有传进选择器"这一维。
+        //    少传 pricing 会退化成配置顺序（ch-a），正确装配按单价选 ch-b —— 必然分叉。
+        let mut cheap_cfg = cfg_with_channels(1);
+        cheap_cfg.policies.push(Policy {
+            id: PolicyId::new("pol-cheap"),
+            name: "最便宜优先".into(),
+            enabled: true,
+            priority: 1,
+            r#match: PolicyMatch { all: true, ..Default::default() },
+            action: PolicyAction { selector: Some(Selector::Cheapest), ..Default::default() },
+            extra: Default::default(),
+        });
+        let cheap_pricing: Arc<dyn PricingEngine> = Arc::new(TwoTierPricing);
+        let cheap_live = LiveRouter::new(
+            Arc::new(arc_swap::ArcSwap::from_pointee(cheap_cfg.clone())),
+            Some(cheap_pricing.clone()),
+            Arc::new(MemoryStickyResolver::with_clock(clock.clone())),
+        );
+        let cheap_ref = <Router>::with_sticky(
+            &cheap_cfg,
+            RouterOptions {
+                engine: EngineOptions::default(),
+                selector: SelectorOptions::default(),
+                clock: Arc::new(ta_core::clock::SystemClock),
+                pricing: Some(cheap_pricing),
+            },
+            Arc::new(MemoryStickyResolver::with_clock(clock.clone())),
+        );
+        let cheap_hints = RouteHints { model: Some(MODEL.into()), ..Default::default() };
+        let plan_cheap = cheap_live.plan(&cheap_hints, &both_free);
+        let (decision_cheap, selection_cheap) = cheap_ref.route(&cheap_hints, &both_free);
+        assert_eq!(
+            selection_cheap.as_ref().map(|s| s.channel.clone()),
+            Some(ChannelId::new("ch-b")),
+            "cheapest 必须选到便宜的那条（少传 pricing 就会退化成 ch-a）"
+        );
+        assert_eq!(
+            format!("{:?}", plan_cheap.decision),
+            format!("{decision_cheap:?}"),
+            "decide 必须逐字段一致（cheapest 形态）"
+        );
+        assert_eq!(
+            format!("{:?}", plan_cheap.selection),
+            format!("{selection_cheap:?}"),
+            "select 必须逐字段一致（cheapest 形态）"
+        );
+    }
+
+    /// 装配**只能有一处**：生产的 `runtime.rs` 不许再自己拼 index / engine / selector。
+    ///
+    /// 这是 B1 的机械保证。行为等价测试挡不住"有人把同一段装配又抄一遍，然后**只改一处**"
+    /// —— 那正是 [docs/13 §4.5 L21] 描述的静默分叉。所以这里直接扫自己的源码。
+    ///
+    /// **只扫 `#[cfg(test)]` 之前的生产段**：本文件下面那些测试自己就要
+    /// `Router::with_sticky`（参照路由器），把测试段也算进来，守卫会被测试代码喂饱而失效
+    /// （这正是它第一版被实操证伪的地方：把 `bind` 改成 `Router::new` 后它依然绿）。
+    ///
+    /// 探针字符串是**拼出来**的：否则这条断言自己的字面量就会命中自己。
+    #[test]
+    fn runtime_has_no_second_router_assembly() {
+        let full = include_str!("runtime.rs");
+        let src = full.split("#[cfg(test)]").next().unwrap_or(full);
+        assert!(
+            src.contains("Router::with_sticky"),
+            "生产装配必须走 ta-core 的 Router::with_sticky（B1 的唯一装配点）"
+        );
+        for needle in [
+            concat!("Routing", "Index::build"),
+            concat!("ChannelSelector", "Impl::new"),
+            concat!("PolicyEngine", "Impl::with_options"),
+            // 自造粘性表：配置每次换代都会换一份新的 → 用户看到的"会话固定"会莫名清零。
+            // 探针带上前导分隔符：否则 `LiveRouter::new(` 会误判（被守的对象自己就长这样）。
+            concat!(" ", "Router::", "new("),
+            concat!("::Router::", "new("),
+        ] {
+            assert!(
+                !src.contains(needle),
+                "生产运行时里出现了第二份路由装配：{needle}（请改用 Router::with_sticky）"
+            );
+        }
     }
 
     // ---------------------------------------------------------- 热重载
