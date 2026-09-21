@@ -236,6 +236,16 @@ tracing::warn!(error = %e, "订阅下载失败")
 | `actual` / `expected` | 漂移检测的两侧值 |
 | `current` | 迁移时的当前版本 |
 | `removed` / `failures` / `attempts` / `argc` / `quitting` / `which` | 计数或状态 |
+| `phase` | 启动编排阶段（`app:boot` 的收敛过程，值见 `BootPhase::as_str`） |
+| `controller` | 内核 REST 控制器地址（mihomo 的 `external-controller`；**只记地址，密钥另有字段**） |
+| `lane_count` | lane 端口数量。**计数一律带 `_count` 后缀** —— `lanes` 会被读成"列表"，而它其实是数字 |
+
+> **第 11 轮驳回的两个名字（写在这里，避免以后重复讨论）**：
+> - **`detail`** —— 自由文本不该开字段。它和 message 的职责重复，一旦开了就会变成
+>   "什么都能往里塞"的垃圾桶，而字段要么可筛要么别开。**细节写进 message**：
+>   `info!(phase = phase.as_str(), "启动阶段：{detail}")`。
+> - **`delayed_s`** —— 与已登记的 `delay_s` **同义**。本层明令禁止第二个同义名
+>   （§5.5 的初衷：名字一旦散出去就收不回来）。
 
 > **迁移记录（第 10 轮已做）**：`lane` → `lane_id`（8 处）、`subscription` → `sub_id`（5 处）、
 > `sub` → `sub_id`（2 处）、`provider` → `provider_id`（1 处）、`cred` → `credential_id`（1 处）。

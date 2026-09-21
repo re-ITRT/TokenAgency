@@ -127,6 +127,9 @@ pub const LOCAL_CONTEXT: &[&str] = &[
     "argc",
     "quitting",
     "which",
+    "phase",
+    "controller",
+    "lane_count",
 ];
 
 /// 是不是 §5 约定的字段名。

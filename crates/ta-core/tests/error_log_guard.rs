@@ -62,6 +62,16 @@ const EXEMPT: &[(&str, &str, &str)] = &[
         "系统通知发送失败",
         "tauri::Error 没有 TA 码（属 T2 的文件，OB1 不落笔）",
     ),
+    (
+        "src-tauri/src/boot.rs",
+        "广播启动阶段事件失败",
+        "tauri::Error 没有 TA 码；emit 失败通常只是前端还没订阅上，不是业务错误",
+    ),
+    (
+        "src-tauri/src/boot.rs",
+        "启动阶段刷新托盘失败",
+        "tauri::Error 没有 TA 码；托盘重绘失败不影响启动，记录即可",
+    ),
 ];
 
 fn exemption_for(rel: &str, message: Option<&str>) -> Option<&'static str> {
