@@ -694,11 +694,20 @@ impl RequestPipeline for Pipeline {
                             Some(meter) => meter.observe_stream(ctx, body),
                             None => body,
                         };
-                        return Ok(dispatch::client_response_from_parts(
-                            status,
-                            headers,
-                            self.watch_stream(record, stream),
-                        ));
+                        // ④ 下游断连 → 取消上游（[docs/12 §4 G2]）：
+                        // body 被 axum 丢掉且**没读完**时置位；正常读完不置位
+                        // （否则每一次成功的流式响应都会记一条假的"客户端断连"）。
+                        let (stream, downstream) =
+                            dispatch::cancel_on_drop(self.watch_stream(record, stream));
+                        let request_id = prepared.request_id.clone();
+                        tokio::spawn(async move {
+                            downstream.cancelled().await;
+                            tracing::info!(
+                                request_id = %request_id,
+                                "客户端在流中途断连：放弃上游连接（不重试、不再写）"
+                            );
+                        });
+                        return Ok(dispatch::client_response_from_parts(status, headers, stream));
                     }
 
                     // 非流式：body 还没吐给客户端，读失败仍然可以换通道
@@ -1396,6 +1405,102 @@ mod tests {
             "除已知的 accept 偏离外，不许有第 5 类凭空多出来的头：\n{head}"
         );
         assert!(head_lower.contains("accept: */*"), "{head}");
+    }
+
+    // ---------------------------------------------------------- G2 ④：下游断连取消上游
+
+    /// [docs/12 §4 G2] ④：**客户端中断时上游连接必须被及时取消**。
+    ///
+    /// 用真 TCP。假上游发头 + 第 1 个 chunk 后继续慢速发；测试只读 1 个 chunk 就把响应
+    /// 丢掉（=客户端走人），然后断言**假上游的读半边看到连接被关**（`read` 返回 0）。
+    /// 用读半边而不是"写失败"判：小分片会被内核缓冲，写失败可能来得很晚甚至不来。
+    ///
+    /// 这条测试证明的是 **DoD 的属性**（此前没有任何测试覆盖它）；包装器自身的语义
+    /// （"读完不置位、被丢才置位"）由 `dispatch::tests` 的 4 个用例钉住。
+    #[tokio::test]
+    async fn client_disconnect_tears_down_the_upstream_stream() {
+        use crate::dispatch::tests::spawn_watching_upstream;
+        use crate::dispatch::{DialerOptions, KernelDialer, StaticLanePorts};
+        use http_body_util::BodyExt;
+        use tokio::io::AsyncWriteExt;
+
+        let upstream = spawn_watching_upstream(|_index, _head, mut write| async move {
+            let _ = write
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                      transfer-encoding: chunked\r\n\r\n",
+                )
+                .await;
+            for i in 1..=60 {
+                let chunk = format!("data: {{\"i\":{i}}}\n\n");
+                let frame = format!("{:x}\r\n{}\r\n", chunk.len(), chunk);
+                if write.write_all(frame.as_bytes()).await.is_err() {
+                    return;
+                }
+                let _ = write.flush().await;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let _ = write.write_all(b"0\r\n\r\n").await;
+        })
+        .await;
+
+        let mut cfg =
+            test_cfg(&format!("http://{}/v1/messages", upstream.addr), "https://b.example/v1");
+        cfg.channels[0].lane = Some(LaneId::new("direct"));
+        let pipeline = pipeline(
+            cfg,
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            Arc::new(KernelDialer::new(
+                Arc::new(StaticLanePorts::default()),
+                DialerOptions::default(),
+            )),
+            Arc::new(RecordingSink::default()),
+        );
+
+        let prepared = pipeline
+            .prepare(&snapshot(br#"{"model":"claude-sonnet-4-5","stream":true}"#))
+            .await
+            .expect("prepare");
+        assert!(prepared.stream);
+        let mut response = pipeline.execute(prepared).await.expect("首字节应当到达");
+
+        // 读第 1 个 chunk —— 证明流真的在流
+        let first =
+            tokio::time::timeout(std::time::Duration::from_secs(2), response.body_mut().frame())
+                .await
+                .expect("首字节必须到达")
+                .expect("应当有帧")
+                .expect("帧应当可读");
+        let first_text =
+            String::from_utf8_lossy(&first.into_data().unwrap_or_default()).to_string();
+        assert!(first_text.contains("data: {\"i\":1}"), "{first_text}");
+
+        // **正向控制**：此刻连接**还活着**（我们还握着响应体），所以标志必须是 false ——
+        // 否则下面那条断言可能只是"它一直是 true"（假守卫）。
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        assert!(
+            !upstream.client_gone.load(Ordering::SeqCst),
+            "还握着响应体时上游连接不该被关（否则这条测试证明不了任何事）"
+        );
+
+        // 客户端走人：丢掉响应体（真实的 axum 在客户端断连时就是这么做的）
+        drop(response);
+
+        let mut gone = false;
+        for _ in 0..150 {
+            if upstream.client_gone.load(Ordering::SeqCst) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            gone,
+            "客户端断连必须传导到上游：上游读半边应在 ~3s 内看到连接被关（而不是继续写下去）"
+        );
     }
 
     // ---------------------------------------------------------- K1：listener 重建那一瞬
