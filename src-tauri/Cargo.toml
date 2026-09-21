@@ -1,0 +1,54 @@
+[package]
+name = "tokenagency"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+default-run = "tokenagency"
+
+[lib]
+name = "tokenagency_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { workspace = true, features = [] }
+
+[dependencies]
+ta-core = { path = "../crates/ta-core" }
+ta-store = { path = "../crates/ta-store" }
+ta-kernel = { path = "../crates/ta-kernel" }
+ta-subscription = { path = "../crates/ta-subscription" }
+ta-secrets = { path = "../crates/ta-secrets" }
+ta-gateway = { path = "../crates/ta-gateway" }
+
+tauri = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+dirs.workspace = true
+arc-swap.workspace = true
+chrono.workspace = true
+# TODO(T1): 写 IPC 命令时加回 specta / tauri-specta（workspace 里已钉好 RC 版本）
+
+tauri-plugin-shell.workspace = true
+tauri-plugin-single-instance.workspace = true
+tauri-plugin-notification.workspace = true
+tauri-plugin-autostart.workspace = true
+tauri-plugin-opener.workspace = true
+tauri-plugin-dialog.workspace = true
+tauri-plugin-fs.workspace = true
+tauri-plugin-process.workspace = true
+tauri-plugin-window-state.workspace = true
+tauri-plugin-deep-link.workspace = true
+tauri-plugin-clipboard-manager.workspace = true
+tauri-plugin-log.workspace = true
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

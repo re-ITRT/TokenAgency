@@ -1,0 +1,125 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ta-core",
+    "crates/ta-store",
+    "crates/ta-kernel",
+    "crates/ta-subscription",
+    "crates/ta-secrets",
+    "crates/ta-gateway",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+authors = ["TokenAgency"]
+repository = ""
+
+[workspace.dependencies]
+# --- 基础 ---
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+serde_path_to_error = "0.1"
+schemars = { version = "1", features = ["preserve_order"] }
+regex = "1"
+once_cell = "1"
+indexmap = { version = "2", features = ["serde"] }
+
+# --- 异步 ---
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io", "time"] }
+tokio-stream = "0.1"
+futures = "0.3"
+futures-util = "0.3"
+async-trait = "0.1"
+bytes = "1"
+
+# --- HTTP：入站 ---
+axum = { version = "0.8", features = ["macros"] }
+hyper = { version = "1", features = ["full"] }
+http = "1"
+http-body-util = "0.1"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["limit", "cors", "trace"] }
+
+# --- HTTP：出站 ---
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls", "http2", "stream", "json", "gzip", "brotli", "deflate", "socks",
+] }
+rustls = "0.23"
+webpki-roots = "1"
+
+# --- 存储 ---
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio", "sqlite", "migrate", "macros", "json", "chrono",
+] }
+
+# --- 系统集成 ---
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+dirs = "6"
+notify = "8"
+sysinfo = "0.33"
+
+# --- 观测 / 工具 ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+backon = { version = "1", features = ["tokio-sleep"] }
+arc-swap = "1"
+zstd = "0.13"
+sha2 = "0.10"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+nanoid = "0.4"
+flate2 = "1"
+
+# --- Tauri ---
+tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
+tauri-build = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-process = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-log = "2"
+# 注意：specta 2 目前只有 RC，必须显式钉版本（工作包 T1 使用）
+specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json", "typescript"] }
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+
+# --- 测试 ---
+insta = { version = "1", features = ["json", "yaml"] }
+wiremock = "0.6"
+pretty_assertions = "1"
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true
+panic = "abort"
+incremental = false
+
+# 网关热路径单独提优化等级（体积换速度，只影响这一个 crate）
+[profile.release.package.ta-gateway]
+opt-level = 3
+
+[profile.dev]
+# 依赖用 O1 编译，避免 dev 下网关慢到没法调试
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

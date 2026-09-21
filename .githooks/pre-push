@@ -1,0 +1,18 @@
+#!/bin/sh
+# TokenAgency pre-push —— 比 pre-commit 重，跑全量测试与前端构建。
+
+fail() {
+    printf '\033[31m\n✘ %s\033[0m\n\n' "$1"
+    exit 1
+}
+info() { printf '\033[36m› %s\033[0m\n' "$1"; }
+
+info "cargo test --workspace --no-fail-fast"
+cargo test --workspace --no-fail-fast || fail "测试未通过，禁止 push。"
+
+if [ -d node_modules ]; then
+    info "npm run build"
+    npm run build || fail "前端构建失败，禁止 push。"
+fi
+
+printf '\033[32m✔ pre-push 通过\033[0m\n'

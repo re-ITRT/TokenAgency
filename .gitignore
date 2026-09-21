@@ -1,0 +1,35 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node
+node_modules/
+dist/
+*.local
+
+# Tauri
+/src-tauri/target
+/src-tauri/gen
+
+# 生成物（由 tauri-specta / schemars 产出，禁止手改）
+src/shared/bindings.ts
+src/shared/schema/config.schema.json
+
+# 运行时数据（绝不入库）
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+/logs/
+/kernel/
+/providers/
+
+# 图标源文件由 scripts/make-icon.mjs 生成，生成物在 src-tauri/icons 需要入库
+/app-icon.png
+/src-tauri/icons/android/
+/src-tauri/icons/ios/
+
+# 编辑器
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store

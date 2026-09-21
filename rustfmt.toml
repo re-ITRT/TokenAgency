@@ -1,0 +1,5 @@
+# 只用 stable 支持的选项，保证 `cargo fmt` 在稳定版上可用
+edition = "2021"
+max_width = 100
+use_small_heuristics = "Max"
+newline_style = "Unix"

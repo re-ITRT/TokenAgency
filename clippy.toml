@@ -1,0 +1,8 @@
+msrv = "1.82"
+# 避免误用容易搞错顺序的 API
+disallowed-methods = []
+
+# 网关热路径上禁止的阻塞调用（注释保留，暂不启用，避免误伤）
+# [[disallowed-methods]]
+# path = "std::thread::sleep"
+# reason = "异步上下文里用 tokio::time::sleep"

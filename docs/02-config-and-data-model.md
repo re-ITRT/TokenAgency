@@ -1,0 +1,300 @@
+# 02 · 领域模型与配置
+
+## 1. 领域模型关系
+
+```
+ProxySubscription (机场订阅 / 手写节点)
+        │ 1..n
+        ▼
+      Lane  ────────────────┐   (网络通道：直连 / 某订阅的某策略组 / 固定节点)
+        ▲                   │
+        │                   │
+   Provider ──1..n──> Credential (一个 key = 一份 tokenplan)
+        ▲                   │
+        └────────┬──────────┘
+                 │
+              Channel  (一条可发送的出网方案 = 协议 + 凭据 + 线路 + 模型名映射)
+                 ▲
+                 │ n..1
+            ChannelGroup (同一个逻辑模型的多个候选 + 选择器 + 粘性策略)
+                 ▲
+                 │
+              Model (对外暴露的逻辑模型)
+                 ▲
+                 │
+             RoutePolicy (规则表：match → action)
+```
+
+一句话记忆：**Model 是对外的脸，Channel 是干活的手，Credential 是钱包，Lane 是路，Policy 是规矩。**
+
+## 2. 实体定义
+
+### 2.1 Provider（上游服务）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 稳定 ID |
+| `name` | string | 显示名 |
+| `protocol` | enum | `openai` \| `openai-responses` \| `anthropic` \| `gemini` \| `custom` |
+| `base_url` | url | 到版本段为止，如 `https://api.openai.com/v1` |
+| `auth.scheme` | enum | `bearer` \| `header` \| `query` \| `none` |
+| `auth.header` | string? | 如 `x-api-key`（anthropic）、`api-key`（azure） |
+| `headers` | map | 附加头。**默认只补缺，不覆盖客户端同名头**（`on_conflict: keep_client`） |
+| `passthrough` | obj | 正常情况**不需要配置**：`header_mode: pass`、`body: preserve` 是默认也是唯一推荐值。允许改成白名单只是想让人确信"我没有被强制全透传"，改错会吞字段 |
+| `timeout` | obj | `connect` / `read`（流式要长）/ `total` |
+| `tls` | obj | `insecure`、`extra_ca`、`min_version` |
+| `model_prefix` | string? | 有些中转要求 `openai/gpt-4o`，这里统一加前缀 |
+| `enabled` | bool | |
+
+内置模板（新建时一键填充）：OpenAI、Anthropic、Google Gemini、DeepSeek、OpenRouter、Moonshot、智谱、通义、**自定义中转（OpenAI 兼容）**、**自定义中转（Anthropic 兼容）**。
+
+### 2.2 Credential（凭据 / 一份 tokenplan）
+
+| 字段 | 说明 |
+|---|---|
+| `id`, `provider`, `label` | 标识 |
+| `secret` | `"${secret:name}"` 引用钥匙串，**绝不明文入配置** |
+| `lane` | 该凭据默认走哪条线（可被 channel 覆盖） |
+| `quota` | 见下 |
+| `guard` | `max_rpm`、`max_concurrency`、`max_input_tokens` |
+| `enabled` | 一键停用（比如某家中转抽风） |
+| `tags` | 自由标签，策略可匹配 |
+
+`quota`：
+
+```yaml
+quota:
+  metric: unknown | tokens | requests | cost   # unknown = 只用响应头观测
+  limit: 5000000                                # metric=tokens 时的总量
+  currency: CNY                                 # metric=cost 时
+  window: month | day | hour | none
+  reset_day: 1                                  # 每月 1 号重置
+  soft_limit: 0.8                               # 80% 告警（托盘变黄 + 通知）
+  hard_limit: 1.0                               # 到 100% 标记 exhausted，路由自动跳过
+  reserve: 0.05                                 # 给"最后兜底"留 5%
+```
+
+### 2.3 Lane（网络通道）
+
+| 字段 | 说明 |
+|---|---|
+| `id`, `name` | 标识 |
+| `kind` | `direct` \| `subscription_auto` \| `subscription_group` \| `subscription_node` \| `filter`（见 [04 §7.1](04-network-core.md)） |
+| `subscription` | 引用 ProxySubscription（`kind != direct` 时必填） |
+| `group` | **订阅里自带的组名**（`kind: subscription_group` 时）。机场的「🇯🇵 日本」「♻️ 自动选择」直接用 |
+| `group_type` | `select` \| `url-test` \| `fallback` \| `load-balance`（组自带，也允许用户覆盖） |
+| `node` | 固定节点名（`kind: subscription_node`） |
+| `filter` | lane 级节点过滤（正则 include/exclude），用于"这条线只要日本节点" |
+| `dialer` | `builtin`（默认）\| `local_proxy`（该 lane 回退到外部代理端口，见 [04 §3](04-network-core.md)） |
+| `health` | 运行态：`ok` \| `degraded` \| `down`、当前节点、延迟、最近失败时间 |
+
+> Lane **没有 `port` 字段**——它不是一个监听端口，只是"用哪个节点、怎么选节点"的一组参数。出站由 `KernelDialer` 经该 lane 对应的内核 loopback 入站完成（见 [04 §7.1](04-network-core.md)）。
+
+**线路解析优先级**（从具体到一般，见 [04 §8.1](04-network-core.md)）：
+
+```
+policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.default_lane ?? direct
+```
+
+所以 Channel、Credential、Provider 上都有一个可选 `lane` 字段，用来做"手动指定谁走哪条线，或者直连"。`direct` 永远是选项之一。
+
+### 2.4 ProxySubscription（Clash 格式订阅）
+
+| 字段 | 说明 |
+|---|---|
+| `id`, `name`, `url` | |
+| `user_agent` | ★ 很多机场按 UA 返回不同格式（clash / surge / v2ray），默认伪装成 Clash 客户端 |
+| `format` | `auto`（默认，靠响应头 + 内容嗅探）\| `clash` \| `base64_links` \| `plain_links` |
+| `interval` | 自动更新周期（默认 6h；订阅返回 `Profile-Update-Interval` 时采用其建议值） |
+| `filter.include/exclude` | 正则，剔除"剩余流量/到期时间/官网/防失联"这类假节点 |
+| `health_check` | `url`（**默认用真实上游端点**，不是 google）、`interval`、`tolerance`（ms） |
+| `keep_versions` | 保留最近 N 个版本（默认 3），坏更新时可一键回滚 |
+| `parsed` | 运行态：节点数、组数、未识别协议列表、最后解析时间、解析器版本 |
+| `rules_raw` | 运行态：订阅自带的 rules / rule-providers（**只读展示，不执行**，见 [04 §5.5](04-network-core.md)） |
+| `userinfo` | 运行态：订阅流量、到期时间（从 `Subscription-Userinfo` 响应头解析，托盘可显示） |
+
+### 2.5 Model（逻辑模型）
+
+| 字段 | 说明 |
+|---|---|
+| `id` | 对外模型名，如 `gpt-4o` |
+| `aliases` | 客户端可能写的其它名字（含带日期版本号、带 provider 前缀的形式） |
+| `display` | UI 排序、分组、图标 |
+| `expose` | 是否出现在 `/v1/models`（默认原样透传上游的列表） |
+
+> 这里**没有 `capabilities` 字段**。模型能力不参与请求改写，只影响"发给谁"，而那是 Channel 上的一个可选标签（见 §2.6 的 `tags`）。上一版的能力矩阵/探测/学习已删除。
+
+### 2.6 Channel（通道）
+
+| 字段 | 说明 |
+|---|---|
+| `id`, `model`, `provider`, `credential`, `lane` | 五元组 |
+| `upstream_model` | 发给上游的真实模型名 |
+| `transform.path` | 覆盖路径（少数中转路径不同） |
+| `transform.headers` | `add` / `remove` / `override`（默认 `add` = 只补缺，绝不覆盖客户端同名头） |
+| `transform.body` | 定点 patch（如强制 `stream_options.include_usage=true`） |
+| `weight`, `priority` | 选择器权重/优先级 |
+| `tags` | `vision` / `no-vision`（可选，用于选目的地）、`cheap`、`official`、`cn-direct`、`no-log` |
+| `enabled` | |
+| `state` | 运行态：`available` \| `cooling(until)` \| `exhausted` |
+
+### 2.7 ChannelGroup（同模型多套餐）
+
+```yaml
+- id: grp-gpt-4o
+  model: gpt-4o
+  members: [ch-openai-personal, ch-relay-a, ch-relay-b]
+  selector: sticky_then_priority
+  sticky: { enabled: true, ttl: 12h, key: [header:x-session-id, body_hash] }
+  release_on: [quota_exhausted, hard_error, user_pin_change]
+```
+
+选择器枚举：
+
+| selector | 语义 | 适用 |
+|---|---|---|
+| `priority` | 严格按 `priority` 升序取第一个可用 | "官方优先，挂了才用中转" |
+| `sticky_then_priority` | 先查粘性表；未命中则按 priority 并写入粘性 | **默认，解决痛点 9** |
+| `quota_first` | 优先消耗 `剩余额度/总额度` 最大的 | "把快过期的先用掉" |
+| `cheapest` | 按单价（用户填写或内置表）最低 | |
+| `lowest_latency` | 按 EWMA 延迟（近 5 分钟） | |
+| `weighted_random` | 按 `weight` 加权随机 | 分摊多账号风控 |
+| `round_robin` | 轮询 | |
+
+### 2.8 RoutePolicy（使用策略）
+
+```yaml
+- id: pol-xxx
+  name: 人类可读名
+  enabled: true
+  priority: 10            # 数字小的先求值；UI 里就是拖拽顺序
+  match: {...}
+  action: {...}
+```
+
+`match` 条件（全部为 AND，列表内为 OR）：
+
+| 条件 | 示例 |
+|---|---|
+| `model_matches` | `["gpt-4o*", "claude-*"]`（glob） |
+| `has_image` | `true` —— 请求内容含图片块（只为选目的地，不改请求） |
+| `header_matches` | `{"x-client": "cursor"}` |
+| `ua_matches` | `"(?i)cursor\|claude-code"` |
+| `channel_tags_any` / `_all` | `[cheap]` |
+| `input_tokens_lt` / `_gt` | `4000` |
+| `stream` | `true` |
+| `quota_remaining_lt` | `0.15`（账本观测） |
+| `time_window` | `"09:00-19:00"` / `weekdays` |
+| `provider_in` | `[p-mytoken]` |
+| `all` | `true`（兜底规则） |
+
+`action` 动作：
+
+| 动作 | 说明 |
+|---|---|
+| `use_group` | 用哪个 ChannelGroup |
+| `use_channels` | 直接点名单/覆盖候选集 |
+| `exclude_channels` | 剔除指定通道（可叠加） |
+| `require_tag` / `exclude_tag` | 按标签收窄候选（如 `exclude_tag: no-vision`） |
+| `selector` | 覆盖选择器 |
+| `failover` | `on`、`max_attempts`、`cooldown`、`backoff` |
+| `on_no_candidate` | `error`（默认）\| `use_any` |
+| `pin_sticky` | 强制锁定到某通道（"这几天就一直用 B 家"） |
+| `transform` | 追加改写 |
+
+### 2.9 Gateway 全局配置
+
+见 [config.example.yaml](../config.example.yaml) 顶部。
+
+## 3. SQLite 表结构
+
+> 用量与成本相关的表（`usage_request` / `usage_daily` / token 类型归一化）见 [07 §6.5](07-ui-pages-and-cost.md)；请求日志的开关与保留策略见 [07 §2](07-ui-pages-and-cost.md)。
+
+```sql
+-- 运行态数据（配置不在这里，配置在 YAML）
+-- 用量明细：token 细分存 JSON map，价格存快照（改价不改历史）
+CREATE TABLE usage_request (
+  request_id TEXT PRIMARY KEY, ts INTEGER,
+  credential_id TEXT, provider_id TEXT, channel_id TEXT,
+  model TEXT, upstream_model TEXT, client TEXT, lane_id TEXT, node TEXT,
+  status INTEGER, error_type TEXT, latency_ms INTEGER, ttfb_ms INTEGER,
+  token_kinds TEXT,          -- JSON: {"input":1204,"input_cached":51200,"output":386,...}
+  usage_raw TEXT,            -- JSON: 上游原始 usage，用于对账
+  total_tokens INTEGER, cost REAL, currency TEXT, price_snapshot TEXT
+);
+CREATE INDEX ix_usage_ts ON usage_request(ts);
+CREATE INDEX ix_usage_cred_ts ON usage_request(credential_id, ts);
+
+-- 日汇总：token_kind 作为行维度，新增 token 类型无需改表
+CREATE TABLE usage_daily (
+  day TEXT, credential_id TEXT, provider_id TEXT, model TEXT, client TEXT,
+  token_kind TEXT, tokens INTEGER, requests INTEGER, cost REAL, currency TEXT,
+  PRIMARY KEY (day, credential_id, provider_id, model, client, token_kind)
+);
+
+CREATE TABLE quota_state (              -- 由账本 + 响应头 + 手工额度合成
+  credential_id TEXT PRIMARY KEY, window_start INTEGER, window_end INTEGER,
+  used_tokens INTEGER, used_requests INTEGER, used_cost REAL,
+  reported_remaining REAL, reported_reset_at INTEGER,
+  state TEXT,                           -- ok | soft | exhausted | unknown
+  updated_at INTEGER
+);
+
+CREATE TABLE api_key_usage (            -- 每个 key 的用量，成本中心按 key 分组用
+  key_id TEXT, day TEXT, token_kind TEXT, tokens INTEGER, requests INTEGER,
+  cost REAL, PRIMARY KEY (key_id, day, token_kind)
+);
+
+CREATE TABLE sticky (                   -- 会话粘性
+  key TEXT PRIMARY KEY, group_id TEXT, channel_id TEXT,
+  created_at INTEGER, expires_at INTEGER, hits INTEGER
+);
+
+CREATE TABLE trace (                    -- 每个请求一行，含失败尝试
+  request_id TEXT PRIMARY KEY, ts INTEGER, client TEXT, model TEXT,
+  protocol_in TEXT, protocol_out TEXT, stream INTEGER,
+  policy_id TEXT, group_id TEXT, chosen_channel TEXT,
+  attempts TEXT,                        -- JSON: [{channel, lane, node, status, ms, reason}]
+  header_diff TEXT,                     -- JSON: 客户端发的头 vs 上游收到的头的差异（自检，正常应恒为空）
+  tokens INTEGER, status INTEGER, total_ms INTEGER, ttfb_ms INTEGER, error TEXT
+);
+
+CREATE TABLE health_sample (
+  ts INTEGER, lane_id TEXT, node TEXT, latency_ms INTEGER, ok INTEGER, status INTEGER
+);
+
+CREATE TABLE secret_meta (              -- key 的元数据，值在钥匙串/加密文件
+  name TEXT PRIMARY KEY, created_at INTEGER, last_used INTEGER, hint TEXT
+);
+```
+
+保留策略：`trace` 按 `request_log.retention` 清理（默认 30 天），`usage_request` / `usage_daily` **永久保留**（很小，且是成本对账的依据），`health_sample` 保留 24h。
+
+> 没有 `capability_probe` 表，也没有 `port_allocations` 表——前者随能力探测一起删除，后者随"不引入旁路端口"一起删除。
+
+## 4. 配置真源与导出
+
+> **评审后修订**：真源从 YAML 改为 **SQLite**。原因是 `serde_yaml_ng` 不保留注释，GUI 高频回写会把用户手写的注释全抹掉（详见 [08 §2.5](08-tech-stack.md)）。
+
+| | 说明 |
+|---|---|
+| **真源** | `<AppData>/TokenAgency/db.sqlite` 的 `config` 表（一行一实体的 JSON，事务写入） |
+| **YAML 的角色** | ① 导入/导出（`ta export` / `ta import`）② 分享与迁移 ③ 可 git 管理的快照 |
+| **文件监听模式**（可选） | 给"我就是想手写 YAML 并用 git 管"的用户：开启后以 `<AppData>/TokenAgency/tokenagency.yaml` 为真源，文件变更热重载；**此时 GUI 的编辑写回会覆盖文件，UI 上必须明确警告** |
+| 改配置的路径（默认模式） | GUI 修改 → 写 DB（事务）→ 校验 → 应用 → `emit("config-changed")` → 托盘与 UI 刷新，**无需重启** |
+| 配置校验 | 由 Rust 类型经 `schemars` 导出 JSON Schema + 语义校验（引用完整性、lane 引用了不存在的订阅、channel 引用了不存在的 credential、端口冲突等），错误定位到具体字段路径（`serde_path_to_error`） |
+| 便携导出 | `ta export --with-secrets` 生成加密包（age / AES-GCM，口令解锁） |
+| 版本化 | 每次成功应用配置留一份带时间戳的 YAML 快照，可回滚（最近 N 份） |
+
+## 5. secrets 引用语法
+
+```yaml
+secret: "${secret:openai-personal}"       # 钥匙串条目名
+# 或
+secret: "${env:OPENAI_API_KEY}"           # 环境变量（CI/脚本场景）
+# 或（不推荐，会提示警告）
+secret: "sk-..."
+```
+
+- **key 永不进 SQLite**，只存 `secret_meta` 元数据；真值在系统钥匙串（`keyring`）。
+- 首次启动或导入 YAML 时，如果发现明文 `sk-...`，UI 弹窗提示"迁移到钥匙串"，一键完成并改写来源。

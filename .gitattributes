@@ -1,0 +1,17 @@
+* text=auto eol=lf
+
+# 二进制 / 生成物
+*.ico   binary
+*.icns  binary
+*.png   binary
+*.woff  binary
+*.woff2 binary
+*.sqlite binary
+
+# 前端构建产物（由 npm run build 生成）
+dist/**      linguist-generated=true
+src/shared/bindings.ts linguist-generated=true
+
+# 锁文件：合并时不要用文本冲突策略
+package-lock.json -diff
+Cargo.lock        -diff

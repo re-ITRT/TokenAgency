@@ -1,0 +1,331 @@
+# ============================================================================
+# TokenAgency 配置示例
+#   默认模式：真源是 SQLite，这份 YAML 用于导入/导出（`ta import config.example.yaml`）。
+#   文件监听模式（设置里开启）：以这份文件为真源，改动热重载，但 GUI 编辑会覆盖它。
+#   key 一律用 ${secret:...} 引用系统钥匙串，不写明文。
+# ============================================================================
+version: 1
+
+# ---------------------------------------------------------------- 网关与全局
+gateway:
+  listen: 127.0.0.1:8787          # 客户端唯一入口
+  admin_listen: 127.0.0.1:8788
+  local_key: "${secret:gateway-local-key}"   # 可选：客户端 Bearer，留空则不校验
+  passthrough:
+    header_mode: pass             # pass = 客户端头全透传（只增不改，默认且推荐）
+    body: preserve                # preserve = 未知字段一律保留
+    strip_hop_by_hop: true
+    verify_no_diff: true          # 自检：记录"客户端发的头"与"上游收到的头"的差异，非空即告警
+  retry:
+    max_attempts: 3
+    retry_after_first_byte: false # 流式已开始输出则绝不重试
+  expose_models_with_capabilities: false  # 默认原样透传 /v1/models，不注入额外字段
+
+# ---------------------------------------------------------------- 请求日志
+request_log:
+  mode: meta            # off | meta（默认）| shape | full
+                        #   off   = 不记日志（聚合用量照记，看板/成本中心不受影响）
+                        #   meta  = 只记元数据 + token 细分 + 花费（约 300B/条）
+                        #   shape = meta + body 的字段结构（不记内容）→ 专门查"字段有没有被吞"
+                        #   full  = meta + 请求/响应头 + body（脱敏 + zstd 压缩）
+  retention: 30d        # 7d | 30d | 90d | forever
+  max_rows: 500000
+  max_size_mb: 2048
+  sample_rate: 1.0      # 量大时可以只记 10%（错误请求默认 100% 记录）
+  image_handling: hash  # hash = 只记媒体的类型/字节数/sha256，不记 base64（强烈建议保持）
+
+# ---------------------------------------------------------------- 成本中心 / 定价
+pricing:
+  defaults: { currency: USD, unit: per_1m }   # per_1m | per_1k | per_token
+  usd_to_cny: 7.25                            # 仅用于显示折算，历史记录保留原币种
+  entries:
+    # 精确匹配
+    - match: { model: "claude-sonnet-4-5", provider: p-anthropic }
+      rates: { input: 3.00, input_cached: 0.30,
+               input_cache_write: 3.75, input_cache_write_1h: 6.00, output: 15.00 }
+      source: builtin
+
+    # 通配匹配（按顺序，首个命中生效）
+    - match: { model: "gpt-4o*" }
+      rates: { input: 2.50, input_cached: 1.25, output: 10.00 }
+      source: builtin
+
+    # 中转站倍率：官方价 × 0.8
+    - match: { provider: p-mytoken }
+      multiplier: 0.8
+      source: manual
+
+    # 固定套餐费：不摊进单次请求，在成本中心按周期摊销展示
+    - match: { credential: c-relay-a }
+      plan_fee: { amount: 99, currency: CNY, window: month }
+
+# ---------------------------------------------------------------- 网络
+net:
+  kernel:
+    provider: external            # external = 用户自行获取内核（默认，保持许可自由）
+                                  # 或 bundled = 随包分发（需确认 GPL-3.0 合规）
+    path: ""                      # provider: external 时用户指定；留空则用首启向导下载/查找
+    controller: 127.0.0.1:39090   # 内核 REST，仅 loopback
+    lane_port_range: [39100, 39299]
+  dialer: kernel                  # kernel（默认）| builtin（自研拨号，未实现，留作后路）
+  dns:
+    enhanced_mode: redir-host     # 不用 fake-ip（我们没有 TUN/DNS 劫持）
+    nameserver: ["https://223.5.5.5/dns-query", "https://doh.pub/dns-query"]
+    proxy_server_nameserver: ["https://223.5.5.5/dns-query"]  # ★ 不配这条，节点都连不上
+  health:
+    interval: 60s
+    url_by_provider: true         # 用各 provider 的真实端点测速，而不是 generate_204
+  default_lane: lane-direct       # 全局兜底线路（所有层级都没指定时用它）
+  system_proxy: off               # 绝不碰系统代理
+  tun: off                        # 绝不接管整机流量
+  # netstat 里应只有这些 loopback 端口，没有任何 0.0.0.0：
+  #   8787 网关 / 8788 管理API / 39090 内核REST / 3910x lane 入站
+
+# ---------------------------------------------------------------- 机场订阅
+proxy_subscriptions:
+  - id: sub-jp
+    name: "机场A"
+    url: "https://example.com/api/v1/client/subscribe?token=REPLACE_ME"
+    user_agent: "clash-verge/v2.0.0"   # ★ 很多机场按 UA 返回不同格式，默认伪装成 Clash 客户端
+    format: auto                  # auto（推荐）| clash | base64_links | plain_links
+    interval: 6h                  # 订阅返回 Profile-Update-Interval 时采用其建议值
+    keep_versions: 3              # 坏更新时可一键回滚
+    filter:
+      include: "(?i)(日本|JP|Tokyo|Osaka|新加坡|SG)"
+      exclude: "(?i)(官网|剩余流量|到期|过期|订阅|防失联)"
+    health_check: { url: "https://api.openai.com/v1/models", interval: 60s, tolerance: 100 }
+
+# ---------------------------------------------------------------- 网络通道 Lane
+# 五个 kind：direct / subscription_auto / subscription_group / subscription_node / filter
+# 订阅里自带的 proxy-groups（🇯🇵 日本、♻️ 自动选择…）会被保留，可直接当线路选。
+lanes:
+  - id: lane-direct
+    name: "直连（本机网络）"
+    kind: direct
+
+  - id: lane-jp-auto
+    name: "日本 · 自动择优"
+    kind: subscription_auto         # 在整份订阅里自己择优
+    subscription: sub-jp
+    group_type: url-test            # url-test | fallback | load-balance | select
+    filter: { include: "(?i)(日本|JP|Tokyo|Osaka)" }
+
+  - id: lane-jp-original
+    name: "🇯🇵 日本（订阅自带分组）"
+    kind: subscription_group        # ★ 直接用机场自己的分组语义，心智不用重建
+    subscription: sub-jp
+    group: "🇯🇵 日本"                # 订阅里 proxy-groups 的 name
+    # group_type 默认取订阅里该组的 type，可在 UI 覆盖
+
+  - id: lane-us-fixed
+    name: "美国 · 固定节点"
+    kind: subscription_node
+    subscription: sub-jp
+    node: "美国-洛杉矶-01"
+
+  # 兼容模式：某条 lane 的协议内建栈还没支持时，单独退回到外部代理端口
+  # - id: lane-legacy
+  #   name: "某冷门协议 · 兼容模式"
+  #   kind: subscription_node
+  #   subscription: sub-other
+  #   node: "某节点"
+  #   dialer: local_proxy
+  #   local_proxy_address: "127.0.0.1:39101"
+
+# ---------------------------------------------------------------- 服务商
+providers:
+  - id: p-openai
+    name: "OpenAI 官方"
+    protocol: openai
+    base_url: https://api.openai.com/v1
+    auth: { scheme: bearer }
+    timeout: { connect: 10s, read: 600s }
+
+  - id: p-anthropic
+    name: "Anthropic 官方"
+    protocol: anthropic
+    base_url: https://api.anthropic.com/v1
+    auth: { scheme: header, header: x-api-key }
+    timeout: { connect: 10s, read: 600s }
+
+  # 自定义中转：OpenAI 兼容
+  - id: p-mytoken
+    name: "某中转站（OpenAI 兼容）"
+    protocol: openai
+    base_url: https://api.example-relay.com/v1
+    auth: { scheme: bearer }
+    lane: lane-jp-auto             # 服务商级默认线路（可被 credential/channel 覆盖）
+    headers:
+      X-Relay-Channel: "default"     # 只补缺，不覆盖客户端同名头
+    passthrough:
+      header_mode: pass              # 关键：别丢客户端的 agent 标识
+      body: preserve                 # 关键：别丢 image_url / 未知字段
+    model_prefix: ""                 # 如上游要求写 "openai/gpt-4o"，填 "openai/"
+
+# ---------------------------------------------------------------- 凭据 / 套餐
+# lane 是可选的：这里配的是"这份套餐默认走哪条线"。
+# 优先级：policy.use_lane > channel.lane > credential.lane > provider.lane > net.default_lane > direct
+credentials:
+  - id: c-openai-personal
+    provider: p-openai
+    label: "OpenAI 个人订阅"
+    secret: "${secret:openai-personal}"
+    lane: lane-jp-original           # 直接用机场自带的「🇯🇵 日本」分组
+    quota: { metric: unknown, window: month, reset_day: 1, soft_limit: 0.8, hard_limit: 1.0 }
+    guard: { max_rpm: 60, max_concurrency: 8 }
+    tags: [official]
+
+  - id: c-anthropic-personal
+    provider: p-anthropic
+    label: "Anthropic 个人订阅"
+    secret: "${secret:anthropic-personal}"
+    lane: lane-jp-auto               # 自己按延迟在订阅里择优
+    quota: { metric: unknown, window: month, reset_day: 1 }
+    tags: [official]
+
+  - id: c-relay-a
+    provider: p-mytoken
+    label: "中转站A · 500万 token/月"
+    secret: "${secret:relay-a}"
+    lane: lane-jp-auto
+    quota: { metric: tokens, limit: 5000000, window: month, reset_day: 1,
+             soft_limit: 0.8, hard_limit: 0.98, reserve: 0.05 }
+    tags: [cheap]
+
+  - id: c-relay-b
+    provider: p-mytoken
+    label: "中转站B · 按量付费"
+    secret: "${secret:relay-b}"
+    lane: lane-direct                # 这家国内直连可达，不用梯子
+    quota: { metric: cost, limit: 20, currency: CNY, window: month }
+    tags: [backup]
+
+# ---------------------------------------------------------------- 逻辑模型
+models:
+  - id: gpt-4o
+    aliases: [gpt-4o-2024-11-20, openai/gpt-4o, gpt-4o-latest]
+    display: { group: OpenAI, order: 10 }
+
+  - id: claude-sonnet-4-5
+    aliases: [claude-sonnet-4-5-20250929, claude-3-5-sonnet]
+    display: { group: Anthropic, order: 20 }
+
+  - id: gpt-4o-mini
+    display: { group: OpenAI, order: 11 }
+
+# 说明：模型不需要声明能力。请求一律全透传；"谁识图"由下面 channel 的 tags 决定。
+
+# ---------------------------------------------------------------- 通道
+channels:
+  - id: ch-openai-personal
+    model: gpt-4o
+    provider: p-openai
+    credential: c-openai-personal
+    lane: lane-us-fixed              # ★ 手动指定：官方这条走固定的美国节点
+    upstream_model: gpt-4o-2024-11-20
+    priority: 10
+    weight: 100
+    tags: [official]
+
+  - id: ch-relay-a
+    model: gpt-4o
+    provider: p-mytoken
+    credential: c-relay-a
+    lane: lane-jp-original           # ★ 手动指定：这家中转走机场自带的「🇯🇵 日本」分组
+    upstream_model: gpt-4o
+    priority: 20
+    weight: 50
+    tags: [cheap]
+
+  - id: ch-relay-b
+    model: gpt-4o
+    provider: p-mytoken
+    credential: c-relay-b
+    lane: lane-direct                # ★ 手动指定：这家直连
+    upstream_model: gpt-4o
+    priority: 30
+    weight: 30
+    tags: [backup]                 # 未标注视图片 → 照发（默认行为是发出去，不是拒绝）
+
+  # 如果你实测发现某家通道其实不识图，就这样标一下（可选，非必须）：
+  # - id: ch-some-relay
+  #   ...
+  #   tags: [no-vision]
+
+  - id: ch-claude-official
+    model: claude-sonnet-4-5
+    provider: p-anthropic
+    credential: c-anthropic-personal
+    # lane 不填 → 继承 credential.lane（lane-jp-auto）
+    upstream_model: claude-sonnet-4-5-20250929
+    priority: 10
+    tags: [official]
+
+# ---------------------------------------------------------------- 通道组
+channel_groups:
+  - id: grp-gpt-4o
+    model: gpt-4o
+    members: [ch-openai-personal, ch-relay-a, ch-relay-b]
+    selector: sticky_then_priority      # ★ "一个额度用完了再用第二个" + 会话粘性
+    sticky:
+      enabled: true
+      ttl: 12h
+      key: [header:x-session-id, header:x-conversation-id, metadata.user_id, body_hash]
+    release_on: [quota_exhausted, hard_error, user_pin_change]
+
+# ---------------------------------------------------------------- 策略表
+policies:
+  # 1) 可选：带图请求跳过不识图的通道（默认关闭；等你真遇到某家中转不识图再开）
+  - id: pol-skip-nonvision
+    name: "带图请求跳过不识图的通道"
+    enabled: false
+    priority: 5
+    match: { has_image: true }
+    action:
+      exclude_tag: no-vision        # 只有被你手工标了 no-vision 的通道会被跳过
+      on_no_candidate: error        # 宁可明确报错，也不要静默发到瞎子上游
+      error_code: 415
+
+  # 2) 深夜的批量任务走便宜通道
+  - id: pol-night-batch
+    name: "夜间长文本走中转A"
+    enabled: false
+    priority: 20
+    match:
+      model_matches: ["gpt-4o*"]
+      input_tokens_gt: 20000
+      time_window: "01:00-07:00"
+    action:
+      use_channels: [ch-relay-a]
+      selector: priority
+
+  # 3) 某家中转抽风时，临时全局绕开（一键开关）
+  - id: pol-avoid-relay-a
+    name: "临时绕开中转A"
+    enabled: false
+    priority: 30
+    match: { all: true }
+    action: { exclude_channels: [ch-relay-a] }
+
+  # 4) 兜底
+  - id: pol-default
+    name: "默认策略"
+    enabled: true
+    priority: 1000
+    match: { all: true }
+    action:
+      use_group: grp-gpt-4o
+      failover:
+        on: [http_429, http_402, http_5xx, timeout, connect_error,
+             quota_exhausted, channel_tagged_out]
+        max_attempts: 3
+        cooldown: 120s
+        backoff: exponential
+
+# ---------------------------------------------------------------- 可选：整机模式
+# 默认全关。开启后 TokenAgency 会接管整机网络，属于"高级模式"，需要管理员权限。
+system_integration:
+  enable_tun: false
+  enable_system_proxy: false
+  autostart: true
+  tray_show_latency: true

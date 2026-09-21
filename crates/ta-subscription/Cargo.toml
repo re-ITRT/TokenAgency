@@ -1,0 +1,26 @@
+[package]
+name = "ta-subscription"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ta-core = { path = "../ta-core" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+backon.workspace = true
+base64.workspace = true
+flate2.workspace = true
+regex.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

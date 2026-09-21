@@ -1,0 +1,361 @@
+# 07 · 页面细节、请求日志与成本中心
+
+本文覆盖 6 块：**首页看板 · 请求日志 · Provider 渠道设置 · 模型目录 · 路由策略 · 成本中心**。
+托盘与整体导航见 [05](05-ui-tray.md)；数据结构见 [02](02-config-and-data-model.md)。
+
+---
+
+# 一、首页看板
+
+## 1.1 用户打开首页到底想知道什么
+
+按优先级排，这 7 个问题决定版面顺序：
+
+| # | 问题 | 对应模块 | 为什么排这个位置 |
+|---|---|---|---|
+| 1 | **现在能不能用？** | 顶部状态条 + 线路健康 | 出事时第一眼要看的，永远最上面 |
+| 2 | **今天花了多少 / 用了多少？** | 4 张数字卡 | 最高频的信息 |
+| 3 | **快没钱了吗？** | 套餐额度条 | 主动预警，避免撞墙 |
+| 4 | **钱花在哪了？** | 用量趋势图 + 模型 TOP | 想优化时的第一入口 |
+| 5 | **有没有在省钱？** | 缓存命中率 + 节省额 | 粘性/缓存策略的效果反馈 |
+| 6 | **哪里出问题了？** | 实时请求流（红/黄行）+ 通道健康 | 排查入口 |
+| 7 | **我现在的策略是什么？** | 状态条 + 一键切换 | 高频操作 |
+
+## 1.2 版面（桌面端三栏栅格）
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ ● 运行中 │ 策略: 默认(粘性+优先级) │ 出口: 东京-03 82ms │ [切策略][测速]│ ①状态条
+├────────────┬────────────┬────────────┬──────────────────────────────┤
+│ 今日请求    │ 今日 Token │ 今日花费    │ 成功率                        │
+│ 1,284      │ 12.4M      │ ¥18.62     │ 99.2%                        │ ②数字卡
+│ ▁▂▃▅▆▇█▇▆   │ ▁▂▄▅▇█▇▅▄  │ ▁▂▃▄▅▆▇█   │ ▇▇█▇▇▇█▇▇   (sparkline)      │
+├────────────┴────────────┴────────────┴──────────────────────────────┤
+│ 用量趋势            [24h] [7d] [30d]          分组: 模型 ▾            │ ③主图
+│ ▒ 堆叠面积图: input_cached / input / output（图例可点隐藏）           │
+│                        悬停显示该点明细（各 token 类型 + 花费）        │
+├──────────────────────────────────────────┬───────────────────────────┤
+│ 实时请求流                                │ 套餐额度                   │ ④⑤
+│ 12:04:31 gpt-4o      ✅ 1.2s  2.4k tok   │ OpenAI个人 ████░░  62%    │
+│ 12:04:28 claude-4.5  ✅ 2.1s  5.1k tok   │ 中转A     ███████░ 82% ⚠️ │
+│ 12:04:22 gpt-4o      ⚠️ 429→切通道 0.3s  │ 中转B     ¥7.2 / ¥20      │
+│ 12:04:15 gpt-4o-mini ❌ 连接超时          │                           │
+│ [全部日志 →]                              │ 线路健康                   │
+│                                          │ 日本线 ✅ 82ms            │
+│                                          │ 美国线 ⚠️ 210ms           │
+├──────────────────────────────────────────┴───────────────────────────┤
+│ 模型用量 TOP5（横条）        │ 缓存命中率 68% · 本月省了 ¥42.10        │ ⑥⑦
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+## 1.3 怎么做得好看（具体规则，不是感觉）
+
+| 规则 | 做法 |
+|---|---|
+| **一张主图，其余是数字** | 图表超过 2 个就没人看了。主图只有一个（趋势），其它用数字卡 + sparkline + 进度条表达 |
+| **数字排版** | 大号等宽数字（`font-variant-numeric: tabular-nums`）+ 小号单位；千分位；Token 用 `12.4M` / `842K` 缩写，**悬停显示精确值** |
+| **颜色语义全局统一** | 绿=成功/正常 · 黄=警告/重试 · 红=失败 · 蓝=主色/选中 · 灰=禁用。全站不许有第二种含义 |
+| **状态条永远在最上** | 它回答"现在能不能用"，且策略切换是高频操作，不能要滚动才看到 |
+| **进度条颜色分级** | <70% 绿 · 70–90% 黄 · >90% 红并轻微脉动；只在红时用动效，别到处闪 |
+| **刷新节奏分级** | 数字 3s、图表 30s、请求流实时推送。用 `transition` 做数值缓动，避免整版跳变 |
+| **空状态要给下一步** | "还没有请求 —— 把 BASE_URL 复制到你的客户端" + 一键复制按钮 |
+| **深色优先** | 开发者多数晚上用；浅色做同构映射，不用两套设计 |
+| **时间轴永远本地时区** | 且显示在列头（"今天（GMT+8）"），避免跨时区误读 |
+| **图表可下钻** | 点趋势图某一天 → 跳到成本中心并带上该时间筛选（不重复造页面） |
+
+## 1.4 可切换的看板"模式"
+
+首页顶部一个下拉，切换关注点（同一份数据，不同排布）：
+
+- **日常**（默认）：上面那套
+- **省钱模式**：把缓存命中率、各套餐实际单价、未定价模型提醒提到第一屏
+- **排障模式**：实时请求流放大到主区，错误率曲线取代趋势图
+- **极简**：只留状态条 + 4 张数字卡（给只想瞄一眼的人，也可以只放托盘）
+
+---
+
+# 二、请求日志
+
+## 2.1 三档开关
+
+```yaml
+request_log:
+  mode: meta          # off | meta | shape | full
+  retention: 30d      # 7d | 30d | 90d | forever
+  max_rows: 500000
+  max_size_mb: 2048
+  sample_rate: 1.0    # 可以只记 10% 的请求（量大的时候）
+```
+
+| 模式 | 记录内容 | 库增长 | 用途 |
+|---|---|---|---|
+| `off` | 什么都不记（**但聚合用量照记**，看板和成本中心不受影响） | 0 | 极致省空间 |
+| `meta`（默认） | 时间、客户端、模型、上游模型、通道、凭据、lane/节点、状态、耗时、TTFB、**token 细分**、花费、错误类型 | 小（约 300 B/请求） | 日常够用 |
+| `shape` | `meta` + **只记 body 的字段结构与类型**（键名、层级、数组长度、图片块的数量与字节数），不记内容 | 很小 | 专门排查"字段有没有被吞" |
+| `full` | `meta` + 请求/响应头 + 请求/响应体（脱敏 + zstd 压缩） | 大 | 深度排查，建议临时开 |
+
+## 2.2 脱敏与体积控制（不做这些，库会被撑爆）
+
+| 项 | 处理 |
+|---|---|
+| `authorization` / `x-api-key` / `api-key` / `cookie` | **永不记录**，值替换为 `***` |
+| **图片块** | 只记 `{type, media_type, bytes, sha256前8位}`，**绝不记 base64 本体** |
+| 其它字段 | 单字段 > 32 KB 截断并标 `truncated: true` |
+| body 存储 | zstd 压缩存 BLOB（聊天文本压缩率通常 5–10×） |
+| 采样 | `sample_rate` 可按比例抽记，错误请求永远 100% 记录（可选开关） |
+
+> 一张 1MB 的截图 base64 后约 1.4MB。每天 50 次带图请求，一个月就是 2GB —— 这就是为什么图片必须只存哈希。
+
+## 2.3 保存时长与清理
+
+- 每小时跑一次清理任务：先按 `retention` 过期，再按 `max_rows` / `max_size_mb` 从最老开始删（谁先超按谁）。
+- 清理后做 `PRAGMA incremental_vacuum`（不要每次全量 VACUUM，会卡）。
+- 设置页显示："当前 12,840 条 / 386 MB / 最早 2026-01-08" + [立即清理] [只清 body] [导出后清空]。
+
+## 2.4 日志页交互
+
+**列表**：虚拟滚动；列可自定义；状态用色块+图标（成功/重试成功/失败）；支持按时间范围、模型、通道、凭据、客户端、状态过滤；`full` 模式下可全文本搜索。
+
+**详情抽屉**（点某一行）：
+
+```
+req_01HQZX…  2026-02-11 12:04:22  Cursor/0.42
+gpt-4o → gpt-4o-2024-11-20   stream  200  1.8s (TTFB 420ms)
+
+命中策略  pol-skip-nonvision → pol-default
+尝试链    ① ch-relay-a     lane-jp  东京-03  429 insufficient_quota  310ms   → 标记 exhausted
+          ② ch-openai-personal lane-jp 东京-03  200                  1.5s    ↓ 已输出
+粘性      key=8f3a… → ch-openai-personal (12h)
+耗时瀑布  ├ 排队 2ms ├ DNS(节点) 0ms ├ TCP 41ms ├ TLS 88ms ├ 请求 289ms ├ TTFB 420ms ┤ 流式 1.38s
+token     input 1,204  input_cached 51,200  output 386   花费 $0.0091
+header_diff  {}                      ← 非空说明网关有 bug
+body 结构  messages[3] · content[2] = [text, image_url{detail:high, 412KB}]
+```
+
+耗时瀑布是排查"到底是网络慢还是模型慢"的关键，比一个总耗时数字有用得多。
+
+---
+
+# 三、Provider 渠道设置
+
+## 3.1 列表页
+
+| 列 | 内容 |
+|---|---|
+| 名称 / 协议 | 图标 + `OpenAI 兼容` / `Anthropic` / `Gemini` 徽章 |
+| 状态灯 | 绿（最近 10 次全成功）· 黄（有失败）· 红（连续失败）· 灰（禁用） |
+| 最近成功率 | 近 24h |
+| 平均延迟 | EWMA |
+| 挂载 | 3 个凭据 · 7 条通道 |
+| 操作 | 测试连通性 / 编辑 / 复制 / 禁用 |
+
+## 3.2 详情页三个 Tab
+
+**① 连接**
+`base_url`、协议、鉴权方式（`bearer` / 自定义头 / query）、模型名前缀、超时（连接 / 读取，读取要给流式留大值）、TLS（跳过校验、额外 CA、最低版本）、**默认线路**（服务商级默认，会被凭据/通道覆盖）。
+
+**② 头部与透传**
+附加头列表（**默认 `add`：只补缺，绝不覆盖客户端同名头**）；透传策略（默认 `header_mode: pass` + `body: preserve`，旁边一行小字："正常不需要改这里，改错会吞字段"）；一个"危险设置"折叠区，收起状态。
+
+**③ 测试**
+一键发一个最小请求，展示：实际发出的头 + 上游返回的原始头 + 原始 body + 耗时。
+**这个页面就是"到底谁吞了我的图片/agent 标识"的答案页**——把它做得好，比任何文档都省事。CLI 里对应 `ta echo <channel>`。
+
+---
+
+# 四、模型目录
+
+一张主表：
+
+| 列 | 说明 |
+|---|---|
+| 逻辑模型 | 对外名字，如 `gpt-4o` |
+| 别名 | 客户端可能写的其它写法（chips 展示，可批量编辑） |
+| 通道数 | 几家用这个模型；**悬停展开每个通道的上游模型名** |
+| 上游模型名 | 每通道映射（可在此表内联编辑，不必进通道矩阵） |
+| 线路 | 每通道当前用的线路（内联下拉，可在这里直接改成某订阅分组或直连） |
+| 标签 | `vision` / `no-vision` / `cheap` … |
+| 价格 | 已配则显示 input/output 单价；未配显示灰色"未定价"并可一键跳成本中心 |
+| 对外暴露 | 开关（关掉就不出现在 `/v1/models`） |
+
+**批量操作**（真实使用里最省时间的部分）：
+- **从 provider 拉取 `/v1/models` 一键导入** → 自动创建逻辑模型 + 通道（上游名 = 原名）
+- 批量加别名（`gpt-4o` ← `gpt-4o-2024-11-20`, `gpt-4o-latest`, `openai/gpt-4o`）
+- 合并重复模型、批量改上游名、批量打标签
+- 导入/导出 CSV
+
+---
+
+# 五、路由策略
+
+- **列表**：拖拽排序即优先级（数字小的先求值，首个命中即生效）；每行一个开关（临时停用不用删）。
+- **条件构造器**：下拉选字段 + 比较符 + 值，不用手写 YAML。字段来自 [02 §2.8](02-config-and-data-model.md) 的 `match` 表。
+- **动作面板**：选通道组、收窄候选（`exclude_tag: no-vision`）、覆盖选择器、故障转移参数、无候选时的行为（默认报错，不静默降级）。
+- **右侧常驻模拟器**：输入 `模型 + 是否带图 + stream + 几个头 + 预估 tokens` → 输出命中规则、候选（含淘汰原因）、最终通道、故障转移链、预计出口节点与延迟、**以及"预计发出的请求与客户端原始请求逐字段一致（仅 model 与鉴权头不同）"**。
+- 三个预置策略模板（一键创建）：`官方优先，挂了用中转` / `便宜优先，粘性` / `全部直连（临时救急）`。
+
+---
+
+# 六、成本中心
+
+这是你提的重点：**token 细分成各种类型，成本要能按任意维度统计。**
+
+## 6.1 第一步：把各家的 token 口径统一
+
+这是整个成本中心的地基。OpenAI / Anthropic / Gemini 的字段名和口径都不一样，**而且 cached 常常已经混在 input 总数里**，不先减掉就会重复计费统计。
+
+| 归一化 key | 含义 | OpenAI | Anthropic | Gemini |
+|---|---|---|---|---|
+| `input` | 标准输入 | `prompt_tokens` − cached | `input_tokens` | `promptTokenCount` − cached |
+| `input_cached` | 缓存命中读 | `prompt_tokens_details.cached_tokens` | `cache_read_input_tokens` | `cachedContentTokenCount` |
+| `input_cache_write` | 缓存写入 | —（OpenAI 自动缓存不计费） | `cache_creation_input_tokens` | — |
+| `input_cache_write_1h` | 缓存写入（1h TTL） | — | `cache_creation.ephemeral_1h_input_tokens` | — |
+| `input_audio` | 音频输入 | `prompt_tokens_details.audio_tokens` | — | — |
+| `output` | 标准输出 | `completion_tokens` − reasoning − audio | `output_tokens` | `candidatesTokenCount` |
+| `output_reasoning` | 推理 token | `completion_tokens_details.reasoning_tokens` | 已并入 output | `thoughtsTokenCount` |
+| `output_audio` | 音频输出 | `completion_tokens_details.audio_tokens` | — | — |
+| `output_prediction_accepted` | 预测命中输出 | `accepted_prediction_tokens` | — | — |
+| `output_prediction_rejected` | 预测未命中 | `rejected_prediction_tokens` | — | —（不计费） |
+
+三条实现规则：
+
+1. **归一化在网关一处完成**，上游原始 usage 也一并存下来（`usage_raw`），方便对账和以后补新类型。
+2. **token 类型是开放的 map，不是固定列**。上游明天加一个新字段（比如新的推理计费档），我们不用改数据库 schema。
+3. **通道不返回细分时**，就只记 `input` / `output`，并在 UI 标注"该通道不提供 token 细分"——**不猜、不估算、不留假数据**。
+
+## 6.2 定价表
+
+```yaml
+pricing:
+  defaults: { currency: USD, unit: per_1m }     # per_1m | per_1k | per_token
+  entries:
+    # 1) 精确匹配
+    - match: { model: "claude-sonnet-4-5", provider: p-anthropic }
+      rates: { input: 3.00, input_cached: 0.30,
+               input_cache_write: 3.75, input_cache_write_1h: 6.00, output: 15.00 }
+      source: builtin            # builtin | manual | imported
+
+    # 2) 通配匹配（按顺序，首个命中生效）
+    - match: { model: "gpt-4o*" }
+      rates: { input: 2.50, input_cached: 1.25, output: 10.00 }
+      source: builtin
+
+    # 3) 中转站倍率：官方价 × 0.8
+    - match: { provider: p-mytoken }
+      multiplier: 0.8
+      source: manual
+
+    # 4) 固定套餐费（不按 token，按周期摊销展示）
+    - match: { credential: c-relay-a }
+      plan_fee: { amount: 99, currency: CNY, window: month }
+```
+
+**价格来源优先级**：`manual`（用户填）> `imported`（导入的表）> `builtin`（内置库）。未定价的模型在成本中心高亮提醒，不阻塞使用。
+
+### 计算
+
+```
+cost = Σ_k  tokens[k] × rate[k] × multiplier / divisor      (divisor: per_1m → 1e6)
+```
+
+**价格快照**：每次请求把当时生效的费率整份存进该条记录。以后改价，历史成本不会被追溯改写——这是财务数据的基本要求。
+
+### 固定套餐费怎么算
+
+`plan_fee` 不摊到单次请求，而是单独一行展示：
+
+```
+中转A · 月付 ¥99
+  本周期已用 4.1M / 5M token
+  按量折算 ¥18.40  ·  实际单价 ¥4.49/M token  ·  利用率 82%
+```
+
+这个"**实际单价**"是最有价值的一列：中转站宣称的倍率不等于真实成本，把 `花费 ÷ token 数` 算出来，**哪家真的便宜一眼可见**。
+
+### 币种
+
+原币种照实记录（`cost` + `currency`），显示时按可配置汇率折算成 CNY。汇率表可手动维护或有网时自动拉取，历史记录保留原值。
+
+## 6.3 统计界面：查询构建器
+
+不做死板的固定报表，做一个"维度 × 指标 × 筛选"的自由构建器：
+
+```
+维度  [时间: 按周 ▾]   [分组: 套餐 ▾]
+指标  ☑ 请求数  ☑ input  ☑ input_cached  ☑ input_cache_write  ☑ output  ☑ 花费  ☑ 缓存命中率
+筛选  [本周 ▾] [套餐: 全部 ▾] [模型: gpt-4o ▾] [客户端: 全部 ▾] [状态: 全部 ▾]
+展示  ( ) 表格   (•) 堆叠柱状图
+                                      [保存为视图]
+```
+
+**预置视图**（顶部一键切换的 Tab，覆盖 90% 的日常问题）：
+
+| 视图 | 回答什么问题 |
+|---|---|
+| 今日概览 | 今天怎么样 |
+| 本周按模型 | 哪些模型在烧钱 |
+| 本月按套餐 | **哪个套餐最划算**（含实际单价列） |
+| 缓存收益 | 缓存命中率多少、省了多少钱（对比"假如没有缓存"的全价估算） |
+| 按客户端 | Cursor vs Claude Code 谁更费 |
+| 未定价模型 | 提醒去补价格 |
+
+**你举的那个例子**——"某一个订阅，这一周内用了多少 output token，花费怎样"——在这里就是三步：
+
+```
+维度: 时间=本周(按天)  |  筛选: 套餐=中转A  |  指标: output, 花费
+```
+
+结果直接是一张表 + 图，可导出 CSV。
+
+## 6.4 缓存收益怎么算
+
+```
+节省金额 = Σ (input_cached_tokens × (rate[input] − rate[input_cached])
+            + input_cache_write_tokens × (rate[input] − rate[input_cache_write]))
+```
+
+正数=省了，负数=缓存写多了反而亏（写缓存比普通输入贵 25% 时确实会亏）。这个数字能直接验证"粘性策略到底值不值"。
+
+## 6.5 数据表设计（支撑任意维度查询）
+
+```sql
+-- 明细（每次请求一行，含 token 细分 JSON 与价格快照）
+CREATE TABLE usage_request (
+  request_id   TEXT PRIMARY KEY,
+  ts           INTEGER,
+  credential_id TEXT, provider_id TEXT, channel_id TEXT,
+  model TEXT, upstream_model TEXT, client TEXT,
+  lane_id TEXT, node TEXT,
+  status INTEGER, error_type TEXT,
+  latency_ms INTEGER, ttfb_ms INTEGER,
+  token_kinds  TEXT,        -- JSON: {"input":1204,"input_cached":51200,"output":386}
+  usage_raw    TEXT,        -- JSON: 上游原始 usage，用于对账
+  total_tokens INTEGER,
+  cost REAL, currency TEXT,
+  price_snapshot TEXT       -- JSON: 当时生效的费率与倍率
+);
+CREATE INDEX ix_usage_ts ON usage_request(ts);
+CREATE INDEX ix_usage_cred_ts ON usage_request(credential_id, ts);
+
+-- 日汇总（写入时同步累加，供看板与成本中心秒查）
+CREATE TABLE usage_daily (
+  day TEXT, credential_id TEXT, provider_id TEXT, model TEXT, client TEXT,
+  token_kind TEXT,           -- ★ 一行一个 token 类型，任意维度都能聚合
+  tokens INTEGER, requests INTEGER, cost REAL, currency TEXT,
+  PRIMARY KEY (day, credential_id, provider_id, model, client, token_kind)
+);
+```
+
+设计要点：**日汇总表把 `token_kind` 作为行维度而不是列**——这样新增 token 类型（推理、音频、预测……）不需要改表结构，任意维度组合都能 `GROUP BY` 出来。
+
+个人量级（每天几百请求）下，即使不建汇总表直接扫明细也够快；汇总表是为了让看板在 10 年数据上依然秒开。
+
+---
+
+# 七、这几个页面的共同设计原则
+
+1. **先给答案，再给细节** —— 列表页显示结论（成功率、额度百分比、实际单价），点进去才有原始数据。
+2. **任何地方都能下钻** —— 看板点数字 → 成本中心带筛选；成本中心点某行 → 请求日志带筛选；日志点一条 → 详情抽屉。三段式，不重复造页面。
+3. **任何统计都能导出 CSV** —— 个人用户迟早要拿去做自己的表。
+4. **不猜数据** —— 上游没给的细分就不显示，标注"该通道未提供"，绝不用估算值冒充真实值。
+5. **改价不改历史** —— 一切成本都基于请求发生时的价格快照。

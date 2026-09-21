@@ -1,0 +1,30 @@
+[package]
+name = "ta-kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ta-core = { path = "../ta-core" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+regex.workspace = true
+rand = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+wiremock.workspace = true
+insta.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -1,0 +1,50 @@
+[package]
+name = "ta-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ta-core = { path = "../ta-core" }
+ta-store = { path = "../ta-store" }
+ta-kernel = { path = "../ta-kernel" }
+ta-secrets = { path = "../ta-secrets" }
+ta-subscription = { path = "../ta-subscription" }
+
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+futures-util.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+http.workspace = true
+axum.workspace = true
+hyper.workspace = true
+http-body-util.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+arc-swap.workspace = true
+regex.workspace = true
+chrono.workspace = true
+nanoid.workspace = true
+zstd.workspace = true
+sha2.workspace = true
+base64.workspace = true
+indexmap.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+insta.workspace = true
+pretty_assertions.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = []

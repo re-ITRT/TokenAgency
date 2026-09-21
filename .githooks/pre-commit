@@ -1,0 +1,73 @@
+#!/bin/sh
+# TokenAgency pre-commit —— 只检查本次提交涉及的东西，尽量快。
+# 安装：pwsh -File scripts/install-hooks.ps1
+# 绕过：git commit --no-verify（仅限紧急情况，别养成习惯）
+
+fail() {
+    printf '\033[31m\n✘ %s\033[0m\n\n' "$1"
+    exit 1
+}
+info() { printf '\033[36m› %s\033[0m\n' "$1"; }
+ok() { printf '\033[32m✔ %s\033[0m\n' "$1"; }
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+# ---------------------------------------------------------------- 1) 明文密钥守卫
+# 只扫"新增的行"，避免历史误报。key 一律走 ${secret:name} / ${env:VAR}。
+leak=$(git diff --cached -U0 | grep -E '^\+' | grep -nE '(sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' || true)
+if [ -n "$leak" ]; then
+    printf '%s\n' "$leak"
+    fail "检测到疑似明文密钥。请改用 \${secret:name} 或 \${env:VAR}（见 docs/02-config-and-data-model.md §5）"
+fi
+
+# ---------------------------------------------------------------- 2) 大文件守卫
+big=""
+for f in $staged; do
+    [ -f "$f" ] || continue
+    sz=$(wc -c <"$f" 2>/dev/null || echo 0)
+    if [ "$sz" -gt 1048576 ]; then
+        big="$big\n  $f ($((sz / 1024)) KB)"
+    fi
+done
+if [ -n "$big" ]; then
+    printf '%b\n' "$big"
+    fail "以上文件超过 1MB。确认是否该入库；运行时数据（*.sqlite / logs / providers）已在 .gitignore 中。"
+fi
+
+# ---------------------------------------------------------------- 3) 分类
+has_rs=0
+has_ts=0
+has_toml=0
+for f in $staged; do
+    case "$f" in
+        *.rs) has_rs=1 ;;
+        *.ts | *.tsx) has_ts=1 ;;
+        Cargo.toml) has_toml=1 ;;
+    esac
+done
+
+# ---------------------------------------------------------------- 4) Rust 格式
+if [ "$has_rs" -eq 1 ] || [ "$has_toml" -eq 1 ]; then
+    info "cargo fmt --all --check"
+    cargo fmt --all -- --check || fail "Rust 格式不合格。运行：cargo fmt --all"
+fi
+
+# ---------------------------------------------------------------- 5) Clippy
+if [ "$has_rs" -eq 1 ]; then
+    info "cargo clippy --workspace --all-targets -- -D warnings"
+    cargo clippy --workspace --all-targets --quiet -- -D warnings \
+        || fail "clippy 未通过（已按 -D warnings 处理）。修复告警后重试。"
+fi
+
+# ---------------------------------------------------------------- 6) 前端类型
+if [ "$has_ts" -eq 1 ]; then
+    if [ -d node_modules ]; then
+        info "tsc --noEmit"
+        npx --no-install tsc --noEmit || fail "TypeScript 类型检查失败。"
+    else
+        printf '\033[33m! 跳过 tsc：node_modules 不存在（先 npm install）\033[0m\n'
+    fi
+fi
+
+ok "pre-commit 通过"
