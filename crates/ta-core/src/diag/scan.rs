@@ -393,6 +393,83 @@ pub fn error_log_sites(src: &str) -> Vec<ErrorLogSite> {
     out
 }
 
+/// 一处结构体**字面构造**（`T { … }`）出现的位置。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructLiteralSite {
+    /// 1 起算的行号
+    pub line: usize,
+}
+
+/// 扫出某个类型名的**字面构造**（`T { … }`）出现位置。
+///
+/// 用来机械地挡住"绕过唯一构造器、自己拼一个结构体"这类违反 —— 它**不是**语法分析，
+/// 只做"上下文排除"这一件事：
+///
+/// | 形态 | 是否算构造 |
+/// |---|---|
+/// | `pub struct T { … }` | 否（定义） |
+/// | `impl T { … }` | 否（实现块） |
+/// | `-> T { … }` | 否（返回类型后面跟函数体） |
+/// | `T { field: v }` | **是** |
+///
+/// 注释与字符串字面量先被涂白（复用 [`blank_comments_and_literals`]），
+/// 所以文档里举例"不该这么写"不会把自己判违规 —— [14 §6.2] 的推荐写法注释、
+/// 本文件自己的文档都是这种形态。
+pub fn struct_literal_sites(src: &str, type_name: &str) -> Vec<StructLiteralSite> {
+    if type_name.is_empty() {
+        return Vec::new();
+    }
+    let blanked = blank_comments_and_literals(src);
+    let b = blanked.as_bytes();
+    let mut out = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = blanked[from..].find(type_name) {
+        let at = from + rel;
+        let end = at + type_name.len();
+        let left_ok = at == 0 || !is_ident_byte(b[at - 1]);
+        let mut i = end;
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let is_brace = b.get(i) == Some(&b'{');
+        if left_ok && is_brace && !is_declaration_prefix(&blanked[..at]) {
+            out.push(StructLiteralSite { line: line_of(&line_starts(&blanked), at) });
+        }
+        from = end;
+    }
+    out
+}
+
+/// 类型名左边紧邻的那个词是不是"声明/实现/返回类型"这三种非构造上下文。
+///
+/// 必须**先剥掉路径限定**再判断：`-> crate::metering::MeteredUsage {` 里的紧邻词是
+/// `crate::metering::`，只看它就会把返回类型误判成构造（这个误报是被红-绿证明抓出来的）。
+fn is_declaration_prefix(before: &str) -> bool {
+    let mut t = before.trim_end();
+    while t.ends_with("::") {
+        let head = &t[..t.len() - 2];
+        let cut =
+            head.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).map_or(0, |i| i + 1);
+        t = head[..cut].trim_end();
+    }
+    let last = t.rsplit(char::is_whitespace).next().unwrap_or("");
+    last == "struct" || last == "impl" || last == "enum" || last == "union" || last.ends_with("->")
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// `MeteredUsage` 的字面构造位置。**只允许出现在 `crates/ta-core/src/metering/**`**
+/// （[11 §6] 铁律 4：估算不许冒充上游；`estimated_usage()` 是唯一出口）。
+///
+/// 为什么这条也值得机械检查：手拼 `MeteredUsage { usage, source: UsageSource::Upstream }`
+/// 在类型上是合法的，编译器不会说话，成本中心会**照原样把估算当真实用量显示** ——
+/// 静默的错账比编译错误危险得多。
+pub fn metered_usage_literal_sites(src: &str) -> Vec<StructLiteralSite> {
+    struct_literal_sites(src, "MeteredUsage")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,5 +613,70 @@ fn f() {
 "#;
         let fields: Vec<String> = tracing_fields(src).into_iter().map(|f| f.name).collect();
         assert_eq!(fields, vec!["provider_id", "lane_id"]);
+    }
+
+    // ------------------------------------------------ 结构体字面构造（守卫用）
+
+    #[test]
+    fn struct_literals_are_found_but_declarations_are_not() {
+        let src = r#"
+pub struct MeteredUsage { pub usage: u64 }
+impl MeteredUsage { fn x() -> u64 { 0 } }
+pub trait T { fn normalize(&self) -> MeteredUsage; }
+fn build() -> MeteredUsage {
+    MeteredUsage { usage: 1 }
+}
+fn other() -> MeteredUsage
+{ MeteredUsage { usage: 2 } }
+"#;
+        let lines: Vec<usize> =
+            metered_usage_literal_sites(src).into_iter().map(|s| s.line).collect();
+        assert_eq!(lines, vec![6, 9], "只该命中两处表达式构造（定义 / impl / 返回类型都不算）");
+    }
+
+    #[test]
+    fn mentions_in_comments_and_strings_are_not_literals() {
+        let src = r#"
+/// 不许手拼 `MeteredUsage { usage: u, source: UsageSource::Upstream }`
+// MeteredUsage { }
+fn f() { let s = "MeteredUsage { }"; }
+"#;
+        assert!(
+            metered_usage_literal_sites(src).is_empty(),
+            "注释与字符串里的例子不是构造（否则文档举例就会把自己判违规）"
+        );
+    }
+
+    #[test]
+    fn a_longer_identifier_is_not_a_match() {
+        let src = "fn f() { let x = MyMeteredUsage { usage: 1 }; }";
+        assert!(
+            metered_usage_literal_sites(src).is_empty(),
+            "`MyMeteredUsage` 不是 `MeteredUsage`"
+        );
+    }
+
+    #[test]
+    fn path_qualified_return_types_are_not_literals() {
+        // 红-绿证明里抓到的真实误报：`-> crate::metering::MeteredUsage {` 的紧邻词是
+        // `crate::metering::`，不剥路径限定就会把返回类型当成手拼构造。
+        let src = r#"
+fn build() -> crate::metering::MeteredUsage {
+    let x = crate::metering::MeteredUsage { usage: u, source: s };
+    x
+}
+"#;
+        let lines: Vec<usize> =
+            metered_usage_literal_sites(src).into_iter().map(|s| s.line).collect();
+        assert_eq!(lines, vec![3], "只有表达式那一行算构造");
+    }
+
+    #[test]
+    fn generic_scan_works_for_any_type_name() {
+        // 通用入口是给后续守卫复用的，别只让 MeteredUsage 能走
+        let src = "fn f() { let a = Foo { x: 1 }; let b = Bar { y: 2 }; }";
+        assert_eq!(struct_literal_sites(src, "Foo").len(), 1);
+        assert_eq!(struct_literal_sites(src, "Bar").len(), 1);
+        assert!(struct_literal_sites(src, "").is_empty(), "空类型名不能扫出任何东西");
     }
 }
