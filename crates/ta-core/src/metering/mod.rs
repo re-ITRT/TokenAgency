@@ -317,6 +317,32 @@ pub fn estimated_usage(body: &Value) -> MeteredUsage {
     MeteredUsage { usage, source: UsageSource::Estimated }
 }
 
+/// ★ 用量口径的**唯一决策点**：上游到底给没给 usage —— 这个事实只在这里被判定一次。
+///
+/// | 入参 | 含义 | 结果 |
+/// |---|---|---|
+/// | `raw = None` | 上游响应里**根本没有** usage 字段 | [`estimated_usage`] → `UsageSource::Estimated` |
+/// | `raw = Some(v)` | 上游确实给了（哪怕内容为空对象） | 对应协议的归一化 → `Upstream` / `UpstreamPartial` |
+///
+/// **为什么必须把 `None` 与 `Some(json!({}))` 分开**（这是这个函数存在的全部理由）：
+/// 两者看起来都是"没有可用的 token 数"，但事实完全不同 ——
+/// `None` 是"我们不知道"，只能估算并**如实标 `Estimated`**；`Some({})` 是"上游说 0"，
+/// 那是上游的数据，标 `Estimated` 反而把上游的账改成了我们的估计。
+/// 一旦让调用方（网关）自己用 `is_null()` / `is_empty()` 去猜，这两件事就会在**第二个地方**
+/// 被重新解释一次 —— 于是同一份响应的口径取决于谁先判的。**判定只做一次，就在这里。**
+///
+/// `v` 可以是整包响应（`{"usage":{…}}`），也可以就是 usage 容器本身
+/// （[`usage_container`] 两者都认），各协议（OpenAI / Anthropic / Gemini）的嵌套差异由
+/// 对应的 `normalize_*` 负责。
+///
+/// **不猜不估算**（[11 §6] 铁律 4）：本函数**只会**在"上游没给"时估算，且估算必带 `Estimated`。
+pub fn metered_usage_for(protocol: Protocol, raw: Option<&Value>, body: &Value) -> MeteredUsage {
+    match raw {
+        Some(v) => DefaultMeter.normalize(protocol, v),
+        None => estimated_usage(body),
+    }
+}
+
 // ---------------------------------------------------------------- 测试
 
 #[cfg(test)]
@@ -908,5 +934,57 @@ mod tests {
         assert_eq!(m.usage.total(), m.usage.input_total() + m.usage.output_total());
         assert_eq!(m.usage.get(&TokenKind::Output), 0, "估算只发生在请求侧，不该凭空造输出");
         assert_eq!(m.usage.input_total(), m.usage.total());
+    }
+
+    // ------------------------------------------------ 唯一决策点（None vs Some）
+
+    #[test]
+    fn a_missing_usage_field_forces_estimation() {
+        let body = json!({"messages": [{"role": "user", "content": "没有 usage 字段的响应"}]});
+        for protocol in [Protocol::Openai, Protocol::Anthropic, Protocol::Gemini] {
+            let m = metered_usage_for(protocol, None, &body);
+            assert_eq!(m.source, UsageSource::Estimated, "{protocol:?}：没有 usage 只能估算");
+            assert_ne!(m.source, UsageSource::Upstream);
+            assert!(m.usage.total() > 0);
+        }
+    }
+
+    /// ★ 这个函数的全部意义：`None`（我们不知道）与 `Some({})`（上游说 0）**必须是两回事**。
+    #[test]
+    fn none_and_an_empty_usage_object_are_not_the_same_fact() {
+        let body = json!({"messages": [{"role": "user", "content": "x"}]});
+        let missing = metered_usage_for(Protocol::Openai, None, &body);
+        let empty = metered_usage_for(Protocol::Openai, Some(&json!({"usage": {}})), &body);
+
+        assert_eq!(missing.source, UsageSource::Estimated, "没有字段 → 我们估算");
+        assert_eq!(empty.source, UsageSource::UpstreamPartial, "上游给了空 usage → 上游说 0");
+        assert_ne!(missing.source, empty.source, "两者混为一谈就等于拿不确定冒充确定");
+        assert!(missing.usage.total() > 0, "估算要给一个非零粗估");
+        assert_eq!(empty.usage.total(), 0, "上游说 0 就是 0，不许我们替他估");
+    }
+
+    #[test]
+    fn present_usage_is_normalized_not_estimated() {
+        let body = json!({"messages": [{"role": "user", "content": "x"}]});
+        let full = json!({"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+                                    "prompt_tokens_details": {"cached_tokens": 2}}});
+        let m = metered_usage_for(Protocol::Openai, Some(&full), &body);
+        assert_eq!(m.source, UsageSource::Upstream, "有细分就是上游完整数据");
+        assert_eq!(m.usage.total(), 15, "必须守恒（与上游总数一致）");
+
+        let partial = json!({"usage": {"prompt_tokens": 10, "completion_tokens": 5}});
+        let m = metered_usage_for(Protocol::Openai, Some(&partial), &body);
+        assert_eq!(m.source, UsageSource::UpstreamPartial);
+        assert_eq!(m.usage.total(), 15);
+    }
+
+    /// usage 容器本身（不是整包响应）传进来也必须认 —— 网关手里的形态取决于它读到哪一层。
+    #[test]
+    fn a_bare_usage_container_is_accepted() {
+        let body = json!({"messages": []});
+        let container = json!({"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10});
+        let m = metered_usage_for(Protocol::Openai, Some(&container), &body);
+        assert_eq!(m.source, UsageSource::UpstreamPartial);
+        assert_eq!(m.usage.total(), 10);
     }
 }
