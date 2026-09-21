@@ -1,0 +1,86 @@
+/**
+ * 页面头：**F2–F4 每个页面的第一块**，统一"标题 — 说明 — 契约出处 — 右侧操作"的排布。
+ *
+ * 为什么要做成共享组件而不是各页自己写：这四件事的**字号层级**在 [15] 里是定死的
+ * （标题 `text.page` 20/500、说明正文、出处弱化），四个包各写一遍必然写出四种大小。
+ *
+ * 规则（[15]）：
+ * - 标题只有一档 `text.page`（**hero 留给看板主数字，一页最多一个**）；
+ * - 位置/间距只从刻度取：页面边距 32（§3.3），区块之间 24；
+ * - 没有一个装饰性元素：没有背景色块、没有边框、没有图标装饰（§1 克制）。
+ *
+ * I2 边界：`badge` 只允许放**只读展示**（如实验模式的圆点）——
+ * 任何"顺手改系统设置"的开关都不属于这里，而属于设置页里明确的用户操作。
+ */
+
+import { Box, Typography } from "@mui/material";
+import type { ReactNode } from "react";
+
+import { useTranslation } from "@/shared/i18n";
+import { typography } from "@/theme";
+
+export type PageHeaderProps = {
+  /** 页面标题（已翻译）。 */
+  title: string;
+  /** 一句话说明这页是干什么的；没有就省略，不要写"这里什么都没有"。 */
+  description?: string;
+  /** 标题右侧的只读角标（如 `<StatusDot>`）。 */
+  badge?: ReactNode;
+  /** 右侧操作区（按钮）。不传就不占位。 */
+  actions?: ReactNode;
+  /** 契约出处（如 `07 §1 首页看板`）——开发向信息，弱化显示。 */
+  docRef?: string;
+};
+
+export function PageHeader({ title, description, badge, actions, docRef }: PageHeaderProps) {
+  const { t } = useTranslation();
+
+  return (
+    <Box
+      component="header"
+      data-testid="page-header"
+      sx={{
+        px: 8,
+        pt: 8,
+        pb: 6,
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 4,
+      }}
+    >
+      <Box sx={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+          <Typography variant="h2" noWrap>
+            {title}
+          </Typography>
+          {badge}
+        </Box>
+
+        {description !== undefined ? (
+          <Typography variant="body1" sx={{ color: "text.secondary" }}>
+            {description}
+          </Typography>
+        ) : null}
+
+        {docRef !== undefined ? (
+          <Typography
+            variant="caption"
+            sx={{
+              color: "text.secondary",
+              fontFamily: typography.fontMono,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {t("component.pageHeader.docRef", { doc: docRef })}
+          </Typography>
+        ) : null}
+      </Box>
+
+      {actions !== undefined ? (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 2, flex: "0 0 auto" }}>
+          {actions}
+        </Box>
+      ) : null}
+    </Box>
+  );
+}

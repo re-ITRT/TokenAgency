@@ -875,7 +875,7 @@ pub const MAX_AUTOSTART_DELAY_S: u32 = 300;
 ///
 /// 对应 `AutostartState.drifted`（[10 §2.2]）。
 ///
-/// ⚠️ **只是判定结果，不带任何动作**：`MissingOnSystem` 不等于"该去注册"、
+/// 注意：**只是判定结果，不带任何动作**：`MissingOnSystem` 不等于"该去注册"、
 /// `UnexpectedOnSystem` 不等于"该去删除"。动作只能由用户点击
 /// `app_set_autostart` / `app_repair_autostart` 触发 —— 用户手动禁用后
 /// 我们**绝不偷偷加回来**（E3）。

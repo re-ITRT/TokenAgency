@@ -33,13 +33,15 @@ const SRC_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 
 /**
  * 豁免文件（相对 `src/`）。**每加一条都要在评论里写清"为什么它不是我们的文本"。**
+ *
+ * 现在只剩一条 —— 而且这是好事：**豁免越少，守卫越硬**。
+ * （`shared/bindings.ts` 曾经也在列表里，因为它是 gitignored 的生成物位置；
+ * 第 11 轮它被入库后就不再是"生成物"，我把它注释里那 4 个自造标记 emoji 换成了文字，
+ * 只给唯一一处**用户数据示例**打了 `ta-allow-emoji` 行内标记。）
  */
 const EXEMPT_FILES = new Set([
   // 模拟"用户数据"：订阅自带的机场组名/节点名（真实样本含 emoji，[15 §2.2] 要求原样呈现）
   "shared/api/mock.ts",
-  // gitignored 的**生成物位置**，当前装的仍是手写契约归档（注释里有 `U+26A0`/`U+2605` 注记）。
-  // 动它要等 T1 命令面补齐（E3）后由生成器覆盖；它不在运行时显示路径上。
-  "shared/bindings.ts",
 ]);
 
 /**
@@ -162,16 +164,19 @@ describe("[15 §8] 设计系统守卫（机械检查，违反即红）", () => {
   });
 
   it("2. 组件里没有硬编码颜色（必须走 tokens / theme.palette）", () => {
-    // 只扫 tsx：颜色字面量的合法出口是 `src/theme.ts`（.ts），组件不该有。
-    // 测试文件豁免：它们用字面量**断言文档里的值**（这正是守卫的执法方式），且不在运行时渲染路径上。
+    // 扫 **ts 与 tsx**：样式层不止在 .tsx 里（`shared/components/dataGrid.ts` 就是一整层 sx），
+    // 只扫 tsx 会让新代码悄悄漏出覆盖面（评审 B-4）。
+    // 两处豁免，各有明确的理由：
+    //   · `src/theme.ts` —— 它**就是**调色板本身，颜色字面量的唯一合法出口；
+    //   · `*.test.*` —— 用字面量**断言文档里的值**（这正是守卫的执法方式），不在运行时渲染路径上。
     const findings = scan(
       (line) =>
         COLOR_PATTERN.test(line) &&
         !line.includes("ta-allow-color") &&
         !line.trimStart().startsWith("*") &&
         !line.trimStart().startsWith("//"),
-      { only: /(?<!\.test)\.tsx$/ },
-    );
+      { only: /(?<!\.test)\.(?:ts|tsx)$/ },
+    ).filter((f) => f.file !== "theme.ts");
     expect(
       findings,
       `[15 §3] 颜色只能从 tokens / theme.palette 取。\n${format(findings)}`,
@@ -179,10 +184,11 @@ describe("[15 §8] 设计系统守卫（机械检查，违反即红）", () => {
   });
 
   it("3. 没有刻度外间距（只允许 2/4/8/12/16/24/32/48/64）", () => {
+    // 同样扫 ts + tsx（`theme.ts` 一起扫：它里面的 px 也必须在刻度内）
     const findings: Finding[] = [];
     for (const file of listSources()) {
       const rel = relOf(file);
-      if (EXEMPT_FILES.has(rel) || !/\.tsx$/.test(rel)) continue;
+      if (EXEMPT_FILES.has(rel) || !/\.tsx?$/.test(rel)) continue;
       const lines = readFileSync(file, "utf8").split(/\r?\n/);
       lines.forEach((text, index) => {
         if (text.includes("ta-allow-spacing")) return;
@@ -199,7 +205,7 @@ describe("[15 §8] 设计系统守卫（机械检查，违反即红）", () => {
   it("4. 没有 fontWeight >= 600、也没有 <strong>/<b>（字重只用 400/500）", () => {
     const findings = scan(
       (line) => BOLD_PATTERN.test(line) || BOLD_TAG_PATTERN.test(line),
-      { only: /\.tsx$/ },
+      { only: /(?<!\.test)\.(?:ts|tsx)$/ },
     );
     expect(
       findings,

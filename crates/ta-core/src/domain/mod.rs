@@ -269,7 +269,7 @@ pub enum Backoff {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MeteringConfig {
-    /// ⚠️ 开启会**修改客户端请求**（注入 `stream_options.include_usage`），默认关闭
+    /// 注意：开启会**修改客户端请求**（注入 `stream_options.include_usage`），默认关闭
     #[serde(default)]
     pub inject_stream_usage: bool,
     #[cfg_attr(feature = "specta", specta(skip))]
@@ -477,7 +477,7 @@ pub struct DnsConfig {
     pub enhanced_mode: String,
     #[serde(default = "default_nameservers")]
     pub nameserver: Vec<String>,
-    /// ★ 节点自身域名解析，必须配，否则节点都连不上
+    /// 注意：节点自身域名解析，必须配，否则节点都连不上
     #[serde(default = "default_nameservers")]
     pub proxy_server_nameserver: Vec<String>,
     #[serde(default = "default_default_ns")]
@@ -542,7 +542,7 @@ pub struct Subscription {
     pub id: SubscriptionId,
     pub name: String,
     pub url: String,
-    /// ★ 很多机场按 UA 返回不同格式，默认伪装 Clash 客户端
+    /// 注意：很多机场按 UA 返回不同格式，默认伪装 Clash 客户端
     #[serde(default = "default_subscription_ua")]
     pub user_agent: String,
     #[serde(default)]
@@ -637,7 +637,8 @@ pub struct Lane {
     pub kind: LaneKind,
     #[serde(default)]
     pub subscription: Option<SubscriptionId>,
-    /// `kind: subscription_group` 时，订阅里自带的组名（如 "🇯🇵 日本"）
+    /// `kind: subscription_group` 时，订阅里自带的组名；**可能含 emoji**（如用户订阅里的日本线路
+    /// 分组），必须**原样**保存与展示 —— 改一个字就与内核里的名字对不上（[15 §2.2]）
     #[serde(default)]
     pub group: Option<String>,
     /// 组类型；缺省时取订阅里该组的 type
@@ -1436,7 +1437,7 @@ pub struct SystemIntegration {
     /// 正是用户最反感的那种"副作用"。与 `enable_tun` / `enable_system_proxy` 同属
     /// "核心承诺的例外"（显式 opt-in，E1）。
     ///
-    /// ⚠️ 这里只是**期望状态**，不是事实：系统实际状态才是真源。用户手动禁用后
+    /// 注意：这里只是**期望状态**，不是事实：系统实际状态才是真源。用户手动禁用后
     /// **绝不静默改回**，只在 UI 里提示漂移并提供「重新注册 / 清除」（E2–E4）。
     #[serde(default)]
     pub autostart: bool,
@@ -1462,7 +1463,7 @@ pub struct SystemIntegration {
     pub extra: Map<String, Value>,
 }
 
-/// ⚠️ **不要改用 `#[derive(Default)]`**：`ConfigDoc.system_integration` 上的
+/// 注意：**不要改用 `#[derive(Default)]`**：`ConfigDoc.system_integration` 上的
 /// `#[serde(default)]` 在"整节缺失"时用的是**这个** `Default`，而"写了空节"
 /// 用的是各字段的 `#[serde(default = ...)]`；两者必须逐字段一致
 /// （`tray_show_latency` 是 `default_true`，三个 OS 状态开关是 `false`）。
