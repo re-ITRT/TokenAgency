@@ -222,6 +222,12 @@ pub struct PreparedRequest {
     pub body: Bytes,
     /// 自检：正常必须为空
     pub header_diff: HeaderDiff,
+    /// 失败转移链（G2 的 `prepare` 填：`channel_id` 之外的后续候选，按顺序）。
+    /// G1 的 `build_prepared_request` 恒填空表 —— 它不做路由决策。
+    pub failover_chain: Vec<ChannelId>,
+    /// 策略级的全局线路覆盖（`PolicyAction::use_lane`）。G1 恒填 `None`；
+    /// G2 从 `RouteDecision` 抄过来，之后每个候选的 lane 解析都带上它。
+    pub lane_override: Option<LaneId>,
     /// 客户端原始请求（trace 用；body 与 headers 是 `Bytes`/`HeaderMap`，克隆很便宜）
     pub snapshot: RequestSnapshot,
 }
@@ -294,6 +300,8 @@ pub fn build_prepared_request(input: PrepareInput<'_>) -> Result<PreparedRequest
         headers,
         body: Bytes::from(patched),
         header_diff,
+        failover_chain: Vec::new(),
+        lane_override: None,
         snapshot: snapshot.clone(),
     })
 }
