@@ -973,6 +973,21 @@ export type EventPayload = {
 /**
  * 命令 → (入参, 返回值)。`api/commands.ts` 与 `api/mock.ts` 都按这张表对齐，
  * 所以**命令名或入参写错会被 tsc 拦下**。
+ *
+ * 注意：这是一张**手写契约**（105 条），**不等于 Rust 已经实现的命令面**。
+ * 截至 task-14 核对（`src-tauri/src/commands/mod.rs` 的 `collect_commands!`），**实际注册 31 条**：
+ *   app_status, app_open_dir, app_clipboard_access_info, config_get, config_validate, config_apply,
+ *   config_export_yaml, config_import_yaml, config_history_list, config_rollback, provider_list,
+ *   provider_get, credential_list, model_list, channel_list, group_list, policy_list, lane_list,
+ *   subscription_list, usage_dashboard, usage_query, usage_token_kinds,
+ *   usage_request_stream_snapshot, pricing_unpriced_models, usage_export_csv, log_query,
+ *   log_get_trace, log_set_mode, log_set_retention, log_storage_stats, log_clear
+ * 其余 **75 条 Rust 侧尚未注册：调用会失败**（浏览器里之所以"看起来能用"，是因为 `api/mock.ts`
+ * 假实现了它们）。它们属于后续里程碑，**不是**可用能力。
+ *
+ * 机械保证：`src/app/commandSurface.guard.test.ts` 断言"页面/外壳引用的每条命令都必须在
+ * Rust 注册表里"（契约全量与注册表的对齐由 E2 的 `command_surface_guard.rs` 负责，两边各管一段）。
+ * 上面那份 31 条清单是**快照**，权威始终是 `src-tauri/src/commands/mod.rs` 的 `collect_commands!`。
  */
 export type CommandMap = {
   // ---- app
@@ -1032,6 +1047,9 @@ export type CommandMap = {
   model_bulk_update: { args: { ids: ModelId[]; patch: ModelPatch }; result: ApplyResult };
 
   // ---- channel / group
+  // Rust 侧类型名是 `ChannelConfig`（crates/ta-core/src/domain/mod.rs:1009），与 TS 的 `Channel`
+  // 是同一实体（字段逐一对应；手写契约用的是后者这个名字）。
+  channel_list: { args: undefined; result: Channel[] };
   channel_matrix: { args: undefined; result: MatrixView };
   channel_upsert: { args: { channel: Channel }; result: Channel };
   channel_delete: { args: { id: ChannelId }; result: void };
@@ -1109,7 +1127,36 @@ export type CommandMap = {
   };
   pricing_import_builtin: { args: undefined; result: ApplyResult };
   pricing_unpriced_models: { args: undefined; result: string[] };
+  /**
+   * 未配可用额度的凭据 + **后端原文**提醒（[06 §10.1 B2]）。
+   *
+   * 形状与 Rust 侧 `QuotaLimitGap`（src-tauri/src/commands/usage.rs:75）一致：
+   * `{ credential_id: String, message: String }`；`message` 是
+   * `ta_core::quota::LimitGap::message()` 的**原文**，命令层一个字都不改写。
+   * UI 消费契约：三处（套餐列表 / 通道矩阵 / 首启向导）用同一个 `LimitGapNotice`
+   * 渲染"名字 + message"，**不许自己写第二份文案**。
+   */
+  quota_limit_gaps: {
+    args: undefined;
+    result: { credential_id: CredentialId; message: string }[];
+  };
   log_query: { args: { query: LogQuery }; result: LogPage };
+  /**
+   * 日志查询能力位（[06 §10.2 D2]）。
+   *
+   * 形状与 Rust 侧 `LogQueryCapabilities`（src-tauri/src/commands/log.rs:76）一致：
+   * `CapabilitySupport { enabled: bool, reason: Option<String> }` → `reason` 为 `string | null`，
+   * **enabled = true 时 reason 为 null**。UI 的消费契约：`enabled === false` 时
+   * 该筛选项禁用并把 `reason` **原文**显示出来（`DisabledReason`/`DisabledMenuItem`），
+   * `outcome` 不支持时必须显示"未知"而不是"正常"（`outcomeDisplay`）。
+   */
+  log_query_capabilities: {
+    args: undefined;
+    result: {
+      retried: { enabled: boolean; reason: string | null };
+      outcome: { enabled: boolean; reason: string | null };
+    };
+  };
   log_get_trace: { args: { request_id: RequestId }; result: TraceDetail };
   log_set_mode: { args: { mode: LogMode }; result: void };
   log_set_retention: { args: { retention: Retention }; result: void };
