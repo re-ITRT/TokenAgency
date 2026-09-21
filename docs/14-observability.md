@@ -440,6 +440,30 @@ info,ta_gateway=debug,ta_kernel=debug
 - **[打开日志目录]** —— 往往用户只需自己看一眼，不必导出
 - 明示"日志里不会有你的密钥"（因为这是用户愿不愿意点的决定因素）
 
+## 11.5 ⚠️ `kernel.log` 也是"日志文件"，**没有例外**
+
+**这条是第 11 轮实测出来的，不是推断**（E4 报的，附 canary 证据）：
+
+真 mihomo 在 **provider 拉取失败**时会把**完整订阅 URL（含 token）**打进 stdout：
+
+```
+level=error msg="initial proxy provider leak-test error: Get \"http://127.0.0.1:9/ta-leak-canary?token=TA-LEAK-CANARY-9f3a2b\": EOF"
+```
+
+**不需要罕见条件 —— 订阅一断网就会发生。**
+
+影响链（精确到层）：tracing 那条路**已被** §7.2 的 `[?&](key|token|api_key)=` 规则兜住；
+但 `KernelLogFileSink` 写的是内核**原文**（逐字节落盘、不过脱敏层）→ **`kernel.log` 里躺着明文 token**，
+而它正是 §11.2 里"诊断包要带走的文件之一" → **导出诊断包会把订阅 token 一起交出去。**
+
+**因此 §11.2 那一行"全部日志文件：写入时已脱敏"对 `kernel.log` 同样成立，一个字都不能例外。**
+
+> **为什么不能靠"导出时拒发"兜住**：那条路是"有 token 就中止导出"，而用户**最需要诊断包的
+> 时刻恰恰是出故障时** —— 那时他会导不出来。**"安全但没用"不是安全。**
+> 正确做法是在**写入路径**上过同一层脱敏（代价是 `kernel.log` 不再是逐字节原文；
+> 但它本来也不是 —— UTF-8 lossy、空行丢弃、背压风险都已在 `childlog.rs` 里写明）。
+
+
 ---
 
 # 12. 界面
