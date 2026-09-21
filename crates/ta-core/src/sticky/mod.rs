@@ -8,6 +8,13 @@ use serde::{Deserialize, Serialize};
 use crate::domain::ReleaseReason;
 use crate::types::*;
 
+// 实现模块：`store` 只负责"记录放哪儿"，`resolver` 负责"key 怎么派生 / 什么时候释放"。
+pub mod resolver;
+pub mod store;
+
+pub use resolver::{body_hash_from_body, derive_key, BackedStickyResolver, MemoryStickyResolver};
+pub use store::{MemoryStickyStore, StickyBackend};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StickyRecord {
     pub key: StickyKey,
@@ -26,7 +33,11 @@ impl StickyRecord {
 
 pub trait StickyResolver: Send + Sync {
     /// 按 group.sticky.key 的顺序派生 key；全部失败返回 None
-    fn key_for(&self, group: &crate::domain::ChannelGroup, hints: &crate::routing::RouteHints) -> Option<StickyKey>;
+    fn key_for(
+        &self,
+        group: &crate::domain::ChannelGroup,
+        hints: &crate::routing::RouteHints,
+    ) -> Option<StickyKey>;
 
     fn lookup(&self, key: &StickyKey, group: &ChannelGroupId) -> Option<StickyRecord>;
 
@@ -53,7 +64,7 @@ pub fn derive_body_hash(system_first: Option<&str>, user_first: Option<&str>) ->
     if let Some(u) = user_first {
         let take = u.char_indices().take_while(|(i, _)| *i < 512).last();
         let cut = take.map(|(i, c)| i + c.len_utf8()).unwrap_or(0);
-        h.update(u[..cut].as_bytes());
+        h.update(&u.as_bytes()[..cut]);
     }
     let out = h.finalize();
     // 只取前 8 字节，够用且短

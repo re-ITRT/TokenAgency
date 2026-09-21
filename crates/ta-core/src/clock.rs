@@ -73,7 +73,10 @@ impl Clock for ManualClock {
 #[serde(rename_all = "snake_case")]
 pub enum TimeRange {
     /// 显式区间（Unix 毫秒，左闭右开）
-    Explicit { from_ms: i64, to_ms: i64 },
+    Explicit {
+        from_ms: i64,
+        to_ms: i64,
+    },
     Today,
     Last7d,
     Last30d,

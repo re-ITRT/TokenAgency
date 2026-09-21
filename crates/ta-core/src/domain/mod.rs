@@ -7,6 +7,10 @@
 //! - 未知字段用 `#[serde(flatten)] extra: Map<String, Value>` **保留**（前向兼容）。
 //! - 不在这里做 IO；校验逻辑放 `crate::config`。
 
+/// 领域类型的**行为**：便捷构造函数、只读辅助、线路解析优先级、模型名 glob。
+/// 契约在 `domain/mod.rs`（冻结）；行为在 `domain::behavior`（可扩展）。
+pub mod behavior;
+
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
@@ -176,9 +180,7 @@ impl Default for PassthroughConfig {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HeaderMode {
     #[default]
@@ -187,9 +189,7 @@ pub enum HeaderMode {
     Allowlist,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BodyMode {
     #[default]
@@ -197,9 +197,7 @@ pub enum BodyMode {
     Strip,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OnLoss {
     #[default]
@@ -248,9 +246,7 @@ impl Default for RetryConfig {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Backoff {
     None,
@@ -301,21 +297,18 @@ fn default_max_size_mb() -> u64 {
 }
 
 /// `Retention` 的默认值是 30d，单独包一层以便 `Default`
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RetentionDefault {
     #[serde(rename = "7d")]
     D7,
+    /// 默认保留 30 天（见 [02 §3] 的保留策略）
+    #[default]
     #[serde(rename = "30d")]
     D30,
     #[serde(rename = "90d")]
     D90,
     Forever,
-}
-impl Default for RetentionDefault {
-    fn default() -> Self {
-        RetentionDefault::D30
-    }
 }
 impl From<RetentionDefault> for Retention {
     fn from(v: RetentionDefault) -> Self {
@@ -328,9 +321,7 @@ impl From<RetentionDefault> for Retention {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ImageHandling {
     /// **只记 {type, media_type, bytes, sha256_prefix}，绝不记 base64**
@@ -391,9 +382,7 @@ impl Default for NetConfig {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DialerKind {
     #[default]
@@ -426,9 +415,7 @@ fn default_lane_range() -> [u16; 2] {
     [39100, 39299]
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum KernelProvider {
     /// 默认：用户自行获取内核，不分发，规避 GPL 分发问题
@@ -437,9 +424,7 @@ pub enum KernelProvider {
     Bundled,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SubscriptionSource {
     #[default]
@@ -516,12 +501,7 @@ fn default_health_interval() -> u32 {
 
 impl Default for HealthConfig {
     fn default() -> Self {
-        Self {
-            interval_s: 60,
-            url_by_provider: true,
-            probe_url: None,
-            extra: Map::new(),
-        }
+        Self { interval_s: 60, url_by_provider: true, probe_url: None, extra: Map::new() }
     }
 }
 
@@ -545,7 +525,8 @@ pub struct Subscription {
     pub filter: SubscriptionFilter,
     #[serde(default)]
     pub health_check: SubscriptionHealthCheck,
-    #[serde(default)]
+    /// 省略 = 启用：**被列进配置就等价于"我要用它"**，停用必须显式写 `false`。
+    #[serde(default = "default_true")]
     pub enabled: bool,
     /// 内核里的 provider key（由 id 派生，稳定）
     #[serde(default)]
@@ -564,9 +545,7 @@ fn default_keep_versions() -> u32 {
     3
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SubscriptionFormat {
     #[default]
@@ -608,13 +587,7 @@ fn default_tolerance() -> u32 {
 
 impl Default for SubscriptionHealthCheck {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            url: None,
-            interval_s: 60,
-            tolerance_ms: 100,
-            extra: Map::new(),
-        }
+        Self { enabled: true, url: None, interval_s: 60, tolerance_ms: 100, extra: Map::new() }
     }
 }
 
@@ -641,7 +614,8 @@ pub struct Lane {
     pub filter: Option<String>,
     #[serde(default)]
     pub exclude_filter: Option<String>,
-    #[serde(default)]
+    /// 省略 = 启用：**被列进配置就等价于"我要用它"**，停用必须显式写 `false`。
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -698,7 +672,8 @@ pub struct Provider {
     /// 如上游要求 `openai/gpt-4o`，在这里统一加前缀
     #[serde(default)]
     pub model_prefix: Option<String>,
-    #[serde(default)]
+    /// 省略 = 启用：**被列进配置就等价于"我要用它"**，停用必须显式写 `false`。
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -723,9 +698,7 @@ impl Default for AuthConfig {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthScheme {
     #[default]
@@ -735,9 +708,7 @@ pub enum AuthScheme {
     None,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HeaderConflict {
     #[default]
@@ -782,12 +753,7 @@ fn default_read_timeout() -> u32 {
 
 impl Default for TimeoutConfig {
     fn default() -> Self {
-        Self {
-            connect_s: 10,
-            read_s: 600,
-            total_s: None,
-            extra: Map::new(),
-        }
+        Self { connect_s: 10, read_s: 600, total_s: None, extra: Map::new() }
     }
 }
 
@@ -821,7 +787,8 @@ pub struct Credential {
     pub guard: GuardConfig,
     #[serde(default)]
     pub tags: Vec<String>,
-    #[serde(default)]
+    /// 省略 = 启用：**被列进配置就等价于"我要用它"**，停用必须显式写 `false`。
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -862,9 +829,7 @@ fn default_hard_limit() -> f64 {
     1.0
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaMetric {
     #[default]
@@ -874,9 +839,7 @@ pub enum QuotaMetric {
     Cost,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaWindow {
     Hour,
@@ -916,9 +879,7 @@ pub struct GuardConfig {
     pub extra: Map<String, Value>,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OnExceed {
     #[default]
@@ -987,7 +948,8 @@ pub struct Channel {
     /// 少数确实要按域名走不同线路的场景
     #[serde(default)]
     pub target_override: Option<String>,
-    #[serde(default)]
+    /// 省略 = 启用：**被列进配置就等价于"我要用它"**，停用必须显式写 `false`。
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -1034,9 +996,7 @@ pub struct ChannelGroup {
     pub extra: Map<String, Value>,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Selector {
     Priority,
@@ -1086,9 +1046,7 @@ impl Default for StickyConfig {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseReason {
     QuotaExhausted,
@@ -1209,9 +1167,7 @@ fn default_failover_on() -> Vec<FailoverTrigger> {
     ]
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FailoverTrigger {
     Http429,
@@ -1224,9 +1180,7 @@ pub enum FailoverTrigger {
     CapabilityMismatch,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NoCandidateAction {
     /// 默认：明确报错，不静默降级
@@ -1255,9 +1209,7 @@ fn default_pricing_currency() -> String {
     "USD".into()
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PriceUnit {
     #[default]
@@ -1323,9 +1275,7 @@ pub struct PlanFee {
     pub extra: Map<String, Value>,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PriceSource {
     #[default]
@@ -1336,21 +1286,44 @@ pub enum PriceSource {
 
 // ================================================================ 系统集成
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SystemIntegration {
+    /// **例外：默认关。** 接管整机网络（TUN）是实验性高级模式，需要管理员权限；
+    /// "默认不接管整机流量"是本产品的核心承诺，所以这里与"实体 enabled"的规则相反。
     #[serde(default)]
     pub enable_tun: bool,
+    /// **例外：默认关。** 同 `enable_tun`：绝不主动碰系统代理。
     #[serde(default)]
     pub enable_system_proxy: bool,
     #[serde(default = "default_true")]
     pub autostart: bool,
     #[serde(default = "default_true")]
     pub tray_show_latency: bool,
-    /// 文件监听模式：以 YAML 为真源（GUI 写回会覆盖，需警告）
+    /// 文件监听模式：以 YAML 为真源（GUI 写回会覆盖，需警告）。
+    /// **默认关**：这是"换一种真源"的 opt-in 模式，不是实体启用开关，
+    /// 与 `Provider.enabled` / `Channel.enabled` 之类不同语义 —— 不要跟着改成 `default_true`。
     #[serde(default)]
     pub file_watch_mode: bool,
     #[serde(default)]
     pub file_watch_path: Option<String>,
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
+}
+
+/// ⚠️ **不要改用 `#[derive(Default)]`**：`ConfigDoc.system_integration` 上的
+/// `#[serde(default)]` 在"整节缺失"时用的是**这个** `Default`，而"写了空节"
+/// 用的是各字段的 `#[serde(default = ...)]`；两者必须逐字段一致
+/// （`autostart` / `tray_show_latency` 是 `default_true`）。
+impl Default for SystemIntegration {
+    fn default() -> Self {
+        Self {
+            enable_tun: false,
+            enable_system_proxy: false,
+            autostart: true,
+            tray_show_latency: true,
+            file_watch_mode: false,
+            file_watch_path: None,
+            extra: Map::new(),
+        }
+    }
 }

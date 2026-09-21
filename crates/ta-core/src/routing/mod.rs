@@ -126,5 +126,41 @@ pub trait PolicyEngine: Send + Sync {
 }
 
 pub trait ChannelSelector: Send + Sync {
-    fn select(&self, decision: &RouteDecision, hints: &RouteHints, ctx: &RouteContext) -> Option<Selection>;
+    fn select(
+        &self,
+        decision: &RouteDecision,
+        hints: &RouteHints,
+        ctx: &RouteContext,
+    ) -> Option<Selection>;
 }
+
+impl EliminateReason {
+    /// 稳定的机器可读串（trace / 模拟器 / 日志都用它，**不要**依赖 `Debug` 的输出）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EliminateReason::Disabled => "disabled",
+            EliminateReason::Cooling => "cooling",
+            EliminateReason::QuotaExhausted => "quota_exhausted",
+            EliminateReason::InvalidCredential => "invalid_credential",
+            EliminateReason::TaggedOut => "tagged_out",
+            EliminateReason::ExcludedByPolicy => "excluded_by_policy",
+            EliminateReason::NoLane => "no_lane",
+            EliminateReason::LaneDown => "lane_down",
+            EliminateReason::NotInGroup => "not_in_group",
+        }
+    }
+}
+
+// ---------------------------------------------------------------- 实现模块
+
+pub mod engine;
+pub mod index;
+pub mod router;
+pub mod selector;
+pub mod simulate;
+
+pub use engine::{EngineOptions, PolicyEngineImpl};
+pub use index::RoutingIndex;
+pub use router::{Router, RouterOptions};
+pub use selector::{ChannelSelectorImpl, SelectorOptions};
+pub use simulate::{simulate, simulate_input, simulate_with, SimulateInput, SimulateResult};

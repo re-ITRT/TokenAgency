@@ -65,9 +65,7 @@ string_id!(/// 客户端（从 UA 推断）
 
 // ---------------------------------------------------------------- 协议
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Protocol {
     Openai,
@@ -191,9 +189,7 @@ impl std::fmt::Display for TokenKind {
 }
 
 /// 一次请求的 token 用量。**未出现的类型就是 0，不写进 map。**
-#[derive(
-    Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct TokenUsage(pub BTreeMap<TokenKind, u64>);
 
@@ -240,9 +236,7 @@ impl TokenUsage {
 
 // ---------------------------------------------------------------- 金额
 
-#[derive(
-    Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Money {
     pub amount: f64,
     /// ISO 4217，如 `USD` / `CNY`
@@ -264,9 +258,7 @@ impl Money {
 // ---------------------------------------------------------------- 用量来源
 
 /// usage 数据从哪来——**绝不用估算值冒充真实值**。
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageSource {
     /// 上游返回了完整细分
@@ -332,9 +324,7 @@ impl LogMode {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Retention {
     #[serde(rename = "7d")]
