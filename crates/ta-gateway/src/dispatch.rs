@@ -145,6 +145,19 @@ impl KernelDialer {
     ///
     /// 这里**没有任何**"顺手"的默认头/UA/重试：出站请求的全部内容都由
     /// `passthrough` 决定，拨号器只负责"从哪个口出去"。
+    ///
+    /// ## 一处已知偏离：`accept: */*`
+    ///
+    /// 客户端**没发** `accept` 时，上游仍会看到 `accept: */*` —— 它不是我们写的：
+    /// `reqwest-0.12.28/src/async_impl/client.rs:286` 的 `ClientBuilder::new()` 就把这条
+    /// 塞进了默认头，而 `default_headers()`（:1163）只做合并、**没法把它清掉**。
+    /// 这与"关自动解压"防的是同一类问题（凭空多一个客户端没发的头），但那条能关、这条不能。
+    ///
+    /// 处置：**不静默容忍**。`pipeline::tests::a2_upstream_receives_the_golden_request_byte_for_byte`
+    /// 里有一条断言把"上游多看到的头集合"钉成**恰好** `{accept}` ——
+    /// 将来 reqwest 再多塞一个默认头、或我们误加了头，那条会红。
+    /// 若哪天要把 I3 收回到"零注入"，这里得换成手写 hyper 传输（代价是 TLS/代理 CONNECT/
+    /// HTTP2/流式取消都要自己做），属于要主管裁决的独立工作包。
     fn build_client(&self, port: Option<u16>) -> Result<reqwest::Client> {
         let mut builder = reqwest::Client::builder()
             .no_gzip()
@@ -433,6 +446,78 @@ pub(crate) mod tests {
 
     fn direct() -> LaneId {
         LaneId::new("direct")
+    }
+
+    // ---------------------------------------------------------- A2 用的"记录型"假上游
+
+    /// 记录**完整原始报文**（请求头 + body）的假上游，用于 A2 的 wire 级证据。
+    ///
+    /// 与 [`spawn_fake_upstream`] 的区别：那个只读请求头（够验证头部透传），
+    /// 而"图片块 / 未知字段逐字节到达"必须看 **body 的原始字节** ——
+    /// 用 `serde_json::Value` 比对只能证明"解析后等价"，证明不了 wire 上的字节。
+    pub(crate) struct RecordingUpstream {
+        pub addr: std::net::SocketAddr,
+        pub requests: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl RecordingUpstream {
+        /// 第 `index` 次收到的原始报文（头 + body）。
+        pub(crate) fn raw(&self, index: usize) -> Vec<u8> {
+            match self.requests.lock() {
+                Ok(guard) => guard.get(index).cloned().unwrap_or_default(),
+                Err(poisoned) => poisoned.into_inner().get(index).cloned().unwrap_or_default(),
+            }
+        }
+    }
+
+    /// 读一个**完整**请求：读到 `\r\n\r\n` 后，再按 `content-length` 读满 body。
+    async fn read_full_request(socket: &mut tokio::net::TcpStream) -> Vec<u8> {
+        let mut acc: Vec<u8> = Vec::new();
+        let mut buf = vec![0u8; 4096];
+        loop {
+            if let Some(head_end) = acc.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4) {
+                let head = String::from_utf8_lossy(&acc[..head_end]).to_ascii_lowercase();
+                let declared = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if acc.len() >= head_end + declared {
+                    return acc;
+                }
+            }
+            match socket.read(&mut buf).await {
+                Ok(0) | Err(_) => return acc,
+                Ok(n) => acc.extend_from_slice(&buf[..n]),
+            }
+        }
+    }
+
+    /// 每次都回 `200 {"ok":true}`，并把收到的原始字节留存下来。
+    pub(crate) async fn spawn_recording_upstream() -> RecordingUpstream {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("绑定假上游");
+        let addr = listener.local_addr().expect("本地地址");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let sink = requests.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let raw = read_full_request(&mut socket).await;
+                match sink.lock() {
+                    Ok(mut guard) => guard.push(raw),
+                    Err(poisoned) => poisoned.into_inner().push(raw),
+                }
+                let (_, mut write) = socket.into_split();
+                let _ = write
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                          content-length: 11\r\n\r\n{\"ok\":true}",
+                    )
+                    .await;
+                let _ = write.flush().await;
+            }
+        });
+        RecordingUpstream { addr, requests }
     }
 
     fn dialer() -> KernelDialer {
