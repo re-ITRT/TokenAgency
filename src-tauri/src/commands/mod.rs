@@ -163,12 +163,14 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             usage::usage_request_stream_snapshot,
             usage::pricing_unpriced_models,
             usage::usage_export_csv,
+            usage::quota_limit_gaps,
             log::log_query,
             log::log_get_trace,
             log::log_set_mode,
             log::log_set_retention,
             log::log_storage_stats,
             log::log_clear,
+            log::log_query_capabilities,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Result)
 }
