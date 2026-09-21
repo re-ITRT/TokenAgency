@@ -102,6 +102,46 @@ if (Test-Path $out) {
             }
         }
     }
+    # ---------------------------------------------------------------- emoji 检查
+    #
+    # 为什么要有这一条（E1 的评审员挖出来的）：生成的 TS 会把 Rust 的 doc 注释**原样**
+    # 带出来（`specta-typescript` 直写 field/variant docs）。所以只要 `crates/**` 的注释里
+    # 有我们自己的"设计标记"（`⚠️`/`★` 之类），**重新生成就会把它们带回 `src/**`**，
+    # 而手写的 `// ta-allow-emoji` 标记会随整文件重写一起消失 → emoji 守卫变红 →
+    # 最省事的"修法"就是加白名单整体绕过。**这条检查把那个陷阱变成一次响亮的失败。**
+    #
+    # 分级（避免误伤合法内容）：
+    #   * **设计标记**（我们用符号当 UI 语义的那几个）→ **失败**：它们本就不该出现在我们的设计里
+    #   * 其它 emoji（例如 doc 里演示"用户数据可以含 🇯🇵"）→ **只警告并列出**，因为
+    #     "我们永不自己产生 emoji" 不等于"禁止 emoji"（docs/15 §2.2：用户数据原样呈现）
+    if (Test-Path $out) {
+        $lines = Get-Content -LiteralPath $out
+        $marker = '[⚠★✔✘✖▲▼●○]'
+        $anyEmoji = '[\u2190-\u2BFF\uFE0F\u{1F000}-\u{1FAFF}\u{1F1E6}-\u{1F1FF}]'
+        $badMarkers = @()
+        $otherEmoji = @()
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -notmatch $anyEmoji) { continue }
+            if ($lines[$i] -match $marker) { $badMarkers += "$($i + 1): $($lines[$i].Trim())" }
+            else { $otherEmoji += "$($i + 1): $($lines[$i].Trim())" }
+        }
+        if ($otherEmoji.Count -gt 0) {
+            Write-Host "! 生成物里有 $($otherEmoji.Count) 处 emoji（多为 doc 里演示的用户数据，按 [15 §2.2] 可保留）：" -ForegroundColor Yellow
+            $otherEmoji | Select-Object -First 6 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        }
+        if ($badMarkers.Count -gt 0) {
+            Write-Host ""
+            Write-Host "✘ 生成物里有 $($badMarkers.Count) 处**我们自己的设计标记**（`⚠ ★ ✔ ✘ ▲ ▼` 等）" -ForegroundColor Red
+            $badMarkers | Select-Object -First 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+            Write-Host ""
+            Write-Host "  根因几乎总在 `crates/**` 的 doc 注释里（这里只是被原样带出来）。" -ForegroundColor Yellow
+            Write-Host "  正确修法是**改源头的注释文字**（[docs/15] 要求我们自己不产生 emoji），" -ForegroundColor Yellow
+            Write-Host "  **不要**把 `// ta-allow-emoji` 加回来 —— 那会让 emoji 守卫整体失效。" -ForegroundColor Yellow
+            Write-Host "  （上一版已备份在 $bak）" -ForegroundColor DarkGray
+            exit 1
+        }
+    }
+
     else {
         Write-Host "生成的 $out 是空文件 —— 视为失败。" -ForegroundColor Red
         exit 1

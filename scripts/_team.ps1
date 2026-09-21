@@ -30,7 +30,15 @@ $Scopes = @{
     'E2'   = @(
         'crates/ta-core/src/routing', 'crates/ta-core/src/sticky',
         'crates/ta-core/src/quota', 'crates/ta-core/src/pricing',
-        'crates/ta-core/src/metering', 'crates/ta-core/src/diag'
+        'crates/ta-core/src/metering', 'crates/ta-core/src/diag',
+        # 第 11 轮补的名册漏洞：`crates/ta-core/src/` 下的**散文件**（types.rs / error.rs /
+        # trace.rs）此前不属于任何人。E2 拥有 ta-core 的契约层（diag/fields 与判定层），
+        # 这三个文件是同一层的共享类型与错误定义，归它最自然。
+        # 发现经过：E2 报"`MeteredUsage` 字段是 pub，别处仍可手拼冒充估算"，而要收紧构造
+        # 就得改 types.rs —— 一查才发现它没有 Owner（docs/13 §1.3：没有 Owner 的归主管）。
+        # 补进名册好过每次由我代笔：**无主文件是协作摩擦的源头**。
+        'crates/ta-core/src/types.rs', 'crates/ta-core/src/error.rs',
+        'crates/ta-core/src/trace.rs'
     )
     'E3'   = @('crates/ta-store', 'crates/ta-secrets', 'src-tauri')
     'E4'   = @('crates/ta-kernel', 'crates/ta-subscription')
