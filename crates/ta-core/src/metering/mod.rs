@@ -305,6 +305,18 @@ pub fn estimate_tokens(body: &Value) -> u64 {
     total
 }
 
+/// 上游完全没给 usage 时的兜底记录：**源必须显式标 `Estimated`**（[11 §6] 铁律 4"不猜不估算"）。
+///
+/// 为什么要有这个函数、而不是让调用方自己拼一个 `MeteredUsage`：
+/// `UsageSource` 是**唯一**能表达"这个数不是上游给的"的地方，而手拼时最自然的写法是
+/// `MeteredUsage { usage: …, source: UsageSource::Upstream }` —— 那就把估算冒充成了上游数据，
+/// 成本中心只会照原样显示，谁也不会发现。**"估算"这件事只允许从这一个入口出去。**
+pub fn estimated_usage(body: &Value) -> MeteredUsage {
+    let mut usage = TokenUsage::new();
+    usage.set(TokenKind::Input, estimate_tokens(body));
+    MeteredUsage { usage, source: UsageSource::Estimated }
+}
+
 // ---------------------------------------------------------------- 测试
 
 #[cfg(test)]
@@ -856,5 +868,45 @@ mod tests {
         assert_eq!(upstream_total(Protocol::Anthropic, &anth), None);
         let gem = json!({"usageMetadata": {"totalTokenCount": 9}});
         assert_eq!(upstream_total(Protocol::Gemini, &gem), Some(9));
+    }
+
+    // ------------------------------------------------ D1：估算绝不冒充上游（[11 §6] 铁律 4）
+
+    #[test]
+    fn estimation_is_always_labeled_estimated() {
+        let body =
+            json!({"messages": [{"role": "user", "content": "一段没有任何 usage 的请求体"}]});
+        let m = estimated_usage(&body);
+        assert_eq!(m.source, UsageSource::Estimated, "估算的来源只能是 Estimated");
+        assert_ne!(m.source, UsageSource::Upstream, "估算不许冒充上游给的数据");
+        assert_ne!(m.source, UsageSource::UpstreamPartial);
+        assert!(m.usage.total() > 0, "估算应当给出一个非零的粗估值");
+    }
+
+    #[test]
+    fn normalization_never_reports_estimated() {
+        // 反向：只要上游给了 usage（哪怕只有一个空对象），来源都必须是上游侧
+        for raw in [
+            json!({"usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}}),
+            json!({"usage": {"prompt_tokens": 1, "completion_tokens": 2}}),
+            json!({"usage": {}}),
+        ] {
+            let m = DefaultMeter.normalize(Protocol::Openai, &raw);
+            assert_ne!(
+                m.source,
+                UsageSource::Estimated,
+                "上游给了 usage 就不能标估算（raw={raw}）"
+            );
+        }
+    }
+
+    /// 总守恒优先于字面文档：估算路径也只写"输入"这一侧，且不产生凭空的对侧数量。
+    #[test]
+    fn estimated_usage_conserves_the_two_sides() {
+        let body = json!({"messages": [{"role": "user", "content": "abc"}]});
+        let m = estimated_usage(&body);
+        assert_eq!(m.usage.total(), m.usage.input_total() + m.usage.output_total());
+        assert_eq!(m.usage.get(&TokenKind::Output), 0, "估算只发生在请求侧，不该凭空造输出");
+        assert_eq!(m.usage.input_total(), m.usage.total());
     }
 }
