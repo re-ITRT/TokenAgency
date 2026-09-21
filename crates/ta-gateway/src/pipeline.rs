@@ -138,9 +138,17 @@ pub struct PipelineDeps {
 struct Runtime {
     /// 通道 → 冷却结束时间（ms）
     cooling_until_ms: BTreeMap<ChannelId, i64>,
-    /// lane → 已知不可用（连接失败过）
-    lane_down: BTreeMap<LaneId, bool>,
+    /// lane → 不可用**截止时间**（ms）。不是永久拉黑，见 [`LANE_RECOVERY_MS`]。
+    lane_down_until_ms: BTreeMap<LaneId, i64>,
 }
+
+/// lane 被判不可用后的恢复窗口。
+///
+/// **为什么必须"短暂"而不是永久**：M0 真机实测（`docs/06 §1.6`）—— 内核热重载
+/// （`PUT /configs?force=true`）时 listener 会经历一瞬间的关闭/重建，此时会出现
+/// `connection refused`。若把它当成"这条 lane 坏了"永久拉黑，用户每改一次线路
+/// 就会永久失去那条线（直到重启网关）。
+const LANE_RECOVERY_MS: i64 = 5_000;
 
 /// 一次尝试的"是谁"部分；结果由 [`AttemptBuilder::record`] 补上。
 struct AttemptBuilder<'a> {
@@ -188,7 +196,9 @@ impl Pipeline {
         if guard.cooling_until_ms.get(channel_id).is_some_and(|until| *until > now_ms) {
             return false;
         }
-        !lane.map(|lane| guard.lane_down.get(lane).copied().unwrap_or(false)).unwrap_or(false)
+        !lane
+            .map(|lane| guard.lane_down_until_ms.get(lane).is_some_and(|until| *until > now_ms))
+            .unwrap_or(false)
     }
 
     /// 通道级失败（429/402/5xx）：冷却该通道。
@@ -198,9 +208,9 @@ impl Pipeline {
             .insert(channel_id.clone(), now_ms + (cooldown_s as i64) * 1000);
     }
 
-    /// lane 级失败：标记 lane 不可用（**只影响用这条 lane 的通道**）。
-    fn mark_lane_down(&self, lane: &LaneId) {
-        self.lock_runtime().lane_down.insert(lane.clone(), true);
+    /// lane 级失败：把这条 lane 标记为**短暂**不可用（只影响用这条 lane 的通道）。
+    fn mark_lane_down(&self, lane: &LaneId, now_ms: i64) {
+        self.lock_runtime().lane_down_until_ms.insert(lane.clone(), now_ms + LANE_RECOVERY_MS);
     }
 
     /// 锁中毒不该让网关瘫痪：取回内部值继续用。
@@ -229,8 +239,9 @@ impl Pipeline {
                 cfg.provider(channel.provider.as_str()),
                 &cfg.net,
             );
-            let lane_down =
-                lane.and_then(|lane| guard.lane_down.get(lane)).copied().unwrap_or(false);
+            let lane_down = lane
+                .and_then(|lane| guard.lane_down_until_ms.get(lane))
+                .is_some_and(|until| *until > now_ms);
             channel_state.insert(
                 channel.id.clone(),
                 ChannelRuntimeState {
@@ -248,9 +259,9 @@ impl Pipeline {
             latency_ms: BTreeMap::new(),
             concurrency: BTreeMap::new(),
             lane_health: guard
-                .lane_down
+                .lane_down_until_ms
                 .iter()
-                .map(|(lane, down)| (lane.clone(), !*down))
+                .map(|(lane, until)| (lane.clone(), *until <= now_ms))
                 .collect(),
         }
     }
@@ -598,7 +609,7 @@ impl RequestPipeline for Pipeline {
                     let latency_ms = started.elapsed().as_millis() as u32;
                     match &err {
                         // **lane 级失败**：只标记这条 lane（其它 lane 不受牵连）
-                        TaError::LaneUnavailable { .. } => self.mark_lane_down(&lane),
+                        TaError::LaneUnavailable { .. } => self.mark_lane_down(&lane, now_ms),
                         _ => {
                             saw_other = true;
                             self.cool_channel(&channel_id, cooldown_s, now_ms);
@@ -1035,13 +1046,22 @@ mod tests {
         let urls = dialer.seen_urls();
         assert!(urls[0].starts_with("lane-jp|"), "{urls:?}");
         assert!(urls[1].starts_with("lane-tokyo|"), "{urls:?}");
-        // lane 级失败只标记那条 lane：ch-a 的通道没被判死（冷却表里没有它）
+        // lane 级失败只标记那条 lane，而且**是短暂的**：内核热重载会让 listener
+        // 一瞬间关闭重建（M0 实测），永久拉黑会让用户"改一次线路就永久少一条线"。
         let now = 1_700_000_000_000;
         assert!(!pipeline.is_available(
             &ChannelId::new("ch-a"),
             Some(&LaneId::new("lane-jp")),
             now
         ));
+        assert!(
+            pipeline.is_available(
+                &ChannelId::new("ch-a"),
+                Some(&LaneId::new("lane-jp")),
+                now + LANE_RECOVERY_MS
+            ),
+            "恢复窗口过后必须重新可用，否则改线路 = 永久失去这条线"
+        );
         assert!(pipeline.is_available(
             &ChannelId::new("ch-a"),
             Some(&LaneId::new("lane-other")),
