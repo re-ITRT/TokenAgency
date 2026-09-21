@@ -12,6 +12,7 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 
 import { errorCode, errorMessage } from "@/shared/api";
 import { useTranslation } from "@/shared/i18n";
+import { typography } from "@/theme";
 
 export type ErrorBoundaryProps = {
   children: ReactNode;
@@ -57,11 +58,11 @@ function ErrorFallback({ error, onReset }: { error: unknown; onReset: () => void
   const detail = `${code ?? "TA-9001"} ${errorMessage(error)}`;
 
   return (
-    <Box sx={{ p: 2, maxWidth: 820 }}>
-      <Paper variant="outlined" sx={{ p: 3 }}>
-        <Stack spacing={1.5}>
-          <Typography variant="h6">{t("error.title")}</Typography>
-          <Typography variant="body2" color="text.secondary">
+    <Box sx={{ p: 8, maxWidth: 820 }}>
+      <Paper variant="outlined" sx={{ p: 6 }}>
+        <Stack spacing={3}>
+          <Typography variant="h2">{t("error.title")}</Typography>
+          <Typography variant="body1" color="text.secondary">
             {t("error.boundary.body")}
           </Typography>
 
@@ -71,7 +72,10 @@ function ErrorFallback({ error, onReset }: { error: unknown; onReset: () => void
                 {t("error.code", { code })}
               </Typography>
             ) : null}
-            <Typography variant="body2" sx={{ fontFamily: "monospace", wordBreak: "break-all" }}>
+            <Typography
+              variant="body2"
+              sx={{ fontFamily: typography.fontMono, wordBreak: "break-all" }}
+            >
               {errorMessage(error)}
             </Typography>
             {code?.startsWith("TA-5") === true ? (
@@ -79,7 +83,7 @@ function ErrorFallback({ error, onReset }: { error: unknown; onReset: () => void
             ) : null}
           </Alert>
 
-          <Stack direction="row" spacing={1}>
+          <Stack direction="row" spacing={2}>
             <Button
               variant="outlined"
               onClick={() => {

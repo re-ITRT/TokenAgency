@@ -79,7 +79,7 @@ export const ALL_RESOURCE_PREFIXES = [
 ] as const;
 
 /**
- * ★ **事件到达时失效哪些 key** —— 页面不要自己订阅后再猜。
+ * **事件到达时失效哪些 key** —— 页面不要自己订阅后再猜。
  *
  * 空数组表示"只进 store / 不改 query"（如 toast、tray:refresh）。
  */

@@ -7,7 +7,7 @@
  * - **懒加载**：页面按需分包，`Suspense` 期间显示加载态（不是白屏）。
  */
 
-import { Box, CircularProgress } from "@mui/material";
+import { Box, CircularProgress, Typography } from "@mui/material";
 import { Suspense } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
@@ -21,9 +21,17 @@ import { HOME_PATH, ROUTES } from "./routes";
 function PageLoading() {
   const { t } = useTranslation();
   return (
-    <Box sx={{ p: 3, display: "flex", alignItems: "center", gap: 1.5, color: "text.secondary" }}>
-      <CircularProgress size={16} />
-      <Box sx={{ fontSize: 13 }}>{t("common.loading")}</Box>
+    <Box
+      sx={{
+        p: 8,
+        display: "flex",
+        alignItems: "center",
+        gap: 3,
+        color: "text.secondary",
+      }}
+    >
+      <CircularProgress size={14} />
+      <Typography variant="body1">{t("common.loading")}</Typography>
     </Box>
   );
 }

@@ -1,16 +1,20 @@
 /**
- * 额度条。实现 [07 §1.3] 的两条硬规则 + [05 §2.1] 的一条产品规则：
+ * 额度条。实现 [07 §1.3] 的分级规则 + [05 §2.1] 的产品规则 + [15] 的视觉规则：
  *
- * - **颜色分级**：<70% 绿 · 70–90% 黄 · >90% 红并轻微脉动（只有红才动效）；
- * - **未设上限必须显式**：`usedPct === null` → 灰色「未设上限」+ ⚠️。
+ * - **颜色分级**：<70% 成功 · 70–90% 警告 · >90% 失败并轻微脉动（[15 §7] 唯一允许的循环动效）；
+ * - **未设上限必须显式**：`usedPct === null` → 「未设上限」+ 警告色 6px 圆点。
+ *   [15 §2.1] 明令**不许用 emoji 做状态表示**（这里原来用的是警告 emoji），改用文字 + 圆点。
  *   不能静默 —— 不填额度就无法"用完自动切"（[03 §0] 的前提），这是最容易让人困惑的地方。
  */
 
 import { Box, Tooltip, Typography } from "@mui/material";
-import type { Theme } from "@mui/material/styles";
 
+import { formatPercent } from "@/shared/format";
 import type { QuotaStateValue } from "@/shared/bindings";
 import { useTranslation } from "@/shared/i18n";
+import { motion, radius, typography } from "@/theme";
+
+import { StatusDot } from "./StatusDot";
 
 /** 额度条的颜色档位（与后端 `QuotaStateValue` 不是一回事：这里是显示档位）。 */
 export type QuotaLevel = "ok" | "soft" | "hard" | "unknown";
@@ -22,18 +26,13 @@ export function quotaLevel(usedPct: number | null): QuotaLevel {
   return "ok";
 }
 
-function levelColor(theme: Theme, level: QuotaLevel): string {
-  switch (level) {
-    case "ok":
-      return theme.palette.success.main;
-    case "soft":
-      return theme.palette.warning.main;
-    case "hard":
-      return theme.palette.error.main;
-    case "unknown":
-      return theme.palette.text.disabled;
-  }
-}
+/** 档位 → 颜色（[15 §3.2]：绿=成功 · 黄=需注意 · 红=失败 · 灰=未知）。 */
+const LEVEL_COLOR: Record<QuotaLevel, string> = {
+  ok: "success.main",
+  soft: "warning.main",
+  hard: "error.main",
+  unknown: "text.disabled",
+};
 
 export type QuotaBarProps = {
   /** 已用比率 0~1。**`null` = 未设上限**（会渲染成灰色 + 提示）。 */
@@ -59,10 +58,11 @@ export function QuotaBar({
 }: QuotaBarProps) {
   const { t } = useTranslation();
   const level = quotaLevel(usedPct);
-  const pctText = usedPct === null ? t("component.quotaBar.unlimited") : `${Math.round(usedPct * 100)}%`;
-  const stateText = t(`component.quotaBar.state.${state ?? (usedPct === null ? "unknown" : "ok")}`);
+  const unlimited = usedPct === null;
+  const pctText = formatPercent(usedPct ?? 0);
+  const stateText = t(`component.quotaBar.state.${state ?? (unlimited ? "unknown" : "ok")}`);
 
-  const tooltip = usedPct === null ? t("component.quotaBar.unlimitedHint") : `${stateText} · ${pctText}`;
+  const tooltip = unlimited ? t("component.quotaBar.unlimitedHint") : `${stateText} · ${pctText}`;
   const fillPct = usedPct === null ? 0 : Math.min(100, Math.max(0, usedPct * 100));
 
   return (
@@ -70,7 +70,12 @@ export function QuotaBar({
       <Box sx={{ minWidth: 0, width: compact ? width : undefined }}>
         {label !== undefined || !compact ? (
           <Box
-            sx={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 1 }}
+            sx={{
+              display: "flex",
+              alignItems: "baseline",
+              justifyContent: "space-between",
+              gap: 2,
+            }}
           >
             {label !== undefined ? (
               <Typography variant="caption" noWrap sx={{ color: "text.secondary" }}>
@@ -79,32 +84,41 @@ export function QuotaBar({
             ) : (
               <span />
             )}
-            <Typography
-              variant="caption"
-              sx={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}
-            >
-              {pctText}
-              {usedPct === null ? " ⚠️" : ""}
-            </Typography>
+            {unlimited ? (
+              // [15 §2.1] 警告的替代手段：文字 + 6px 警告色圆点（不是 emoji，也不是色块）
+              <StatusDot status="warn" label={t("component.quotaBar.unlimited")} size={6} />
+            ) : (
+              <Typography
+                variant="caption"
+                sx={{
+                  fontVariantNumeric: "tabular-nums",
+                  whiteSpace: "nowrap",
+                  color: LEVEL_COLOR[level],
+                }}
+              >
+                {pctText}
+              </Typography>
+            )}
           </Box>
         ) : null}
 
         <Box
-          sx={(theme) => ({
-            mt: compact ? 0 : 0.5,
+          sx={{
+            mt: compact ? 0 : 1,
             height: 6,
             width,
-            borderRadius: 3,
-            bgcolor: theme.palette.action.hover,
+            borderRadius: `${radius.control}px`,
+            bgcolor: "action.hover",
             overflow: "hidden",
-          })}
+          }}
         >
           <Box
-            sx={(theme) => ({
+            sx={{
               height: "100%",
               width: `${fillPct}%`,
-              bgcolor: levelColor(theme, level),
-              transition: "width 300ms ease", // 数值缓动，避免整版跳变
+              bgcolor: LEVEL_COLOR[level],
+              // 数值缓动，避免整版跳变（[15 §7]：≤250ms，快出缓入）
+              transition: `width ${motion.enter} ${motion.easing}`,
               ...(level === "hard"
                 ? {
                     animation: "ta-quota-pulse 1.8s ease-in-out infinite",
@@ -114,14 +128,18 @@ export function QuotaBar({
                     },
                   }
                 : {}),
-            })}
+            }}
           />
         </Box>
 
         {detail !== undefined ? (
           <Typography
             variant="caption"
-            sx={{ color: "text.secondary", fontVariantNumeric: "tabular-nums" }}
+            sx={{
+              color: "text.secondary",
+              fontFamily: typography.fontMono,
+              fontVariantNumeric: "tabular-nums",
+            }}
           >
             {detail}
           </Typography>

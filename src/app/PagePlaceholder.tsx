@@ -5,11 +5,15 @@
  * - 归属（F2/F3/F4）—— 谁该来填这个坑；
  * - 该放哪个文件（约定路径，见 `pageRegistry.tsx`）—— 放进去就自动接线；
  * - 契约出处（文档章节）。
+ *
+ * 视觉（[15]）：虚线边框本身承担信息（"这块还没实现"），所以留着；
+ * 其余靠文字层级（`text.page` → `text.body` → `text.meta`），不用色块与 chip（§1 克制）。
  */
 
-import { Box, Chip, Paper, Stack, Typography } from "@mui/material";
+import { Box, Paper, Stack, Typography } from "@mui/material";
 
 import { useTranslation } from "@/shared/i18n";
+import { radius, typography } from "@/theme";
 
 import { primaryCandidate } from "./pageRegistry";
 
@@ -31,39 +35,56 @@ export function PagePlaceholder({ title, owner, pages, docRef, note }: PagePlace
   const path = primaryCandidate(pages);
 
   return (
-    <Box sx={{ p: 2 }} data-testid="page-placeholder" data-page-path={path}>
+    <Box
+      sx={{ p: 8, maxWidth: 820 }}
+      data-testid="page-placeholder"
+      data-page-path={path}
+    >
       <Paper
         variant="outlined"
-        sx={{ p: 3, borderStyle: "dashed", bgcolor: "transparent", maxWidth: 720 }}
+        sx={{
+          p: 6,
+          borderStyle: "dashed",
+          borderRadius: `${radius.surface}px`,
+          bgcolor: "background.paper",
+        }}
       >
-        <Stack spacing={1.25}>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <Typography variant="h6">{title}</Typography>
-            <Chip size="small" label={`${t("common.owner")}: ${owner}`} />
-            <Chip size="small" variant="outlined" label={t("common.notImplemented")} />
+        <Stack spacing={3}>
+          <Stack spacing={1}>
+            <Typography variant="h2">{title}</Typography>
+            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+              {`${t("common.owner")} ${owner} · ${t("common.notImplemented")}`}
+            </Typography>
           </Stack>
 
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body1" sx={{ color: "text.secondary" }}>
             {t("placeholder.body", { owner })}
           </Typography>
 
           {path !== "" ? (
-            <>
-              <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
+            <Stack spacing={1}>
+              <Typography
+                sx={{
+                  fontFamily: typography.fontMono,
+                  fontSize: typography.size.body,
+                  lineHeight: typography.lineHeight.table,
+                  color: "text.primary",
+                }}
+              >
                 src/pages/{path}.tsx
               </Typography>
-              <Typography variant="caption" color="text.secondary">
+              <Typography variant="caption" sx={{ color: "text.secondary" }}>
                 {t("placeholder.pagePath", { path: `${path}.tsx` })}
               </Typography>
-            </>
+            </Stack>
           ) : null}
 
-          <Typography variant="caption" color="text.secondary">
+          <Typography variant="caption" sx={{ color: "text.secondary" }}>
             {t("placeholder.docRef", { doc: docRef })}
           </Typography>
 
           {note !== undefined ? (
-            <Typography variant="caption" color="warning.main">
+            <Typography variant="caption" sx={{ color: "warning.main" }}>
               {note}
             </Typography>
           ) : null}

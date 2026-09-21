@@ -14,7 +14,7 @@
 import { CssBaseline, ThemeProvider } from "@mui/material";
 import { HashRouter } from "react-router-dom";
 
-// ⚠️ 用显式路径 `@/app/AppShell` 而不是 `@/app`：Windows 文件系统大小写不敏感，
+// 注意：用显式路径 `@/app/AppShell` 而不是 `@/app`：Windows 文件系统大小写不敏感，
 // `@/app` 会先命中 `src/App.tsx`（那个骨架页）而不是 `src/app/` 目录，
 // 导致 TS 报"only in casing"错误。四个包同理：请 `import { ROUTES } from "@/app/routes"`。
 import { AppShell } from "@/app/AppShell";

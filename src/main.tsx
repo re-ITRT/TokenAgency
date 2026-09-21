@@ -1,14 +1,20 @@
+/**
+ * 入口：只负责 QueryClient + 挂载。
+ *
+ * **主题只有一个来源**：`App.tsx` 里的 `<ThemeProvider theme={buildTheme(themeMode)}>`
+ * （跟随 `useUiStore.themeMode`）。这里不再包一层 `ThemeProvider`/`CssBaseline` ——
+ * 两处建主题会让"跟随用户选择"与"固定深色"打架，也会多一份 Emotion 缓存。
+ */
+
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { CssBaseline, ThemeProvider } from "@mui/material";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
-import { buildTheme } from "./theme";
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // 桌面应用：数据都在本机，不需要太激进的重新拉取
+      // 本地 IPC：数据变化靠事件失效，轮询只是兜底
       staleTime: 5_000,
       refetchOnWindowFocus: false,
       retry: 1,
@@ -19,10 +25,7 @@ const queryClient = new QueryClient({
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <ThemeProvider theme={buildTheme("dark")}>
-        <CssBaseline />
-        <App />
-      </ThemeProvider>
+      <App />
     </QueryClientProvider>
   </React.StrictMode>,
 );

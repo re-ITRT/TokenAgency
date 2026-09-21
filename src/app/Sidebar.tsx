@@ -3,6 +3,9 @@
  *
  * 标签一律来自 i18n（用户语言），不出现 channel / credential / lane 这类内部概念。
  * 折叠状态存在 `useUiStore`（跨页面 + 持久化）。
+ *
+ * 视觉（[15]）：品牌区只有文字层级、没有色块（§1 克制）；图标一律 outlined 18px（§6）；
+ * 选中态 = `accent.subtle` 底 + 左侧 2px 强调色条（§5，由主题的 `MuiListItemButton` 提供）。
  */
 
 import {
@@ -25,11 +28,15 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 import { currentLocale, otherLocale, setLocale, useTranslation } from "@/shared/i18n";
 import { useUiStore } from "@/stores";
+import { motion, typography } from "@/theme";
 
 import { matchRoute, NAV_ROUTES } from "./routes";
 
 export const SIDEBAR_WIDTH = 216;
 export const SIDEBAR_COLLAPSED_WIDTH = 56;
+
+/** 品牌区与状态条同高，视觉上一条线。 */
+export const CHROME_HEIGHT = 48;
 
 export function Sidebar() {
   const { t } = useTranslation();
@@ -49,41 +56,53 @@ export function Sidebar() {
       sx={{
         width,
         flex: `0 0 ${width}px`,
-        borderRight: 1,
+        borderRight: `1px solid`,
         borderColor: "divider",
         display: "flex",
         flexDirection: "column",
         minHeight: 0,
-        transition: "width 150ms ease",
+        transition: `width ${motion.quick} ${motion.easing}`,
       }}
     >
-      <Box sx={{ px: 1.5, py: 1.25, display: "flex", alignItems: "center", gap: 1, minHeight: 44 }}>
-        <Box
+      <Box
+        sx={{
+          px: 3,
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          minHeight: CHROME_HEIGHT,
+          gap: 0.5,
+        }}
+      >
+        <Typography
+          noWrap
           sx={{
-            width: 22,
-            height: 22,
-            borderRadius: 1,
-            bgcolor: "primary.main",
-            color: "primary.contrastText",
-            display: "grid",
-            placeItems: "center",
-            fontSize: 12,
-            fontWeight: 700,
-            flex: "0 0 auto",
+            fontSize: typography.size.section,
+            fontWeight: typography.weight.medium,
+            lineHeight: typography.lineHeight.heading,
+            letterSpacing: typography.letterSpacing.large,
+            color: "text.primary",
           }}
         >
-          TA
-        </Box>
+          {collapsed ? "TA" : t("app.name")}
+        </Typography>
         {!collapsed ? (
-          <Typography variant="subtitle2" noWrap>
-            {t("app.name")}
+          <Typography
+            noWrap
+            sx={{
+              fontSize: typography.size.label,
+              color: "text.secondary",
+              lineHeight: typography.lineHeight.table,
+            }}
+          >
+            {t("app.tagline")}
           </Typography>
         ) : null}
       </Box>
 
       <Divider />
 
-      <List dense sx={{ flex: 1, minHeight: 0, overflowY: "auto", py: 0.5 }}>
+      <List dense sx={{ flex: 1, minHeight: 0, overflowY: "auto", py: 1 }}>
         {NAV_ROUTES.map((route) => {
           const Icon = route.icon;
           const active = route.key === activeKey;
@@ -94,24 +113,30 @@ export function Sidebar() {
               selected={active}
               onClick={() => navigate(route.path)}
               sx={{
-                mx: 0.5,
-                borderRadius: 1,
-                minHeight: 34,
+                mx: 1,
                 justifyContent: collapsed ? "center" : "flex-start",
-                px: collapsed ? 1 : 1.25,
+                px: 1,
               }}
             >
               <Tooltip title={collapsed ? label : ""} placement="right">
+                {/* [15 §6] 侧边栏图标 18px；与文字间距 10px（用 minWidth 表达，不是随手 margin） */}
                 <ListItemIcon
-                  sx={{ minWidth: collapsed ? 0 : 28, justifyContent: "center", color: "inherit" }}
+                  sx={{
+                    minWidth: collapsed ? 0 : 28,
+                    justifyContent: "center",
+                    color: "inherit",
+                    "& svg": { fontSize: 18 },
+                  }}
                 >
-                  <Icon fontSize="small" />
+                  <Icon />
                 </ListItemIcon>
               </Tooltip>
               {!collapsed ? (
                 <ListItemText
                   primary={label}
-                  slotProps={{ primary: { fontSize: 13, noWrap: true } }}
+                  slotProps={{
+                    primary: { noWrap: true, sx: { fontSize: typography.size.body } },
+                  }}
                 />
               ) : null}
             </ListItemButton>
@@ -123,43 +148,35 @@ export function Sidebar() {
 
       <Box
         sx={{
-          px: 0.5,
-          py: 0.5,
+          px: 1,
+          py: 1,
           display: "flex",
           alignItems: "center",
           justifyContent: collapsed ? "center" : "space-between",
-          gap: 0.5,
+          gap: 1,
+          "& svg": { fontSize: 16 },
         }}
       >
         {!collapsed ? (
           <>
             <Tooltip title={t("app.theme.toggle")}>
-              <IconButton size="small" onClick={toggleTheme}>
-                {themeMode === "dark" ? (
-                  <LightModeIcon fontSize="small" />
-                ) : (
-                  <DarkModeIcon fontSize="small" />
-                )}
+              <IconButton onClick={toggleTheme}>
+                {themeMode === "dark" ? <LightModeIcon /> : <DarkModeIcon />}
               </IconButton>
             </Tooltip>
             <Tooltip title={t("app.locale.toggle")}>
               <IconButton
-                size="small"
                 onClick={() => setLocale(otherLocale())}
                 aria-label={`locale:${currentLocale()}`}
               >
-                <TranslateIcon fontSize="small" />
+                <TranslateIcon />
               </IconButton>
             </Tooltip>
           </>
         ) : null}
         <Tooltip title={collapsed ? t("app.sidebar.expand") : t("app.sidebar.collapse")}>
-          <IconButton size="small" onClick={toggleSidebar}>
-            {collapsed ? (
-              <ChevronRightIcon fontSize="small" />
-            ) : (
-              <ChevronLeftIcon fontSize="small" />
-            )}
+          <IconButton onClick={toggleSidebar}>
+            {collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
           </IconButton>
         </Tooltip>
       </Box>

@@ -128,7 +128,7 @@ export const provider = {
   remove: (id: ProviderId, force = false) => invokeCommand("provider_delete", { id, force }),
   test: (id: ProviderId, model?: string) =>
     invokeCommand("provider_test", { id, model }) as Promise<ProbeResult>,
-  /** ★ "谁吞了字段"的答案页。 */
+  /** "谁吞了字段"的答案页。 */
   echo: (id: ProviderId, model: string, withImage: boolean) =>
     invokeCommand("provider_echo", { id, model, with_image: withImage }) as Promise<EchoResult>,
 };

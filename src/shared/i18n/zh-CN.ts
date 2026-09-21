@@ -14,6 +14,8 @@ export const zhCN = {
   "app.theme.toggle": "切换深色 / 浅色",
   "app.locale.toggle": "切换到 English",
   "app.badge.experimental": "实验模式",
+  "app.badge.experimental.hint":
+    "TUN / 系统代理已开启：这会修改系统网络状态（实验模式）。此处只做展示，不改系统设置。",
   "app.version": "版本 {{version}}",
   "app.uptime": "已运行 {{duration}}",
 

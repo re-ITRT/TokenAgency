@@ -1,10 +1,12 @@
 /**
  * 数字卡（看板 4 张卡：今日请求 / 今日 Token / 今日花费 / 成功率）。
  *
- * 按 [07 §1.3] 的排版规则：
- * - 大号**等宽数字**（`tabular-nums`）+ 小号单位，千分位；
- * - Token 用 `12.4M` 缩写，**悬停显示精确值**；
- * - 与上期比较的涨跌用同一套颜色语义（绿好 / 红坏，`goodWhenPositive` 可翻转）。
+ * 按 [15] 的排版规则：
+ * - 主数字 `text.hero`（28px / 500，**一页最多一个 hero** —— 卡片行里最多一张卡用它）；
+ * - 大号**等宽数字**（`tabular-nums`）+ 小号单位（`text.meta` / `text.secondary`），千分位；
+ * - Token 用 `12.4M` 缩写，**悬停显示精确值**（[15 §4.3]）；
+ * - 涨跌用数字符号（`+3.2%` / `-1.8%`），颜色只作辅助（[15 §2.1]）；
+ * - **主数字不着语义色**：[15 §3.2] 明令不许用 success 当"好的数字"的颜色去美化 KPI。
  */
 
 import { Box, Paper, Skeleton, Tooltip, Typography } from "@mui/material";
@@ -12,9 +14,9 @@ import type { ReactNode } from "react";
 
 import { formatExact, formatInt, formatMoney, formatPercent, formatTokens } from "@/shared/format";
 import { useTranslation } from "@/shared/i18n";
+import { radius, typography } from "@/theme";
 
 import { Sparkline } from "./Sparkline";
-import type { SemStatus } from "./StatusDot";
 
 /** 数值格式化方式（避免页面各自 `toFixed`）。 */
 export type ValueFormat = "int" | "tokens" | "money" | "percent";
@@ -34,17 +36,7 @@ export type NumberCardProps = {
   /** 与上期比较：正数=上升。 */
   delta?: { value: number; goodWhenPositive?: boolean };
   icon?: ReactNode;
-  /** 强调色（用 <70% 绿 / 警告黄 / 失败红那套语义）。 */
-  tone?: Extract<SemStatus, "ok" | "warn" | "error" | "info">;
   loading?: boolean;
-};
-
-/** 语义色 → MUI 调色板键（全站统一：绿=成功、黄=警告、红=失败、蓝=主色）。 */
-const TONE_KEY: Record<"ok" | "warn" | "error" | "info", string> = {
-  ok: "success",
-  warn: "warning",
-  error: "error",
-  info: "primary",
 };
 
 function renderValue(props: NumberCardProps): string {
@@ -76,12 +68,12 @@ function exactText(props: NumberCardProps): string | undefined {
 }
 
 export function NumberCard(props: NumberCardProps) {
-  const { label, unit, sparkline, delta, icon, tone, loading } = props;
+  const { label, unit, sparkline, delta, icon, loading } = props;
   const { t } = useTranslation();
 
   if (loading === true) {
     return (
-      <Paper variant="outlined" sx={{ p: 1.5, minWidth: 0 }}>
+      <Paper variant="outlined" sx={{ p: 4, minWidth: 0, borderRadius: `${radius.surface}px` }}>
         <Skeleton width={72} height={14} />
         <Skeleton width={120} height={34} />
       </Paper>
@@ -90,57 +82,73 @@ export function NumberCard(props: NumberCardProps) {
 
   const shown = renderValue(props);
   const exact = exactText(props);
-  const tonePath = tone === undefined ? undefined : `${TONE_KEY[tone]}.main`;
+
+  const body = (
+    <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.5, mt: 0.5 }}>
+      <Typography
+        component="span"
+        sx={{
+          fontSize: typography.size.hero,
+          fontWeight: typography.weight.medium,
+          lineHeight: typography.lineHeight.heading,
+          letterSpacing: typography.letterSpacing.large,
+          fontVariantNumeric: "tabular-nums",
+          color: "text.primary",
+        }}
+      >
+        {shown}
+      </Typography>
+      {unit !== undefined ? (
+        <Typography component="span" variant="caption" sx={{ color: "text.secondary" }}>
+          {unit}
+        </Typography>
+      ) : null}
+      {delta !== undefined ? (
+        <Typography
+          component="span"
+          variant="caption"
+          sx={{
+            ml: 0.5,
+            fontVariantNumeric: "tabular-nums",
+            // 颜色只作辅助（[15 §2.1]）；方向由 +/- 号表达
+            color:
+              (delta.value >= 0) === (delta.goodWhenPositive ?? true)
+                ? "success.main"
+                : "error.main",
+          }}
+        >
+          {delta.value >= 0 ? "+" : "-"}
+          {formatPercent(Math.abs(delta.value), 1)}
+        </Typography>
+      ) : null}
+    </Box>
+  );
 
   return (
-    <Paper variant="outlined" sx={{ p: 1.5, minWidth: 0, height: "100%" }}>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, color: "text.secondary" }}>
-        {icon}
+    <Paper
+      variant="outlined"
+      sx={{ p: 4, minWidth: 0, height: "100%", borderRadius: `${radius.surface}px` }}
+    >
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, color: "text.secondary" }}>
+        {icon !== undefined ? (
+          <Box component="span" sx={{ display: "inline-flex", "& svg": { fontSize: 14 } }}>
+            {icon}
+          </Box>
+        ) : null}
         <Typography variant="caption" noWrap>
           {label}
         </Typography>
       </Box>
 
-      <Tooltip title={exact === undefined ? "" : t("component.numberCard.hintExact", { value: exact })}>
-        <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.5, mt: 0.25 }}>
-          <Typography
-            component="span"
-            sx={{
-              fontSize: 26,
-              fontWeight: 600,
-              lineHeight: 1.15,
-              fontVariantNumeric: "tabular-nums",
-              color: tonePath,
-            }}
-          >
-            {shown}
-          </Typography>
-          {unit !== undefined ? (
-            <Typography component="span" variant="caption" sx={{ color: "text.secondary" }}>
-              {unit}
-            </Typography>
-          ) : null}
-          {delta !== undefined ? (
-            <Typography
-              component="span"
-              variant="caption"
-              sx={(theme) => ({
-                ml: 0.5,
-                fontVariantNumeric: "tabular-nums",
-                color:
-                  (delta.value >= 0) === (delta.goodWhenPositive ?? true)
-                    ? theme.palette.success.main
-                    : theme.palette.error.main,
-              })}
-            >
-              {delta.value >= 0 ? "▲" : "▼"} {formatPercent(Math.abs(delta.value), 1)}
-            </Typography>
-          ) : null}
-        </Box>
-      </Tooltip>
+      {exact === undefined ? (
+        body
+      ) : (
+        <Tooltip title={t("component.numberCard.hintExact", { value: exact })}>{body}</Tooltip>
+      )}
 
       {sparkline !== undefined && sparkline.length > 0 ? (
-        <Box sx={{ mt: 0.5, color: tonePath ?? "text.secondary" }}>
+        // 趋势线是数据不是装饰：不给语义色（[15 §3.2]），跟随次要文字色
+        <Box sx={{ mt: 1, color: "text.secondary" }}>
           <Sparkline data={sparkline} label={t("component.sparkline.label")} />
         </Box>
       ) : null}

@@ -14,6 +14,8 @@ export const en: Record<I18nKey, string> = {
   "app.theme.toggle": "Toggle dark / light",
   "app.locale.toggle": "切换到中文",
   "app.badge.experimental": "Experimental",
+  "app.badge.experimental.hint":
+    "TUN / system proxy is on: this changes OS network state (experimental). Shown for information only — nothing here writes system settings.",
   "app.version": "Version {{version}}",
   "app.uptime": "Up {{duration}}",
 

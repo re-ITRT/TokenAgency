@@ -5,18 +5,14 @@
  * - `app_status`（轮询 + 事件失效）→ 网关/内核/当前策略/默认出口；
  * - `policy_list` / `lane_list`（缓存）→ 把 id 翻成用户看得懂的名字；
  * - `config_get` → 判断是否处于实验模式（TUN / 系统代理），给状态条加角标。
+ *
+ * 视觉（[15]）：状态一律「6px 圆点 + 文字」（§5），**不用彩色 chip**（§2.1 也不许 emoji）；
+ * 数字用 `tabular-nums`（§4.3）；层级靠字号与深浅，不用 HTML 粗体标签（浏览器默认 700 字重，§4.2 禁止）。
+ *
+ * I2 边界：这里对 TUN / 系统代理**只做展示与说明**，没有任何"顺手改系统设置"的入口。
  */
 
-import {
-  Box,
-  Button,
-  Chip,
-  Divider,
-  IconButton,
-  Stack,
-  Tooltip,
-  Typography,
-} from "@mui/material";
+import { Box, Button, Divider, IconButton, Tooltip, Typography } from "@mui/material";
 import ContentCopyIcon from "@mui/icons-material/ContentCopyOutlined";
 import PauseCircleOutlineIcon from "@mui/icons-material/PauseCircleOutlineOutlined";
 import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutlineOutlined";
@@ -37,6 +33,7 @@ import type { KernelState } from "@/shared/bindings";
 import { formatDuration, formatLatency } from "@/shared/format";
 import { useTranslation } from "@/shared/i18n";
 import { useAppStore } from "@/stores";
+import { typography } from "@/theme";
 
 import { StatusDot, type SemStatus } from "@/shared/components";
 
@@ -56,6 +53,9 @@ const KERNEL_LABEL_KEY = {
   restarting: "status.kernel.restarting",
   failed: "status.kernel.failed",
 } as const;
+
+/** 与侧边栏品牌区同高。 */
+const CHROME_HEIGHT = 48;
 
 export function StatusBar() {
   const { t } = useTranslation();
@@ -99,14 +99,14 @@ export function StatusBar() {
     <Box
       component="header"
       sx={{
-        px: 1.5,
-        py: 0.75,
-        borderBottom: 1,
+        px: 3,
+        py: 1,
+        borderBottom: `1px solid`,
         borderColor: "divider",
         display: "flex",
         alignItems: "center",
-        gap: 1.5,
-        minHeight: 44,
+        gap: 3,
+        minHeight: CHROME_HEIGHT,
         flex: "0 0 auto",
       }}
     >
@@ -115,46 +115,58 @@ export function StatusBar() {
         label={gatewayRunning ? t("status.gateway.running") : t("status.gateway.paused")}
       />
 
-      <Chip
-        size="small"
-        variant="outlined"
-        color={KERNEL_STATUS[kernelState] === "ok" ? "success" : "default"}
-        label={`${t("status.kernel.label")}: ${t(KERNEL_LABEL_KEY[kernelState])}`}
+      <StatusDot
+        status={KERNEL_STATUS[kernelState]}
+        label={`${t("status.kernel.label")} ${t(KERNEL_LABEL_KEY[kernelState])}`}
       />
 
       {experimental ? (
-        <Tooltip title="TUN / 系统代理已开启：会修改系统网络状态（实验模式）">
-          <Chip size="small" color="warning" label={t("app.badge.experimental")} />
+        // 只展示与解释，不提供开关（I2）
+        <Tooltip title={t("app.badge.experimental.hint")}>
+          <Box component="span" sx={{ display: "inline-flex" }}>
+            <StatusDot status="warn" label={t("app.badge.experimental")} />
+          </Box>
         </Tooltip>
       ) : null}
 
       <Divider orientation="vertical" flexItem />
 
-      <Typography variant="caption" color="text.secondary" noWrap>
-        {t("status.policy")}: <strong>{policyName}</strong>
+      <Typography variant="caption" noWrap sx={{ color: "text.secondary" }}>
+        {t("status.policy")}
+        {" · "}
+        <Box component="span" sx={{ color: "text.primary" }}>
+          {policyName}
+        </Box>
       </Typography>
 
-      <Stack direction="row" spacing={0.5} alignItems="center" sx={{ minWidth: 0 }}>
-        <Typography variant="caption" color="text.secondary" noWrap>
-          {t("status.exit")}: <strong>{laneName}</strong>
-          {status?.current_node !== null && status?.current_node !== undefined
-            ? ` · ${t("status.exit.node", { node: status.current_node })}`
-            : ""}
+      <Typography variant="caption" noWrap sx={{ color: "text.secondary", minWidth: 0 }}>
+        {t("status.exit")}
+        {" · "}
+        <Box component="span" sx={{ color: "text.primary" }}>
+          {laneName}
+        </Box>
+        {status?.current_node !== null && status?.current_node !== undefined
+          ? ` · ${t("status.exit.node", { node: status.current_node })}`
+          : ""}
+      </Typography>
+
+      {latency !== null ? (
+        <Typography
+          variant="caption"
+          sx={{ fontVariantNumeric: "tabular-nums", color: "text.secondary" }}
+        >
+          {t("status.latency", { latency: formatLatency(latency) })}
         </Typography>
-        {latency !== null ? (
-          <Typography
-            variant="caption"
-            sx={{ fontVariantNumeric: "tabular-nums", color: "text.secondary" }}
-          >
-            {t("status.latency", { latency: formatLatency(latency) })}
-          </Typography>
-        ) : null}
-      </Stack>
+      ) : null}
 
       <Box sx={{ flex: 1 }} />
 
       {status !== undefined ? (
-        <Typography variant="caption" color="text.secondary" noWrap>
+        <Typography
+          variant="caption"
+          noWrap
+          sx={{ color: "text.secondary", fontVariantNumeric: "tabular-nums" }}
+        >
           {t("app.uptime", { duration: formatDuration(status.uptime_s) })}
         </Typography>
       ) : null}
@@ -162,42 +174,52 @@ export function StatusBar() {
       <Tooltip title={gatewayRunning ? t("status.gateway.pause") : t("status.gateway.resume")}>
         <span>
           <IconButton
-            size="small"
             disabled={busy}
             onClick={() => {
               if (gatewayRunning) pause.mutate(undefined);
               else resume.mutate(undefined);
             }}
+            sx={{ "& svg": { fontSize: 16 } }}
           >
-            {gatewayRunning ? (
-              <PauseCircleOutlineIcon fontSize="small" />
-            ) : (
-              <PlayCircleOutlineIcon fontSize="small" />
-            )}
+            {gatewayRunning ? <PauseCircleOutlineIcon /> : <PlayCircleOutlineIcon />}
           </IconButton>
         </span>
       </Tooltip>
 
       <Tooltip title={t("status.clipboard")}>
         <IconButton
-          size="small"
+          sx={{ "& svg": { fontSize: 16 } }}
           onClick={() => {
             void api.app
               .clipboardAccessInfo()
               .then((text) => navigator.clipboard?.writeText(text))
-              .then(() => pushToast({ level: "info", title: t("status.clipboard.done"), body: "", dedupeKey: "clipboard" }))
-              .catch((e: unknown) => pushToast({ level: "error", title: t("error.title"), body: errorMessage(e), dedupeKey: "clipboard-err" }));
+              .then(() =>
+                pushToast({
+                  level: "info",
+                  title: t("status.clipboard.done"),
+                  body: "",
+                  dedupeKey: "clipboard",
+                }),
+              )
+              .catch((e: unknown) =>
+                pushToast({
+                  level: "error",
+                  title: t("error.title"),
+                  body: errorMessage(e),
+                  dedupeKey: "clipboard-err",
+                }),
+              );
           }}
         >
-          <ContentCopyIcon fontSize="small" />
+          <ContentCopyIcon />
         </IconButton>
       </Tooltip>
 
       <Tooltip title={t("common.refresh")}>
         <Button
-          size="small"
           variant="text"
-          startIcon={<RefreshIcon fontSize="small" />}
+          startIcon={<RefreshIcon sx={{ fontSize: 14 }} />}
+          sx={{ fontSize: typography.size.meta, color: "text.secondary" }}
           onClick={() => {
             for (const key of ALL_RESOURCE_PREFIXES) {
               void queryClient.invalidateQueries({ queryKey: key });
