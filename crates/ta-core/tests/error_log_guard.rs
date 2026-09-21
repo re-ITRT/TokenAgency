@@ -62,16 +62,14 @@ const EXEMPT: &[(&str, &str, &str)] = &[
         "系统通知发送失败",
         "tauri::Error 没有 TA 码（属 T2 的文件，OB1 不落笔）",
     ),
-    (
-        "src-tauri/src/boot.rs",
-        "广播启动阶段事件失败",
-        "tauri::Error 没有 TA 码；emit 失败通常只是前端还没订阅上，不是业务错误",
-    ),
-    (
-        "src-tauri/src/boot.rs",
-        "启动阶段刷新托盘失败",
-        "tauri::Error 没有 TA 码；托盘重绘失败不影响启动，记录即可",
-    ),
+    // ⚠️ `src-tauri/src/boot.rs` 的两条豁免**不在这里** —— 它们随 `boot.rs` 一起落地。
+    //
+    // 起因（我犯的顺序错误）：`d843946` 先把这两条登记进 master，而 `boot.rs` 只存在于当时
+    // **尚未合并**的 `wp/e3` 里 → 本文件末尾"豁免不许腐烂"那条守卫在干净 master 上**直接红**
+    // （每条豁免都必须命中一处真实日志）。这是"契约条目依赖未合并文件"的典型顺序耦合，
+    // 由 wp/e3 的评审员从源码推出并报了回来。
+    //
+    // 规则：**EXEMPT 条目必须与其引用的文件在同一个提交/同一个合并里落地。**
 ];
 
 fn exemption_for(rel: &str, message: Option<&str>) -> Option<&'static str> {
