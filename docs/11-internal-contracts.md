@@ -386,6 +386,17 @@ subscription / subscription_version
 
 **上游错误一律透传**（不改状态码、不改 body），只加 `x-tokenagency-*` 头。
 
+> **⚠️ 第 9 轮补注（G1 实现后发现）：`TA-1002` 目前不可达。**
+> 员工 E5 实现入站限流时指出：配置里**根本没有** `gateway.rpm_limit` 这个字段
+> （`GatewayConfig` 只有 `local_key` / `max_body_mb` / `debug_headers` 等）。
+> 它把这个限制做成了 `IngressOptions` 的**构造参数**，而**没有**从 `gateway.extra` 偷读 ——
+> 这是对的（[13 L10]：不报错但不生效，比编译失败更危险）。
+>
+> 但后果要说清：**没有任何调用方会传这个参数，所以 `TA-1002` 在配置层落地前是一行死码。**
+> **裁决：M1 不新增该配置字段**（个人中转站只绑回环，本机 RPM 保护是过度设计）。
+> 已排为 E1 的收尾任务：加 `gateway.rpm_limit: Option<u32>`（`None` = 不限），
+> 届时本码才真正可达。**在那之前，任何人不应假设限流生效。**
+
 ---
 
 # 6. 上游 usage 归一化表（TokenMeter 的规格）

@@ -249,7 +249,7 @@ React 19 + TS ──Tauri IPC(invoke/emit)──▶ src-tauri ──▶ crates/*
 ## 5.1 请求管线（12 步，定稿）
 
 ```
- 1. Ingress      解析 → request_id；记录原始头/体快照（用于自检）；剥离 hop-by-hop
+ 1. Ingress      解析 → request_id；剥离 hop-by-hop；**鉴权/限流通过后才**记录原始头/体快照
  2. Auth         本地密钥（可选）+ RPM 限流
  3. Hints        只读少量字段用于路由：model / stream / has_image / 估算 tokens
  4. ModelResolve 逻辑模型名 → ModelEntry（别名表）→ 候选通道组
@@ -257,11 +257,22 @@ React 19 + TS ──Tauri IPC(invoke/emit)──▶ src-tauri ──▶ crates/*
  6. TagFilter    仅当策略显式要求时才按标签收窄（如排除 no-vision）；默认不过滤
  7. Select       sticky 命中即用；否则按 selector 选 → 写 sticky
  8. EgressAdapt  定点改写：模型名、鉴权头、必需路径；body 其余字段原样
+                 ★ 选 lane 在这一步之内 —— **切换套餐 = 切换 lane**
  9. Dispatch     取该 lane 的 client（127.0.0.1:3910x）→ 发送 → SSE 零缓冲转发
 10. Meter        解析 usage → 写账本 + 日汇总 + 额度状态
 11. Failover     未向下游写出任何字节时才重试；否则记 stream_broken
 12. Trace        落库：候选、淘汰原因、耗时瀑布、lane/节点、header_diff、状态
 ```
+
+> **修订（第 9 轮，主管裁决）**：步骤 1 原本把"记录原始头/体快照"和"剥离 hop-by-hop"并列在第一句，
+> 读起来像是**读 body 快照发生在鉴权之前**。员工 E5 实现 G1 时**刻意偏离**了这个顺序（先鉴权/限流，
+> 再读 body），理由是：让**未授权**请求把 `max_body_mb`（默认上限很大）读进内存，是一个真实的
+> DoS 面。对合法请求而言两种顺序**不可观测**（读的是同样的字节），所以这是**修正一个写错的文档**，
+> 不是偏离契约。**已按实现修订本文。**
+>
+> **步骤 8 的补充**：lane 解析顺序为
+> `policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.default_lane ?? direct`
+> —— **lane 是在通道选定之后才决定的**，所以"换套餐"必然"换线路"（[03 §0] 的基线场景正是靠这条成立的）。
 
 ## 5.2 时序：带图的流式请求（正常路径）
 
