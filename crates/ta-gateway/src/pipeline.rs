@@ -15,7 +15,7 @@
 //!    的通道）；429/402/5xx → 冷却**通道**。混成一个循环就会出现
 //!    "同一个已耗尽的套餐被重试 5 次"（`docs/03 §5.1`、`docs/12 §4 G2`）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -27,9 +27,7 @@ use ta_core::domain::behavior::resolve_lane;
 use ta_core::domain::{ChannelConfig, ConfigDoc, NoCandidateAction};
 use ta_core::error::{Result, TaError};
 use ta_core::quota::{QuotaLedger, QuotaObservation};
-use ta_core::routing::{
-    ChannelRuntimeState, ChannelSelector, PolicyEngine, RouteContext, RouteHints,
-};
+use ta_core::routing::{ChannelRuntimeState, RouteContext, RouteHints};
 use ta_core::types::{ChannelId, CredentialId, LaneId, Protocol};
 
 use crate::dispatch::{self, ByteStream, OutboundDialer, UpstreamRequest, UpstreamResponse};
@@ -37,6 +35,7 @@ use crate::ingress::{
     build_prepared_request, PrepareInput, PreparedRequest, RequestPipeline, RequestSnapshot,
 };
 use crate::passthrough::PassthroughPolicy;
+use crate::runtime::RoutingPlanner;
 
 // ================================================================ 接缝（别的包实现）
 
@@ -121,8 +120,13 @@ pub struct MeterContext {
 pub struct PipelineDeps {
     pub cfg: Arc<arc_swap::ArcSwap<ConfigDoc>>,
     pub clock: Arc<dyn Clock>,
-    pub policy: Arc<dyn PolicyEngine>,
-    pub selector: Arc<dyn ChannelSelector>,
+    /// 路由计划器：**一次绑定、一次求值**。
+    ///
+    /// 这里刻意**不是** `policy` + `selector` 两个 trait 对象：分开调用的两次之间，
+    /// 配置可能换代（[`crate::runtime::LiveRouter`] 每次调用都会跟代），
+    /// 于是"候选集来自第 N 代、选择在第 N+1 代求值" —— 换配置时偶发
+    /// 「无可用通道」。计划器把 decide/select 关进一次调用，并回传那一版配置。
+    pub planner: Arc<dyn RoutingPlanner>,
     pub quota: Arc<dyn QuotaLedger>,
     pub secrets: Arc<dyn SecretResolver>,
     pub dialer: Arc<dyn OutboundDialer>,
@@ -140,15 +144,41 @@ struct Runtime {
     cooling_until_ms: BTreeMap<ChannelId, i64>,
     /// lane → 不可用**截止时间**（ms）。不是永久拉黑，见 [`LANE_RECOVERY_MS`]。
     lane_down_until_ms: BTreeMap<LaneId, i64>,
+    /// lane → **连续**连接失败次数。成功一次清零（[docs/03 §5.3]）。
+    lane_failures: BTreeMap<LaneId, u32>,
 }
 
-/// lane 被判不可用后的恢复窗口。
+/// 连续失败多少次才把一条 lane 判为降级（[docs/03 §5.3]：连续 3 次）。
+///
+/// **不能一次失败就降级**：内核热重载（K1）时 listener 有一瞬的关闭/重建，
+/// 一次 `connection refused` 就拉黑 5 秒，等于用户每改一次线路就多一次失败 ——
+/// 而且下一批请求会因为在窗口内被淘汰而拿到「无可用通道」，连一次尝试都没有。
+const LANE_DEGRADE_AFTER: u32 = 3;
+
+/// lane 被判降级后的恢复窗口。
 ///
 /// **为什么必须"短暂"而不是永久**：M0 真机实测（`docs/06 §1.6`）—— 内核热重载
 /// （`PUT /configs?force=true`）时 listener 会经历一瞬间的关闭/重建，此时会出现
 /// `connection refused`。若把它当成"这条 lane 坏了"永久拉黑，用户每改一次线路
 /// 就会永久失去那条线（直到重启网关）。
+///
+/// 窗口从**本次请求开始时刻**起算（`execute` 只取一次 `now_ms`）：一次请求内不会因为
+/// 自己的重试把窗口推后。跨请求看是精确的。
 const LANE_RECOVERY_MS: i64 = 5_000;
+
+/// 候选**全部试过之后**再重试一次连接失败候选的间隔。
+///
+/// 只为跨过内核 listener 重建那一瞬（K1），**不是通用退避**：
+/// 通用退避属于通道级冷却（`cooldown_s`），两者混在一起会让"重试"变成"重打同一个
+/// 已耗尽的套餐"。
+///
+/// ⚠️ **这个 50ms 是估的，没有实测**（[docs/13 L19] 的同一条纪律：别把估计写成事实）。
+/// K1 实测的是"reload 是进程内重载、PID 不变、可逆"，**没有量过 listener 关闭→重建
+/// 持续多久**。若真实时长更大，单候选配置在这一瞬仍可能打不通 ——
+/// 那会表现为"改线路时偶发一次失败"，正是 K1 要消灭的形态。
+/// 要收紧它，得在真内核上量：循环发请求 + `PUT /configs?force=true`，
+/// 记录被拒的持续时间，再把这里换成实测值（并写进 commit 证据）。
+const LANE_RELOAD_RETRY_DELAY_MS: u64 = 50;
 
 /// 一次尝试的"是谁"部分；结果由 [`AttemptBuilder::record`] 补上。
 struct AttemptBuilder<'a> {
@@ -208,9 +238,36 @@ impl Pipeline {
             .insert(channel_id.clone(), now_ms + (cooldown_s as i64) * 1000);
     }
 
-    /// lane 级失败：把这条 lane 标记为**短暂**不可用（只影响用这条 lane 的通道）。
-    fn mark_lane_down(&self, lane: &LaneId, now_ms: i64) {
-        self.lock_runtime().lane_down_until_ms.insert(lane.clone(), now_ms + LANE_RECOVERY_MS);
+    /// lane 级失败：记一次**连续**失败；到阈值才降级（[docs/03 §5.3]）。
+    ///
+    /// 阈值判断与降级写在同一个锁里：分两次加锁会让并发的成功/失败互相覆盖计数。
+    /// 注意 `entry(..).or_insert(..)` 返回的 `&mut` 必须在动 `guard` 的其它字段**之前**
+    /// 结束借用（NLL），所以计数先落到局部变量 `count`。
+    fn record_lane_failure(&self, lane: &LaneId, now_ms: i64) {
+        let mut guard = self.lock_runtime();
+        let count = {
+            let failures = guard.lane_failures.entry(lane.clone()).or_insert(0);
+            *failures = failures.saturating_add(1);
+            *failures
+        };
+        if count >= LANE_DEGRADE_AFTER {
+            // 降级后重新计数：窗口过去再连续失败 3 次才再次降级
+            guard.lane_failures.insert(lane.clone(), 0);
+            guard.lane_down_until_ms.insert(lane.clone(), now_ms + LANE_RECOVERY_MS);
+        }
+    }
+
+    /// lane 级成功：成功一次就把连续失败计数清零，并立即解除降级
+    /// （[docs/03 §5.3]「成功一次 → 冷却计时器清零」）。
+    fn record_lane_success(&self, lane: &LaneId) {
+        let mut guard = self.lock_runtime();
+        guard.lane_failures.remove(lane);
+        guard.lane_down_until_ms.remove(lane);
+    }
+
+    /// 这条 lane 现在是否处于降级窗口内。
+    fn lane_is_degraded(&self, lane: &LaneId, now_ms: i64) -> bool {
+        self.lock_runtime().lane_down_until_ms.get(lane).is_some_and(|until| *until > now_ms)
     }
 
     /// 锁中毒不该让网关瘫痪：取回内部值继续用。
@@ -427,13 +484,17 @@ fn metadata_user_id(body: &[u8]) -> Option<String> {
 #[async_trait]
 impl RequestPipeline for Pipeline {
     async fn prepare(&self, snapshot: &RequestSnapshot) -> Result<PreparedRequest> {
-        let cfg = self.deps.cfg.load_full();
         let now_ms = self.deps.clock.now_ms();
         let hints = route_hints(snapshot);
-        let ctx = self.route_context(&cfg, now_ms);
+        // 运行态快照用的配置（冷却/lane 健康/额度）先取一份；**它只影响 overlay**，
+        // 缺项等于"没有运行态限制"，所以即使它与下面路由用的那版不同代也无害。
+        let ctx = self.route_context(&self.deps.planner.current_doc(), now_ms);
 
-        // 步骤 4–5：候选集（策略引擎负责标签过滤与淘汰原因）
-        let mut decision = self.deps.policy.decide(&hints, &ctx);
+        // 步骤 4–7：**一次绑定**求值 —— `plan.cfg` 就是 decision/selection 依据的那一版，
+        // 后面解析通道、算 lane、造请求全部用它，不再自己 load（否则就回到"一次请求混代"）。
+        let plan = self.deps.planner.plan(&hints, &ctx);
+        let cfg = plan.cfg;
+        let mut decision = plan.decision;
         if decision.candidates.is_empty() && decision.on_no_candidate == NoCandidateAction::UseAny {
             // 策略说"没人可用也照发" → 退回该模型的全部启用通道（这是策略语义，不是静默降级）
             decision.candidates = self.all_channels_for(&cfg, &hints);
@@ -448,11 +509,9 @@ impl RequestPipeline for Pipeline {
             });
         }
 
-        // 步骤 6–7：选择（粘性优先，由选择器实现）
-        let selection = self.deps.selector.select(&decision, &hints, &ctx).ok_or_else(|| {
-            TaError::NoViableChannel {
-                message: format!("{} 个候选在求值后都不可用", decision.candidates.len()),
-            }
+        // 步骤 6–7：选择（粘性优先，由计划器内的选择器实现）
+        let selection = plan.selection.ok_or_else(|| TaError::NoViableChannel {
+            message: format!("{} 个候选在求值后都不可用", decision.candidates.len()),
         })?;
 
         // 步骤 8：定点改写（**只走 G1 的实现**）
@@ -471,11 +530,12 @@ impl RequestPipeline for Pipeline {
         let max_attempts = cfg.gateway.retry.attempts_for(prepared.stream).max(1);
         let cooldown_s = cfg.gateway.retry.cooldown_s;
 
-        // 候选顺序：首选 + 失败链（去重，保序）
-        let mut chain: Vec<ChannelId> = Vec::new();
+        // 候选顺序：首选 + 失败链（去重，保序）。用队列而不是 `for`：
+        // K1 需要在"候选全部试过之后"再给连接失败的候选**一次**有界重试。
+        let mut queue: VecDeque<ChannelId> = VecDeque::new();
         for id in std::iter::once(&prepared.channel_id).chain(prepared.failover_chain.iter()) {
-            if !chain.contains(id) {
-                chain.push(id.clone());
+            if !queue.contains(id) {
+                queue.push_back(id.clone());
             }
         }
 
@@ -483,8 +543,33 @@ impl RequestPipeline for Pipeline {
         let mut saw_exhausted = false;
         let mut saw_other = false;
         let mut attempt: u32 = 0;
+        // 连接失败的候选：等队列空了再重试一次（K1）。
+        //
+        // ⚠️ 它**只记住最后一个** lane 级失败的候选：若 A、B 两个候选都是 lane 连接失败，
+        // 只有 B 能拿到这次重试（有界是对的，但这份不对称是刻意的取舍，不是"每个候选各重试一次"）。
+        // 想改成"每个候选都重试"就得让预算按候选分配，会把 attempts 语义变复杂。
+        let mut lane_retry: Option<(ChannelId, LaneId)> = None;
 
-        for channel_id in chain {
+        loop {
+            let Some(channel_id) = queue.pop_front() else {
+                // 队列空了。若最后是"lane 连不上"，且还有预算、这条 lane 也没被降级，
+                // 就给同一个候选一次重试 —— 这是 K1 的全部意义：内核 listener 重建那一瞬的
+                // `connection refused` 必须能挺过去。否则单通道/单 lane 配置下，
+                // 用户每改一次线路就会随机看到一次失败（而"改线路"正是触发重载的时刻）。
+                match lane_retry.take() {
+                    Some((channel_id, lane))
+                        if attempt < max_attempts && !self.lane_is_degraded(&lane, now_ms) =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            LANE_RELOAD_RETRY_DELAY_MS,
+                        ))
+                        .await;
+                        queue.push_back(channel_id);
+                        continue;
+                    }
+                    _ => break,
+                }
+            };
             if attempt >= max_attempts {
                 break;
             }
@@ -523,6 +608,8 @@ impl RequestPipeline for Pipeline {
             let started = std::time::Instant::now();
             match self.deps.dialer.execute(&lane, request).await {
                 Ok(upstream) => {
+                    // 这条 lane 通了：连续失败计数清零，降级立即解除（[docs/03 §5.3]）
+                    self.record_lane_success(&lane);
                     let latency_ms = started.elapsed().as_millis() as u32;
                     if dispatch::is_failover_status(upstream.status) {
                         // **通道级失败**：冷却这个通道，换下一个候选
@@ -608,8 +695,13 @@ impl RequestPipeline for Pipeline {
                 Err(err) => {
                     let latency_ms = started.elapsed().as_millis() as u32;
                     match &err {
-                        // **lane 级失败**：只标记这条 lane（其它 lane 不受牵连）
-                        TaError::LaneUnavailable { .. } => self.mark_lane_down(&lane, now_ms),
+                        // **lane 级失败**：只记这条 lane 的连续失败（其它 lane 不受牵连）。
+                        // 到阈值才降级；单次失败只留下"队列空后重试一次"的依据 ——
+                        // 一次失败就拉黑，正是 K1 要避免的。
+                        TaError::LaneUnavailable { .. } => {
+                            self.record_lane_failure(&lane, now_ms);
+                            lane_retry = Some((channel_id.clone(), lane.clone()));
+                        }
                         _ => {
                             saw_other = true;
                             self.cool_channel(&channel_id, cooldown_s, now_ms);
@@ -699,9 +791,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicU32, Ordering};
     use ta_core::clock::ManualClock;
-    use ta_core::domain::{Credential, Model, Provider, Selector};
+    use ta_core::domain::{Credential, Lane, LaneKind, Model, Provider, Selector};
     use ta_core::quota::{QuotaState, QuotaStateKind};
-    use ta_core::routing::{RouteDecision, Selection};
+    use ta_core::routing::{ChannelSelector, PolicyEngine, RouteDecision, Selection};
 
     const MODEL: &str = "claude-sonnet-4-5";
     const SECRET: &str = "sk-relay-secret";
@@ -889,11 +981,15 @@ mod tests {
         dialer: Arc<dyn OutboundDialer>,
         sink: Arc<RecordingSink>,
     ) -> Pipeline {
+        let cfg = Arc::new(arc_swap::ArcSwap::from_pointee(cfg));
         Pipeline::new(Arc::new(PipelineDeps {
-            cfg: Arc::new(arc_swap::ArcSwap::from_pointee(cfg)),
+            cfg: cfg.clone(),
             clock: Arc::new(ManualClock::new(1_700_000_000_000)),
-            policy,
-            selector: Arc::new(ChainSelector),
+            planner: Arc::new(crate::runtime::PolicySelectorPlanner::new(
+                cfg,
+                policy,
+                Arc::new(ChainSelector),
+            )),
             quota: Arc::new(NoQuota),
             secrets: Arc::new(StaticSecrets::new([
                 ("${secret:a}", SECRET),
@@ -1052,21 +1148,13 @@ mod tests {
         let urls = dialer.seen_urls();
         assert!(urls[0].starts_with("lane-jp|"), "{urls:?}");
         assert!(urls[1].starts_with("lane-tokyo|"), "{urls:?}");
-        // lane 级失败只标记那条 lane，而且**是短暂的**：内核热重载会让 listener
-        // 一瞬间关闭重建（M0 实测），永久拉黑会让用户"改一次线路就永久少一条线"。
+        // lane 级失败只影响那条 lane，而且**一次失败不降级**（[docs/03 §5.3] 要求连续 3 次）：
+        // 内核热重载会让 listener 一瞬间关闭重建（M0 实测 K1），一次 refused 就把整条线
+        // 拉黑 5 秒，会让"改线路"这个动作本身变成一次失败。
         let now = 1_700_000_000_000;
-        assert!(!pipeline.is_available(
-            &ChannelId::new("ch-a"),
-            Some(&LaneId::new("lane-jp")),
-            now
-        ));
         assert!(
-            pipeline.is_available(
-                &ChannelId::new("ch-a"),
-                Some(&LaneId::new("lane-jp")),
-                now + LANE_RECOVERY_MS
-            ),
-            "恢复窗口过后必须重新可用，否则改线路 = 永久失去这条线"
+            pipeline.is_available(&ChannelId::new("ch-a"), Some(&LaneId::new("lane-jp")), now),
+            "一次连接失败不该把 lane 拉黑（否则改线路时那一瞬会连带把整条线关掉 5 秒）"
         );
         assert!(pipeline.is_available(
             &ChannelId::new("ch-a"),
@@ -1076,6 +1164,274 @@ mod tests {
         let records = sink.records.lock().unwrap().clone();
         assert_eq!(records[0].error_code.as_deref(), Some("TA-3002"));
         assert_eq!(records[0].lane_id.as_ref().map(|l| l.as_str()), Some("lane-jp"));
+    }
+
+    // ---------------------------------------------------------- A2：上游真的收到了这些字节
+
+    /// A2（`docs/06 §2.1`）的 **wire 级**证据：把请求真的打到回环假上游，
+    /// 然后拿**上游收到的原始报文**逐项核对。
+    ///
+    /// 与 `passthrough.rs` 的 insta 快照互补：快照证明"我们构造出的请求是对的"，
+    /// 这条证明"**上游真的收到了它**"。覆盖 A2 的三条：
+    /// ① 图片块（含 `detail`）真的到达；② `x-stainless-*` / `anthropic-beta` /
+    /// 自定义 UA 逐字节到达；③ 未知 part 类型与未知顶层字段不丢。
+    ///
+    /// 用 `--nocapture` 跑可以看到打印出来的原始报文。
+    #[tokio::test]
+    async fn a2_upstream_receives_the_golden_request_byte_for_byte() {
+        use crate::dispatch::tests::spawn_recording_upstream;
+        use crate::dispatch::{DialerOptions, KernelDialer, StaticLanePorts};
+        use crate::passthrough::tests::golden_fixture;
+
+        let upstream = spawn_recording_upstream().await;
+        let fixture = golden_fixture();
+
+        // 同一个 golden 夹具，只是把上游换成我们的回环假上游、lane 换成 direct
+        let mut provider = fixture.provider.clone();
+        provider.base_url = format!("http://{}", upstream.addr);
+        let mut channel = fixture.channel.clone();
+        channel.lane = Some(LaneId::new("direct"));
+
+        let mut doc = ConfigDoc::default();
+        doc.models.push(Model::new(MODEL));
+        doc.lanes.push(Lane::new("direct", "直连（本机网络）", LaneKind::Direct));
+        doc.providers.push(provider);
+        // 用 `${secret:a}` 以便复用测试夹具的 StaticSecrets
+        doc.credentials.push(Credential::new("c-relay-a", "p-relay", "中转A", "${secret:a}"));
+        doc.channels.push(channel);
+
+        let pipeline = pipeline(
+            doc,
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-relay-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            Arc::new(KernelDialer::new(
+                Arc::new(StaticLanePorts::default()),
+                DialerOptions::default(),
+            )),
+            Arc::new(RecordingSink::default()),
+        );
+
+        let body = serde_json::to_vec(&fixture.body).expect("golden body");
+        let snapshot = RequestSnapshot {
+            request_id: "req_a2_golden".into(),
+            method: http::Method::POST,
+            path: "/v1/messages".into(),
+            query: None,
+            endpoint: crate::ingress::Endpoint::Messages,
+            // fixture 的 content-length 是**故意写错的 999999**，正好用来证明
+            // 上游看到的是按实际 body 重算后的值
+            headers: fixture.headers.clone(),
+            body: Bytes::from(body),
+            received_at_ms: 1_700_000_000_000,
+        };
+        let prepared = pipeline.prepare(&snapshot).await.expect("prepare");
+        let response = pipeline.execute(prepared).await.expect("execute");
+        assert_eq!(response.status(), http::StatusCode::OK);
+
+        let raw = upstream.raw(0);
+        assert!(!raw.is_empty(), "假上游必须真的收到请求");
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        println!("=== A2 证据：上游收到的原始报文 ===\n{text}\n=== 原文结束 ===");
+
+        let head_end = raw.windows(4).position(|w| w == b"\r\n\r\n").expect("头体分界") + 4;
+        let head = &text[..head_end];
+        let head_lower = head.to_ascii_lowercase();
+        let body_raw = String::from_utf8_lossy(&raw[head_end..]).into_owned();
+
+        // ---- ① body：图片块（含 detail）、未知 part、未知顶层字段逐字节在
+        for needle in [
+            r#""type":"image_url""#,
+            r#""detail":"high""#,
+            "data:image/png;base64,iVBORw0KGgo=",
+            r#""type":"brand_new_part_type""#,
+            r#""unknown":[1,2,3]"#,
+            "future_top_level_field",
+        ] {
+            assert!(body_raw.contains(needle), "body 里缺了 {needle}：{body_raw}");
+        }
+        // 除了 model（逻辑名 → 上游名），一个字段都不许变
+        let mut expected = fixture.body.clone();
+        expected["model"] = serde_json::json!(fixture.channel.upstream_model);
+        let received: serde_json::Value =
+            serde_json::from_str(&body_raw).expect("上游收到的是合法 JSON");
+        assert_eq!(received, expected, "除 model 外任何字段/结构变化都是全透传失败");
+
+        // ---- ② 代理标识 / 自定义头逐字节到达（值大小写原样，所以按原文断言）
+        for keep in [
+            "user-agent: claude-cli/1.0.60 (external, cli)",
+            "x-stainless-lang: js",
+            "x-stainless-package-version: 0.60.0",
+            "x-stainless-os: Windows",
+            "x-stainless-runtime: node",
+            "anthropic-beta: prompt-caching-2024-07-31,computer-use-2025-01-24",
+            "x-session-id: sess-8f3a2b",
+            "x-weirdly-named-custom: keep-me",
+        ] {
+            assert!(head.contains(keep), "上游收到的头里缺了 {keep}：\n{head}");
+        }
+
+        // ---- 4 处例外：host 重写且只有一个、content-length 按实际 body 重算、
+        //      鉴权头换成通道凭据、hop-by-hop 全剥
+        let host_count =
+            head_lower.matches("\r\nhost:").count() + usize::from(head_lower.starts_with("host:"));
+        assert_eq!(host_count, 1, "host 头只能有一个：\n{head}");
+        assert!(head_lower.contains(&format!("host: {}", upstream.addr)), "{head}");
+        assert!(head.contains("authorization: Bearer sk-relay-secret"), "{head}");
+        let declared = head_lower
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .expect("必须有 content-length");
+        assert_eq!(declared, raw.len() - head_end, "content-length 必须等于真实发出的字节数");
+        for gone in ["connection:", "keep-alive:", "proxy-connection:", "transfer-encoding:"] {
+            assert!(!head_lower.contains(gone), "{gone} 必须被剥离：\n{head}");
+        }
+
+        // ---- 5) 头集合的两个方向都要钉死：客户端发的**一个都不能丢**，
+        //      而"上游多看到的"必须**恰好**是那条已知偏离。
+        //
+        // 已知偏离（不是我们写的代码，是 reqwest 的默认头）：
+        // `reqwest-0.12.28/src/async_impl/client.rs:286` —— `ClientBuilder::new()` 就把
+        // `accept: */*` 塞进了 `config.headers`，而 `default_headers()` 只做合并（:1163），
+        // **清不掉**。于是客户端没发 `accept` 时，上游会多看到这一条。
+        // 这条断言的作用：把偏离**变成摆明的、被钉住的事实**（[docs/03 §7.2.1] 那种做法），
+        // reqwest 哪天再多塞一个默认头，这条就会红。
+        let header_name = |line: &str| line.split(':').next().map(str::trim).map(str::to_string);
+        let sent: std::collections::BTreeSet<String> = head_lower
+            .lines()
+            .skip(1)
+            .filter_map(header_name)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let client: std::collections::BTreeSet<String> = fixture
+            .headers
+            .keys()
+            .map(|name| name.as_str().to_string())
+            .filter(|name| !crate::passthrough::is_hop_by_hop(name))
+            .collect();
+        let dropped: Vec<&String> = client.difference(&sent).collect();
+        assert!(dropped.is_empty(), "客户端发的头不许丢：{dropped:?}\n{head}");
+        let injected: std::collections::BTreeSet<String> =
+            sent.difference(&client).cloned().collect();
+        assert_eq!(
+            injected,
+            std::collections::BTreeSet::from(["accept".to_string()]),
+            "除已知的 accept 偏离外，不许有第 5 类凭空多出来的头：\n{head}"
+        );
+        assert!(head_lower.contains("accept: */*"), "{head}");
+    }
+
+    // ---------------------------------------------------------- K1：listener 重建那一瞬
+
+    /// K1（`docs/06 §1.6`）：内核热重载 `PUT /configs?force=true` 是**进程内**重载、PID 不变，
+    /// 但 listener 有一瞬间的关闭/重建 → 此时会出现 `connection refused`。
+    ///
+    /// **只有一个候选**时（"一个人的中转站"很常见，而"改线路"正是触发重载的动作），
+    /// 这一瞬必须靠一次有界重试挺过去；打不通就直接报错，等于用户每改一次线路
+    /// 就随机看到一次失败。
+    ///
+    /// 这条测试在旧实现上**红**：旧实现是 `mark_lane_down` + 换下一个候选，而这里没有
+    /// 下一个候选 —— 请求直接失败，`dialer.calls() == 1`。
+    #[tokio::test]
+    async fn single_candidate_survives_the_kernel_listener_blip() {
+        let sink = Arc::new(RecordingSink::default());
+        let dialer = Arc::new(ScriptedDialer::with(vec![
+            Scripted::LaneDown,
+            Scripted::Ok {
+                status: 200,
+                headers: vec![("content-type", "application/json")],
+                body: r#"{"ok":true}"#,
+            },
+        ]));
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer.clone(),
+            sink,
+        );
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let response =
+            pipeline.execute(prepared).await.expect("listener 重建那一瞬必须被有界重试挺过去");
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(dialer.calls(), 2, "一次连接失败后必须真的再试同一个候选，而不是直接放弃");
+    }
+
+    /// 重试必须是**有界**的：用的是同一个 `attempts` 预算，不额外开一条无限循环。
+    /// 全部失败时对外语义是 TA-3002（503 可重试），**不是** TA-2003（415 无可用通道）
+    /// —— 后者会让客户端以为"这个模型没配置"，而真实原因是线路暂时连不上。
+    #[tokio::test]
+    async fn lane_retry_is_bounded_by_the_attempt_budget() {
+        let dialer = Arc::new(ScriptedDialer::with(vec![
+            Scripted::LaneDown,
+            Scripted::LaneDown,
+            Scripted::LaneDown,
+        ]));
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer.clone(),
+            Arc::new(RecordingSink::default()),
+        );
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let err = pipeline.execute(prepared).await.expect_err("一直连不上就必须报错");
+        // 非流式 `max_attempts` 默认 3 → 总共 3 次尝试，一次都不多
+        assert_eq!(dialer.calls(), 3, "重试不许超过 attempts 预算");
+        assert_eq!(err.code(), "TA-3002", "线路问题是 503 可重试，不是 415 无可用通道");
+        assert_eq!(err.http_status(), 503);
+        // 连续 3 次才降级（[docs/03 §5.3]）
+        assert!(
+            !pipeline.is_available(
+                &ChannelId::new("ch-a"),
+                Some(&LaneId::new("lane-jp")),
+                1_700_000_000_000
+            ),
+            "连续 3 次失败后必须降级，否则下一条请求还会撞同一堵墙"
+        );
+    }
+
+    /// 连续失败计数**成功一次就清零**（[docs/03 §5.3]「成功一次 → 冷却计时器清零」）。
+    ///
+    /// 两个请求各失败 2 次后成功：如果计数不清零，第二个请求的第一次失败就是第 3 次连续
+    /// 失败 → 立刻降级 → 那个请求会拿 503 而不是成功。所以这条测试能区分"清零"与"不清零"。
+    #[tokio::test]
+    async fn lane_failure_counter_is_cleared_by_a_success() {
+        let ok = Scripted::Ok { status: 200, headers: vec![], body: r#"{"ok":true}"# };
+        let dialer = Arc::new(ScriptedDialer::with(vec![
+            Scripted::LaneDown,
+            Scripted::LaneDown,
+            Scripted::Ok { status: 200, headers: vec![], body: r#"{"ok":true}"# },
+            Scripted::LaneDown,
+            Scripted::LaneDown,
+            ok,
+        ]));
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer.clone(),
+            Arc::new(RecordingSink::default()),
+        );
+        for round in 1..=2 {
+            let prepared =
+                pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+            let response = pipeline.execute(prepared).await.unwrap_or_else(|e| {
+                panic!("第 {round} 轮必须成功（失败 2 次 + 成功 1 次）：{e:?}")
+            });
+            assert_eq!(response.status(), http::StatusCode::OK);
+        }
+        assert_eq!(dialer.calls(), 6, "每轮 3 次（失败、失败、成功）");
     }
 
     #[tokio::test]
@@ -1210,5 +1566,121 @@ mod tests {
         }
         // **只有 1 次上游请求**（DoD 原文：输出 3 个 chunk 后断连 → 只有 1 次上游请求）
         assert_eq!(upstream.connection_count(), 1, "已输出字节后绝不允许重试");
+    }
+
+    // ---------------------------------------------------------- 降级窗口的正向控制
+
+    /// 降级窗口必须**真的会过去**。
+    ///
+    /// 缺了这条正向控制，"把窗口写成 `i64::MAX`（永久拉黑）"不会有任何测试变红 ——
+    /// 而永久拉黑正是 M0 实测（`docs/06 §1.6`）要求避免的那条：用户改一次线路
+    /// 就永久失去那条线（直到重启网关）。
+    #[tokio::test]
+    async fn a_degraded_lane_is_available_again_after_the_recovery_window() {
+        let dialer = Arc::new(ScriptedDialer::with(vec![
+            Scripted::LaneDown,
+            Scripted::LaneDown,
+            Scripted::LaneDown,
+        ]));
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer,
+            Arc::new(RecordingSink::default()),
+        );
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let _ = pipeline.execute(prepared).await.expect_err("三次都连不上");
+
+        let channel = ChannelId::new("ch-a");
+        let lane = LaneId::new("lane-jp");
+        let now = 1_700_000_000_000;
+        assert!(
+            !pipeline.is_available(&channel, Some(&lane), now),
+            "连续 3 次失败后必须处于降级窗口内"
+        );
+        // 窗口长度**故意独立写死**，不从被测量的常量取：否则断言会退化成同义反复 ——
+        // 把 `LANE_RECOVERY_MS` 改成 `i64::MAX`（永久拉黑）也照样通过，
+        // 而那正是 [docs/06 §1.6] 要求避免的形态。
+        const EXPECTED_WINDOW_MS: i64 = 5_000;
+        assert!(
+            !pipeline.is_available(&channel, Some(&lane), now + EXPECTED_WINDOW_MS - 1),
+            "窗口内必须仍然不可用（降级要真的生效）"
+        );
+        assert!(
+            pipeline.is_available(&channel, Some(&lane), now + EXPECTED_WINDOW_MS),
+            "恢复窗口过后必须重新可用（[docs/06 §1.6]：reload 那一瞬不是永久故障）"
+        );
+    }
+
+    // ---------------------------------------------------------- 同代求值
+
+    /// 一次 `prepare` 只能有**一个权威代次**：通道解析必须用计划回传的那一版配置。
+    ///
+    /// 造一个"计划绑定在 v1、`deps.config` 已经是 v2"的场景（真实里是配置换代恰好落在
+    /// 路由求值前后）。旧实现自己 `load_full()` → 会拿 v2 解析通道
+    /// （`upstream_model = "upstream-v2"`），于是"路由按 v1 选、请求按 v2 造"。
+    /// 现在必须一律用计划回传的 v1。
+    #[tokio::test]
+    async fn prepare_uses_the_plan_binding_and_never_mixes_generations() {
+        struct BoundPlanner {
+            doc: Arc<ConfigDoc>,
+        }
+        impl RoutingPlanner for BoundPlanner {
+            fn current_doc(&self) -> Arc<ConfigDoc> {
+                self.doc.clone()
+            }
+            fn plan(&self, _hints: &RouteHints, _ctx: &RouteContext) -> crate::runtime::RoutePlan {
+                crate::runtime::RoutePlan {
+                    cfg: self.doc.clone(),
+                    decision: RouteDecision {
+                        candidates: vec![ChannelId::new("ch-a")],
+                        selector: Selector::Priority,
+                        on_no_candidate: NoCandidateAction::Error,
+                        ..Default::default()
+                    },
+                    selection: Some(Selection {
+                        channel: ChannelId::new("ch-a"),
+                        sticky_hit: false,
+                        sticky_key: None,
+                        chain: vec![ChannelId::new("ch-a")],
+                    }),
+                }
+            }
+        }
+
+        let mut v1 = test_cfg("https://a.example/v1", "https://b.example/v1");
+        v1.channels[0].upstream_model = "upstream-v1".into();
+        let v1 = Arc::new(v1);
+        let mut v2 = test_cfg("https://a.example/v1", "https://b.example/v1");
+        v2.channels[0].upstream_model = "upstream-v2".into();
+
+        let pipeline = Pipeline::new(Arc::new(PipelineDeps {
+            // deps.config 是**后一代**（v2）—— 模拟"换代发生在路由求值之后"
+            cfg: Arc::new(arc_swap::ArcSwap::from_pointee(v2)),
+            clock: Arc::new(ManualClock::new(1_700_000_000_000)),
+            planner: Arc::new(BoundPlanner { doc: v1 }),
+            quota: Arc::new(NoQuota),
+            secrets: Arc::new(StaticSecrets::new([("${secret:a}", SECRET)])),
+            dialer: Arc::new(ScriptedDialer::default()),
+            passthrough: FullPassthrough::shared(),
+            sink: Arc::new(RecordingSink::default()),
+            meter: None,
+        }));
+
+        let prepared = pipeline
+            .prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#))
+            .await
+            .expect("应当能准备");
+        assert_eq!(
+            prepared.upstream_model, "upstream-v1",
+            "通道解析必须用计划回传的那一版配置，而不是自己再 load 一次"
+        );
+        let patched: serde_json::Value =
+            serde_json::from_slice(&prepared.body).expect("body 是 JSON");
+        assert_eq!(patched["model"], "upstream-v1", "body 也必须按同一版配置改写");
     }
 }

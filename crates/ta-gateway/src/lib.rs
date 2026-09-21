@@ -16,7 +16,10 @@ pub mod ingress;
 pub mod meter;
 pub mod passthrough;
 pub mod pipeline;
+pub mod runtime;
 pub mod trace;
+
+pub use runtime::{build_runtime, kernel_dialer, GatewayRuntime, LiveRouter, RuntimeParts};
 
 /// 网关运行时共享状态。**所有子模块通过它取依赖，不各自持有全局变量。**
 pub struct GatewayDeps {
