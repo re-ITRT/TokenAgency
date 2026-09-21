@@ -438,6 +438,66 @@ impl Default for IngressOptions {
     }
 }
 
+/// 网关运行状态（给 `app_status` / 托盘读）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayRunState {
+    Running,
+    Paused,
+}
+
+/// **暂停/恢复闸门**（托盘与状态栏的"暂停网关"按钮）。
+///
+/// 语义（与主管逐条对齐）：
+/// 1. 暂停 = **不再接受新的请求**（在途请求**不取消** —— 那是 G2③̶ 的语义，两者正交）；
+/// 2. **配置与热重载不受影响**：这里只是一个准入开关，不碰 `ArcSwap<ConfigDoc>`；
+/// 3. 状态可被外部读到（[`GatewayGate::state`]），`/healthz` **仍然可用**
+///    ——  paused 必须是"我按了暂停"，不能显示成"网关失联"。
+///
+/// 它挂在 [`IngressState`] 上（**唯一装配路径**），不是第二个服务入口：
+/// 在 ingress 外侧再包一层就是"第二条请求路径"，[docs/13 §4.5 L21] 明令禁止。
+#[derive(Debug, Default)]
+pub struct GatewayGate {
+    paused: std::sync::atomic::AtomicBool,
+}
+
+impl GatewayGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn pause(&self) {
+        self.paused.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn resume(&self) {
+        self.paused.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn state(&self) -> GatewayRunState {
+        if self.paused.load(std::sync::atomic::Ordering::SeqCst) {
+            GatewayRunState::Paused
+        } else {
+            GatewayRunState::Running
+        }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.state() == GatewayRunState::Paused
+    }
+}
+
+/// 暂停期间拒绝新请求用的错误。
+///
+/// 用 [docs/11 §5] 的专用码 **`TA-1005 tokenagency_gateway_paused`（503，retryable=false）**：
+/// - **不可重试**是关键：客户端拿到它会把话抛给用户，而**不会对着暂停的网关猛重试**
+///   （`TA-1002`/429 或 `TA-3001`/`TA-3002` 都是 retryable，语义上就错了）；
+/// - 与"内核未就绪 / 线路不可用"（也都是 503）靠 `code` 与 `type` 区分 ——
+///   用户看到的必须是"**我自己按了暂停**"，不是"中转站坏了"。
+fn gateway_paused_error() -> TaError {
+    TaError::GatewayPaused
+}
+
 /// 入站运行时依赖。
 pub struct IngressState {
     pub cfg: Arc<arc_swap::ArcSwap<ConfigDoc>>,
@@ -449,6 +509,8 @@ pub struct IngressState {
     pub secrets: Arc<dyn SecretResolver>,
     pub pipeline: Arc<dyn RequestPipeline>,
     pub kernel: Arc<dyn KernelProbe>,
+    /// 暂停/恢复闸门（`app_pause_gateway` / `app_resume_gateway` 的接缝）。
+    pub gate: Arc<GatewayGate>,
     pub rpm: RpmLimiter,
     pub options: IngressOptions,
 }
@@ -463,7 +525,23 @@ impl IngressState {
         kernel: Arc<dyn KernelProbe>,
         options: IngressOptions,
     ) -> Self {
-        Self { cfg, clock, passthrough, secrets, pipeline, kernel, rpm: RpmLimiter::new(), options }
+        Self {
+            cfg,
+            clock,
+            passthrough,
+            secrets,
+            pipeline,
+            kernel,
+            gate: Arc::new(GatewayGate::new()),
+            rpm: RpmLimiter::new(),
+            options,
+        }
+    }
+
+    /// 用调用方持有的闸门装配（`build_runtime` 用它把同一个 `Arc` 交给运行时与 `app_*` 命令）。
+    pub fn with_gate(mut self, gate: Arc<GatewayGate>) -> Self {
+        self.gate = gate;
+        self
     }
 
     /// 从 `lib.rs` 的依赖包装配（T2 用）。
@@ -599,15 +677,43 @@ async fn handle_request(
     let cfg = state.cfg.load_full();
     let now_ms = state.clock.now_ms();
 
+    // [docs/10 §1.4]：**全部** `x-tokenagency-*` 都受 `gateway.debug_headers` 控制。
+    // 出口只有一个，所以在这里统一收口 —— 逐个 return 去记"这个要不要加"迟早会漏一个。
+    // 注意：**错误信封 body 里的 `request_id` 不受影响**（那是内容，不是头），
+    // 关掉调试头只是让"对未知头敏感的客户端"看不见它们。
+    let finish = |mut response: Response| -> Response {
+        if !cfg.gateway.debug_headers {
+            // HeaderMap 没有 retain，先收集名字再删（不能边遍历边改）
+            let ours: Vec<http::HeaderName> = response
+                .headers()
+                .keys()
+                .filter(|name| name.as_str().starts_with("x-tokenagency-"))
+                .cloned()
+                .collect();
+            for name in ours {
+                response.headers_mut().remove(&name);
+            }
+        }
+        response
+    };
+
     let limit = cfg.gateway.max_body_mb.saturating_mul(1024 * 1024);
+
+    // 暂停闸门：**新请求一律拒绝**，在途的不受影响（那是 G2③ 的取消语义，别混在一起）。
+    // 放在鉴权**之前**：暂停时不必再做解析/校验，也少一次钥匙串访问；
+    // `/healthz` 已经在上面返回了 —— 托盘必须能显示"已暂停"，而不是"失联"。
+    if state.gate.is_paused() {
+        return finish(error_response(&gateway_paused_error(), &request_id));
+    }
+
     // 先看声明的长度：超限的大 body 根本不必读进内存
     if let Some(size) = declared_length(&parts.headers) {
         if size > limit {
-            return error_response(&TaError::BodyTooLarge { size, limit }, &request_id);
+            return finish(error_response(&TaError::BodyTooLarge { size, limit }, &request_id));
         }
     }
     if let Err(err) = check_local_key(&cfg, &parts.headers, state.secrets.as_ref()).await {
-        return error_response(&err, &request_id);
+        return finish(error_response(&err, &request_id));
     }
     if let Some(limit) = state.options.rpm_limit {
         if let Err(retry_after_s) = state.rpm.check(now_ms, limit, state.options.rpm_window_ms) {
@@ -615,12 +721,12 @@ async fn handle_request(
             if let Ok(value) = HeaderValue::from_str(&retry_after_s.to_string()) {
                 response.headers_mut().insert(header::RETRY_AFTER, value);
             }
-            return response;
+            return finish(response);
         }
     }
     let body = match read_body_limited(body, limit).await {
         Ok(body) => body,
-        Err(err) => return error_response(&err, &request_id),
+        Err(err) => return finish(error_response(&err, &request_id)),
     };
 
     let snapshot = RequestSnapshot {
@@ -645,11 +751,11 @@ async fn handle_request(
                 error = %err,
                 "请求在网关自身被拒"
             );
-            return error_response(&err, &request_id);
+            return finish(error_response(&err, &request_id));
         }
     };
     match state.pipeline.execute(prepared).await {
-        Ok(response) => with_request_id(response, &request_id),
+        Ok(response) => finish(with_request_id(response, &request_id)),
         Err(err) => {
             tracing::warn!(
                 code = err.code(),
@@ -658,7 +764,7 @@ async fn handle_request(
                 error = %err,
                 "请求在网关自身被拒（分发/失败链）"
             );
-            error_response(&err, &request_id)
+            finish(error_response(&err, &request_id))
         }
     }
 }
@@ -1468,6 +1574,175 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(value["endpoint"], "wildcard");
         assert_eq!(value["body"], json!({"foo": 1}));
+    }
+
+    // ---------------------------------------------------------- 调试头开关（[10 §1.4]）
+
+    /// `gateway.debug_headers: false` 时，**全部** `x-tokenagency-*` 都不出现；
+    /// 但**错误信封 body 里的 `request_id` 保留**（那是内容，不是头）。
+    #[tokio::test]
+    async fn debug_headers_can_be_switched_off_while_the_envelope_keeps_request_id() {
+        let mut cfg = test_cfg();
+        cfg.gateway.debug_headers = false;
+        cfg.gateway.local_key = Some("local-secret".into());
+        let state = state_with(cfg, IngressOptions::default(), KernelState::Ready);
+
+        // 成功路径：没有任何 x-tokenagency-*
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header(header::AUTHORIZATION, "Bearer local-secret")
+            .body(Body::from(b"{\"model\":\"claude-sonnet-4-5\"}".to_vec()))
+            .unwrap();
+        let (status, headers, _) = send(state.clone(), request).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            !headers.keys().any(|name| name.as_str().starts_with("x-tokenagency-")),
+            "关掉调试头后成功响应里也不该有：{headers:?}"
+        );
+
+        // 错误路径：同样没有头，但信封 body 里 request_id 仍在
+        let (status, headers, value) =
+            send(state, json_request("POST", "/v1/chat/completions", b"{\"model\":\"m\"}")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(!headers.keys().any(|name| name.as_str().starts_with("x-tokenagency-")));
+        assert_eq!(value["error"]["code"], "TA-1001");
+        assert!(
+            value["error"]["request_id"].as_str().is_some_and(|id| !id.is_empty()),
+            "信封内部的 request_id 不受调试头开关影响：{value}"
+        );
+    }
+
+    // ---------------------------------------------------------- 暂停闸门
+
+    /// 暂停期间：**上游收到的新请求数必须是 0**，且拒绝理由要让人看出"是我自己按的暂停"。
+    #[tokio::test]
+    async fn paused_gateway_rejects_new_requests_without_calling_upstream() {
+        use crate::runtime::{build_runtime, tests::*};
+
+        let dialer = Arc::new(RecordingDialer::default());
+        let deps = test_deps(cfg_with_channels(0), dialer.clone());
+        let runtime = build_runtime(&deps, test_parts());
+
+        // 暂停前先确认它本来是通的（否则下面"0 个请求"可能只是链路本来就坏）
+        let body = br#"{"model":"claude-sonnet-4-5"}"#;
+        let (status, _, _) =
+            send(runtime.state.clone(), json_request("POST", "/v1/messages", body)).await;
+        assert_eq!(status, StatusCode::OK);
+        let calls_before = dialer.urls.lock().map(|g| g.len()).unwrap_or(0);
+        assert_eq!(calls_before, 1);
+
+        runtime.gate.pause();
+        assert_eq!(runtime.gate.state(), GatewayRunState::Paused);
+
+        let (status, _, value) =
+            send(runtime.state.clone(), json_request("POST", "/v1/messages", body)).await;
+        // **先断上游请求数**：这是本功能的产品要害（"暂停"若拦不住请求，其余都是装饰）。
+        // 放在状态码之前，红的时候才能证明**这条**断言本身有牙。
+        let calls_after = dialer.urls.lock().map(|g| g.len()).unwrap_or(0);
+        assert_eq!(calls_after, calls_before, "暂停期间上游必须收到 0 个新请求");
+        // 再断拒绝的形状（三条正好钉住"客户端会不会重试"这件担忧）：
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{value}");
+        assert_eq!(value["error"]["code"], "TA-1005");
+        assert_eq!(value["error"]["type"], "tokenagency_gateway_paused");
+        assert_eq!(value["error"]["retryable"], false, "暂停不是可重试的故障：{value}");
+        let message = value["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.contains("暂停"), "拒绝理由必须让人看出是用户按的暂停：{value}");
+        println!(
+            "=== 暂停闸门证据 ===\npaused_state={:?}\n暂停前上游请求数={calls_before}  暂停后={calls_after}\n响应={value}",
+            runtime.gate.state()
+        );
+    }
+
+    /// 恢复后请求重新流通；`/healthz` 在暂停期间**仍然可用**（托盘要显示"已暂停"，不是"失联"）。
+    #[tokio::test]
+    async fn resume_lets_requests_flow_again_and_healthz_survives_the_pause() {
+        use crate::runtime::{build_runtime, tests::*};
+
+        let dialer = Arc::new(RecordingDialer::default());
+        let deps = test_deps(cfg_with_channels(0), dialer.clone());
+        let runtime = build_runtime(&deps, test_parts());
+        runtime.gate.pause();
+
+        // healthz 不受暂停影响
+        let (status, _, value) =
+            send(runtime.state.clone(), json_request("GET", "/healthz", b"")).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        assert_eq!(value["status"], "ok");
+
+        // 恢复 → 请求重新流通
+        runtime.gate.resume();
+        assert_eq!(runtime.gate.state(), GatewayRunState::Running);
+        let body = br#"{"model":"claude-sonnet-4-5"}"#;
+        let (status, _, _) =
+            send(runtime.state.clone(), json_request("POST", "/v1/messages", body)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(dialer.urls.lock().map(|g| g.len()).unwrap_or(0), 1);
+    }
+
+    /// **在途请求不被暂停取消**（与 G2③ 的取消语义正交）。
+    ///
+    /// 用一个"卡住直到被放行"的拨号器：请求已经进入管线之后才 `pause()`，
+    /// 放行后它必须仍然正常返回 200。
+    #[tokio::test]
+    async fn an_in_flight_request_is_not_cancelled_by_pausing() {
+        use crate::dispatch::{HealthReport, OutboundDialer, UpstreamRequest, UpstreamResponse};
+        use crate::runtime::{build_runtime, tests::*};
+        use ta_core::types::LaneId;
+
+        struct GatedDialer {
+            entered: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        }
+
+        #[async_trait]
+        impl OutboundDialer for GatedDialer {
+            async fn execute(
+                &self,
+                _lane: &LaneId,
+                _req: UpstreamRequest,
+            ) -> ta_core::error::Result<UpstreamResponse> {
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(UpstreamResponse {
+                    status: StatusCode::OK,
+                    headers: HeaderMap::new(),
+                    body: crate::dispatch::byte_stream_from_bytes(Bytes::from_static(b"{}")),
+                })
+            }
+            async fn health(&self, lane: &LaneId) -> HealthReport {
+                HealthReport { lane_id: lane.clone(), ok: true, latency_ms: None, error: None }
+            }
+        }
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let deps = test_deps(
+            cfg_with_channels(0),
+            Arc::new(GatedDialer { entered: entered.clone(), release: release.clone() }),
+        );
+        let runtime = build_runtime(&deps, test_parts());
+
+        let request = json_request(
+            "POST",
+            "/v1/messages",
+            br#"{"model":"claude-sonnet-4-5","stream":false}"#,
+        );
+        let app = router(runtime.state.clone());
+        let handle = tokio::spawn(async move {
+            tower::ServiceExt::oneshot(app, request).await.expect("路由必须能处理")
+        });
+
+        // 等它**真的进了管线**（拨号器已收到请求），再暂停
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+            .await
+            .expect("请求应当到达拨号器");
+        runtime.gate.pause();
+        assert!(runtime.gate.is_paused());
+        release.notify_one();
+
+        let response = handle.await.expect("join");
+        assert_eq!(response.status(), StatusCode::OK, "在途请求不该因为随后的暂停被取消");
     }
 
     #[test]

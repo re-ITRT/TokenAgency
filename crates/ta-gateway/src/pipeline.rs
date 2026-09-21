@@ -27,14 +27,14 @@ use ta_core::domain::behavior::resolve_lane;
 use ta_core::domain::{ChannelConfig, ConfigDoc, NoCandidateAction};
 use ta_core::error::{Result, TaError};
 use ta_core::quota::{QuotaLedger, QuotaObservation};
-use ta_core::routing::{ChannelRuntimeState, RouteContext, RouteHints};
+use ta_core::routing::{ChannelRuntimeState, EliminateReason, RouteContext, RouteHints};
 use ta_core::types::{ChannelId, CredentialId, LaneId, Protocol};
 
 use crate::dispatch::{self, ByteStream, OutboundDialer, UpstreamRequest, UpstreamResponse};
 use crate::ingress::{
     build_prepared_request, PrepareInput, PreparedRequest, RequestPipeline, RequestSnapshot,
 };
-use crate::passthrough::PassthroughPolicy;
+use crate::passthrough::{HeaderDiff, PassthroughPolicy};
 use crate::runtime::RoutingPlanner;
 
 // ================================================================ 接缝（别的包实现）
@@ -91,6 +91,41 @@ pub struct AttemptRecord {
 #[async_trait]
 pub trait AttemptSink: Send + Sync {
     async fn on_attempt(&self, record: AttemptRecord);
+
+    /// **请求结束（每次请求恰好一次）**。默认空实现：只想看尝试的 sink 不必实现它。
+    ///
+    /// 为什么需要它：一条 trace 是**请求级**的（`TraceRecord` 里有尝试链、总耗时、
+    /// `header_diff`），而 `on_attempt` 只知道单次尝试。没有这个钩子，sink 就只能靠
+    /// "攒着等超时"或"猜哪次是最后一次"，两种都会在慢请求上出错。
+    async fn on_request_complete(&self, _summary: RequestTraceSummary) {}
+}
+
+/// 请求级 trace 的输入（由管线组装，sink 负责落库）。
+///
+/// 字段按 `ta_store::TraceRecord` 的需要挑 —— 这里**不引入 ta-store 的类型**，
+/// 是为了让 sink 接口保持窄（测试里可以用假 sink；换存储也不用改管线）。
+#[derive(Debug, Clone)]
+pub struct RequestTraceSummary {
+    pub request_id: String,
+    pub ts_ms: i64,
+    /// 客户端发来的逻辑模型名
+    pub model: Option<String>,
+    pub upstream_model: String,
+    pub protocol_in: Protocol,
+    pub protocol_out: Protocol,
+    pub stream: bool,
+    /// 最终答复客户端的那个通道（失败链走完时是"最后一个说话的上游"）
+    pub chosen_channel: Option<ChannelId>,
+    pub lane: Option<LaneId>,
+    /// 自检：**正常恒为空**，非空说明网关自己吞/加了头（[docs/03 §7.4]）
+    pub header_diff: Option<HeaderDiff>,
+    /// 客户端最终看到的 HTTP 状态码（上游透传的就是上游的码）
+    pub status: u16,
+    pub total_ms: u32,
+    /// 首字节耗时（流式就是拿到上游响应头的时间）
+    pub ttfb_ms: Option<u32>,
+    /// 网关自身错误的码 + 人话（上游透传的错误**不进这里** —— 那是上游的话）
+    pub error: Option<String>,
 }
 
 /// 计量接缝（G4 实现）：拿响应 body 去解析 usage。
@@ -442,6 +477,41 @@ impl Pipeline {
         self.deps.sink.on_attempt(record).await;
     }
 
+    /// 请求级 trace 的**唯一出口**：所有 return 之前都经这里，保证"每个请求恰好一条"。
+    #[allow(clippy::too_many_arguments)]
+    async fn emit_request_trace(
+        &self,
+        prepared: &PreparedRequest,
+        status: u16,
+        error: Option<String>,
+        chosen_channel: Option<&ChannelId>,
+        lane: Option<&LaneId>,
+        ttfb_ms: Option<u32>,
+        total_ms: u32,
+        now_ms: i64,
+    ) {
+        self.deps
+            .sink
+            .on_request_complete(RequestTraceSummary {
+                request_id: prepared.request_id.clone(),
+                ts_ms: now_ms,
+                model: prepared.model.clone(),
+                upstream_model: prepared.upstream_model.clone(),
+                protocol_in: prepared.client_protocol,
+                protocol_out: prepared.protocol,
+                stream: prepared.stream,
+                chosen_channel: chosen_channel.cloned(),
+                lane: lane.cloned(),
+                // 自检信息一定要落库：非空就说明网关自己动了头（[docs/03 §7.4]）
+                header_diff: Some(prepared.header_diff.clone()),
+                status,
+                total_ms,
+                ttfb_ms,
+                error,
+            })
+            .await;
+    }
+
     /// 一次尝试的记录器（把"谁/第几次"与"结果"分开，避免一个函数八个参数）。
     fn attempt<'a>(
         &self,
@@ -541,6 +611,19 @@ impl RequestPipeline for Pipeline {
             decision.candidates = self.all_channels_for(&cfg, &hints);
         }
         if decision.candidates.is_empty() {
+            // [docs/11 §5] 的两分法在这里也适用：**本地账本**判定"候选全都耗尽了"时，
+            // 我们**根本没有问过上游** → 没有"上游说的话"可以透传 → 由我们自己开口，
+            // 而且要说清是**额度**问题（402 / TA-2004），不是含糊的"无可用通道"（415 / TA-2003）。
+            // 判据是**全部淘汰原因都是 `QuotaExhausted`**：只要还夹着别的理由（标签排除、
+            // 冷却、lane 降级…），那就不是"额度问题"，说成 402 会误导用户去充值。
+            let all_quota_exhausted = !decision.eliminated.is_empty()
+                && decision
+                    .eliminated
+                    .iter()
+                    .all(|(_, reason)| *reason == EliminateReason::QuotaExhausted);
+            if all_quota_exhausted {
+                return Err(TaError::AllChannelsExhausted);
+            }
             return Err(TaError::NoViableChannel {
                 message: format!(
                     "模型 {} 没有可用通道（淘汰 {} 个）",
@@ -566,6 +649,8 @@ impl RequestPipeline for Pipeline {
     }
 
     async fn execute(&self, prepared: PreparedRequest) -> Result<axum::response::Response> {
+        // 请求级 trace 的总耗时从这里起算（含失败链上的所有尝试）
+        let started_at = std::time::Instant::now();
         let cfg = self.deps.cfg.load_full();
         let now_ms = self.deps.clock.now_ms();
         let max_attempts = cfg.gateway.retry.attempts_for(prepared.stream).max(1);
@@ -584,9 +669,9 @@ impl RequestPipeline for Pipeline {
         let mut saw_exhausted = false;
         let mut saw_other = false;
         let mut attempt: u32 = 0;
-        // 上游**真正回了话**的最后一个响应（429/402/5xx）。失败链走完若没有候选成功，
-        // 就把它原样交给客户端 —— 见函数末尾与 [docs/11 §5]。
-        let mut last_upstream: Option<UpstreamResponse> = None;
+        // 上游**真正回了话**的最后一个响应（429/402/5xx），连同它的通道/线路/第几次尝试。
+        // 失败链走完若没有候选成功，就把它原样交给客户端 —— 见函数末尾与 [docs/11 §5]。
+        let mut last_upstream: Option<(UpstreamResponse, ChannelId, LaneId, u32)> = None;
         // 连接失败的候选：等队列空了再重试一次（K1）。
         //
         // ⚠️ 它**只记住最后一个** lane 级失败的候选：若 A、B 两个候选都是 lane 连接失败，
@@ -673,11 +758,11 @@ impl RequestPipeline for Pipeline {
                         last_error = Some(TaError::AllChannelsFailed {
                             message: format!("通道 {channel_id} 返回 {}", upstream.status.as_u16()),
                         });
-                        // 上游**说了话**（429/402/5xx）→ 记住它的原话。
-                        // 若整条失败链走完都没有候选成功，客户端必须看到**上游的原话**
-                        // 而不是我们的信封（[docs/11 §5] 第 1 行：哪怕 4xx/5xx 也原样透传）。
+                        // 上游**说了话**（429/402/5xx）→ 记住它的原话**以及它的来源**，
+                        // 失败链走完没人成功时原样交给客户端，并让 `x-tokenagency-*` 能指出
+                        // "这句话是哪个通道/哪条线路/第几次尝试说的"。
                         // 边界就在"上游说不说话"：没听到（传输失败）才由我们包装。
-                        last_upstream = Some(upstream);
+                        last_upstream = Some((upstream, channel_id.clone(), lane.clone(), attempt));
                         continue;
                     }
 
@@ -715,7 +800,24 @@ impl RequestPipeline for Pipeline {
                                 "客户端在流中途断连：放弃上游连接（不重试、不再写）"
                             );
                         });
-                        return Ok(dispatch::client_response_from_parts(status, headers, stream));
+                        self.emit_request_trace(
+                            &prepared,
+                            status.as_u16(),
+                            None,
+                            Some(&channel_id),
+                            Some(&lane),
+                            Some(latency_ms),
+                            started_at.elapsed().as_millis() as u32,
+                            now_ms,
+                        )
+                        .await;
+                        return Ok(with_debug_headers(
+                            dispatch::client_response_from_parts(status, headers, stream),
+                            &cfg,
+                            &channel_id,
+                            &lane,
+                            attempt,
+                        ));
                     }
 
                     // 非流式：body 还没吐给客户端，读失败仍然可以换通道
@@ -736,10 +838,27 @@ impl RequestPipeline for Pipeline {
                                 false,
                             ))
                             .await;
-                            return Ok(dispatch::client_response_from_bytes(
-                                status,
-                                upstream.headers,
-                                bytes,
+                            self.emit_request_trace(
+                                &prepared,
+                                status.as_u16(),
+                                None,
+                                Some(&channel_id),
+                                Some(&lane),
+                                Some(latency_ms),
+                                started_at.elapsed().as_millis() as u32,
+                                now_ms,
+                            )
+                            .await;
+                            return Ok(with_debug_headers(
+                                dispatch::client_response_from_bytes(
+                                    status,
+                                    upstream.headers,
+                                    bytes,
+                                ),
+                                &cfg,
+                                &channel_id,
+                                &lane,
+                                attempt,
                             ));
                         }
                         Err(err) => {
@@ -793,17 +912,58 @@ impl RequestPipeline for Pipeline {
         // 2) **我们没听到上游说话**（连接被拒/TLS/超时/读到一半断）→ 用我们自己的码 +
         //    `retryable` + 人话。裸 socket 错误没有可透传的上游语义，直接吐出去只会被
         //    误判成"中转站的服务没了"。
-        if let Some(upstream) = last_upstream {
-            return Ok(dispatch::into_client_response(upstream));
+        if let Some((upstream, channel_id, lane, attempts)) = last_upstream {
+            self.emit_request_trace(
+                &prepared,
+                upstream.status.as_u16(),
+                // 上游说的错**不进** `error`（那是上游的话，不是我们的判断）
+                None,
+                Some(&channel_id),
+                Some(&lane),
+                None,
+                started_at.elapsed().as_millis() as u32,
+                now_ms,
+            )
+            .await;
+            return Ok(with_debug_headers(
+                dispatch::into_client_response(upstream),
+                &cfg,
+                &channel_id,
+                &lane,
+                attempts,
+            ));
         }
 
         // 没有任何上游响应：额度全耗尽与"都挂了"是两种不同的对外语义
         if !saw_other && saw_exhausted {
+            self.emit_request_trace(
+                &prepared,
+                TaError::AllChannelsExhausted.http_status(),
+                Some(TaError::AllChannelsExhausted.to_string()),
+                None,
+                None,
+                None,
+                started_at.elapsed().as_millis() as u32,
+                now_ms,
+            )
+            .await;
             return Err(TaError::AllChannelsExhausted);
         }
-        Err(last_error.unwrap_or(TaError::NoViableChannel {
+        let err = last_error.unwrap_or(TaError::NoViableChannel {
             message: "所有候选通道都不可用".into(),
-        }))
+        });
+        self.emit_request_trace(
+            &prepared,
+            err.http_status(),
+            Some(err.to_string()),
+            None,
+            None,
+            None,
+            started_at.elapsed().as_millis() as u32,
+            now_ms,
+        )
+        .await;
+        Err(err)
     }
 }
 
@@ -823,6 +983,39 @@ impl Pipeline {
             .map(|channel| channel.id.clone())
             .collect()
     }
+}
+
+/// [docs/10 §1.4] 的 `x-tokenagency-*` 调试头。
+///
+/// 三个原则：
+/// 1. **只追加，绝不改上游的头** —— 这是加在响应上的"我们自己的补充信息"，
+///    不是对上游响应的改写（[docs/10 §1.4] 末句）。
+/// 2. `gateway.debug_headers: false` 时**一个都不加**（有些客户端对未知头敏感）。
+/// 3. **不写猜的值**：`x-tokenagency-usage-source` 只有在计量**真的**给出来源时才加
+///    （[docs/11 §6] 铁律"不猜不估算"）；没有数据源就留空 —— 编一个 `upstream` 出来，
+///    比没有这个头更坏。
+fn with_debug_headers(
+    mut response: axum::response::Response,
+    cfg: &ConfigDoc,
+    channel_id: &ChannelId,
+    lane: &LaneId,
+    attempts: u32,
+) -> axum::response::Response {
+    if !cfg.gateway.debug_headers {
+        return response;
+    }
+    let headers = response.headers_mut();
+    for (name, value) in
+        [("x-tokenagency-channel", channel_id.as_str()), ("x-tokenagency-lane", lane.as_str())]
+    {
+        if let Ok(value) = http::HeaderValue::from_str(value) {
+            headers.insert(name, value);
+        }
+    }
+    if let Ok(value) = http::HeaderValue::from_str(&attempts.to_string()) {
+        headers.insert("x-tokenagency-attempts", value);
+    }
+    response
 }
 
 fn meter_context(
@@ -915,6 +1108,24 @@ mod tests {
         Ok { status: u16, headers: Vec<(&'static str, &'static str)>, body: &'static str },
         LaneDown,
         Transport(String),
+    }
+
+    /// 一个"候选全被淘汰"的策略：用来测 [docs/11 §5] 里"谁开口"的分界
+    /// （本地账本耗尽 → 我们开口 TA-2004；其它理由 → TA-2003）。
+    struct EliminatingPolicy {
+        eliminated: Vec<(ChannelId, EliminateReason)>,
+    }
+
+    impl PolicyEngine for EliminatingPolicy {
+        fn decide(&self, _hints: &RouteHints, _ctx: &RouteContext) -> RouteDecision {
+            RouteDecision {
+                candidates: vec![],
+                eliminated: self.eliminated.clone(),
+                on_no_candidate: NoCandidateAction::Error,
+                selector: Selector::Priority,
+                ..Default::default()
+            }
+        }
     }
 
     #[derive(Default)]
@@ -1179,6 +1390,60 @@ mod tests {
             .expect_err("没有候选必须报错");
         assert_eq!(err.code(), "TA-2003");
         assert_eq!(err.http_status(), 415);
+    }
+
+    /// [docs/11 §5]：**本地账本**判定"候选全都耗尽"时 —— 我们**没问过上游**，
+    /// 没有"上游说的话"可以透传 → 由我们自己开口，且必须说清是**额度**（402 / TA-2004），
+    /// 不是含糊的"无可用通道"（415 / TA-2003）。
+    ///
+    /// 顺带钉住"没问过上游"这件事：`dialer.calls() == 0`。
+    #[tokio::test]
+    async fn locally_exhausted_candidates_report_2004_without_calling_upstream() {
+        let dialer = Arc::new(ScriptedDialer::default());
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(EliminatingPolicy {
+                eliminated: vec![
+                    (ChannelId::new("ch-a"), EliminateReason::QuotaExhausted),
+                    (ChannelId::new("ch-b"), EliminateReason::QuotaExhausted),
+                ],
+            }),
+            dialer.clone(),
+            Arc::new(RecordingSink::default()),
+        );
+        let err = pipeline
+            .prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#))
+            .await
+            .expect_err("本地都说耗尽了");
+        assert_eq!(err.code(), "TA-2004", "本地额度耗尽 = 我们开口的 402");
+        assert_eq!(err.http_status(), 402);
+        assert_eq!(dialer.calls(), 0, "本地判定耗尽时不该有任何上游调用");
+    }
+
+    /// 反向控制：只要淘汰理由**不全是**额度（标签排除 / 冷却 / lane 降级…），
+    /// 就不能说成 402 —— 否则会把用户骗去充值。
+    #[tokio::test]
+    async fn non_quota_eliminations_stay_2003_even_if_one_of_them_is_quota() {
+        for eliminated in [
+            vec![(ChannelId::new("ch-a"), EliminateReason::TaggedOut)],
+            vec![
+                (ChannelId::new("ch-a"), EliminateReason::QuotaExhausted),
+                (ChannelId::new("ch-b"), EliminateReason::TaggedOut),
+            ],
+        ] {
+            let pipeline = pipeline(
+                test_cfg("https://a.example/v1", "https://b.example/v1"),
+                Arc::new(EliminatingPolicy { eliminated }),
+                Arc::new(ScriptedDialer::default()),
+                Arc::new(RecordingSink::default()),
+            );
+            let err = pipeline
+                .prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#))
+                .await
+                .expect_err("没有候选必须报错");
+            assert_eq!(err.code(), "TA-2003", "不全是额度问题就不该报 402");
+            assert_eq!(err.http_status(), 415);
+        }
     }
 
     // ---------------------------------------------------------- 失败转移
@@ -1781,6 +2046,173 @@ mod tests {
         assert_eq!(envelope["error"]["retryable"], true);
         assert_eq!(envelope["error"]["type"], "tokenagency_lane_unavailable");
         assert_eq!(envelope["error"]["request_id"], "req_test");
+    }
+
+    // ---------------------------------------------------------- trace 落库（C4）
+
+    /// **C4 的端到端证据**：一次真实请求（ch-a 500 → ch-b 200）写进**真 SQLite trace 表**，
+    /// 再按 `request_id` 查回来，必须能看到完整的尝试链与最终结果。
+    ///
+    /// 用 `ta_store::open_memory()`（跑过迁移的真库）+ `SqliteTraceStore`，
+    /// 而不是假 store —— 假 store 只能证明"我们调用了一个方法"，证明不了"表里真有这条轨迹"。
+    #[tokio::test]
+    async fn one_request_writes_one_queryable_trace_with_its_attempt_chain() {
+        use crate::trace::TraceStoreSink;
+        use ta_store::TraceStore;
+
+        let pool = ta_store::open_memory().await.expect("内存库");
+        let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+        let store: Arc<dyn TraceStore> =
+            Arc::new(ta_store::SqliteTraceStore::with_clock(pool, clock.clone()));
+        let sink: Arc<dyn AttemptSink> = Arc::new(TraceStoreSink::new(store.clone()));
+
+        let cfg = Arc::new(arc_swap::ArcSwap::from_pointee(test_cfg(
+            "https://a.example/v1",
+            "https://b.example/v1",
+        )));
+        let pipeline = Pipeline::new(Arc::new(PipelineDeps {
+            cfg: cfg.clone(),
+            clock,
+            planner: Arc::new(crate::runtime::PolicySelectorPlanner::new(
+                cfg,
+                Arc::new(FixedPolicy {
+                    candidates: vec!["ch-a", "ch-b"],
+                    on_no_candidate: NoCandidateAction::Error,
+                }),
+                Arc::new(ChainSelector),
+            )),
+            quota: Arc::new(NoQuota),
+            secrets: Arc::new(StaticSecrets::new([
+                ("${secret:a}", SECRET),
+                ("${secret:b}", SECRET),
+            ])),
+            dialer: Arc::new(ScriptedDialer::with(vec![
+                Scripted::Ok { status: 500, headers: vec![], body: "{}" },
+                Scripted::Ok { status: 200, headers: vec![], body: r#"{"ok":true}"# },
+            ])),
+            passthrough: FullPassthrough::shared(),
+            sink,
+            meter: None,
+        }));
+
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let request_id = prepared.request_id.clone();
+        let response = pipeline.execute(prepared).await.expect("第二个通道应当成功");
+        assert_eq!(response.status(), http::StatusCode::OK);
+        // 流/非流式的 body 都要被丢弃，否则 trace 写不写得到不影响断言
+        drop(response);
+
+        let detail = store
+            .get(&request_id)
+            .await
+            .expect("查询 trace 不该报错")
+            .unwrap_or_else(|| panic!("trace 表里必须有 {request_id} 这一条"));
+        assert_eq!(detail.row.request_id, request_id);
+        assert_eq!(detail.row.model, "claude-sonnet-4-5");
+        assert_eq!(detail.row.status, 200);
+        assert_eq!(detail.attempts.len(), 2, "两次尝试都要在链里：{:?}", detail.attempts);
+        assert_eq!(detail.attempts[0].channel.as_deref(), Some("ch-a"));
+        assert_eq!(detail.attempts[0].status, Some(500));
+        assert_eq!(detail.attempts[1].channel.as_deref(), Some("ch-b"));
+        assert_eq!(detail.attempts[1].status, Some(200));
+        assert!(
+            detail.header_diff.as_ref().is_none_or(|diff| diff.is_empty()),
+            "自检 header_diff 必须为空（非空=网关自己动过头）：{:?}",
+            detail.header_diff
+        );
+        // 拿来贴进 PR 的真实轨迹
+        println!(
+            "=== 真轨迹（trace 表读回）===\nrequest_id={}\nmodel={} status={} outcome={} total_ms={}\nattempts={:?}",
+            detail.row.request_id,
+            detail.row.model,
+            detail.row.status,
+            detail.row.outcome,
+            detail.row.total_ms,
+            detail.attempts
+        );
+    }
+
+    /// 三个头必须指出**真实**的来源：通道、线路、**第几次尝试**。
+    /// 这里让 ch-a 先 429 再换 ch-b 成功 → `attempts` 必须是 2（不是常数、不是 1）。
+    #[tokio::test]
+    async fn debug_headers_carry_the_real_channel_lane_and_attempt_count() {
+        let dialer = Arc::new(ScriptedDialer::with(vec![
+            Scripted::Ok { status: 429, headers: vec![], body: "{}" },
+            Scripted::Ok { status: 200, headers: vec![], body: r#"{"ok":true}"# },
+        ]));
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a", "ch-b"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer,
+            Arc::new(RecordingSink::default()),
+        );
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let response = pipeline.execute(prepared).await.expect("第二个通道应当成功");
+        assert_eq!(response.status(), http::StatusCode::OK);
+        assert_eq!(response.headers().get("x-tokenagency-channel").unwrap(), "ch-b");
+        assert_eq!(response.headers().get("x-tokenagency-lane").unwrap(), "lane-tokyo");
+        assert_eq!(response.headers().get("x-tokenagency-attempts").unwrap(), "2");
+    }
+
+    /// 上游错误被透传时，`x-tokenagency-*` 也要指出"这句话是谁说的"，
+    /// 且**不许动上游自己的头**（我们只追加）。
+    #[tokio::test]
+    async fn debug_headers_ride_along_the_passthrough_without_touching_upstream_headers() {
+        let dialer = Arc::new(ScriptedDialer::with(vec![Scripted::Ok {
+            status: 429,
+            headers: vec![("x-upstream-note", "keep-me"), ("retry-after", "9")],
+            body: "{}",
+        }]));
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer,
+            Arc::new(RecordingSink::default()),
+        );
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let response = pipeline.execute(prepared).await.expect("429 透传");
+        assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get("x-upstream-note").unwrap(), "keep-me");
+        assert_eq!(response.headers().get("retry-after").unwrap(), "9");
+        assert_eq!(response.headers().get("x-tokenagency-channel").unwrap(), "ch-a");
+        assert_eq!(response.headers().get("x-tokenagency-attempts").unwrap(), "1");
+    }
+
+    /// `gateway.debug_headers: false` → **一个都不加**（有些客户端对未知头敏感）。
+    #[tokio::test]
+    async fn debug_headers_are_absent_when_switched_off() {
+        let mut cfg = test_cfg("https://a.example/v1", "https://b.example/v1");
+        cfg.gateway.debug_headers = false;
+        let pipeline = pipeline(
+            cfg,
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            Arc::new(ScriptedDialer::with(vec![Scripted::Ok {
+                status: 200,
+                headers: vec![],
+                body: r#"{"ok":true}"#,
+            }])),
+            Arc::new(RecordingSink::default()),
+        );
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let response = pipeline.execute(prepared).await.expect("应当成功");
+        assert!(
+            !response.headers().keys().any(|name| name.as_str().starts_with("x-tokenagency-")),
+            "关掉调试头之后一个都不该出现：{:?}",
+            response.headers()
+        );
     }
 
     #[tokio::test]
