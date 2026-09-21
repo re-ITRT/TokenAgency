@@ -1,3 +1,11 @@
+> ⚠️ **字段名以 [config.example.yaml](../config.example.yaml) 为准。** 该文件是**从 Rust 类型生成的**
+> （`pwsh -File scripts/gen-example-config.ps1`），并有防漂移测试 `crates/ta-core/tests/example_config_guard.rs` 守卫。
+> 本文只解释**语义与选型理由**；正文里若有与示例不一致的字段名，以示例为准。
+>
+> 命名纪律：带单位的字段一律带后缀 —— `interval_s` / `ttl_h` / `cooldown_s` / `connect_s` / `read_s` / `tolerance_ms`。
+> 曾经因为示例里写成 `interval` / `ttl` / `cooldown`，导致这些值**静默落进 `extra` 未知字段、运行时不生效却不报错**，
+> 是员工 P1 实测抓出来的。这是本项目最阴险的一类 bug，所以加了生成 + 守卫两道机制。
+
 # 02 · 领域模型与配置
 
 ## 1. 领域模型关系
@@ -41,7 +49,7 @@ ProxySubscription (机场订阅 / 手写节点)
 | `auth.header` | string? | 如 `x-api-key`（anthropic）、`api-key`（azure） |
 | `headers` | map | 附加头。**默认只补缺，不覆盖客户端同名头**（`on_conflict: keep_client`） |
 | `passthrough` | obj | 正常情况**不需要配置**：`header_mode: pass`、`body: preserve` 是默认也是唯一推荐值。允许改成白名单只是想让人确信"我没有被强制全透传"，改错会吞字段 |
-| `timeout` | obj | `connect` / `read`（流式要长）/ `total` |
+| `timeout` | obj | `connect_s` / `read_s`（流式要长）/ `total_s` |
 | `tls` | obj | `insecure`、`extra_ca`、`min_version` |
 | `model_prefix` | string? | 有些中转要求 `openai/gpt-4o`，这里统一加前缀 |
 | `enabled` | bool | |
@@ -84,7 +92,7 @@ quota:
 | `group` | **订阅里自带的组名**（`kind: subscription_group` 时）。机场的「🇯🇵 日本」「♻️ 自动选择」直接用 |
 | `group_type` | `select` \| `url-test` \| `fallback` \| `load-balance`（组自带，也允许用户覆盖） |
 | `node` | 固定节点名（`kind: subscription_node`） |
-| `filter` | lane 级节点过滤（正则 include/exclude），用于"这条线只要日本节点" |
+| `filter` | lane 级节点过滤的**正则串**（`Option<String>`，对应内核 `proxy-providers[].filter`）。**不是 mapping**；排除用同级的 `exclude_filter` |
 | `dialer` | `builtin`（默认）\| `local_proxy`（该 lane 回退到外部代理端口，见 [04 §3](04-network-core.md)） |
 | `health` | 运行态：`ok` \| `degraded` \| `down`、当前节点、延迟、最近失败时间 |
 
@@ -105,9 +113,9 @@ policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.defau
 | `id`, `name`, `url` | |
 | `user_agent` | ★ 很多机场按 UA 返回不同格式（clash / surge / v2ray），默认伪装成 Clash 客户端 |
 | `format` | `auto`（默认，靠响应头 + 内容嗅探）\| `clash` \| `base64_links` \| `plain_links` |
-| `interval` | 自动更新周期（默认 6h；订阅返回 `Profile-Update-Interval` 时采用其建议值） |
-| `filter.include/exclude` | 正则，剔除"剩余流量/到期时间/官网/防失联"这类假节点 |
-| `health_check` | `url`（**默认用真实上游端点**，不是 google）、`interval`、`tolerance`（ms） |
+| `interval_s` | 自动更新周期（默认 21600 秒 = 6h；订阅返回 `Profile-Update-Interval` 时采用其建议值） |
+| `filter.include/exclude` | 正则，剔除"剩余流量/到期时间/官网/防失联"这类假节点（**只有订阅级过滤是 mapping**） |
+| `health_check` | `url`（**默认用真实上游端点**，不是 google）、`interval_s`、`tolerance_ms` |
 | `keep_versions` | 保留最近 N 个版本（默认 3），坏更新时可一键回滚 |
 | `parsed` | 运行态：节点数、组数、未识别协议列表、最后解析时间、解析器版本 |
 | `rules_raw` | 运行态：订阅自带的 rules / rule-providers（**只读展示，不执行**，见 [04 §5.5](04-network-core.md)） |
@@ -145,7 +153,7 @@ policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.defau
   model: gpt-4o
   members: [ch-openai-personal, ch-relay-a, ch-relay-b]
   selector: sticky_then_priority
-  sticky: { enabled: true, ttl: 12h, key: [header:x-session-id, body_hash] }
+  sticky: { enabled: true, ttl_h: 12, key: [header:x-session-id, body_hash] }
   release_on: [quota_exhausted, hard_error, user_pin_change]
 ```
 
@@ -197,7 +205,7 @@ policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.defau
 | `exclude_channels` | 剔除指定通道（可叠加） |
 | `require_tag` / `exclude_tag` | 按标签收窄候选（如 `exclude_tag: no-vision`） |
 | `selector` | 覆盖选择器 |
-| `failover` | `on`、`max_attempts`、`cooldown`、`backoff` |
+| `failover` | `on`、`max_attempts`、`cooldown_s`、`backoff`（`on` 的取值用 `http429` / `http402` / `http5xx`，**不带下划线**，见 [config.example.yaml](../config.example.yaml)） |
 | `on_no_candidate` | `error`（默认）\| `use_any` |
 | `pin_sticky` | 强制锁定到某通道（"这几天就一直用 B 家"） |
 | `transform` | 追加改写 |
@@ -237,6 +245,13 @@ CREATE TABLE quota_state (              -- 由账本 + 响应头 + 手工额度�
   used_tokens INTEGER, used_requests INTEGER, used_cost REAL,
   reported_remaining REAL, reported_reset_at INTEGER,
   state TEXT,                           -- ok | soft | exhausted | unknown
+  -- 下面两列在第 7 轮补入（迁移 0002）。
+  -- 原因：ta_core::quota::QuotaState 是冻结类型、没有 invalid 位，
+  -- 但"key 失效"必须与"额度耗尽"区分 —— 前者窗口滚动也不该解除，
+  -- 否则失效的 key 会被反复启用、白白烧掉尝试次数。
+  -- 语义位定义在 ta_core::quota::backend::QuotaRecord，以那里为准。
+  hard_exhausted INTEGER NOT NULL DEFAULT 0,
+  invalid        INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER
 );
 

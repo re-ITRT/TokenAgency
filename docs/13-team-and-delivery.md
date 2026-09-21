@@ -148,6 +148,8 @@
 | L6 | **并行度必须与代码边界对齐，否则是负优化** | 第一波 7 个包并行，其中 3 人挤在同一个 `ta-core` crate：共用 `Cargo.toml` 不能改、抢 cargo 构建锁、边界靠人工盯 | 编制上限 5；**一人一层**（对应架构依赖方向），主岗长期不变 + 副岗补位 |
 | L7 | **干净失败远好过半成品** | P6 失败，但 `ta-subscription` 仍停在上一个可用状态，零残留 | 定损流程：先看"有没有留下编译不过的东西"，再决定是回滚还是重做。**不做无谓的救火** |
 | L8 | **契约冻结是并行的前提，也是提前开工的机会** | W0 把全部 trait 定义完，于是网关（关键路径）不必等 store/kernel 实现完，可以对着 trait 先写 | 波次计划里把 E5（网关）提前到 W1；契约冻结期明确为 W1–W2 |
+| L9 | **手写的示例/文档必然与代码漂移，要把它变成生成物 + 上守卫** | 员工 P1 实测抓出我手写的 `config.example.yaml` 有三处**硬错误**（`off` 在 YAML 1.2 里是字符串不是 bool、`filter` 写成 mapping、`failover.on` 用 `http_429` 而枚举是 `http429`），外加一批字段名不对——**静默落进 `extra`、运行时不生效、却完全不报错** | 示例改成 `scripts/gen-example-config.ps1` 从 `default_doc()` 生成；加 `crates/ta-core/tests/example_config_guard.rs` 三道守卫（能读通 / 无未知字段 / 序列化幂等）。**给员工建了安全网，而不是骂他们看错了文档** |
+| L10 | **"不报错但不生效"比"编译失败"危险得多** | 上面那批历史字段名（`interval`/`ttl`/`cooldown`）会让用户以为配上了、实际没生效 —— 编译期和运行期都静默 | 命名纪律：带单位的字段必须带后缀（`interval_s`/`ttl_h`/`cooldown_s`/`connect_s`/`read_s`/`tolerance_ms`）；各实体的 `extra` 字段用 `semantic_eq` 做全量比对来检测未知字段 |
 
 ---
 

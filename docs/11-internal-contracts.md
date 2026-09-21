@@ -383,21 +383,37 @@ subscription / subscription_version
 
 # 6. 上游 usage 归一化表（TokenMeter 的规格）
 
+> **裁决记录（第 7 轮修订）**：员工 P3 实现时发现下表不够精确 —— 它只写了"cached 从 input 扣、reasoning/audio 从 output 扣"，
+> 但**上游还有别的子类型嵌套在总数里**（OpenAI 的预测 token、输入 audio，Gemini 的 tool token）。
+> 不扣就会与上游 `total_tokens` 对不上，也就是重复计数。
+>
+> **裁决：以"总额守恒"为准，不以本表字面为准。** 即：
+> **归一化后的 `Usage.total()` 必须等于上游给出的 total（若上游给了）。**
+> 凡是被上游计入父类总数的子类型，一律从父类里扣掉、单独记为自己的 kind。
+> 下表已按此修订；P3 的实现是正确的，无需返工。
+
 | TokenKind | OpenAI Chat | OpenAI Responses | Anthropic | Gemini |
 |---|---|---|---|---|
-| `Input` | `prompt_tokens − cached` | `input_tokens − cached` | `input_tokens` | `promptTokenCount − cachedContentTokenCount` |
+| `Input` | `prompt_tokens` − cached − audio | `input_tokens` − cached | `input_tokens` | `promptTokenCount` − cachedContentTokenCount − toolUsePromptTokenCount |
 | `InputCached` | `prompt_tokens_details.cached_tokens` | `input_tokens_details.cached_tokens` | `cache_read_input_tokens` | `cachedContentTokenCount` |
 | `InputCacheWrite` | — | — | `cache_creation.ephemeral_5m_input_tokens`（无细分时取 `cache_creation_input_tokens`） | — |
 | `InputCacheWrite1h` | — | — | `cache_creation.ephemeral_1h_input_tokens` | — |
 | `InputAudio` | `prompt_tokens_details.audio_tokens` | — | — | — |
-| `Output` | `completion_tokens − reasoning − audio` | `output_tokens − reasoning` | `output_tokens` | `candidatesTokenCount` |
-| `OutputReasoning` | `completion_tokens_details.reasoning_tokens` | `output_tokens_details.reasoning_tokens` | —（并入 output） | `thoughtsTokenCount` |
+| `Output` | `completion_tokens` − reasoning − audio − accepted_prediction − rejected_prediction | `output_tokens` − reasoning | `output_tokens` | `candidatesTokenCount` |
+| `OutputReasoning` | `completion_tokens_details.reasoning_tokens` | `output_tokens_details.reasoning_tokens` | —（已并入 output） | `thoughtsTokenCount` |
 | `OutputAudio` | `completion_tokens_details.audio_tokens` | — | — | — |
-| `OutputPredictionAccepted` | `accepted_prediction_tokens` | — | — | — |
-| `OutputPredictionRejected` | `rejected_prediction_tokens` | — | — | — |
+| `OutputPredictionAccepted` | `completion_tokens_details.accepted_prediction_tokens` | — | — | — |
+| `OutputPredictionRejected` | `completion_tokens_details.rejected_prediction_tokens` | — | — | — |
+| `Other("tool_use_prompt")` | — | — | — | `toolUsePromptTokenCount` |
 
-**三条铁律**：
+**各家的"不扣"也要写清楚（否则会过度扣减）**：
 
-1. **必须先把 cached 从 input 总数里减掉**，否则重复计费统计。
-2. `usage_raw` 原样保存，供对账与将来补新类型。
-3. 上游没给细分 → 只记 `Input`/`Output`，并把 `usage_source` 标为 `upstream_partial`，**不估算、不猜**。
+- **Anthropic**：`input_tokens` **本身就不含** `cache_read_input_tokens` / `cache_creation_input_tokens`，所以 Input 不做任何减扣。
+- **Gemini**：`candidatesTokenCount` **不含** `thoughtsTokenCount`，所以 Output 不扣 thoughts；而 `totalTokenCount` 含 thoughts —— 这两条并存不矛盾。
+
+**四条铁律**：
+
+1. **总额守恒（最高优先级）**：`Usage.total() == 上游 total`（上游给了 total 时）。本表与该规则冲突时，**以规则为准**。
+2. **必须先把子类型从父类总数里减掉**，否则重复计费统计。
+3. `usage_raw` 原样保存，供对账与将来补新类型。
+4. 上游没给细分 → 只记 `Input`/`Output` 并把 `usage_source` 标为 `UpstreamPartial`，**不估算、不猜**；上游出现的新类型用 `TokenKind::Other(...)` 原样保留，不要丢弃。
