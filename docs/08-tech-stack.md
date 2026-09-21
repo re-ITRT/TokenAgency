@@ -255,7 +255,7 @@ schemars = "1"                                                  # ★ 从 Rust �
 | 时间 | `chrono` | |
 | 文件监听 | `notify` | "文件监听模式"用 |
 | ID | `nanoid` 或 `uuid` | 请求 ID 要短且可读 |
-| 并发原语 | `tokio-util`（`CancellationToken`） | 客户端断连时及时取消上游请求 |
+| 并发原语 | `tokio::sync::Notify`（取消原语；**不用** `tokio-util` 的 `CancellationToken`，避免为它单独开 `sync` feature） | 客户端断连时及时取消上游请求 |
 
 ## 2.7 Rust workspace 结构（强烈建议）
 

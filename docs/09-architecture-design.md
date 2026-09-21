@@ -330,7 +330,7 @@ T5  网关 listen 8787 → emit("kernel:status", ready) → 托盘转绿
 | 配置读取 | `arc-swap` 无锁热更新，请求路径不阻塞 |
 | 账本写入 | 批量合并 + 单写线程（SQLite 单写者），避免写竞争 |
 | 事件广播 | `tokio::sync::broadcast`，**环形缓冲 + 200ms 批量 emit**，防打爆 WebView |
-| 下游断连 | `CancellationToken` → 及时取消上游请求（省钱、省连接） |
+| 下游断连 | 取消原语 → 及时取消上游请求（省钱、省连接）。**实现用 `tokio::sync::Notify`**（等价于 `CancellationToken`，不引入 `tokio-util` 的 `sync` feature —— 见 [08 §栈表]） |
 | 并发保护 | 每凭据令牌桶（RPM）+ 信号量（并发），超限排队或换下一个通道 |
 | 背压 | SSE 转发用 `Body::from_stream`，不缓冲全量响应 |
 

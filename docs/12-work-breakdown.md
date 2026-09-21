@@ -186,7 +186,7 @@
 | 项 | 内容 |
 |---|---|
 | **拥有** | `crates/ta-gateway/src/pipeline/**`、`src/dispatch/**`、`src/failover/**` |
-| **做** | ① 12 步管线编排 ② `KernelDialer::execute`（每 lane 一个 reqwest Client，绑定 3910x）③ SSE 零缓冲转发（`bytes_stream`）④ 下游断连 → `CancellationToken` 取消上游 ⑤ 失败链 + **重试边界（已输出字节绝不重试）** + 冷却退避 |
+| **做** | ① 12 步管线编排 ② `KernelDialer::execute`（每 lane 一个 reqwest Client，绑定 3910x）③ SSE 零缓冲转发（`bytes_stream`）④ 下游断连 → 取消原语（`tokio::sync::Notify`）取消上游 ⑤ 失败链 + **重试边界（已输出字节绝不重试）** + 冷却退避 |
 | **DoD** | wiremock 测试：429→换通道、5xx→换通道、connect 失败→换 lane；**"输出 3 个 chunk 后断连 → 只有 1 次上游请求"** |
 
 ## G3 · 协议适配（IR 路径）
