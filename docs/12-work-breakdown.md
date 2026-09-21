@@ -149,7 +149,7 @@
 |---|---|
 | **拥有** | `crates/ta-kernel/**` |
 | **做** | ① `KernelConfigGen::generate`：**严格按 [11 §2.2] 的模板**，强制写死隔离项 ② `PortAllocator`：bind 试探 + 落库复用 ③ 进程生命周期（就绪探测 / 退避重启 / Job Object / 无孤儿）④ REST client（§2.3 全部端点）⑤ `snapshot()` 解析节点与分组 |
-| **关键** | 生成前必须校验 `listeners[].proxy` 引用的组名存在，否则内核会启动失败 |
+| **关键** | ⚠️ **生成前必须校验 `listeners[].proxy` 引用的组名存在** —— 但原因**不是**"否则内核会启动失败"（那句话已被实测证伪）：**内核根本不校验，指向不存在的名字也照样绑定成功、零报错**，只在请求到达时报 502。见 [06 §1.6] K4(d)。同源两条：`filter` 匹配不到节点会静默变 `[COMPATIBLE]`（K3d，故每个组都要 `empty-fallback: REJECT`）；**provider 加载失败时内核照常启动、REST 照常通，所有 lane 静默降级** → **"就绪"的判据必须包含"每个 provider 的 `proxies[]` 非空"**（见 [11 §2.1] 的 ⚠️） |
 | **DoD** | ① 配置生成快照测试（`insta`）② 用一个假 REST server（wiremock）验证 `set_node` / `delay` / `snapshot` ③ 进程看护单测（杀掉后能重启） |
 
 ## P6 · `ta-subscription`
@@ -222,7 +222,7 @@
 | 项 | 内容 |
 |---|---|
 | **拥有** | `src-tauri/src/tray.rs`、`src-tauri/src/plugins.rs`、`src-tauri/src/lifecycle.rs`、`capabilities/` |
-| **做** | ① 托盘状态色图标（4 态 + 实验模式角标）② 动态菜单（策略/节点/额度/紧急开关，[05 §1.2]）③ 12 个插件注册 ④ 关窗退托盘、单实例、通知去重 ⑤ 启动编排（骨架屏 → 内核就绪 → 转绿）⑥ **开机自启动**（见下） |
+| **做** | ① 托盘状态色图标（4 态 + 实验模式角标）② 动态菜单（策略/节点/额度/紧急开关，[05 §1.2]）③ **11 个插件注册**（原列 12 个；**`tauri-plugin-log` 已移除** —— 它与 `tracing_subscriber` 是两套并行日志系统，见 [14 §1.1]）④ 关窗退托盘、单实例、通知去重 ⑤ 启动编排（骨架屏 → 内核就绪 → 转绿）⑥ **开机自启动**（见下） |
 | **开机自启动（本包必做，不是可选）** | ① `tauri-plugin-autostart` 接线，`MacosLauncher::LaunchAgent`；Windows 走 HKCU Run 键（免提权）② **`app_get_autostart` 必须真的去读系统状态**，不许回显配置值；填 `AutostartState` 全部字段（[10 §2.2](10-interface-spec.md)）③ 启动模式 `tray`（默认，静默进托盘）/ `window` ④ 启动延迟由我们自己实现（命令行传参 → 启动后先睡再拉内核）⑤ **卸载钩子删除系统条目**（NSIS `customUnInstall`）⑥ 漂移检测：`desired != actual` 时不自动改回，交给 UI 提示 ⑦ 边界规则见 [09 §1.2](09-architecture-design.md) E1–E5 |
 | **DoD** | 手动/自动验证：托盘菜单能切策略与节点；关窗不退进程；二次启动只唤起已有窗口 |
 

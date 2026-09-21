@@ -456,3 +456,82 @@ Job Object 防孤儿（**本机已实测**：drop spawner 后子进程被收走�
 - 跨协议 IR 的完整覆盖（G3 先做能跑的最小集）
 - macOS / Linux 打包与自动更新
 - 用户脚本引擎（[ADR-11](09-architecture-design.md) 明确 v1 不做）
+
+---
+
+# 11. 已知遗留（第 10 轮收口时确认，**交接给新团队**）
+
+这两条都是**诊断清楚、但没修完**的。写在这里是为了让接手的人不必从零复现 ——
+**尤其"已排除项"那一栏，它省掉的是最贵的那段时间。**
+
+## 11.1 `tokenagency` 的 lib 测试目标无法运行（Windows）
+
+**症状**：`cargo test -p tokenagency --lib` 的 harness 在**加载阶段**就崩，
+`exit code: 0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND)`，一个测试都没跑。
+
+**影响**：`cargo test --workspace` 因此永远红。丢掉的测试是
+`src-tauri/src/{tray,autostart,lifecycle}.rs` 里的单元测试 —— 其中
+**自启动漂移的四条分支**与**"state() 只读不写"**是**唯一**能验证
+[docs/09 §1.2] E1–E5 的自动化证据。**这不是可以放着不管的测试。**
+
+**已排除的可能**（都做过实验，不是推断）：
+
+| 假设 | 实验 | 结果 |
+|---|---|---|
+| 并发构建污染产物 | `cargo clean`（移除 32.4 GiB / 54063 文件）后全量重建 | 仍然失败，**确定性** |
+| `crate-type` 里的 `cdylib` | 临时改成 `["rlib"]` 重建 | 仍然失败 |
+| 同名 DLL 遮蔽（`tokenagency_lib.dll`） | 删掉 deps 与 debug 下的同名 DLL 后直接运行 | 仍然失败 |
+| 缺 `WebView2Loader.dll` | 把 `webview2-com-sys` 的 x64 那份复制到 exe 旁 | 仍然失败 |
+| PATH 上有旧版 `WebView2Loader.dll`（Windows Kits 里有一个） | 把 `Windows Kits` 从 PATH 剔除后运行 | 仍然失败 |
+| 依赖版本被顺带升级 | 逐行读 `Cargo.lock` 的 diff | **只新增了一行 `"sqlx"`**，无版本变更 |
+| 应用本身也起不来 | `TA_EXPORT_BINDINGS=1 cargo run -p tokenagency` | **能正常加载并执行** —— 只有 lib 测试 harness 不行 |
+
+**关键线索**：能跑的旧 harness 是 **3.6 MB**（T1 之前，00:15 构建，`--list` 正常），
+现在是 **15.9 MB**（T1 把 `sqlx`/`specta`/`commands` 拉进来之后）。
+**所以触发条件是 T1 引入的那批依赖** —— 从那条线往下查应该会更快。
+
+**建议的调查入口**：`dumpbin /imports <harness.exe>` 对比新旧两个 exe 的导入表
+（本机没找到 `dumpbin`，需要先走 `vcvars64.bat` 或装 VS 的 C++ 工具）。
+
+**不要**用 `[lib] test = false` 把它藏起来 —— 那会让上面那些测试**静默地永不运行**，
+比一个已知会红的门禁更危险。
+
+## 11.2 绑定导出的第二个冲突：`serde_json::Value` 里的 BigInt
+
+**症状**：`Channel` 改名之后，`scripts/gen-bindings.ps1` 报：
+
+```
+export bindings: Attempted to export "header_diff.Number.0.i64.0" but Specta forbids
+exporting BigInt-style types (usize, isize, i64, u64, i128, u128)
+While inlining: -> ta_store::trace_store::TraceDetail_Serialize
+  header_diff -> serde_json::Value
+```
+
+**根因**：`ta-store::trace_store::TraceDetail.header_diff` 是 `serde_json::Value`，
+而 `specta-typescript 0.0.12` **禁止导出 BigInt 类类型**（怕 JS 精度丢失）。
+
+**已排除**：`specta-typescript 0.0.12` 的 `Typescript` 构建器**没有** bigint 配置方法
+（只有 `new/header/layout/branded_type_impl/export/export_to`）——
+所以"把 bigint 行为设成 Number"这条路在这个版本上不存在。
+
+**三条候选方案**（**需要你这个决策者来定，因为它涉及契约**）：
+
+1. **把 `header_diff` 换成具体类型**（最佳，但是契约变更）：
+   它本来就是个结构化的 diff（`added` / `removed` / `changed`），
+   `ta-gateway::HeaderDiff` 就是那个形状。让 `ta-store` 定义一个自己的等价类型即可。
+   **好处**：前端拿到的是有类型的对象，不再是 `unknown`。
+2. **前端侧用 `unknown`**：在 `ta-store` 里造一个 `JsonValue` newtype 并手写 `impl specta::Type`
+   映射到 `unknown`。代价：`ta-store` 要在 `specta` feature 下依赖 `specta-typescript`。
+3. **换成 JSON 字符串**：`header_diff: Option<String>`，前端 `JSON.parse`。
+   最小改动，但**改了线上形态**，且让前端多一步解析。
+
+**推荐 1** —— 它与 [docs/11 §5] "错误/结构要有类型"的一贯做法一致；
+2 让数据层依赖 TS 导出器，方向不对；3 是拿契约换省事。
+
+**在此之前**：`src/shared/bindings.ts` 是**手写的 95 条占位契约**
+（文件头自称 `GENERATED REPLACEMENT PENDING`）。注意它**被 `.gitignore` 忽略、从未提交** ——
+即"生成绑定前一定要先备份，否则那份手写契约会永久丢失"。`gen-bindings.ps1` 已经会备份到 `.bak`。
+
+**已存档一份**：`docs/contracts/bindings-handwritten-reference.ts.txt`
+（**后缀是 `.ts.txt` 不是 `.ts`** —— 否则 `tsc` 会把它当源码一起编译，把前端类型检查搞红）。
+它的用途是做"95 vs 31"的差集对照；T1 补齐全量命令面之后即可删除。

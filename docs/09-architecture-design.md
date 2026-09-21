@@ -313,7 +313,9 @@ Client        Gateway              Kernel            Upstream
 T0  Tauri 启动 → 窗口渲染骨架屏（不等内核）
 T1  读 DB 配置 → 分配 lane 端口（bind 试探）→ 生成 kernel.generated.yaml
 T2  拉起 mihomo sidecar（绑定 Job Object）
-T3  轮询 REST /version（≤5s）→ 就绪
+T3  轮询 REST /version（≤5s）→ **且每个我们生成的 provider 的 proxies[] 非空** → 就绪
+    （⚠️ 只问 /version 会被骗：provider 加载失败时内核照常启动、REST 照常通，
+      而所有 lane 静默降级成直连。见 [06 §1.6] 的「就绪判定会被骗」）
 T4  为每条 lane 建 reqwest Client（绑定 3910x）
 T5  网关 listen 8787 → emit("kernel:status", ready) → 托盘转绿
     ↑ 若 T3 失败：指数退避重启（1s→30s，最多 5 次）

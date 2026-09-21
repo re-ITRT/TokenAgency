@@ -230,7 +230,7 @@ pub trait PassthroughPolicy: Send + Sync {
 | 阶段 | 约定 |
 |---|---|
 | 启动 | `mihomo -d <appdata>/kernel -f kernel.generated.yaml`，**绑定 Job Object**（Windows `KILL_ON_JOB_CLOSE`）防孤儿 |
-| 就绪 | 轮询 `GET /version`（带 secret），超时 5s |
+| 就绪 | 轮询 `GET /version`（带 secret），超时 5s **且** 每个我们生成的 provider 的 `proxies[]` 非空（见下方 ⚠️） |
 | 失败 | 指数退避重启 1s→2s→4s→8s→16s（上限 30s），连续 5 次 → `state=failed`，托盘红，通道降级为仅 direct |
 | 停止 | 先 `SIGTERM`/`taskkill`，等 2s，再强杀 |
 | 状态机 | `stopped → starting → ready → (restarting → ready)* | failed` |
@@ -288,7 +288,30 @@ rules:
   - MATCH,DIRECT             # 兜底；listeners 已各自指定 proxy，规则不参与决策
 ```
 
-**约束**：`listeners[].proxy` 必须是**已存在的组名或 `DIRECT`**，否则内核启动失败 → 生成时必须先校验引用。
+**约束**：`listeners[].proxy` 必须是**已存在的组名或 `DIRECT`** → 生成时必须先校验引用。
+
+> ⚠️ **更正（第 10 轮，M0 实测）：本文原来写的"否则内核启动失败"是错的。**
+>
+> 实测（mihomo v1.19.31，[06 §1.6] K4(d)）：`listeners[].proxy` **指向一个不存在的名字时，
+> listener 照样绑定成功、内核启动零报错** —— 只在**请求真的到达时**才在内核日志里报
+> `[Metadata] parse failed: proxy <名字> not found`（客户端看到 502）。
+>
+> **所以"内核会替我们拦住"这个想法必须彻底放弃**：引用校验是**我们唯一的防线**，
+> 而且校验失败必须在**生成阶段**就报错（带字段路径），不能指望内核在运行时拒绝。
+>
+> 顺带一条同源的：`proxy-groups` 的 `filter` **匹配不到任何节点**时，组会静默变成 `[COMPATIBLE]`（零报错）
+> → 生成的每个组都必须显式写 `empty-fallback: REJECT`（[06 §1.6] K3(d)）。
+
+> ⚠️ **"就绪"的完整判据（第 10 轮补充）：不能只问"进程在不在"。**
+>
+> 实测：provider 文件**缺失或为空**时，内核**照常启动、REST 照常通**，
+> 而**所有 lane 静默降级成 `COMPATIBLE`**（= 直连语义）。
+> 只轮询 `GET /version` 的就绪探测在这种情况下会**对外报"内核已就绪"** ——
+> 这是"静默降级"最严重的版本：不是某条 lane 降级，是**整个内核降级而我们报了绿**。
+>
+> 完整判据：① 进程活着 ② `GET /version` 有响应 ③ **每个我们生成的 provider 的 `proxies[]` 非空**。
+> 任一为空 → **不报就绪**，报一个说得清的错。且判定**必须可重查**（reload 后、订阅同步后都能再查），
+> 不能"启动时查一次就锁死"。详见 [06 §1.6] 的「就绪判定会被骗」。
 
 ## 2.3 我们使用的 REST 端点
 

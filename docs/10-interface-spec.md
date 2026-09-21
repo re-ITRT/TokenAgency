@@ -193,7 +193,10 @@ type AutostartState = {
 4. `drifted: true` 时 UI 必须显式提示，并提供 `app_repair_autostart`，**绝不自动改回**（E3）。
 5. `unsupported` 时开关置灰并显示 `unsupported_reason`，而不是假装成功。
 6. `app_set_autostart` 成功后要**重新读一次系统状态**填 `actual`，而不是假定写入成功。
-| `app_set_autostart` | `enabled: bool` | `void` |
+
+> **第 10 轮勘误**：本节末尾曾残留一行 `| app_set_autostart | enabled: bool | void |` 的表行，
+> 与本命令在 §2.2 命令清单里的正规定义**自相矛盾**（入参与返回值都不同）。
+> 已删除 —— 实现者若照那行写会产生签名不一致。**残留表行比缺文档危险**：它看起来是权威的。
 
 ### config / 配置
 
