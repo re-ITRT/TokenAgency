@@ -9,6 +9,9 @@ pub mod ports;
 pub mod process;
 pub mod rest;
 
+#[cfg(test)]
+pub(crate) mod testutil;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -90,6 +93,9 @@ pub trait KernelController: Send + Sync {
     async fn apply(&self) -> Result<KernelStatus>;
     /// `PUT /proxies/{group}` —— 组内切节点
     async fn set_node(&self, group: &str, node: &str) -> Result<()>;
+    /// 把某条 lane 对应的组切到指定节点（`select` 组）—— 上层只认 lane，
+    /// 「lane → 内核组名」的映射是内核层的细节（见 `docs/04` §8.2 的线路下拉/托盘切换）。
+    async fn set_select(&self, lane: &LaneId, node: &str) -> Result<()>;
     /// `GET /proxies/{name}/delay`
     async fn delay_of(&self, name: &str, timeout_ms: u64) -> Result<u32>;
     /// `PUT /providers/proxies/{key}` —— 刷新订阅
