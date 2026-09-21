@@ -27,8 +27,20 @@ pub fn source_files() -> Vec<SourceFile> {
     let root = repo_root();
     let mut out = Vec::new();
     for base in ["crates", "src-tauri/src"] {
-        walk(&root.join(base), &root, &mut out);
+        walk(&root.join(base), &root, &["rs"], &mut out);
     }
+    out.sort_by(|a, b| a.rel.cmp(&b.rel));
+    out
+}
+
+/// 前端源码：`src/**/*.ts` 与 `src/**/*.tsx`（命令面守卫要数"页面真实引用了哪些命令"）。
+///
+/// 与 [`source_files`] **共用同一份遍历实现**（`walk`）—— 多一套遍历就会多一套忽略规则，
+/// 那正是"两个真相源"的老问题。
+pub fn frontend_source_files() -> Vec<SourceFile> {
+    let root = repo_root();
+    let mut out = Vec::new();
+    walk(&root.join("src"), &root, &["ts", "tsx"], &mut out);
     out.sort_by(|a, b| a.rel.cmp(&b.rel));
     out
 }
@@ -38,7 +50,8 @@ pub fn read_repo_file(rel: &str) -> Option<String> {
     std::fs::read_to_string(repo_root().join(rel)).ok()
 }
 
-fn walk(dir: &Path, root: &Path, out: &mut Vec<SourceFile>) {
+/// 按扩展名遍历（`exts` 不带点）。**全仓只有这一份遍历实现**。
+fn walk(dir: &Path, root: &Path, exts: &[&str], out: &mut Vec<SourceFile>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -48,10 +61,10 @@ fn walk(dir: &Path, root: &Path, out: &mut Vec<SourceFile>) {
             if matches!(name.as_str(), "target" | "node_modules" | ".git" | "dist" | "gen") {
                 continue;
             }
-            walk(&path, root, out);
+            walk(&path, root, exts, out);
             continue;
         }
-        if !name.ends_with(".rs") {
+        if !exts.iter().any(|e| name.ends_with(&format!(".{e}"))) {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
