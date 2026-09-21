@@ -45,7 +45,15 @@
    并有守卫禁止页面调用它们。
 2. **套餐·凭据页、网络页**（日志页这一轮做了）。
 3. **跨协议转换（G3）**。
-4. **流式计量的精确上游 usage**（G4 第 4 块；非流式接线亦未完成）。
+4. ~~**流式计量的精确上游 usage**（G4 第 4 块；非流式接线亦未完成）~~ → **本轮接线完成**：
+   一次请求恰好一条 `UsageRecord`；**流式精确计量**（把同一口径下的 usage 容器合并后**只调一次**
+   `metered_usage_for`），同时逐 chunk 直通不缓冲；只记 2xx；账本/价格快照**同步**（配额判定不等 SQLite），
+   只有写表是 spawn。RED 实证 5 条（去掉信封回退 → Anthropic input 丢成 0；去掉 2xx 判定 → 4xx 也记账；
+   去掉"只结算一次" → 一条流记 3 条；不包回协议主路径 → 上游显式 0 被误判成估算；`pipeline_with_meter`
+   接回 None → 端到端 0 条）。`cargo test -p ta-gateway --all-targets` → 140 passed + 1 passed。
+   - **残留（已登记）**：`usage_paths(Anthropic)` 只列 `/usage`，而真实流的 input 在
+     `message_start.message.usage`；网关侧目前用一层"信封回退"绕开（有 RED 证明）。正解是把
+     `/message/usage` 补进 ta-core 那张**唯一口径表**，已派给 E2；补上后回退自动退化为冗余。
 5. **应用日志 Tab、按 TA 码精确筛列表**（命令面里没有读应用日志的命令）；**导出/诊断包按钮**
    （`log_export` 未实现 —— 页面**没有按钮、也没有禁用占位**）。
 6. **契约与 Rust 的日志结构不一致**（`log_query` 参数名 `query`/`q`、时间窗 `range`/`from_ms,to_ms`、
@@ -91,21 +99,37 @@
 
 ## 2. 门禁与产物
 
-**以下全部在「干净发布快照 `8abb32d`」上跑**（`git worktree add --detach … master` + 自己构建 `dist/`），
+**以下全部在「干净发布快照 `d8eb54e`」上跑**（`git worktree add --detach … master` + 自己构建 `dist/`），
 **无任何 `--exclude`**、无跳过：
 
 ```
 cargo fmt --all --check                                   → 0
 cargo check  --workspace --all-targets                     → 0
 cargo clippy --workspace --all-targets -- -D warnings      → 0
-cargo test   --workspace                                   → 0   （959 passed / 0 failed）
+cargo test（逐包）                                          → 0   （986 passed / 0 failed）
 npm run build（tsc --noEmit + vite build）                  → 0
 npm test                                                   → 0   （9 files / 90 passed）
 cargo tauri build --bundles nsis                           → 0
 ```
 
-- **959** 里包含 A1 的真内核端到端（`accept_a1.rs`）与两条防漂移守卫（`command_surface_guard` 6 条、
-  前端 `commandSurface.guard` 2 条）。
+**逐包测试明细**（本轮实测；为什么不是一条 `cargo test --workspace`：见下面那条"口径"）
+
+| 包 | passed | failed |
+|---|---|---|
+| `ta-core` | 418 | 0 |
+| `ta-gateway` | 143 | 0 |
+| `ta-kernel` | 113 | 0 |
+| `ta-store` | 34 | 0 |
+| `ta-secrets` | 92 | 0 |
+| `ta-subscription` | 85 | 0 |
+| `tokenagency` | 101（98 lib + 2 真内核 + 1 清单守卫） | 0 |
+| **合计** | **986** | **0** |
+
+- `tokenagency` 那 101 是**直接运行测试二进制**得到的（同一个二进制比在 `cargo test --workspace` 下快得多：
+  单独跑 `finished in 2.14s`）。**为什么这条要单列**：本会话里 `cargo test --workspace` 会在 `tokenagency_lib`
+  这一步停住（进程累计 CPU 0.2 秒、数百秒不结束），而**同一个二进制单独跑 2.14 秒全绿** —— 这是
+  **本会话的进程竞争/输出消费问题，不是测试死锁**（详情与三次踩坑记录见 §4）。逐包跑 + 直接跑二进制
+  是等价的覆盖，且每一步都已落文件留痕。
 - `ignored` 只出现 **2** 处，且都是 **rustdoc 示例**（`src-tauri/src/plugins.rs:115`、
   `crates/ta-core/src/config/migrate.rs:60` 的 ` ```ignore `）——**全仓 `#[ignore]` 计数为 0**，没有藏起来的测试。
   （`docs/13 §7.3` 那条"不许用 `#[ignore]` 藏测试"依然成立。）
@@ -113,8 +137,8 @@ cargo tauri build --bundles nsis                           → 0
 **安装包（W5）**
 ```
 target/release/bundle/nsis/TokenAgency_0.1.0_x64-setup.exe
-  4.58 MB   构建于 2026-09-22 05:08:33
-  SHA256  303B7D20F3C5AEBA7FC750543645781FC3D73BBA5775773C9D35A9420BE3C55A
+  4.58 MB   构建于 2026-09-22 05:50:05（从冻结快照 d8eb54e）
+  SHA256  7C900F71F38EDD09179D933E044B9502AD0E0A46901143FFC721F646CED76770
 ```
 
 **在同一份 `target/release/tokenagency.exe` 上做的端到端不变量检查**（A3/A4 的证据来源）：
@@ -148,7 +172,13 @@ pwsh -File scripts/check-invariants.ps1 -Mode Run -Exe target\release\tokenagenc
 
 ### 已知偏离（接受并钉住边界，不是遗忘）
 1. **`accept: */*` 默认头注入**：客户端没发 `accept` 时上游仍会看到 `accept: */*`（根因在 `reqwest` 的默认头，`default_headers()` 清不掉）。**有测试钉住"上游多看到的头集合恰好 `{accept}`"**，**无测试能消除它**。收口需手写 hyper 传输层 → 已排为 M1 之后的独立工作包「零注入传输层」。**不得在任何地方写成"全透传 100% 成立"。**
-2. **策略模拟器 vs 真实决策**：装配已通过 `Router::with_sticky` **归一为一条代码路径**（`Router::new` 变成它的特例），并有"两条路径产出逐字段相等"的测试；但"模拟器输出 == 真实 `plan` 输出"**缺跨 crate 端到端断言** → 该论断标注为**未成立**。
+2. ~~**策略模拟器 vs 真实决策**~~ → **本轮收口**：`LiveRouter::bind` **不再自己拼装配**，改调 ta-core 的
+   `Router::with_sticky`；并新增**跨 crate「逐字段一致」断言**（粘性命中 / 粘性未命中 / cheapest / 无候选
+   四种形态）+ 一条**只扫生产段**的源码守卫。守卫生效的 RED 实证：把 `bind` 改回 `Router::new` → 守卫红；
+   `bind` 丢 pricing → 等价断言红（cheapest 形态 live 选 `ch-a`、参照选 `ch-b`）。
+   **顺带自查出一个真问题**：这条守卫**第一版是假的** —— 它扫整份文件，测试段里的 `Router::with_sticky`
+   把它"喂饱"了，于是把 `bind` 换成 `Router::new` 它照样绿。已改成只扫 `#[cfg(test)]` **之前**，
+   并把这次"守卫自己被证伪"的过程写进了测试文档。**这条已知偏离可以划掉了。**
 3. **`kernel.log` 不再是内核原文**（写入前过脱敏）：这是**有意的取舍** —— 保真度服务排查，脱敏服务用户的账号安全。
 4. **`LANE_RELOAD_RETRY_DELAY_MS = 50` 是估的**，未在真内核上量过 listener 重建耗时（已在注释写明）。
 5. **`is_group()` 的 `URLTest/Fallback/LoadBalance/Relay`** 四个类型名在真夹具里从未出现 → **推断**（已标注）。
@@ -197,6 +227,11 @@ pwsh -File scripts/check-invariants.ps1 -Mode Run -Exe target\release\tokenagenc
      表现是 `LNK1104: 无法打开文件 …tokenagency_lib-*.exe`（旧测试进程还占着那个 exe）+ cargo 锁互等。
      **先查孤儿进程，不要怀疑代码** —— 清掉全部孤儿 `cargo`/`rustc`/测试进程后，同一条命令立刻
      `98 passed / 2.17s`。所以本节的口径最终是三条：**落文件、别用 `-First`、同一 target 不并发跑 cargo**。
+   - **主管自己也违反了这条口径两次**（诚实记录）：发布门禁脚本里我仍然写了
+     `cargo test --workspace 2>&1 | Select-String … | Select-Object -Last 60`，结果两次白跑 —— 测试二进制
+     停在 **0.17s / 0.20s CPU、数百秒不结束**，我甚至一度按"CPU 接近 0 且长时间不结束"判成**死锁**，
+     还去逐个跑可疑测试（那些都是绿的）。改成**纯文件重定向（`*>` 到文件、之后再筛文件）**后立刻正常。
+     **这条纪律对主管同样有效，而且我违反它的代价是全队等**。
 
 ### 工具缺陷（已定位、修法已定，今天不动 —— 因为员工正在并发用它）
 **`pr.ps1` 的 `Base:` trailer 记录的是"写提交那一刻的 master"，不是分支的真实基点。**
