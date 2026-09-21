@@ -328,9 +328,15 @@ policies:
     /// `sticky_write = false` 并**每会话跑两轮**：第二轮"不命中"就是这条漏注入的探针。
     ///
     /// **这条测试证明的范围（别高估它）**：它只证明"**本夹具覆盖到的决策面上**两条装配
-    /// 路径产出相同"。效果在夹具里不可见的部件（例如某天新增、只在特定配置下才生效的选项）
-    /// 它发现不了 —— 那种部件需要自己的一格探针。目前已有两格：
-    /// `sticky_write`（本轮）与 `pricing`（见 [`pricing_option_is_not_silently_dropped`]）。
+    /// 路径产出相同"。效果在夹具里不可见的部件需要**自己的一格探针**。目前：
+    ///
+    /// - **已有探针**：`selector.sticky_write`（本测试的两轮夹具）、
+    ///   `opts.pricing`（[`pricing_option_is_not_silently_dropped`]）；
+    /// - **已知未覆盖（具名残留）**：`engine.local_offset_minutes`（只影响 `time_window`
+    ///   类策略）、`engine.no_viable_channel_status`（只影响无候选场景）。
+    ///   **触发条件**：等 `LiveRouter::bind` 真的开始传非默认 engine options（即有调用方
+    ///   依赖这两个字段）时补上那两格 —— 那时"漏注入"的后果才从"理论不可见"变成用户可见。
+    ///   在此之前**具名登记**，比含糊地写"有些部件没覆盖"可管理。
     #[test]
     fn new_is_the_self_resolver_special_case_of_with_sticky() {
         let d = doc();
@@ -470,6 +476,11 @@ policies:
     /// 为什么单独一条：主测试的夹具里 pricing **不影响结果**（组是 `sticky_then_priority`），
     /// 所以哪天 `with_sticky` 漏掉 `.with_pricing(opts.pricing)`，那条测试照样全绿。
     /// 这里补上"效果在夹具里可见"的那一格。
+    ///
+    /// **它证明的不变量其实是第三条：「选项真的被尊重」** —— 而不是"两条路径一致"。
+    /// 因为 `Router::new` 现在也委托给 `with_sticky`，漏注入时两条路径**一起**退化，
+    /// 主断言（两侧相等）对此天然免疫；所以这条探针的红点必然落在**夹具前提自检**
+    /// 那条 `assert_ne!` 上（E1 复核确认）。**别把它读成"路径一致"那一类。**
     #[test]
     fn pricing_option_is_not_silently_dropped() {
         let mut d = doc();
