@@ -28,7 +28,7 @@ use ta_core::domain::{ChannelConfig, ConfigDoc, NoCandidateAction};
 use ta_core::error::{Result, TaError};
 use ta_core::quota::{QuotaLedger, QuotaObservation};
 use ta_core::routing::{ChannelRuntimeState, EliminateReason, RouteContext, RouteHints};
-use ta_core::types::{ChannelId, CredentialId, LaneId, Protocol};
+use ta_core::types::{ChannelId, CredentialId, LaneId, Protocol, ProviderId};
 
 use crate::dispatch::{self, ByteStream, OutboundDialer, UpstreamRequest, UpstreamResponse};
 use crate::ingress::{
@@ -132,22 +132,40 @@ pub struct RequestTraceSummary {
 ///
 /// `observe_stream` **必须是直通包装**（可以看，不能攒）：G2 保证零缓冲，
 /// 计量不许把它变成"等整条流结束"。
+///
+/// `status` 参数是历史签名（`tests/accept_a1.rs` 已按它实现），**计量实现不读它**：
+/// 判定"这条响应该不该记账"只认 [`MeterContext::status`] —— 流式那条路径根本没有这个
+/// 参数，若两边各判一次就会出现"同一个值两个权威"。
 pub trait ResponseMeter: Send + Sync {
     fn observe_full(&self, ctx: MeterContext, body: &Bytes, status: u16);
     fn observe_stream(&self, ctx: MeterContext, stream: ByteStream) -> ByteStream;
 }
 
-/// 计量上下文（够 G4 定位到通道/凭据/model）。
+/// 计量上下文（够 G4 定位到通道/凭据/model，并**独立**落一条 `UsageRecord`）。
 #[derive(Debug, Clone)]
 pub struct MeterContext {
     pub request_id: String,
+    /// 通道引用的服务商 —— `UsageRecord.provider_id` 要用它（定价也按它匹配）
+    pub provider_id: ProviderId,
     pub channel_id: ChannelId,
     pub credential_id: CredentialId,
     pub model: Option<String>,
     pub upstream_model: String,
     pub lane_id: Option<LaneId>,
+    /// **上游**协议（解析上游响应里的 usage 就按它）
     pub protocol: Protocol,
     pub stream: bool,
+    /// 客户端最终看到的码。**唯一权威**：计量只按它判断"要不要记账"
+    /// （上游说 4xx 时它没消耗额度，记一条 0/估算只会让成本中心虚增）。
+    pub status: u16,
+    /// 我们**实际发给上游**的请求体：上游不给 usage 时的估算兜底输入
+    /// （`Bytes` 克隆只加引用计数，不复制 body）。
+    pub request_body: Bytes,
+    /// 请求级起点（含失败链）。流式响应要等流结束才算得出总耗时，
+    /// 所以带 `Instant` 而不是提前算好的 `u32`。
+    pub request_started_at: std::time::Instant,
+    /// 上游响应头到达耗时 —— 那就是上游首字节（`ttfb_ms`）
+    pub upstream_ms: u32,
 }
 
 // ================================================================ 依赖与状态
@@ -782,7 +800,14 @@ impl RequestPipeline for Pipeline {
                         );
                         self.emit(record.clone()).await;
                         let UpstreamResponse { status, headers, body } = upstream;
-                        let ctx = meter_context(&prepared, &channel, &lane);
+                        let ctx = meter_context(
+                            &prepared,
+                            &channel,
+                            &lane,
+                            started_at,
+                            status.as_u16(),
+                            latency_ms,
+                        );
                         let stream = match &self.deps.meter {
                             Some(meter) => meter.observe_stream(ctx, body),
                             None => body,
@@ -826,7 +851,14 @@ impl RequestPipeline for Pipeline {
                             let status = upstream.status;
                             if let Some(meter) = &self.deps.meter {
                                 meter.observe_full(
-                                    meter_context(&prepared, &channel, &lane),
+                                    meter_context(
+                                        &prepared,
+                                        &channel,
+                                        &lane,
+                                        started_at,
+                                        status.as_u16(),
+                                        latency_ms,
+                                    ),
                                     &bytes,
                                     status.as_u16(),
                                 );
@@ -1022,9 +1054,13 @@ fn meter_context(
     prepared: &PreparedRequest,
     channel: &ChannelConfig,
     lane: &LaneId,
+    started_at: std::time::Instant,
+    status: u16,
+    upstream_ms: u32,
 ) -> MeterContext {
     MeterContext {
         request_id: prepared.request_id.clone(),
+        provider_id: channel.provider.clone(),
         channel_id: channel.id.clone(),
         credential_id: channel.credential.clone(),
         model: prepared.model.clone(),
@@ -1032,6 +1068,10 @@ fn meter_context(
         lane_id: Some(lane.clone()),
         protocol: prepared.protocol,
         stream: prepared.stream,
+        status,
+        request_body: prepared.body.clone(),
+        request_started_at: started_at,
+        upstream_ms,
     }
 }
 
@@ -1315,6 +1355,34 @@ mod tests {
             passthrough: FullPassthrough::shared(),
             sink: Arc::new(RecordingSink::default()),
             meter: None,
+        }))
+    }
+
+    /// 与 [`pipeline`] 同义，但接上**真的**计量器（G4 ④ 的生产接线）。
+    ///
+    /// 为什么端到端测试必须用真 `UsageMeter` 而不是替身：替身只能证明"接缝被调用了"，
+    /// 证明不了"记录里的通道/线路/服务商/价格快照/账本观测是对的"。
+    fn pipeline_with_meter(
+        cfg: ConfigDoc,
+        policy: Arc<dyn PolicyEngine>,
+        dialer: Arc<dyn OutboundDialer>,
+        meter: Arc<dyn ResponseMeter>,
+    ) -> Pipeline {
+        let cfg = Arc::new(arc_swap::ArcSwap::from_pointee(cfg));
+        Pipeline::new(Arc::new(PipelineDeps {
+            cfg: cfg.clone(),
+            clock: Arc::new(ManualClock::new(1_700_000_000_000)),
+            planner: Arc::new(crate::runtime::PolicySelectorPlanner::new(
+                cfg,
+                policy,
+                Arc::new(ChainSelector),
+            )),
+            quota: Arc::new(NoQuota),
+            secrets: Arc::new(StaticSecrets::new([("${secret:a}", SECRET)])),
+            dialer,
+            passthrough: FullPassthrough::shared(),
+            sink: Arc::new(RecordingSink::default()),
+            meter: Some(meter),
         }))
     }
 
@@ -2298,6 +2366,106 @@ mod tests {
         }
         // **只有 1 次上游请求**（DoD 原文：输出 3 个 chunk 后断连 → 只有 1 次上游请求）
         assert_eq!(upstream.connection_count(), 1, "已输出字节后绝不允许重试");
+    }
+
+    // ---------------------------------------------------------- G4 ④ 计量接线（端到端）
+
+    /// 接上生产 `UsageMeter` 之后，一次非流式请求留下**恰好一条**完整用量记录。
+    ///
+    /// 断言的是"记录里每个字段都对得上真实来源"，不只是"有一条记录"：
+    /// 通道/线路/服务商来自这次真正被选中的候选，令牌数来自上游响应，
+    /// 价格快照来自请求时刻的费率，账本拿到的是同一份数字。
+    #[tokio::test]
+    async fn production_meter_records_one_full_usage_row_for_a_non_stream_request() {
+        let (meter, store, ledger) = crate::meter::test_support::recording_meter();
+        let dialer = Arc::new(ScriptedDialer::with(vec![Scripted::Ok {
+            status: 200,
+            headers: vec![],
+            body: r#"{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":1000,"completion_tokens":500,"total_tokens":1500}}"#,
+        }]));
+        let pipeline = pipeline_with_meter(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer,
+            Arc::new(meter),
+        );
+
+        let prepared =
+            pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
+        let request_id = prepared.request_id.clone();
+        let response = pipeline.execute(prepared).await.expect("非流式应当成功");
+        assert_eq!(response.status(), http::StatusCode::OK);
+        // 计量是**旁路**：body 必须照常交给客户端
+        let body = body_string(response).await;
+        assert!(body.contains(r#""total_tokens":1500"#), "客户端必须拿到上游原话：{body}");
+
+        crate::meter::test_support::drain_tasks().await;
+        let records = store.records();
+        assert_eq!(records.len(), 1, "一次请求恰好一条用量记录");
+        let row = &records[0];
+        assert_eq!(row.request_id.as_str(), request_id);
+        assert_eq!(row.provider_id.as_str(), "p-a");
+        assert_eq!(row.channel_id.as_str(), "ch-a");
+        assert_eq!(row.credential_id.as_str(), "c-a");
+        assert_eq!(row.lane_id.as_ref().map(|l| l.as_str()), Some("lane-jp"));
+        assert_eq!(row.model, "claude-sonnet-4-5");
+        assert_eq!(row.status, 200);
+        assert_eq!(row.usage.get(&ta_core::types::TokenKind::Input), 1000);
+        assert_eq!(row.usage.get(&ta_core::types::TokenKind::Output), 500);
+        assert_eq!(row.usage_source, ta_core::types::UsageSource::UpstreamPartial);
+        // 1000×3/1M + 500×15/1M = 0.0105
+        assert!((row.cost.amount - 0.0105).abs() < 1e-12, "cost={}", row.cost.amount);
+        assert_eq!(row.price_snapshot["rates"]["input"], serde_json::json!(3.0));
+        assert!(row.ttfb_ms.is_some(), "上游首字节耗时必须记下来");
+
+        let observed = ledger.observed();
+        assert_eq!(observed.len(), 1, "额度账本必须同时收到观测（配额判定靠它）");
+        assert_eq!(observed[0].0.as_str(), "c-a");
+    }
+
+    /// 流式：**逐字节透传** + 流结束时恰好一条记录（用量来自 SSE 里的 usage）。
+    #[tokio::test]
+    async fn production_meter_records_stream_usage_and_keeps_the_stream_verbatim() {
+        let (meter, store, _ledger) = crate::meter::test_support::recording_meter();
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],",
+            "\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let dialer = Arc::new(ScriptedDialer::with(vec![Scripted::Ok {
+            status: 200,
+            headers: vec![("content-type", "text/event-stream")],
+            body: sse,
+        }]));
+        let pipeline = pipeline_with_meter(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            dialer,
+            Arc::new(meter),
+        );
+
+        let prepared = pipeline
+            .prepare(&snapshot(br#"{"model":"claude-sonnet-4-5","stream":true}"#))
+            .await
+            .unwrap();
+        assert!(prepared.stream, "夹具必须走流式路径");
+        let response = pipeline.execute(prepared).await.expect("流式应当成功");
+        // 读完 = 流结束 → 计量在此刻结算；字节必须一个不差
+        let text = body_string(response).await;
+        assert_eq!(text, sse, "零缓冲：流式字节必须逐一致");
+
+        crate::meter::test_support::drain_tasks().await;
+        let records = store.records();
+        assert_eq!(records.len(), 1, "流式也是恰好一条");
+        assert_eq!(records[0].usage.get(&ta_core::types::TokenKind::Input), 7);
+        assert_eq!(records[0].usage.get(&ta_core::types::TokenKind::Output), 2);
+        assert_eq!(records[0].usage_source, ta_core::types::UsageSource::UpstreamPartial);
     }
 
     // ---------------------------------------------------------- 冷却退避（[docs/03 §5.3]）

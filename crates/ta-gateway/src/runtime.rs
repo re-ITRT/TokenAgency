@@ -94,6 +94,18 @@ impl RuntimeParts {
         self
     }
 
+    /// 接上**生产计量器**（G4 ④）：响应 usage → 额度账本 / 价格快照 / `usage` 表。
+    ///
+    /// 为什么不给空实现、也不默认接上：`meter: None` 的语义是"**计量没接线**"，
+    /// 此时成本中心永远是 0 —— 静默地"接了但没数据"比没接更糟（[docs/13 §4.5 L10]），
+    /// 所以由装配方显式调这一句，而不是让 [`build_runtime`] 替它猜。
+    ///
+    /// **必须在 tokio 运行时里装配**：落库是 `spawn` 出去的。
+    pub fn with_usage_meter(mut self, deps: &Arc<GatewayDeps>) -> Self {
+        self.meter = Some(Arc::new(crate::meter::UsageMeter::from_deps(deps)));
+        self
+    }
+
     pub fn with_ingress_options(mut self, ingress: IngressOptions) -> Self {
         self.ingress = ingress;
         self
@@ -606,6 +618,20 @@ pub(crate) mod tests {
         );
         // 配置也是同一份 ArcSwap（管理 API 改配置，网关立刻看到）
         assert!(Arc::ptr_eq(&deps.config, &runtime.state.cfg));
+    }
+
+    /// 生产计量器的装配入口：`with_usage_meter` 之后装配里**真的有**计量器。
+    ///
+    /// 这条挡的是"忘了装配"这类**静默**故障：`meter: None` 不会报任何错，
+    /// 只会让成本中心永远 0（[docs/13 §4.5 L10]）。计量本身对不对由
+    /// `meter::tests` 与 `pipeline::tests::production_meter_*` 证明。
+    #[tokio::test]
+    async fn usage_meter_is_wired_through_runtime_parts() {
+        let deps = test_deps(cfg_with_channels(0), Arc::new(NoDialer));
+        let parts = test_parts().with_usage_meter(&deps);
+        assert!(parts.meter.is_some(), "with_usage_meter 必须真的接上计量器");
+        // 装配也必须照常成功（计量器不会给装配引入新的前置条件）
+        let _runtime = build_runtime(&deps, parts);
     }
 
     // ---------------------------------------------------------- 热重载
