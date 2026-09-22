@@ -674,10 +674,11 @@ describe("[docs/19 §1.2] 第 2 步：添加模型", () => {
     await gotoStep2();
     await screen.findAllByTestId("pw-model-row");
 
-    // 换成直连 → lane 必须是 null（未选 = 直连）
+    // 换成直连 → [docs/20 §1.3.1] 写的是**直连那条 lane 的具体 id**（不是 null）：
+    // 用户选的是"直连"这个具体线路，落库就得存它，免得以后改全局默认线路把它悄悄带走
     await chooseOption("pw-model-lane", "直连");
     await waitFor(() => expect(bulk.calls).toHaveLength(1));
-    expect(bulk.calls[0]).toEqual({ ids: ["m-added"], patch: { lane: null } });
+    expect(bulk.calls[0]).toEqual({ ids: ["m-added"], patch: { lane: "lane-direct" } });
   });
 
   it("pw-cancel / pw-finish 都能关掉向导（cancel 一次命令都不发）", async () => {
@@ -713,7 +714,12 @@ describe("[docs/19 §1.2] 一键扫描：结果只来自后端", () => {
   function registerScanMocks(preview: unknown = PREVIEW) {
     registerUpsertMocks();
     const scan = recordingMock(preview);
-    const apply = recordingMock({ applied: true, restart_required: false, kernel_reload: false });
+    const apply = recordingMock({
+      applied: true,
+      restart_required: false,
+      kernel_reload: false,
+      channels_created: 1,
+    });
     registerMock("model_import_from_provider", scan.handler);
     registerMock("model_apply_import", apply.handler);
     return { scan, apply };
@@ -746,9 +752,11 @@ describe("[docs/19 §1.2] 一键扫描：结果只来自后端", () => {
 
     fireEvent.click(screen.getByTestId("pw-scan-add"));
     await waitFor(() => expect(apply.calls).toHaveLength(1));
+    // [docs/20 §3]：默认 lane 也要一起发出去（基准 mock 的 net.default_lane = lane-direct）
     expect(apply.calls[0]).toEqual({
       preview_token: "pv-1",
       selected: ["deepseek-v4.1flash"],
+      lane: "lane-direct",
     });
 
     // 添加完说清楚加了几个（后端返回 applied=true）
@@ -801,5 +809,145 @@ describe("[docs/19 §1.2] 一键扫描：结果只来自后端", () => {
     });
     expect(await screen.findByTestId("pw-scan-result")).toBeTruthy();
     expect(screen.queryByText("正在扫描上游模型")).toBeNull();
+  });
+});
+
+// ================================================================ ⑤ [docs/20 §3] 添加之后立刻能看、每行能改线路
+
+/** 一份只有一条待添加模型的扫描结果（tid 与真机一致）。 */
+const LANE_PREVIEW = {
+  preview_token: "pv-lane",
+  models: [{ upstream_model: "m-new", suggested_id: "m-new", exists: false }],
+  skipped: [],
+};
+
+/** 一条已被这个服务商挂上的 cell（`channel_matrix` 的形状）。 */
+function matrixCell(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    model_id: "m-x",
+    credential_id: "my-gateway-default",
+    channel_id: "ch-x",
+    lane_id: null,
+    upstream_model: "up-x",
+    ...overrides,
+  };
+}
+
+/**
+ * 「后端真的建了通道」的替身。
+ *
+ * 为什么必须由替身建：第 2 步上面那块是**从 `channel_matrix` 派生的**（[docs/20 §0]），
+ * 前端不许自己往清单里塞行；所以"添加之后看得到"这件事，只能靠替身在 apply 之后
+ * 真的往矩阵里加一条 —— 否则测的就是前端编的假数据。
+ *
+ * 改线路也一样：`model_bulk_update` 的替身把 lane 写回矩阵，界面上的值只有**重取**之后
+ * 才会变（这正是"值要真的变回来"那条要求）。
+ */
+function registerMatrixBackend() {
+  registerUpsertMocks();
+  registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
+  const cells: Record<string, unknown>[] = [];
+  registerMock("channel_matrix", () => matrixView(cells, []));
+  const bulkCalls: Record<string, unknown>[] = [];
+  registerMock("model_bulk_update", (args) => {
+    bulkCalls.push(args ?? {});
+    const ids = (args?.["ids"] ?? []) as string[];
+    const patch = (args?.["patch"] ?? {}) as Record<string, unknown>;
+    for (const cell of cells) {
+      if (ids.includes(cell["model_id"] as string)) cell["lane_id"] = patch["lane"] ?? null;
+    }
+    return { applied: true, restart_required: false, kernel_reload: false, channels_created: 0 };
+  });
+  return { cells, bulkCalls };
+}
+
+describe("[docs/20 §3] 添加之后上面立刻看得到，且每一行都能改线路", () => {
+  it("model_apply_import 带上默认 lane；后端真建了通道 → 行立刻出现；channels_created 如实显示", async () => {
+    const { cells } = registerMatrixBackend();
+    registerMock("model_import_from_provider", () => LANE_PREVIEW);
+    const applyCalls: Record<string, unknown>[] = [];
+    registerMock("model_apply_import", (args) => {
+      applyCalls.push(args ?? {});
+      // 后端建通道（[docs/20 §1.1]）：这条之后矩阵里才有它
+      cells.push(
+        matrixCell({
+          model_id: "m-new",
+          channel_id: "ch-my-gateway-my-gateway-default-m-new",
+          lane_id: (args?.["lane"] as string | null) ?? null,
+        }),
+      );
+      return { applied: true, restart_required: false, kernel_reload: false, channels_created: 1 };
+    });
+
+    await gotoStep2();
+    fireEvent.click(screen.getByTestId("pw-scan"));
+    fireEvent.click(await screen.findByTestId("pw-scan-select-all"));
+    fireEvent.click(screen.getByTestId("pw-scan-add"));
+
+    // ① 入参带上当前默认 lane
+    await waitFor(() => expect(applyCalls).toHaveLength(1));
+    expect(applyCalls[0]).toEqual({
+      preview_token: "pv-lane",
+      selected: ["m-new"],
+      lane: "lane-direct",
+    });
+
+    // ② 上面那块立刻有东西（不是点完添加、上面永远空着）
+    const row = await screen.findByTestId("pw-model-row");
+    expect(row.textContent).toContain("m-new");
+
+    // ③ 后端说新建了几条线路就显示几条（不编数字、不写死）
+    expect(screen.getByTestId("pw-channels-created").textContent).toContain("1");
+  });
+
+  it("每行的 pw-model-lane 永不为空：没配过显示「直连」，值就是直连那条 lane 的 id", async () => {
+    registerUpsertMocks();
+    registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
+    // 第 1 步也没选过默认代理：链路末端就是直连
+    registerMock("config_get", () => ({ net: { default_lane: null } }));
+    registerMock("channel_matrix", () => matrixView([matrixCell()]));
+
+    await gotoStep2();
+    const row = (await screen.findAllByTestId("pw-model-row"))[0]!;
+
+    // 空下拉 = 用户看到的「未配置」：这里必须是可读的名字，且值真的是那条直连 lane
+    expect(selectTextOf("pw-model-lane")).toBe("直连");
+    expect(inputOf("pw-model-lane").value).toBe("lane-direct");
+    expect(within(row).getByTestId("pw-model-lane-name").textContent).toBe("直连");
+  });
+
+  it("行内改线路：落库载荷是 { ids: [模型], patch: { lane } }，重取后行内显示该线路名", async () => {
+    const { cells, bulkCalls } = registerMatrixBackend();
+    cells.push(matrixCell());
+    registerMock("config_get", () => ({ net: { default_lane: null } }));
+
+    await gotoStep2();
+    await screen.findAllByTestId("pw-model-row");
+
+    await chooseOption("pw-model-lane", /日本/);
+    await waitFor(() => expect(bulkCalls).toHaveLength(1));
+    expect(bulkCalls[0]).toEqual({ ids: ["m-x"], patch: { lane: "lane-jp" } });
+
+    // 重取之后显示的真的是新线路（不是"界面上改了、值没变回来"）
+    await waitFor(() => expect(selectTextOf("pw-model-lane")).toContain("日本"));
+    expect(
+      within(await screen.findByTestId("pw-model-row")).getByTestId("pw-model-lane-name").textContent,
+    ).toContain("日本");
+  });
+
+  it("改线路失败：原样显示后端原文（含 TA 码），不吞", async () => {
+    const { cells } = registerMatrixBackend();
+    cells.push(matrixCell());
+    registerMock("model_bulk_update", () => {
+      throw new TokenAgencyError({ code: "TA-5001", message: "线路 lane-jp 不存在" });
+    });
+
+    await gotoStep2();
+    await screen.findAllByTestId("pw-model-row");
+    await chooseOption("pw-model-lane", /日本/);
+
+    const error = await screen.findByTestId("pw-lane-error");
+    expect(error.textContent).toContain("TA-5001");
+    expect(error.textContent).toContain("线路 lane-jp 不存在");
   });
 });

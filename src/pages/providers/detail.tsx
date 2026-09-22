@@ -16,6 +16,14 @@
  *    列出的字段网格里额外 CA 只显示"配没配"（完整内容在「原始字段」里原样可见，不藏数据）。
  *
  * 数据流见 `index.tsx`（两页共用 `qk.providers`），字段偏差见 `model.ts`。
+ *
+ * ## 图形化编辑（[docs/20 §4]）
+ *
+ * 页头有 `providers-detail-edit`：点开的是**与"添加服务商"同一个两步向导**
+ * （`./providerWizard.tsx`），只是以 `mode: "edit"` 打开 —— 第 1 步预填现有名称/协议/地址、
+ * 密钥框留空 = 不改，第 2 步与新增完全一致（扫描、勾选添加、逐行改线路）。
+ * 打开之前先把草稿种进那个模块级会话（`startEditSession`），所以从 `/network` 绕一圈回来
+ * 它照样在（与新增路径同一条数据路径）。
  */
 
 import {
@@ -30,11 +38,11 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { errorMessage, qk, useCommandQuery } from "@/shared/api";
-import type { QuotaStateValue } from "@/shared/bindings";
+import type { Protocol, QuotaStateValue } from "@/shared/bindings";
 import { PageHeader, QuotaBar, StatusDot, type SemStatus } from "@/shared/components";
 import { formatInt, formatLatency, formatMoney, formatPercent, formatTokens } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
@@ -49,6 +57,8 @@ import {
   type CredentialRow,
   type ProviderRow,
 } from "./model";
+import { ProviderTwoStepWizard } from "./providerWizard";
+import { resetWizardSession, startEditSession } from "./providerWizardModel";
 
 // ================================================================ 文案映射（显式表，不用模板拼 key）
 
@@ -173,6 +183,18 @@ function MonoValue({ children }: { children: ReactNode }) {
 /** 秒 → `10s`；缺失画「—」。 */
 function seconds(value: number | undefined): string {
   return value === undefined ? DASH : `${value}s`;
+}
+
+/**
+ * 编辑模式预填用的协议值。
+ *
+ * 后端给什么就用什么：能对上 `PROTOCOLS` 就是它，**对不上也原样带进草稿**
+ * （契约外的取值不改写 —— 与这一页"原样显示"同一条纪律，向导的协议下拉会为它补一行原值）。
+ * 只有后端**根本没给**协议时才落到契约里的 `custom`（那种配置本身是不完整的，用户在
+ * 下拉里看得见、也改得掉）。
+ */
+function editProtocolOf(raw: string | undefined): Protocol {
+  return raw === undefined || raw === "" ? "custom" : (raw as Protocol);
 }
 
 /** 把后端的线上值翻成界面语言；契约外的取值**原样显示**（是后端说的话，不改写、不猜）。 */
@@ -707,6 +729,39 @@ export default function ProviderDetailPage() {
   );
   const laneOptions = useMemo(() => (lanes.data ?? []).map((l) => readLane(l)), [lanes.data]);
 
+  /**
+   * 编辑向导（[docs/20 §4]）。
+   *
+   * 打开顺序很重要：**先把草稿种进会话，再让它 open** —— 组件在 `open` 变真时从会话读一次
+   * （与从 `/network` 回来走同一条路径）。这样预填、"留空密钥 = 不改"、
+   * "名称去重排除自己"三件事都由会话里的那一份负责，组件里不需要第二套状态。
+   */
+  const [editOpen, setEditOpen] = useState(false);
+  const openEdit = (): void => {
+    if (row === undefined) return;
+    startEditSession({
+      providerId: row.id,
+      name: row.name,
+      protocol: editProtocolOf(row.protocol),
+      baseUrl: row.baseUrl ?? "",
+    });
+    setEditOpen(true);
+  };
+  const closeEdit = (): void => {
+    resetWizardSession();
+    setEditOpen(false);
+  };
+
+  /** 名称去重对着后端给的整份目录做（编辑模式会把"自己"从里面摘掉）。 */
+  const providerIds = useMemo(() => (providers.data ?? []).map((p) => p.id), [providers.data]);
+  const providerNames = useMemo(
+    () =>
+      (providers.data ?? [])
+        .map((p) => p.name)
+        .filter((name): name is string => typeof name === "string"),
+    [providers.data],
+  );
+
   return (
     <>
       <PageHeader
@@ -714,16 +769,31 @@ export default function ProviderDetailPage() {
         description={t("providers.detail.description")}
         docRef="07 §3.2 服务商详情（连接 / 附加头与透传）"
         actions={
-          <Button
-            variant="outlined"
-            onClick={() => {
-              void providers.refetch();
-              void credentials.refetch();
-              void lanes.refetch();
-            }}
-          >
-            {t("providers.refresh")}
-          </Button>
+          <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+            {/*
+              编辑入口只在这一行真的存在时出现（目录里没有这个 id 时不放一个点了会错的按钮）。
+              文案走 `providers.edit`。
+            */}
+            {row === undefined ? null : (
+              <Button
+                variant="contained"
+                data-testid="providers-detail-edit"
+                onClick={openEdit}
+              >
+                {t("providers.edit")}
+              </Button>
+            )}
+            <Button
+              variant="outlined"
+              onClick={() => {
+                void providers.refetch();
+                void credentials.refetch();
+                void lanes.refetch();
+              }}
+            >
+              {t("providers.refresh")}
+            </Button>
+          </Box>
         }
       />
 
@@ -739,6 +809,13 @@ export default function ProviderDetailPage() {
         laneName={(laneId) => laneNameOf(laneOptions, laneId)}
         laneError={lanes.error ?? undefined}
         onBack={() => navigate("/providers")}
+      />
+
+      {/* 与「添加服务商」同一个两步向导：这里只是以编辑模式打开（功能一模一样） */}
+      <ProviderTwoStepWizard
+        open={editOpen}
+        existing={{ ids: providerIds, names: providerNames }}
+        onClose={closeEdit}
       />
     </>
   );

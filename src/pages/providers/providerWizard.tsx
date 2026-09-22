@@ -43,7 +43,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { api, errorMessage, qk, useCommandMutation, useCommandQuery } from "@/shared/api";
-import type { ImportPreview, ProbeResult } from "@/shared/bindings";
+import type { ImportPreview, LaneId, ProbeResult } from "@/shared/bindings";
 import { formatInt } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { typography } from "@/theme";
@@ -55,6 +55,7 @@ import {
   defaultCredentialPayload,
   defaultLaneOf,
   deriveProviderId,
+  directLaneIdOf,
   laneChoices,
   lanePatch,
   laneValue,
@@ -130,6 +131,14 @@ export type ProviderTwoStepWizardProps = {
   onClose: () => void;
 };
 
+/**
+ * 两步向导（[docs/19 §1] 新增 / [docs/20 §4] 编辑）。
+ *
+ * **模式来自会话**（`WizardSession.mode`）而不是 prop：编辑模式要预填草稿、并把
+ * "这是我自己那一份"登记进 `saved`（[`startEditSession`]），这两件事在**打开之前**就完成了 ——
+ * 调用方（`index.tsx` / `detail.tsx`）先写 store 再 `open`，与 `pw-proxy` 去 `/network`
+ * 再回来是同一条数据路径。于是组件里只有一套状态，不需要"再从 prop 种一次草稿"的第二条真相源。
+ */
 export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoStepWizardProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -157,6 +166,8 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   const draft = session.draft;
   const step = session.step;
   const saved = session.saved;
+  /** 编辑模式（`providers-detail-edit` 进来的那一档）：第 1 步预填、留空密钥 = 不改。 */
+  const editing = session.mode === "edit";
 
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -171,17 +182,27 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   const [scanError, setScanError] = useState<unknown>(undefined);
   const [applyError, setApplyError] = useState<unknown>(undefined);
   const [appliedCount, setAppliedCount] = useState<number | undefined>(undefined);
+  /** 后端返回的 `channels_created`：本次**真新建**了几条线路。如实显示，不编数字。 */
+  const [channelsCreated, setChannelsCreated] = useState<number | undefined>(undefined);
+  /** 改线路失败时后端说的话（[docs/20 §3]：不许吞）。 */
+  const [laneError, setLaneError] = useState<unknown>(undefined);
   const [needsProvider, setNeedsProvider] = useState(false);
   const [selection, setSelection] = useState<readonly string[]>([]);
   const [infoOpen, setInfoOpen] = useState<string | undefined>(undefined);
 
-  // ---- 只读数据（第 2 步才需要，所以按步开启）
+  // ---- 只读数据（第 2 步才需要，所以按步开启；编辑模式第 1 步还要读凭据，见下）
 
   const matrix = useCommandQuery("channel_matrix", undefined, qk.channelMatrix, {
     enabled: open && step === 2,
   });
+  /**
+   * `credential_list`：
+   * - 第 2 步用来把 `channel_matrix` 的 cell 归到"这家服务商的凭据"上；
+   * - **编辑模式第 1 步也要**：用户填了新密钥时要写的是**这家已有的那把**凭据，
+   *   而不是凭空新造一个 `<provider>-default` 挂上去。
+   */
   const credentials = useCommandQuery("credential_list", undefined, qk.credentials, {
-    enabled: open && step === 2,
+    enabled: open && (step === 2 || editing),
   });
   const laneOptions = useCommandQuery("lane_pick_options", undefined, qk.lanePickOptions, {
     enabled: open && step === 2,
@@ -213,7 +234,30 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
    */
   const shownIssues = submitted ? allIssues : nameTakenIssue(draft, existing, saved);
 
+  /**
+   * 这一份服务商的 id。
+   *
+   * - 会话里已经有（`pw-test` 落过库 / 编辑模式种下的现有 id）→ **就用它**，
+   *   绝不重新派生（否则改名就等于新建一个服务商，[docs/20 §4] 明确禁止）；
+   * - 编辑模式一定来自 `startEditSession`，所以 `saved` 必然在；万一不在就退回派生，
+   *   让界面显示出一个 id 而不是空白（用户看得见就不会猜）。
+   */
   const providerId = saved?.providerId ?? deriveProviderId(draft.name, existing.ids);
+
+  /**
+   * 编辑模式下写密钥要落到的凭据 id：**优先这家已有的那把**。
+   *
+   * 为什么不能直接用 `<provider>-default`：`c-bytedance` 这类 id 是用户/历史建出来的，
+   * 编辑时再 upsert 一个 `<provider>-default` 等于往这家服务商下面多挂一份重复凭据。
+   * 顺序：`<provider>-default`（第 1 步建的那种）→ 该 provider 的第一条凭据 → 兜底新建 `<provider>-default`。
+   */
+  const editCredentialId = useMemo(() => {
+    const own = (credentials.data ?? [])
+      .filter((view) => view.credential.provider === providerId)
+      .map((view) => view.credential.id);
+    const preferred = defaultCredentialId(providerId);
+    return own.includes(preferred) ? preferred : (own[0] ?? preferred);
+  }, [credentials.data, providerId]);
 
   // ---- 第 1 步：落库（`pw-next` 与"还没落库时的 pw-test"共用）
 
@@ -230,12 +274,27 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
       // 后端返回的 id 才是权威（upsert 可能改写）；凭据挂在它下面
       const landedId =
         typeof provider?.id === "string" && provider.id !== "" ? provider.id : candidateId;
-      await upsertCredential.mutateAsync({
-        credential: defaultCredentialPayload(landedId, draft.name),
-      });
       const keyWritten = draft.key !== "";
-      if (keyWritten) {
-        await setSecret.mutateAsync({ id: defaultCredentialId(landedId), plaintext: draft.key });
+      if (editing) {
+        /**
+         * 编辑模式（[docs/20 §4]）：**留空密钥 = 不改**。
+         *
+         * 所以一个字节都不碰凭据与密钥仓库 —— 只覆盖写服务商自己。
+         * 填了新值才写：写的是这家**已有**的那把凭据（[`editCredentialId`]）。
+         */
+        if (keyWritten) {
+          await upsertCredential.mutateAsync({
+            credential: defaultCredentialPayload(landedId, draft.name, editCredentialId),
+          });
+          await setSecret.mutateAsync({ id: editCredentialId, plaintext: draft.key });
+        }
+      } else {
+        await upsertCredential.mutateAsync({
+          credential: defaultCredentialPayload(landedId, draft.name),
+        });
+        if (keyWritten) {
+          await setSecret.mutateAsync({ id: defaultCredentialId(landedId), plaintext: draft.key });
+        }
       }
       // 明文用完就从草稿里抹掉（它已经在密钥仓库里了，没有理由继续留在内存里）。
       // 同时把"这一份本会话已经落库了 / 密钥已经存过了"记进会话 —— 校验要看它，
@@ -249,8 +308,8 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
         saved: stored,
         draft: { ...prev.draft, key: "" },
       }));
-      void queryClient.invalidateQueries({ queryKey: qk.providers });
-      void queryClient.invalidateQueries({ queryKey: qk.credentials });
+      await queryClient.invalidateQueries({ queryKey: qk.providers });
+      await queryClient.invalidateQueries({ queryKey: qk.credentials });
       return landedId;
     } catch (err) {
       setSaveError(err);
@@ -327,24 +386,65 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   const applySelected = (): void => {
     if (preview === undefined) return;
     setApplyError(undefined);
+    setAppliedCount(undefined);
+    setChannelsCreated(undefined);
     void (async () => {
       try {
-        const result = await api.model.applyImport(preview.preview_token, [...selection]);
+        /**
+         * 走 `@/shared/api` 的**类型化门面**（页面不写裸命令字符串）；第三个参数是本轮契约
+         * 新增的 `lane?`（[docs/20 §2.3]）—— 把**当前默认 lane** 一起发下去，
+         * 新通道的 lane 由它决定。不发的话后端只能自己猜，界面上的"默认直连"就与线上不是一回事。
+         */
+        const result = await api.model.applyImport(
+          preview.preview_token,
+          [...selection],
+          newModelLane,
+        );
         // 只有后端说 applied 才算加了；条数是"我们提交了几条"，不是编出来的数字
         setAppliedCount(result.applied ? selection.length : undefined);
-        void queryClient.invalidateQueries({ queryKey: qk.channelMatrix });
-        void queryClient.invalidateQueries({ queryKey: qk.models });
+        // `channels_created` = 后端说这次**真新建**了几条线（0 也如实显示）
+        setChannelsCreated(
+          typeof result.channels_created === "number" ? result.channels_created : undefined,
+        );
+        /**
+         * **必须等这一次取数回来**（[docs/20 §3]）：上面那块「已添加的模型」是
+         * **从 `channel_matrix` 派生的**，fire-and-forget 的话"添加成功"这句话说出来时
+         * 上面还是空的 —— 用户第 1 条反馈看到的正是这个。
+         * 凭据也一起失效：新模型可能刚落上一份凭据归属，第 2 步的过滤按它算。
+         */
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: qk.channelMatrix }),
+          queryClient.invalidateQueries({ queryKey: qk.models }),
+          queryClient.invalidateQueries({ queryKey: qk.credentials }),
+        ]);
       } catch (err) {
         setApplyError(err);
       }
     })();
   };
 
+  /**
+   * 行内改线路（[docs/20 §3]）：落库载荷固定是 `{ ids: [模型], patch: { lane } }`。
+   *
+   * 成功后**等**矩阵与模型清单重取回来，行里的值才会真的变（不然就是"界面上改了、值没变"）；
+   * 失败把后端原文放进 `pw-lane-error` 显示出来 —— 静默失败正是第 71 轮那个坑。
+   */
   const changeLane = (modelId: string, value: string): void => {
-    bulkUpdate.mutate(
-      { ids: [modelId], patch: { lane: lanePatch(value) } },
-      { onSuccess: () => void queryClient.invalidateQueries({ queryKey: qk.channelMatrix }) },
-    );
+    setLaneError(undefined);
+    void (async () => {
+      try {
+        await bulkUpdate.mutateAsync({
+          ids: [modelId],
+          patch: { lane: lanePatch(value, directLaneId) },
+        });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: qk.channelMatrix }),
+          queryClient.invalidateQueries({ queryKey: qk.models }),
+        ]);
+      } catch (err) {
+        setLaneError(err);
+      }
+    })();
   };
 
   const close = (): void => {
@@ -359,6 +459,8 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
     setScanError(undefined);
     setApplyError(undefined);
     setAppliedCount(undefined);
+    setChannelsCreated(undefined);
+    setLaneError(undefined);
     setSelection([]);
     setInfoOpen(undefined);
     onClose();
@@ -390,10 +492,35 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
     }
     return map;
   }, [models.data]);
+  /**
+   * 直连那条 lane 的 id（[docs/20 §1.2 第 3 步]）与下拉选项。
+   * 前者让"没配过"显示成一个**真实的值**（而不是空白/「未配置」）。
+   */
+  const directLaneId = useMemo(() => directLaneIdOf(laneOptions.data ?? []), [laneOptions.data]);
   const laneOptionList = useMemo(
     () => laneChoices(laneOptions.data ?? [], t("network.directLabel")),
     [laneOptions.data, t],
   );
+  /**
+   * 新增模型时的默认 lane = `net.default_lane`（用户在 `/network` 选的"新建服务商默认代理"）
+   * → 直连那条 lane。取不到直连 id 时回落到 `null`（继承，链路末端仍是直连）。
+   */
+  const newModelLane: LaneId | null = defaultLane ?? (directLaneId === "" ? null : directLaneId);
+
+  /** 一个 lane 值在下拉里显示的名字（直连 / `组名 · 线路名`）；找不到就退回原值。 */
+  const laneLabelOf = (value: string): string =>
+    laneOptionList.find((choice) => choice.value === value)?.label ?? value;
+
+  /** 协议下拉：正常情况下就是 `PROTOCOLS`；编辑模式遇到契约外的值**原样补一行**，不改写它。 */
+  const protocolOptions = useMemo(() => {
+    const known = PROTOCOLS.map((protocol) => ({
+      value: protocol as string,
+      label: t(PROTOCOL_LABEL[protocol] ?? "providers.protocol.custom"),
+    }));
+    const raw = draft.protocol as string;
+    if (raw === "" || known.some((option) => option.value === raw)) return known;
+    return [{ value: raw, label: raw }, ...known];
+  }, [draft.protocol, t]);
 
   const probeText = (): string | undefined => {
     if (probeError !== undefined && probeError !== null) return errorMessage(probeError);
@@ -419,7 +546,12 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
       slotProps={{ paper: { sx: { maxHeight: "90vh" } } }}
     >
       <DialogTitle>
-        {step === 1 ? t("providers.wizard.step1Title") : t("providers.wizard.step2Title")}
+        {/* 编辑模式（[docs/20 §4]）：标题说清"这是在改已有的那一份"，不是新建 */}
+        {step === 2
+          ? t("providers.wizard.step2Title")
+          : editing
+            ? t("providers.wizard.editTitle")
+            : t("providers.wizard.step1Title")}
         <Typography variant="caption" sx={{ ml: 2, color: "text.secondary" }}>
           {t("providers.wizard.stepOf", { current: step, total: 2 })}
         </Typography>
@@ -455,10 +587,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
               onChange={(value) =>
                 patchSession(() => ({ draft: { ...draft, protocol: value as Step1Draft["protocol"] } }))
               }
-              options={PROTOCOLS.map((protocol) => ({
-                value: protocol,
-                label: t(PROTOCOL_LABEL[protocol] ?? "providers.protocol.custom"),
-              }))}
+              options={protocolOptions}
               emptyLabel={t("wizard.required")}
             />
 
@@ -486,7 +615,10 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
                 fullWidth
                 autoComplete="new-password"
               />
-              <Caption>{t("credentials.add.secret")}</Caption>
+              {/* 编辑模式必须说清"留空 = 不改"（[docs/20 §4]）：否则用户会以为密钥被清掉了 */}
+              <Caption>
+                {editing ? t("providers.wizard.keyUnchanged") : t("credentials.add.secret")}
+              </Caption>
             </Stack>
 
             <Issues issues={shownIssues} backendError={saveError} />
@@ -531,6 +663,8 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
 
               <Stack spacing={2}>
                 <Typography variant="h4">{t("providers.wizard.addedModels")}</Typography>
+                {/* 空态那句话会让人以为"这里本来就没有"：先把默认语义说清楚（继承链末端是直连） */}
+                <Caption>{t("providers.wizard.modelLaneDefaultHint")}</Caption>
                 <Stack spacing={2} data-testid="pw-added-models">
                   {addedModels.length === 0 ? (
                     <Typography variant="body1" data-testid="pw-added-models-empty">
@@ -539,11 +673,15 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
                   ) : (
                     addedModels.map((row) => {
                       /**
-                       * 该行现在走哪条线：① channel 自己的 lane（后端在用的真值）→
-                       * ② 模型级默认 lane（改过的值存这里）→ ③ 第 1 步/`net.default_lane`
-                       * （都没设就是 `null` = 直连）。
+                       * 该行现在走哪条线（[docs/20 §1.2]）：
+                       * ① channel 自己的 lane（后端在用的真值）→ ② 模型级默认 lane（改过的值存这里）
+                       * → ③ `net.default_lane`（第 1 步/`/network` 选的）→ ④ **直连**。
+                       *
+                       * 最后一步是这轮补上的：以前落到 `null`，下拉渲染成空白，用户看到的就是
+                       * 「未配置」—— 而继承链的末端明明是直连。
                        */
                       const lane = row.laneId ?? modelDefaultLanes.get(row.modelId) ?? defaultLane;
+                      const value = laneValue(lane, directLaneId === "" ? null : directLaneId);
                       return (
                         <Stack key={row.modelId} spacing={1} data-testid="pw-model-row">
                           <Stack
@@ -580,11 +718,19 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
                               <SelectField
                                 testId="pw-model-lane"
                                 label={t("providers.wizard.modelLane")}
-                                value={laneValue(lane)}
-                                onChange={(value) => changeLane(row.modelId, value)}
+                                value={value}
+                                onChange={(next) => changeLane(row.modelId, next)}
                                 options={laneOptionList}
                                 emptyLabel={t("network.directLabel")}
                               />
+                              {/* 除了下拉，行内还要有**一处可读的当前线路名**：空白下拉什么都说明不了 */}
+                              <Typography
+                                variant="caption"
+                                data-testid="pw-model-lane-name"
+                                sx={{ color: "text.secondary" }}
+                              >
+                                {laneLabelOf(value)}
+                              </Typography>
                             </Box>
                           </Stack>
 
@@ -617,6 +763,17 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
                     })
                   )}
                 </Stack>
+
+                {/* 改线路失败必须说出来（[docs/20 §3]：不许吞）—— 静默失败是第 71 轮的坑 */}
+                {laneError !== undefined && laneError !== null ? (
+                  <Typography
+                    variant="body1"
+                    data-testid="pw-lane-error"
+                    sx={{ color: "error.main" }}
+                  >
+                    {errorMessage(laneError)}
+                  </Typography>
+                ) : null}
               </Stack>
 
               {/* ---------------- 扫描结果 ---------------- */}
@@ -679,6 +836,16 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
                     {appliedCount !== undefined ? (
                       <Typography variant="body1">
                         {t("providers.wizard.addedCount", { count: appliedCount })}
+                      </Typography>
+                    ) : null}
+                    {/*
+                      后端说这次真新建了几条线就显示几条（0 也如实显示：那就是"一条都没接上"）。
+                      `channels_created` 是"这次真的接上了几条线"的**唯一**真话 —— "加了模型"与
+                      "接上了线路"是两件事（[docs/20 §0] 的教训正是点了添加、上面什么都没有）。
+                    */}
+                    {channelsCreated !== undefined ? (
+                      <Typography variant="body1" data-testid="pw-channels-created">
+                        {t("providers.wizard.channelsCreated", { count: channelsCreated })}
                       </Typography>
                     ) : null}
                     {applyError !== undefined && applyError !== null ? (

@@ -200,18 +200,33 @@ export function defaultCredentialId(providerId: string): string {
  * - `secret` 恒为 `${secret:<id>}` **引用**，明文永远不在这里；
  * - `quota` / `guard` / `tags` / `enabled` 在 Rust 侧都有 `serde(default)`，**一个都不带**；
  * - `label` 用用户给的显示名称（用户数据原样，不另造文案）。
+ * - `credentialId` 只在**编辑模式**下被显式给出：那时要写的是这家服务商**已有的那把**凭据
+ *   （例如 `c-bytedance`），而不是凭空新造一个 `<provider>-default`（[docs/20 §4]）。
  */
-export function defaultCredentialPayload(providerId: string, label: string): Credential {
-  const id = defaultCredentialId(providerId);
+export function defaultCredentialPayload(
+  providerId: string,
+  label: string,
+  credentialId: string = defaultCredentialId(providerId),
+): Credential {
   return {
-    id,
+    id: credentialId,
     provider: providerId,
     label: label.trim(),
-    secret: `\${secret:${id}}`,
+    secret: `\${secret:${credentialId}}`,
   } as unknown as Credential;
 }
 
 // ================================================================ 模块级草稿 store
+
+/**
+ * 向导的两种模式（[docs/20 §4]）：
+ * - `create`：从 `providers-add-open` 进来，第 1 步是空表单，落库时 id 由名称**派生**；
+ * - `edit`：从详情页 `providers-detail-edit` 进来，第 1 步**预填**现有服务商，
+ *   落库时用**现有 id 覆盖写**，密钥框留空 = 不改已存的那把。
+ *
+ * 两种模式共用同一套控件与第 2 步（写范围与验收都要求"功能一模一样"）。
+ */
+export type WizardMode = "create" | "edit";
 
 /**
  * 向导会话。**活在模块里**，所以 `/network` 来回一趟（页面卸载再挂载）也丢不了草稿
@@ -220,13 +235,14 @@ export function defaultCredentialPayload(providerId: string, label: string): Cre
 export type WizardSession = {
   open: boolean;
   step: 1 | 2;
+  mode: WizardMode;
   draft: Step1Draft;
   /** 已经真的落库的那一份（`pw-next` / 落库式 `pw-test` 成功后写入）。 */
   saved: SavedInSession | undefined;
 };
 
 function freshSession(): WizardSession {
-  return { open: false, step: 1, draft: { ...EMPTY_STEP1_DRAFT }, saved: undefined };
+  return { open: false, step: 1, mode: "create", draft: { ...EMPTY_STEP1_DRAFT }, saved: undefined };
 }
 
 let session: WizardSession = freshSession();
@@ -244,6 +260,44 @@ export function writeWizardSession(patch: Partial<WizardSession>): WizardSession
 /** 关掉向导时清干净：下一次打开不带上一次的残值（**也顺手清掉内存里的明文密钥**）。 */
 export function resetWizardSession(): void {
   session = freshSession();
+}
+
+/** 编辑模式要预填的现有服务商（详情页从 `provider_list` 的那一行取）。 */
+export type EditSeed = {
+  providerId: string;
+  name: string;
+  /**
+   * 后端原话的协议值。能对上 `PROTOCOLS` 就是那一个；**对不上也原样带进草稿**
+   * （契约外的取值不改写 —— 与列表页/详情页"原样显示"同一条纪律），
+   * 下拉里会因此多出一行原值，用户看得见它、也改得掉。
+   */
+  protocol: Protocol;
+  baseUrl: string;
+};
+
+/**
+ * 打开**编辑模式**（[docs/20 §4]）：预填现有服务商，并把"本会话自己那一份"预先登记好。
+ *
+ * 为什么 `saved` 一开始就要写：`SavedInSession` 是第 71 轮为"本会话已落库的那一份"造的机制
+ * （`validateStep1` 用它把**自己**从重名校验里摘掉）。编辑模式里"自己"就是**当前这个服务商**，
+ * 不先登记，用户点「下一步」会被自己现有的名字挡住；同时 `secretStored: true` 正是
+ * "密钥框留空 = 不改"在预检里的表达（空 key 不算"没填"）。
+ */
+export function startEditSession(seed: EditSeed): WizardSession {
+  session = {
+    open: true,
+    step: 1,
+    mode: "edit",
+    draft: {
+      name: seed.name,
+      protocol: seed.protocol,
+      baseUrl: seed.baseUrl,
+      // 明文密钥**永不预填**（它只存在于密钥仓库里）：空 = 不改
+      key: "",
+    },
+    saved: { providerId: seed.providerId, name: seed.name, secretStored: true },
+  };
+  return session;
 }
 
 // ================================================================ 第 2 步：派生
@@ -308,21 +362,46 @@ export function defaultLaneOf(configDoc: unknown): LaneId | null {
   return typeof lane === "string" && lane !== "" ? lane : null;
 }
 
-/** 一个下拉项：`value` 是 `""`（= 未选 = 直连）或一个真实 lane id。 */
+/** 一个下拉项：`value` 是直连那条 lane 的 id（或退化成 `""`）或一个真实 lane id。 */
 export type LaneChoice = { value: string; label: string };
 
 /**
- * 网络代理下拉的选项：**第一条永远是"直连"（`value: ""`）**，其余来自
- * `lane_pick_options`（后端给的分组清单）。分组标题不丢信息也不重复：这里把
- * `组名 · 线路名` 拼起来（同名线路在不同组里也能分清）。
+ * 从 `lane_pick_options` 里取**直连那一组**的 lane id（[docs/20 §1.2 第 3 步]）。
+ *
+ * 为什么要它：五级继承链的末端就是直连（[docs/04 §8.1]），所以"没显式配过"的语义是
+ * **直连**，而不是"空"。界面上那条空选项会被渲染成空白/「未配置」—— 正是用户第 2 条反馈。
+ * 直连是配置里一条真 lane（`kind: "direct"`），把自己的 id 填进下拉，值就永远不为空。
+ *
+ * 取不到（后端没给直连那条 lane）时返回 `""`：此时链路末端仍然是直连，
+ * 只是没有 id 可填，于是回落到 `null`（继承）—— 与 [docs/20 §1.2] 的回落一致。
+ */
+export function directLaneIdOf(options: readonly LanePickOption[]): string {
+  for (const group of options) {
+    for (const option of group.options) {
+      if (option.kind === "direct") return option.lane_id;
+    }
+  }
+  return "";
+}
+
+/**
+ * 网络代理下拉的选项：**第一条永远是"直连"**。
+ *
+ * 直连那条真实存在时用它的 lane id 作值（[`directLaneIdOf`]），这样"没配过"显示的是
+ * 一个真实可回写的值，而不是空；只有取不到时才退化成 `""`。
+ * 其余来自 `lane_pick_options`（后端给的分组清单），分组标题不丢信息也不重复：
+ * 这里把 `组名 · 线路名` 拼起来（同名线路在不同组里也能分清）。
  */
 export function laneChoices(
   options: readonly LanePickOption[],
   directLabel: string,
 ): LaneChoice[] {
-  const out: LaneChoice[] = [{ value: "", label: directLabel }];
+  const directId = directLaneIdOf(options);
+  const out: LaneChoice[] = [{ value: directId, label: directLabel }];
   for (const group of options) {
     for (const option of group.options) {
+      // 直连那条已经在第一行了：不再重复一遍（否则选它会出现两个一模一样的选项）
+      if (option.kind === "direct") continue;
       out.push({
         value: option.lane_id,
         label: group.group === "" ? option.name : `${group.group} · ${option.name}`,
@@ -332,14 +411,31 @@ export function laneChoices(
   return out;
 }
 
-/** lane → 下拉的 value（未设 = `""` = 直连）。 */
-export function laneValue(lane: LaneId | null): string {
-  return lane ?? "";
+/**
+ * lane → 下拉的 value。**永远不为空**：没配过就是直连那条 lane 的 id（[docs/20 §1.2]）。
+ *
+ * `directLaneId` 取不到时才回落到 `""`（= 继承，链路末端仍是直连）。
+ */
+export function laneValue(lane: LaneId | null, directLaneId: LaneId | null = null): string {
+  return lane ?? directLaneId ?? "";
 }
 
-/** 下拉的 value → `ModelPatch.lane`（未选 = `null` = 直连，[docs/19 §1.5]）。 */
-export function lanePatch(value: string): LaneId | null {
-  return value === "" ? null : value;
+/**
+ * 下拉的 value → `ModelPatch.lane`（[docs/20 §1.3] 的三态）。
+ *
+ * 选「直连」写的是**直连那条 lane 的具体 id**，不是 `null`（[docs/20 §1.3.1] 的裁决）：
+ * 用户点的是"直连"这个具体选择，落库就要写他选的东西 —— 通道页显示的是直连线路的名字，
+ * 而且以后用户在 `/network` 改全局默认线路时**不会**把这批模型悄悄带走
+ * （`null` = 继承，会跟着走；模型级显式选择优先于全局默认）。
+ *
+ * 只有连直连那条 lane 都取不到（`value === ""`）时才回落到 `null`（继承，链路末端仍是直连）。
+ */
+export function lanePatch(value: string, directLaneId: LaneId | null = null): LaneId | null {
+  if (value === "") return null;
+  if (directLaneId !== null && directLaneId !== "" && value === directLaneId) {
+    return directLaneId;
+  }
+  return value;
 }
 
 // ================================================================ 探测结果 → 人话

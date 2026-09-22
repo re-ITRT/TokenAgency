@@ -36,6 +36,7 @@ import ProviderDetailPage, {
   type ProviderDetailBodyProps,
 } from "@/pages/providers/detail";
 import { mountOf, readCredential, readProvider } from "@/pages/providers/model";
+import { resetWizardSession } from "@/pages/providers/providerWizardModel";
 import { knownPages, resolvePage } from "@/app/pageRegistry";
 import { routeByKey } from "@/app/routes";
 import { TokenAgencyError, registerMock } from "@/shared/api";
@@ -976,5 +977,151 @@ describe("[docs/17 §3.1] 添加密钥：明文只进密钥仓库，界面永不
     expect(document.body.textContent ?? "").not.toContain(SECRET);
     // 失败时**不清空**输入框：用户还要重试
     expect(inputOf("credentials-add-secret").value).toBe(SECRET);
+  });
+});
+
+// ================================================================ ⑧ [docs/20 §4] 详情页的图形化编辑
+
+/** 一条挂在某个服务商下的凭据：第 2 步"已添加的模型"按凭据归属过滤。 */
+function boundCredential(id: string, provider: string): unknown {
+  return {
+    credential: {
+      id,
+      provider,
+      label: "默认凭据",
+      secret: `\${secret:${id}}`,
+      lane: null,
+      quota: {
+        metric: "cost",
+        limit: 20,
+        currency: "CNY",
+        window: "month",
+        reset_day: 1,
+        soft_limit: 0.8,
+        hard_limit: 1,
+        reserve: 0,
+      },
+      guard: { max_rpm: null, max_concurrency: null, max_input_tokens: null, on_exceed: "wait" },
+      tags: [],
+      enabled: true,
+    },
+    provider_name: provider,
+    quota: { credential_id: id, state: "ok" },
+    channel_count: 1,
+  };
+}
+
+/** 下拉当前显示的文案（MUI 把选中的值渲染在 `[role="combobox"]` 里）。 */
+function selectTextOf(testId: string): string {
+  return (within(screen.getByTestId(testId)).getByRole("combobox").textContent ?? "").trim();
+}
+
+/** 基准 mock 的模型 id（`shared/api/mock.ts` 的场景常量）。 */
+const BASELINE_MODEL = "deepseek-v4.1flash";
+
+/** 从列表点进详情，再点 `providers-detail-edit` 打开编辑向导的第 1 步。 */
+async function openEditWizard(id = "p-bytedance"): Promise<void> {
+  renderAt(`/providers/${id}`);
+  await screen.findByTestId("providers-detail");
+  fireEvent.click(await screen.findByTestId("providers-detail-edit"));
+  await screen.findByTestId("provider-wizard-step1");
+}
+
+describe("[docs/20 §4] 详情页的图形化编辑：与新增同一个两步向导", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+    // 草稿活在模块级 store 里：每条用例从干净状态开始
+    resetWizardSession();
+  });
+
+  it("详情页有 providers-detail-edit；点开是向导第 1 步且预填与现有服务商一致", async () => {
+    await openEditWizard();
+
+    // 预填的是**现有服务商**的名字 / 地址 / 协议（不是空表单）
+    expect(inputOf("pw-name").value).toBe("字节方舟");
+    expect(inputOf("pw-baseUrl").value).toBe("https://ark.cn-beijing.volces.com/api/v3");
+    expect(selectTextOf("pw-protocol")).toContain("OpenAI");
+    // 标题与密钥说明是编辑模式那一套（留空 = 不改）
+    expect(screen.getByText("编辑服务商")).toBeTruthy();
+    expect(screen.getByText("留空表示不改动已保存的密钥")).toBeTruthy();
+  });
+
+  it("编辑模式留空密钥：只 provider_upsert（用现有 id 覆盖写），不发 credential_set_secret", async () => {
+    const provider = recordingMock({
+      id: "p-bytedance",
+      name: "字节方舟 v2",
+      protocol: "openai",
+      base_url: "https://ark.cn-beijing.volces.com/api/v3",
+    });
+    const secret = recordingMock(undefined);
+    registerMock("provider_upsert", provider.handler);
+    registerMock("credential_set_secret", secret.handler);
+    registerMock("credential_list", () => [boundCredential("c-bytedance", "p-bytedance")]);
+
+    await openEditWizard();
+    typeInto("pw-name", "字节方舟 v2");
+    fireEvent.click(screen.getByTestId("pw-next"));
+    await screen.findByTestId("provider-wizard-step2");
+
+    // 密钥框留空 -> 一个字节都不碰密钥仓库
+    expect(secret.calls).toHaveLength(0);
+    // 但服务商是**覆盖写**：id 必须还是现有那一个（不许派生新 id）
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0]!["provider"]).toMatchObject({
+      id: "p-bytedance",
+      name: "字节方舟 v2",
+      protocol: "openai",
+      base_url: "https://ark.cn-beijing.volces.com/api/v3",
+    });
+    // 自己不算重名：改回自己的名字也不该被拦（第 1 步能过就说明去重排除了自己）
+    expect(screen.queryByText(/已经被占用/)).toBeNull();
+  });
+
+  it("填了密钥才写：先 provider_upsert（同 id）→ credential_set_secret", async () => {
+    const provider = recordingMock({ id: "p-bytedance", name: "字节方舟" });
+    const credential = recordingMock({ id: "c-bytedance" });
+    const secret = recordingMock(undefined);
+    registerMock("provider_upsert", provider.handler);
+    registerMock("credential_upsert", credential.handler);
+    registerMock("credential_set_secret", secret.handler);
+    registerMock("credential_list", () => [boundCredential("c-bytedance", "p-bytedance")]);
+
+    const KEY = "sk-edit-canary-0002"; // ta-allow-fake-secret —— 假值
+    await openEditWizard();
+    typeInto("pw-key", KEY);
+    fireEvent.click(screen.getByTestId("pw-next"));
+    await screen.findByTestId("provider-wizard-step2");
+
+    // 写的是**这个服务商已有的那把凭据**，不是新造一个 `<id>-default`
+    expect(credential.calls[0]!["credential"]).toMatchObject({ id: "c-bytedance" });
+    expect(secret.calls[0]).toEqual({ id: "c-bytedance", plaintext: KEY });
+    expect(document.body.textContent ?? "").not.toContain(KEY);
+  });
+
+  it("编辑模式第 2 步：列出该服务商已有模型，并能就地改线路", async () => {
+    registerMock("provider_upsert", () => ({ id: "p-bytedance", name: "字节方舟" }));
+    registerMock("credential_list", () => [boundCredential("c-bytedance", "p-bytedance")]);
+    const bulk = recordingMock({
+      applied: true,
+      restart_required: false,
+      kernel_reload: false,
+      channels_created: 0,
+    });
+    registerMock("model_bulk_update", bulk.handler);
+
+    await openEditWizard();
+    fireEvent.click(screen.getByTestId("pw-next"));
+    await screen.findByTestId("provider-wizard-step2");
+
+    // 基准 mock 的 channel_matrix 里，c-bytedance 上挂着这个模型
+    const row = await screen.findByTestId("pw-model-row");
+    expect(row.textContent).toContain(BASELINE_MODEL);
+    // 「已添加的模型」不是空态
+    expect(screen.queryByTestId("pw-added-models-empty")).toBeNull();
+
+    // 就地改线路：走的是同一个 pw-model-lane
+    await chooseOption("pw-model-lane", /日本/);
+    await waitFor(() => expect(bulk.calls).toHaveLength(1));
+    expect(bulk.calls[0]).toEqual({ ids: [BASELINE_MODEL], patch: { lane: "lane-jp" } });
   });
 });
