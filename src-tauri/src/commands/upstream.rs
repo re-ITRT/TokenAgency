@@ -41,9 +41,9 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use ta_core::domain::{AuthScheme, ConfigDoc, DisplayConfig, Model, Provider};
+use ta_core::domain::{AuthScheme, ChannelConfig, ConfigDoc, Model, Provider};
 use ta_core::error::TaError;
-use ta_core::types::ProviderId;
+use ta_core::types::{CredentialId, LaneId, ProviderId};
 use ta_gateway::passthrough;
 use ta_gateway::pipeline::SecretResolver;
 use ta_gateway::probe::{probe_lane, ProbeProviderRequest, UpstreamProbe};
@@ -51,7 +51,7 @@ use ta_gateway::traits::OutboundDialer;
 
 use crate::commands::catalog::save_validated;
 use crate::commands::config::ApplyResult;
-use crate::commands::entity::applied;
+use crate::commands::entity::applied_with_channels;
 use crate::commands::{IpcError, IpcResult};
 use crate::gateway::SecretsAdapter;
 use crate::import_preview::{PreviewModel, PreviewSkip};
@@ -399,15 +399,79 @@ pub async fn model_import_from_provider(
 
 // ================================================================ model_apply_import
 
+/// 通道 id 的**一段**净化（与前端 `src/pages/channels/model.ts` 的 `idSlug` 同一套）：
+/// trim → 小写 → 非 `[a-z0-9]` 一律变 `-` → 合并连续横线 → 去掉首尾横线。
+///
+/// 用 `char::to_lowercase()`（Unicode 小写）而不是 `to_ascii_lowercase()`：JS 的
+/// `String.prototype.toLowerCase()` 就是前者，两者在非 ASCII 字母上会分叉
+/// （`İ` 的小写是 `i` + 组合符）。id 本来就是 slug，但派生法必须逐字一致。
+fn id_slug(raw: &str) -> String {
+    let mut buf = String::with_capacity(raw.len());
+    for c in raw.trim().chars() {
+        for lowered in c.to_lowercase() {
+            if lowered.is_ascii_lowercase() || lowered.is_ascii_digit() {
+                buf.push(lowered);
+            } else {
+                buf.push('-');
+            }
+        }
+    }
+    buf.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-")
+}
+
+/// 派生通道 id：`ch-<provider>-<credential>-<model>`（[docs/20 §1.1]）。
+///
+/// **必须与前端 `channelIdFor` 逐字一致**：这个 id 是"同一条线"的稳定指纹，
+/// 两边派生法一旦分叉，界面按 A 判定"还没有这条线"、后端按 B 建出另一条，
+/// 用户就会看到重复线路。空段（净化后为空）照前端的做法丢掉。
+fn channel_id_for(provider: &str, credential: &str, model: &str) -> String {
+    let parts = [id_slug(provider), id_slug(credential), id_slug(model)];
+    let mut out = String::from("ch");
+    for p in parts.iter().filter(|p| !p.is_empty()) {
+        out.push('-');
+        out.push_str(p);
+    }
+    out
+}
+
+/// 这次导入该把新通道挂到哪份凭据上（[docs/20 §1.1] 的选择顺序）：
+/// `<provider>-default`（向导第 1 步建的那一份）→ 该服务商**第一条启用中**的凭据。
+///
+/// 两步都要求 `enabled`：把通道接到一份停用的凭据上，等于建了一条永远不会有流量的线
+/// —— 那正是"界面上看着配好了、实际不通"的假成功。一条启用中的都没有 → `None`，
+/// 调用方在**真要建通道**的那一刻如实报 `TA-1004`，
+/// **绝不**静默建一条没有凭据的线路。
+fn pick_credential(doc: &ConfigDoc, provider: &ProviderId) -> Option<CredentialId> {
+    let pool: Vec<&ta_core::domain::Credential> =
+        doc.credentials.iter().filter(|c| c.provider == *provider && c.enabled).collect();
+    let default_id = format!("{provider}-default");
+    pool.iter().find(|c| c.id.as_str() == default_id).or_else(|| pool.first()).map(|c| c.id.clone())
+}
+
+/// 一份启用中的凭据都没有时的**人话**错误（`TA-1004`）。
+fn no_credential(provider: &ProviderId) -> IpcError {
+    IpcError::from(TaError::MalformedRequest(format!(
+        "服务商 {provider} 还没有凭据可用（一份都没有，或者全都停用了）：先回第 1 步填密钥、\
+         保存凭据，再回来点「添加」——绝不静默建一条没有凭据的线路"
+    )))
+}
+
 /// 实现体（测试直接调它）。
 ///
-/// **只写 `selected` 里、且此刻还不在配置里的那些**（重复写没有意义）。
-/// 写库走的是**唯一**那条写路径 [`save_validated`] —— 与 `model_upsert` 同一份
-/// "校验 → 事务写库 → 留快照 → 换内存快照"。
+/// 一次导入做**两件事**（[docs/20 §1.1]）：把模型写进 `doc.models`（没有才建），
+/// 并把它**接到**这个服务商上（建 `ch-<provider>-<credential>-<model>` 这条通道）。
+/// 只写模型不建通道，就是第 71 轮的真机缺陷：列表从 `channel_matrix` 派生，
+/// 没有通道 → 上面永远空、模型永远显示"未配置"。
+///
+/// 写库走的是**唯一**那条写路径 [`save_validated`]：校验 → 事务写库 → 留快照 → 换内存快照。
+///
+/// **幂等**：同一次预览应用两次，第二次既不建模型也不建通道，**且不写库**
+/// （写一份一模一样的配置只会多一个快照）；`applied` 仍为真 —— 语义是"命令成功了，没有要改的"。
 pub async fn apply_model_import(
     state: &AppState,
     preview_token: &str,
     selected: &[String],
+    lane: Option<LaneId>,
 ) -> IpcResult<ApplyResult> {
     // token 未知或超过 5 分钟 → 让用户重新扫描（预览不落库，所以没有"从库里找回来"这条路）
     let Some(entry) = state.import_previews.get(preview_token, state.clock.now_ms()) else {
@@ -436,50 +500,115 @@ pub async fn apply_model_import(
 
     let wanted: BTreeSet<&str> = selected.iter().map(String::as_str).collect();
     let mut doc = (*state.doc()).clone();
-    let mut added = 0usize;
+
+    // 服务商必须还在：新通道要挂在它下面（不在就报"服务商不存在"，不写出一个悬空引用）
+    let provider_id = ProviderId::new(entry.provider_id.as_str());
+    provider_of(&doc, &provider_id)?;
+
+    let mut added = 0u32;
+    let mut channels_created = 0u32;
+    // 有没有动过"模型的 default_lane"（也属于要落库的改动）
+    let mut lane_written = false;
+    // 凭据**按需**解析（只在真要建通道时才要求有凭据）：全是"已经有通道"的幂等调用
+    // 不该因为后来密钥被删掉就报错。
+    let mut chosen_credential: Option<CredentialId> = None;
+
     for row in entry.models.iter() {
         if !wanted.contains(row.suggested_id.as_str()) {
             continue;
         }
-        // 以**此刻**的配置为准重新判一次（扫描到应用之间配置可能已经变了 ——
-        // 另一个入口刚加过同一个模型时，这里就不该再写第二条）
-        if model_exists(&doc, &row.suggested_id) {
+
+        // ① 模型：以**此刻**的配置为准重新判一次（扫描到应用之间配置可能已经变了 ——
+        //    另一个入口刚加过同一个模型时，这里就不该再写第二条）。
+        if let Some(slot) = doc.models.iter_mut().find(|m| m.matches(&row.suggested_id)) {
+            // 已有的模型不动 id/别名；只在这次明确给了 lane 时同步"下一次建通道的默认线"
+            // （没给 = 不动，免得一次普通重扫把用户之前选的线抹掉）。
+            if let Some(l) = &lane {
+                if slot.default_lane.as_ref() != Some(l) {
+                    slot.default_lane = Some(l.clone());
+                    lane_written = true;
+                }
+            }
+        } else {
+            let mut model = Model::new(row.suggested_id.clone());
+            model.default_lane = lane.clone();
+            doc.models.push(model);
+            added += 1;
+        }
+
+        // 该模型的"对外可用名字"：id 或任一别名都算同一个逻辑模型
+        // （与 `delete_model` / `channel.model` 的解析同口径）。
+        let names: BTreeSet<String> = doc
+            .models
+            .iter()
+            .find(|m| m.matches(&row.suggested_id))
+            .map(|m| m.names().map(str::to_string).collect())
+            .unwrap_or_else(|| BTreeSet::from([row.suggested_id.clone()]));
+
+        // ② 通道：按 `(provider, credential, model)` 这个三元组判重（[docs/20 §1.1]）——
+        //    三条里任何一条不同就是**另一条线**，该建。凭据是三元组的一维，先把它算出来。
+        let credential = chosen_credential.clone().or_else(|| pick_credential(&doc, &provider_id));
+
+        // 已经有一条"这个服务商 + 这份凭据 + 这个模型"的线 → 什么都不用做
+        let already_wired = credential.as_ref().is_some_and(|cred| {
+            doc.channels.iter().any(|c| {
+                c.provider == provider_id
+                    && &c.credential == cred
+                    && names.contains(c.model.as_str())
+            })
+        });
+        if already_wired {
             continue;
         }
-        doc.models.push(Model {
-            id: row.suggested_id.clone(),
-            aliases: Vec::new(),
-            display: DisplayConfig::default(),
-            expose: true,
-            extra: serde_json::Map::new(),
-        });
-        added += 1;
+
+        // 走到这里就是**真要建一条通道**了：这时才要求"至少有一份启用中的凭据"，
+        // 一份都没有就如实报错 —— 绝不静默建一条没有凭据的线路。
+        let Some(credential) = credential else {
+            return Err(no_credential(&provider_id));
+        };
+        if chosen_credential.is_none() {
+            chosen_credential = Some(credential.clone());
+        }
+
+        let mut channel = ChannelConfig::new(
+            channel_id_for(provider_id.as_str(), credential.as_str(), &row.suggested_id),
+            row.suggested_id.clone(),
+            provider_id.clone(),
+            credential,
+            row.upstream_model.clone(),
+        );
+        // `ChannelConfig::new` 的 `lane = None` = 继承；入参给了就写死在这一条上
+        channel.lane = lane.clone();
+        doc.channels.push(channel);
+        channels_created += 1;
     }
 
     // 勾的全是"已经有了"：这时**不写库**（写一份一模一样的配置只会多一个快照，
     // 而用户的意图已经满足了）；`applied` 仍然为真，语义是"这条命令成功了，没有要改的"。
-    if added == 0 {
-        return Ok(applied());
+    if added == 0 && channels_created == 0 && !lane_written {
+        return Ok(applied_with_channels(0));
     }
 
     save_validated(state, doc, "model_apply_import").await?;
     tracing::info!(
         provider_id = %entry.provider_id,
-        "模型导入已写入配置：本次新增 {} 条",
-        added
+        "模型导入已写入配置：本次新增 {} 个模型、{} 条通道",
+        added,
+        channels_created
     );
-    Ok(applied())
+    Ok(applied_with_channels(channels_created))
 }
 
-/// `model_apply_import({ preview_token, selected }) -> ApplyResult`（[docs/19 §1.2]）。
+/// `model_apply_import({ preview_token, selected, lane? }) -> ApplyResult`（[docs/20 §2.3]）。
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn model_apply_import(
     state: State<'_, AppState>,
     preview_token: String,
     selected: Vec<String>,
+    lane: Option<LaneId>,
 ) -> IpcResult<ApplyResult> {
-    apply_model_import(&state, &preview_token, &selected).await
+    apply_model_import(&state, &preview_token, &selected, lane).await
 }
 
 #[cfg(test)]
@@ -892,6 +1021,7 @@ mod tests {
             &state,
             &preview.preview_token,
             &["o3-mini".to_string(), "deepseek-chat".to_string()],
+            None,
         )
         .await
         .expect("应用导入应当成功");
@@ -921,9 +1051,10 @@ mod tests {
             import_models_from_provider(&state, &secrets(), "p1", None).await.expect("扫描成功");
         assert!(preview.models[0].exists, "已存在的必须标出来");
 
-        let result = apply_model_import(&state, &preview.preview_token, &["gpt-4o".to_string()])
-            .await
-            .expect("应用导入应当成功");
+        let result =
+            apply_model_import(&state, &preview.preview_token, &["gpt-4o".to_string()], None)
+                .await
+                .expect("应用导入应当成功");
         assert!(result.applied);
         assert_eq!(state.doc().models.len(), 1, "重复写没有意义：库里不该出现第二条 gpt-4o");
     }
@@ -938,10 +1069,10 @@ mod tests {
 
         let preview =
             import_models_from_provider(&state, &secrets(), "p1", None).await.expect("扫描成功");
-        apply_model_import(&state, &preview.preview_token, &["a-model".to_string()])
+        apply_model_import(&state, &preview.preview_token, &["a-model".to_string()], None)
             .await
             .expect("第一次导入");
-        apply_model_import(&state, &preview.preview_token, &["b-model".to_string()])
+        apply_model_import(&state, &preview.preview_token, &["b-model".to_string()], None)
             .await
             .expect("第二次导入（同一个 token）");
 
@@ -957,7 +1088,7 @@ mod tests {
             fixture("apply-bad-token", config_with(&upstream.base_url(), serde_json::json!({})))
                 .await;
 
-        let err = apply_model_import(&state, "pv_从没见过的", &["m-1".to_string()])
+        let err = apply_model_import(&state, "pv_从没见过的", &["m-1".to_string()], None)
             .await
             .expect_err("未知 token 必须报错");
         assert_eq!(err.code, "TA-1004");
@@ -985,7 +1116,7 @@ mod tests {
             stale_now,
         );
 
-        let err = apply_model_import(&state, &token, &["m-1".to_string()])
+        let err = apply_model_import(&state, &token, &["m-1".to_string()], None)
             .await
             .expect_err("过期预览必须报错");
         assert_eq!(err.code, "TA-1004");
@@ -1002,7 +1133,7 @@ mod tests {
 
         let preview =
             import_models_from_provider(&state, &secrets(), "p1", None).await.expect("扫描成功");
-        let err = apply_model_import(&state, &preview.preview_token, &[])
+        let err = apply_model_import(&state, &preview.preview_token, &[], None)
             .await
             .expect_err("空清单必须报错");
         assert_eq!(err.code, "TA-1004");
@@ -1019,12 +1150,180 @@ mod tests {
 
         let preview =
             import_models_from_provider(&state, &secrets(), "p1", None).await.expect("扫描成功");
-        let err = apply_model_import(&state, &preview.preview_token, &["凭空捏造的".to_string()])
-            .await
-            .expect_err("预览里没有的 id 必须报错");
+        let err =
+            apply_model_import(&state, &preview.preview_token, &["凭空捏造的".to_string()], None)
+                .await
+                .expect_err("预览里没有的 id 必须报错");
         assert_eq!(err.code, "TA-1004");
         assert!(err.message.contains("凭空捏造的"), "要点名是哪个 id：{}", err.message);
         assert!(state.doc().models.is_empty());
+    }
+
+    /// 「添加模型」= 建模型 + **建线路**（[docs/20 §1.1]）：导入之后模型真的接在这个服务商上。
+    ///
+    /// 这是第 71 轮真机缺陷的回归测试：只往 `doc.models` 塞一行的话，第 2 步的
+    /// "已添加的模型"（从 `channel_matrix` 派生）永远是空的，模型也永远显示"未配置"。
+    #[tokio::test]
+    async fn apply_import_wires_each_model_to_the_provider_with_the_chosen_lane() {
+        let upstream =
+            spawn_upstream(vec![Reply::json(200, models_body(&["gpt-4o-2024-08-06", "o3-mini"]))])
+                .await;
+        let state = fixture(
+            "apply-wired",
+            config_with(
+                &upstream.base_url(),
+                serde_json::json!({
+                    "lanes": [{ "id": "lane-direct", "name": "直连", "kind": "direct" }],
+                }),
+            ),
+        )
+        .await;
+
+        let preview =
+            import_models_from_provider(&state, &secrets(), "p1", None).await.expect("扫描成功");
+        let result = apply_model_import(
+            &state,
+            &preview.preview_token,
+            &["gpt-4o".to_string(), "o3-mini".to_string()],
+            Some(LaneId::new("lane-direct")),
+        )
+        .await
+        .expect("应用导入应当成功");
+
+        assert!(result.applied);
+        assert_eq!(result.channels_created, 2, "两个模型各接了一条线");
+
+        let doc = state.config.load().await.expect("load");
+        let wired = doc
+            .channels
+            .iter()
+            .find(|c| c.id.as_str() == "ch-p1-p1-default-gpt-4o")
+            .unwrap_or_else(|| {
+                panic!("导入必须建出 ch-p1-p1-default-gpt-4o，实际的通道：{:?}", doc.channels)
+            });
+        assert_eq!(wired.model, "gpt-4o");
+        assert_eq!(wired.provider.as_str(), "p1");
+        assert_eq!(wired.credential.as_str(), "p1-default");
+        assert_eq!(
+            wired.upstream_model, "gpt-4o-2024-08-06",
+            "上游名要用扫描行的那一个（不是派生出来的逻辑 id）"
+        );
+        assert_eq!(wired.lane.as_ref().map(LaneId::as_str), Some("lane-direct"));
+        assert!(
+            doc.channels.iter().any(|c| c.id.as_str() == "ch-p1-p1-default-o3-mini"),
+            "勾选的每个模型都要接上：{:?}",
+            doc.channels
+        );
+
+        // 模型侧也记下"下一次给这个模型建通道默认走哪条"（界面据此显示该行的线路）
+        let model = doc.models.iter().find(|m| m.id == "gpt-4o").expect("模型要建出来");
+        assert_eq!(model.default_lane.as_ref().map(LaneId::as_str), Some("lane-direct"));
+    }
+
+    /// **幂等**：同一次预览应用两次，第二次不重复建模型/通道，**且不写库**（[docs/20 §2.3]）。
+    #[tokio::test]
+    async fn apply_import_twice_creates_nothing_and_writes_nothing() {
+        let upstream = spawn_upstream(vec![Reply::json(200, models_body(&["m-1"]))]).await;
+        let state =
+            fixture("apply-idem", config_with(&upstream.base_url(), serde_json::json!({}))).await;
+
+        let preview =
+            import_models_from_provider(&state, &secrets(), "p1", None).await.expect("扫描成功");
+        let first = apply_model_import(&state, &preview.preview_token, &["m-1".to_string()], None)
+            .await
+            .expect("第一次导入");
+        assert_eq!(first.channels_created, 1, "第一次要真接上一条线");
+
+        // 快照条数是"有没有写过库"的硬证据：save_validated 每次写库都会留一个快照
+        let snapshots_before = state.config.list_snapshots(50).await.expect("列快照").len();
+        let second = apply_model_import(&state, &preview.preview_token, &["m-1".to_string()], None)
+            .await
+            .expect("第二次导入");
+        assert!(second.applied, "没有要改的不等于命令失败");
+        assert_eq!(second.channels_created, 0, "第二次不该再建线");
+        assert_eq!(state.doc().models.len(), 1, "模型也不该重复");
+        assert_eq!(state.doc().channels.len(), 1, "通道也不该重复");
+        assert_eq!(
+            state.config.list_snapshots(50).await.expect("列快照").len(),
+            snapshots_before,
+            "没有任何改动时**不许写库**（多一个快照就是多写了一次）"
+        );
+    }
+
+    /// 一份凭据都没有 → `TA-1004`，消息说清"先回第 1 步填密钥"，**且库没变**
+    /// （绝不静默建一条没有凭据的线路）。
+    #[tokio::test]
+    async fn apply_import_without_a_credential_refuses_with_ta_1004() {
+        let upstream = spawn_upstream(vec![Reply::json(200, models_body(&["m-1"]))]).await;
+        let state =
+            fixture("apply-nocred", config_with(&upstream.base_url(), serde_json::json!({}))).await;
+
+        // 先真的扫一次（扫描需要一份启用中的凭据），拿到 token 之后再模拟"凭据被删掉"
+        let preview =
+            import_models_from_provider(&state, &secrets(), "p1", None).await.expect("扫描成功");
+        let mut doc = (*state.doc()).clone();
+        doc.credentials.clear();
+        state.config.save(&doc).await.expect("save");
+        state.set_doc(doc);
+
+        let err = apply_model_import(&state, &preview.preview_token, &["m-1".to_string()], None)
+            .await
+            .expect_err("没有凭据必须报错");
+        assert_eq!(err.code, "TA-1004");
+        assert!(err.message.contains("还没有凭据"), "{}", err.message);
+        assert!(err.message.contains("第 1 步"), "要说清去哪一步补：{}", err.message);
+
+        assert!(state.doc().models.is_empty(), "报错就不许在内存里留下半个模型");
+        assert!(state.doc().channels.is_empty(), "报错就不许留下通道");
+        let back = state.config.load().await.expect("load");
+        assert!(back.models.is_empty(), "报错就不许写库");
+        assert!(back.channels.is_empty(), "报错就不许写库");
+    }
+
+    /// 凭据选择顺序（[docs/20 §1.1]）：`<provider>-default` 优先；它停用时退到第一条启用中的。
+    #[tokio::test]
+    async fn apply_import_picks_the_default_credential_first_then_the_first_enabled() {
+        let upstream = spawn_upstream(vec![Reply::json(200, models_body(&["m-1"]))]).await;
+        let mut config = config_with(&upstream.base_url(), serde_json::json!({}));
+        config["credentials"] = serde_json::json!([
+            {
+                "id": "p1-default",
+                "provider": "p1",
+                "label": "默认",
+                "secret": "${secret:p1-default}",
+                "enabled": false,
+            },
+            {
+                "id": "p1-second",
+                "provider": "p1",
+                "label": "第二把",
+                "secret": "${secret:p1-second}",
+            },
+        ]);
+        let state = fixture("apply-cred-order", config).await;
+        let secrets = StaticSecrets::new([
+            ("${secret:p1-default}", "sk-命令层测试"),
+            ("${secret:p1-second}", "sk-第二把"),
+        ]);
+
+        let preview =
+            import_models_from_provider(&state, &secrets, "p1", None).await.expect("扫描成功");
+        let result = apply_model_import(&state, &preview.preview_token, &["m-1".to_string()], None)
+            .await
+            .expect("应用导入");
+
+        assert_eq!(result.channels_created, 1);
+        let doc = state.config.load().await.expect("load");
+        assert_eq!(
+            doc.channels[0].credential.as_str(),
+            "p1-second",
+            "停用的 <provider>-default 不该被选中（接到停用凭据上等于建了一条没有流量的线）"
+        );
+        assert_eq!(
+            doc.channels[0].id.as_str(),
+            "ch-p1-p1-second-m-1",
+            "通道 id 里的凭据段必须就是被选中的那一份"
+        );
     }
 
     // ---------------------------------------------------------------- 派生规则（纯函数）
@@ -1056,6 +1355,27 @@ mod tests {
         // 派生不出 id 的必须**如实报错**，而不是凑一个
         for bad in ["!!!", "/", "openai/", "   "] {
             assert!(derive_suggested_id(bad).is_err(), "`{bad}` 派生不出合法 id，必须进 skipped");
+        }
+    }
+
+    /// 通道 id 的派生法**必须与前端 `channelIdFor`（`src/pages/channels/model.ts`）逐字一致**
+    /// （[docs/20 §1.1]）：两边一旦分叉，界面会说"还没有这条线"、后端却建出另一条。
+    #[test]
+    fn channel_id_derivation_matches_the_frontend() {
+        let cases = [
+            (("p1", "p1-default", "gpt-4o"), "ch-p1-p1-default-gpt-4o"),
+            // 非 [a-z0-9] 一律变 '-'，连续横线合并，去首尾横线
+            (("OpenAI 官方", "key #1", "gpt-4o"), "ch-openai-key-1-gpt-4o"),
+            (("p", "c", "Qwen2.5 7B!"), "ch-p-c-qwen2-5-7b"),
+            // 净化后为空的段照前端的做法丢掉（`filter(part => part !== "")`）
+            (("p", "***", "m"), "ch-p-m"),
+        ];
+        for ((provider, credential, model), expected) in cases {
+            assert_eq!(
+                channel_id_for(provider, credential, model),
+                expected,
+                "`{provider}` / `{credential}` / `{model}` 的派生结果不对"
+            );
         }
     }
 
@@ -1093,15 +1413,15 @@ mod tests {
         assert_eq!(doc.credentials[0].provider.as_str(), "p1");
     }
 
-    /// `Model` 的构造必须给出全部字段（`Model` 没有 `Default`）——
-    /// 这条测试与 `apply_import` 里的写法共用同一份字段清单。
+    /// `Model` 的构造必须给出全部字段（`Model` 没有 `Default`）。
     #[test]
     fn new_model_carries_only_the_id_the_contract_requires() {
         let model = Model {
             id: "m".to_string(),
             aliases: Vec::new(),
-            display: DisplayConfig::default(),
+            display: ta_core::domain::DisplayConfig::default(),
             expose: true,
+            default_lane: None,
             extra: serde_json::Map::new(),
         };
         let back: Model =

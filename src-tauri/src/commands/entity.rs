@@ -44,7 +44,7 @@ use ta_core::domain::capabilities::{policy_capability_mismatches, CapabilityMism
 use ta_core::domain::{ChannelConfig, ChannelGroup, ConfigDoc, Credential, Model, Policy};
 use ta_core::error::TaError;
 use ta_core::pricing::PricingEngine;
-use ta_core::types::{ChannelGroupId, StickyKey};
+use ta_core::types::{ChannelGroupId, LaneId, StickyKey};
 use ta_store::{SecretMetaStore, StickyStore};
 
 use crate::commands::catalog::save_validated;
@@ -62,7 +62,15 @@ use crate::state::AppState;
 /// `pub(crate)`：`commands::upstream` 的 `model_apply_import` 也返回同一个形状，
 /// 让它自己写一遍 `ApplyResult { … }` 就是第二份"什么算 applied"的口径。
 pub(crate) fn applied() -> ApplyResult {
-    ApplyResult { applied: true, restart_required: false, kernel_reload: false }
+    applied_with_channels(0)
+}
+
+/// 同 [`applied`]，但**如实汇报**本次真新建了几条通道（[docs/20 §1.1]）。
+///
+/// 只有 `model_apply_import` 用得上：它会把模型接到服务商上（建通道），
+/// 界面要能说清"接上了几条"。别的命令一律走 [`applied`]（0）。
+pub(crate) fn applied_with_channels(channels_created: u32) -> ApplyResult {
+    ApplyResult { applied: true, restart_required: false, kernel_reload: false, channels_created }
 }
 
 /// "你要改的东西不存在" —— 必须报错，**不能静默成功**。
@@ -914,9 +922,12 @@ pub async fn group_release_sticky(
 
 // ================================================================ model
 
-/// `ModelPatch`（`bindings.ts`：`Partial<Pick<Model, "expose" | "aliases" | "display">>`）。
+/// `ModelPatch`（`bindings.ts`：`Partial<Pick<Model, "expose" | "aliases" | "display">>` + `lane`）。
 ///
-/// 三个字段都是 `Option`：**没给的字段不动**（`null`/缺省都不等于"清空"）。
+/// `expose` / `aliases` / `display` 是 `Option`：**没给的字段不动**（`null`/缺省都不等于"清空"）。
+///
+/// `lane` 是**三态**（[docs/20 §1.3]）：字段缺失 = 不动；`null` = 清空（回到继承链，末端直连）；
+/// 值 = 写该 lane。`Option<Option<_>>` 正是这三态：外层 `None` = 没给，内层 `None` = 清空。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
 pub struct ModelPatch {
     #[serde(default)]
@@ -925,6 +936,8 @@ pub struct ModelPatch {
     pub aliases: Option<Vec<String>>,
     #[serde(default)]
     pub display: Option<ta_core::domain::DisplayConfig>,
+    #[serde(default)]
+    pub lane: Option<Option<LaneId>>,
 }
 
 /// `model_upsert`：同 id 覆盖、不存在则新增（幂等）。
@@ -1012,6 +1025,16 @@ pub async fn model_delete(state: State<'_, AppState>, id: String, force: bool) -
 ///
 /// **要么全改、要么全不改**：任何一个 id 不存在就整体报错（不做"跳过不存在的"那种
 /// 静默半成功 —— 那会让用户以为改上了）。
+///
+/// `patch.lane` 一给就要写**两处**（[docs/20 §1.3]）：
+/// * `Model.default_lane`（"下一次给这个模型建通道默认走哪条"）；
+/// * 该模型**现有所有通道**的 `lane`（通道匹配用与 `delete_model` 同一口径：
+///   `channel.model` 写模型 id 或任一别名都算）。
+///
+/// 为什么必须写通道：lane 是 channel 级字段，模型自己不承载流量 —— 只改一个"默认值"
+/// 而通道还是老样子，就是"界面上改了、线上没变"（第 71 轮踩过的坑）。
+///
+/// `lane: null` 是**清空**（三处一起清），不是"没给"：外层 `Option` 才是"没给"。
 pub async fn bulk_update_models(
     state: &AppState,
     ids: &[String],
@@ -1040,6 +1063,23 @@ pub async fn bulk_update_models(
             }
         }
     }
+
+    // `lane` 单独一轮（不与上面的字段补丁混在一起）：写 `default_lane` 与写通道的 `lane`
+    // 是同一件事的两面，分开写让"改了哪些模型、连带改了哪些通道"一眼可见。
+    // 通道匹配口径与 `delete_model` 完全一致：`model.names()` —— id 或任一别名。
+    if let Some(lane) = &patch.lane {
+        for id in ids {
+            let Some(model) = doc.models.iter_mut().find(|m| m.id == *id) else {
+                continue; // 上面已经证明过每个 id 都存在
+            };
+            model.default_lane = lane.clone();
+            let names: BTreeSet<String> = model.names().map(str::to_string).collect();
+            for ch in doc.channels.iter_mut().filter(|c| names.contains(c.model.as_str())) {
+                ch.lane = lane.clone();
+            }
+        }
+    }
+
     save_validated(state, doc, "model_bulk_update").await?;
     Ok(applied())
 }
@@ -1576,7 +1616,7 @@ mod tests {
         ChannelConfig, Model, Policy, PriceEntry, PriceMatch, PriceSource, Provider,
     };
     use ta_core::quota::QuotaBackend;
-    use ta_core::types::{ChannelId, Protocol};
+    use ta_core::types::{ChannelId, LaneId, Protocol};
     use ta_secrets::mock::MockStore;
     use ta_secrets::SecretStore;
     use ta_store::ConfigStore;
@@ -1679,7 +1719,7 @@ mod tests {
         let state = seeded("model-bulk").await;
         upsert_model(&state, Model::new("m-b")).await.expect("加第二个模型");
 
-        let patch = ModelPatch { expose: Some(false), aliases: None, display: None };
+        let patch = ModelPatch { expose: Some(false), aliases: None, display: None, lane: None };
         let r =
             bulk_update_models(&state, &["m-a".into(), "m-b".into()], &patch).await.expect("批量");
         assert!(
@@ -1735,6 +1775,111 @@ mod tests {
         assert!(err.message.contains("m-nope"));
         // 空清单也是一个错误，不是"成功但什么都没做"
         assert!(bulk_update_models(&state, &[], &ModelPatch::default()).await.is_err());
+    }
+
+    /// `model_bulk_update` 的 `lane`（[docs/20 §1.3]）：写 `Model.default_lane`，
+    /// **并把该模型现有所有通道的 `lane` 写成同值**；三态 = 缺省不动 / `null` 清空 / 值写该线路。
+    #[tokio::test]
+    async fn model_bulk_update_writes_lane_to_the_model_and_every_channel() {
+        let state = seeded("model-lane").await;
+        // 前置：两条线路；m-b 的通道写的是**别名**（匹配口径与 delete_model 同）；m-c 没有通道
+        rewrite_doc(&state, |d| {
+            d.lanes.push(ta_core::domain::Lane::direct("lane-a", "线路 A"));
+            d.lanes.push(ta_core::domain::Lane::direct("lane-b", "线路 B"));
+            d.models.push(Model::new("m-b").with_aliases(["alias-b"]));
+            d.models.push(Model::new("m-c"));
+            d.channels.push(ChannelConfig::new("ch-b", "alias-b", "p-a", "c-a", "upstream-b"));
+        })
+        .await;
+
+        // ① 有通道的模型：模型侧与通道侧一起变
+        let patch = ModelPatch { lane: Some(Some(LaneId::new("lane-a"))), ..Default::default() };
+        bulk_update_models(&state, &["m-a".into()], &patch).await.expect("写 lane");
+        let back = state.config.load().await.expect("load");
+        assert_eq!(
+            back.models.iter().find(|m| m.id == "m-a").and_then(|m| m.default_lane.clone()),
+            Some(LaneId::new("lane-a")),
+            "模型侧要记下默认线路（下一次给它建通道用）"
+        );
+        assert_eq!(
+            back.channels.iter().find(|c| c.id.as_str() == "ch-a").and_then(|c| c.lane.clone()),
+            Some(LaneId::new("lane-a")),
+            "通道的 lane 必须跟着变：lane 是通道级字段，模型自己不承载流量"
+        );
+
+        // ② 别名命中：`channel.model` 写别名也算这个模型的通道
+        bulk_update_models(&state, &["m-b".into()], &patch).await.expect("按别名写");
+        let back = state.config.load().await.expect("load");
+        assert_eq!(
+            back.channels.iter().find(|c| c.id.as_str() == "ch-b").and_then(|c| c.lane.clone()),
+            Some(LaneId::new("lane-a")),
+            "通道匹配口径与 delete_model 一致：模型 id 或任一别名"
+        );
+
+        // ③ 没有任何通道的模型：只写模型侧，**不凭空造一条通道**
+        let channels_before = back.channels.len();
+        bulk_update_models(&state, &["m-c".into()], &patch).await.expect("无通道也能写");
+        let back = state.config.load().await.expect("load");
+        assert_eq!(
+            back.models.iter().find(|m| m.id == "m-c").and_then(|m| m.default_lane.clone()),
+            Some(LaneId::new("lane-a"))
+        );
+        assert_eq!(back.channels.len(), channels_before, "不许为它凭空建通道");
+
+        // ④ 字段缺失 = 不动
+        bulk_update_models(&state, &["m-c".into()], &ModelPatch::default()).await.expect("空补丁");
+        let back = state.config.load().await.expect("load");
+        assert_eq!(
+            back.models.iter().find(|m| m.id == "m-c").and_then(|m| m.default_lane.clone()),
+            Some(LaneId::new("lane-a")),
+            "没给 lane 就不许动"
+        );
+
+        // ⑤ `null` = 清空（模型与它的通道一起清，回到继承链）
+        let clear = ModelPatch { lane: Some(None), ..Default::default() };
+        bulk_update_models(&state, &["m-a".into()], &clear).await.expect("清空");
+        let back = state.config.load().await.expect("load");
+        assert_eq!(
+            back.models.iter().find(|m| m.id == "m-a").and_then(|m| m.default_lane.clone()),
+            None,
+            "null = 清空"
+        );
+        assert_eq!(
+            back.channels.iter().find(|c| c.id.as_str() == "ch-a").and_then(|c| c.lane.clone()),
+            None,
+            "通道也要一起清"
+        );
+    }
+
+    /// `lane` 指向**不存在的线路** → 校验器拦下（`TA-5001`），**库一个字节都不变**。
+    #[tokio::test]
+    async fn model_bulk_update_rejects_an_unknown_lane_without_writing() {
+        let state = seeded("model-lane-bad").await;
+        let before = state.config.load().await.expect("load");
+
+        let patch = ModelPatch { lane: Some(Some(LaneId::new("lane-nope"))), ..Default::default() };
+        let err = bulk_update_models(&state, &["m-a".into()], &patch)
+            .await
+            .expect_err("不存在的线路必须报错");
+        assert_eq!(err.code, "TA-5001");
+        let details = err.details.expect("details").to_string();
+        assert!(details.contains("models[0].default_lane"), "要带出字段路径：{details}");
+
+        assert_eq!(
+            state.doc().models.iter().find(|m| m.id == "m-a").and_then(|m| m.default_lane.clone()),
+            None,
+            "被拒绝时内存快照也不许变"
+        );
+
+        // `d.channels[0].lane` 自己没法当证据：模型侧被改坏了而通道没写，两份都会被校验器拒。
+        // 直接比对整份文档，才是"一个字节都不许变"。
+        let after = state.config.load().await.expect("load");
+        assert_eq!(
+            serde_json::to_value(&after).expect("序列化"),
+            serde_json::to_value(&before).expect("序列化"),
+            "校验不过 = 库一个字节都不许变"
+        );
+        assert_eq!(after.channels[0].lane, None, "通道的 lane 也不许被写坏");
     }
 
     #[tokio::test]
