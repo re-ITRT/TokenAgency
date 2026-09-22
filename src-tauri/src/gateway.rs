@@ -254,6 +254,19 @@ impl GatewayBoot {
         self.runtime.gate.clone()
     }
 
+    /// **唯一出站通道**（`GatewayDeps`：dialer / store / pricing / quota / events）。
+    ///
+    /// 为什么必须能取出来（而不是"装配完就丢掉"）：命令层要发 HTTP 只能走
+    /// `GatewayDeps.dialer` —— `src-tauri` 不依赖 `reqwest`，另开一条出站路径会**绕过线路策略**
+    /// （[docs/12 §5 T2]）。`app_status` 的"网关状态"也要靠 `AppState.gateway` 是否存在
+    /// （`gateway_ready()`），否则状态会撒谎。
+    ///
+    /// 取回的是**同一个对象**：`assemble` 把 deps 交给 `build_runtime` 之后，运行时仍持有
+    /// 那份 `Arc`（可用 `Arc::ptr_eq` 证明），所以这里不是"第二份依赖"。
+    pub fn deps(&self) -> Arc<ta_gateway::GatewayDeps> {
+        self.runtime.deps.clone()
+    }
+
     /// 按 [docs/12 §5 T2] 的"唯一装配入口"装配（不自己拼管线）。
     pub fn assemble(app: AppHandle<tauri::Wry>, state: &AppState, ports: PortMap) -> Self {
         let doc = state.doc();
