@@ -58,14 +58,41 @@ const URL_PATTERN = /^https?:\/\//;
 export type ExistingProviders = { ids: readonly string[]; names: readonly string[] };
 
 /**
+ * 本会话**已经真的落库**的那一份（`pw-next` 或落库式 `pw-test` 成功后写入）。
+ *
+ * 为什么要记住 `name` 与 `secretStored`：`pw-test` 按 [docs/19 §1.3] 是**先落库再探测**的，
+ * 落库之后 (a) 明文 key 立刻从草稿里抹掉（[docs/19 §1.1] 的纪律：明文只进密钥仓库），
+ * (b) `provider_list` 刷新后**自己刚建的那一份**出现在清单里。不把这两件事告诉校验，
+ * 用户按「填名称/地址/key → 测试连接 → 下一步」这条**明文路径**走就会被自己刚建的东西挡住
+ * （"名称已经被占用" + "密钥必填"），永远进不了第 2 步 —— 这是真机上抓到过的缺陷。
+ */
+export type SavedInSession = { providerId: string; name: string; secretStored: boolean };
+
+/** 把"本会话自己落库的那一份"从现有清单里摘掉：它不是重名，也不是别人的东西。 */
+function excludeOwnEntry(existing: ExistingProviders, saved?: SavedInSession): ExistingProviders {
+  if (saved === undefined) return existing;
+  return {
+    ids: existing.ids.filter((id) => id !== saved.providerId),
+    names: existing.names.filter((name) => name !== saved.name),
+  };
+}
+
+/**
  * 名称是否被占用。
  *
  * 与**现有 `name` 及 `id` 都去重**（[docs/19 §1.1]）：名字直接撞上某个 id 时，
  * 用户看到的是"这个名字已经有人用了"，而不是一个只有懂 id 规则的人才看得懂的报错。
+ *
+ * `saved` = 本会话已经落库的那一份：**它自己不算重名**（见 [`SavedInSession`]）。
  */
-export function isNameTaken(name: string, existing: ExistingProviders): boolean {
+export function isNameTaken(
+  name: string,
+  existing: ExistingProviders,
+  saved?: SavedInSession,
+): boolean {
   const value = name.trim();
-  return value !== "" && (existing.names.includes(value) || existing.ids.includes(value));
+  const rest = excludeOwnEntry(existing, saved);
+  return value !== "" && (rest.names.includes(value) || rest.ids.includes(value));
 }
 
 /** 名称 → id 的 slug：小写、非 `[a-z0-9]` 一律变短横线、去首尾与重复的横线。 */
@@ -106,12 +133,16 @@ export function deriveProviderId(name: string, existingIds: readonly string[]): 
 }
 
 /** 本步骤的本地预检。返回空数组才允许发命令。 */
-export function validateStep1(draft: Step1Draft, existing: ExistingProviders): WizardIssue[] {
+export function validateStep1(
+  draft: Step1Draft,
+  existing: ExistingProviders,
+  saved?: SavedInSession,
+): WizardIssue[] {
   const issues: WizardIssue[] = [];
   const name = draft.name.trim();
 
   if (name === "") issues.push({ field: "name", message: "wizard.required" });
-  else if (isNameTaken(name, existing)) {
+  else if (isNameTaken(name, existing, saved)) {
     issues.push({ field: "name", message: "providers.wizard.nameTaken" });
   }
 
@@ -121,14 +152,23 @@ export function validateStep1(draft: Step1Draft, existing: ExistingProviders): W
 
   // 密钥必填（[docs/19 §1.1] 的"必填"）：没有密钥的服务商在真机上连不通，
   // 与其让用户以为配好了，不如在这里说清楚。
-  if (draft.key === "") issues.push({ field: "key", message: "wizard.required" });
+  //
+  // **例外**：本会话已经把明文写进密钥仓库了（`pw-test` 落库后明文会被抹掉），
+  // 这时候空 key 是"沿用已存的那把"，不是"没填"—— 再要一次就是让用户重打一遍。
+  if (draft.key === "" && saved?.secretStored !== true) {
+    issues.push({ field: "key", message: "wizard.required" });
+  }
 
   return issues;
 }
 
 /** 只把"名称被占用"这一条单独取出来：它在用户刚敲完名字时就该出现（本地即时提示）。 */
-export function nameTakenIssue(draft: Step1Draft, existing: ExistingProviders): WizardIssue[] {
-  return isNameTaken(draft.name, existing)
+export function nameTakenIssue(
+  draft: Step1Draft,
+  existing: ExistingProviders,
+  saved?: SavedInSession,
+): WizardIssue[] {
+  return isNameTaken(draft.name, existing, saved)
     ? [{ field: "name", message: "providers.wizard.nameTaken" }]
     : [];
 }
@@ -182,7 +222,7 @@ export type WizardSession = {
   step: 1 | 2;
   draft: Step1Draft;
   /** 已经真的落库的那一份（`pw-next` / 落库式 `pw-test` 成功后写入）。 */
-  saved: { providerId: string } | undefined;
+  saved: SavedInSession | undefined;
 };
 
 function freshSession(): WizardSession {

@@ -68,6 +68,7 @@ import {
   validateStep1,
   writeWizardSession,
   type ExistingProviders,
+  type SavedInSession,
   type Step1Draft,
   type WizardSession,
 } from "./providerWizardModel";
@@ -202,14 +203,15 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
 
   // ---- 本地校验
 
-  const allIssues = useMemo(() => validateStep1(draft, existing), [draft, existing]);
+  const allIssues = useMemo(
+    () => validateStep1(draft, existing, saved),
+    [draft, existing, saved],
+  );
   /**
    * 显示哪几条：**名称被占用**即时提示（用户刚敲完就该看到），
    * 其余（必填 / base_url 形状）在用户点过一次按钮之后再列出来 —— 打开表单就满屏红字没有意义。
    */
-  const shownIssues = submitted
-    ? allIssues
-    : nameTakenIssue(draft, existing);
+  const shownIssues = submitted ? allIssues : nameTakenIssue(draft, existing, saved);
 
   const providerId = saved?.providerId ?? deriveProviderId(draft.name, existing.ids);
 
@@ -219,7 +221,9 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
     setSaveError(undefined);
     setSaving(true);
     try {
-      const candidateId = deriveProviderId(draft.name, existing.ids);
+      // 本会话已经落过库 -> **继续用那个 id**：改名不等于新建一个服务商
+      // （否则「测试连接」之后再改一下名字，库里就会多出一个没人认领的服务商）。
+      const candidateId = saved?.providerId ?? deriveProviderId(draft.name, existing.ids);
       const provider = await upsertProvider.mutateAsync({
         provider: step1ProviderPayload(draft, candidateId),
       });
@@ -229,12 +233,20 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
       await upsertCredential.mutateAsync({
         credential: defaultCredentialPayload(landedId, draft.name),
       });
-      if (draft.key !== "") {
+      const keyWritten = draft.key !== "";
+      if (keyWritten) {
         await setSecret.mutateAsync({ id: defaultCredentialId(landedId), plaintext: draft.key });
       }
-      // 明文用完就从草稿里抹掉（它已经在密钥仓库里了，没有理由继续留在内存里）
+      // 明文用完就从草稿里抹掉（它已经在密钥仓库里了，没有理由继续留在内存里）。
+      // 同时把"这一份本会话已经落库了 / 密钥已经存过了"记进会话 —— 校验要看它，
+      // 否则用户按「测试连接 -> 下一步」走会被自己刚建的那一份挡住（见 SavedInSession）。
+      const stored: SavedInSession = {
+        providerId: landedId,
+        name: draft.name.trim(),
+        secretStored: keyWritten || saved?.secretStored === true,
+      };
       patchSession((prev) => ({
-        saved: { providerId: landedId },
+        saved: stored,
         draft: { ...prev.draft, key: "" },
       }));
       void queryClient.invalidateQueries({ queryKey: qk.providers });
@@ -250,7 +262,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
 
   const submitStep1 = (): void => {
     setSubmitted(true);
-    if (validateStep1(draft, existing).length > 0) return;
+    if (validateStep1(draft, existing, saved).length > 0) return;
     void (async () => {
       const landedId = await saveStep1();
       if (landedId !== undefined) patchSession(() => ({ step: 2 }));
@@ -265,7 +277,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
    */
   const runTest = (): void => {
     setSubmitted(true);
-    if (validateStep1(draft, existing).length > 0) return;
+    if (validateStep1(draft, existing, saved).length > 0) return;
     void (async () => {
       let id = saved?.providerId;
       if (id === undefined) id = await saveStep1();

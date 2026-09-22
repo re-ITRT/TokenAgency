@@ -29,7 +29,7 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import ProvidersPage from "@/pages/providers";
-import { resetWizardSession } from "@/pages/providers/providerWizardModel";
+import { resetWizardSession, validateStep1 } from "@/pages/providers/providerWizardModel";
 import { TokenAgencyError, registerMock } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
 import { i18n } from "@/shared/i18n";
@@ -208,6 +208,48 @@ async function gotoStep2(name = "My Gateway"): Promise<void> {
   await screen.findByTestId("provider-wizard-step2");
 }
 
+// ================================================================ ⓪ 第 1 步的本地预检（纯函数）
+
+/**
+ * 预检必须认识"**本会话已经落库的那一份**"（[docs/19 §1.1 / §1.3]）。
+ *
+ * `pw-test` 是**先落库再探测**的，落库之后明文从草稿里被抹掉、`provider_list` 里出现了
+ * 自己刚建的那一份。预检看不见这两件事时，「测试连接 → 下一步」这条明文路径会被自己
+ * 刚建的东西挡住（"名称已经被占用" + "密钥必填"），永远进不了第 2 步 —— 真机上抓到过。
+ */
+describe("[docs/19 §1.1] 第 1 步预检要区分'本会话已落库的那一份'与'别人的东西'", () => {
+  const draft = {
+    name: "My Gateway",
+    protocol: "openai",
+    baseUrl: "https://gw.example.com/v1",
+    key: "",
+  } as const;
+  const saved = { providerId: "my-gateway", name: "My Gateway", secretStored: true };
+
+  it("还没落库：空 key 必填、撞上现有名字要拦下", () => {
+    const issues = validateStep1({ ...draft }, { ids: ["my-gateway"], names: ["My Gateway"] });
+    expect(issues.map((issue) => issue.field).sort()).toEqual(["key", "name"]);
+  });
+
+  it("已落库且密钥已存：同一个 id/名字不算重名，空 key = 沿用已存的那把", () => {
+    const issues = validateStep1(
+      { ...draft },
+      { ids: ["my-gateway"], names: ["My Gateway"] },
+      saved,
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it("已落库，但改成了**别人**的名字：照样拦下（不能顺手把重名放过去）", () => {
+    const issues = validateStep1(
+      { ...draft, name: "字节方舟" },
+      { ids: ["p-bytedance"], names: ["字节方舟"] },
+      saved,
+    );
+    expect(issues.map((issue) => issue.field)).toEqual(["name"]);
+  });
+});
+
 // ================================================================ ① 第 1 步：真控件
 
 describe("[docs/19 §1.1] 第 1 步：服务商信息", () => {
@@ -372,6 +414,56 @@ describe("[docs/19 §1.1 / §1.3] pw-test：先真落库（并说出来），再
 
     // 绝不静默产生持久化副作用：必须说出来
     expect(screen.getByTestId("pw-saved-notice").textContent).toContain("关掉向导不会撤销");
+  });
+
+  it("点过 pw-test 之后 pw-next 仍然能进第 2 步：自己建的那份不算重名、已存的密钥不必重填", async () => {
+    // 真 `provider_upsert` 之后清单里就会有它 —— 落库式探测的副作用，必须模拟出来
+    const listed: Record<string, unknown>[] = [
+      {
+        id: "p-bytedance",
+        name: "字节方舟",
+        protocol: "openai",
+        base_url: "https://ark.example/v3",
+        enabled: true,
+      },
+    ];
+    registerMock("provider_list", () => listed);
+    const provider = recordingMock(undefined);
+    registerMock("provider_upsert", (args) => {
+      provider.handler(args);
+      const payload = args!["provider"] as Record<string, unknown>;
+      listed.push({ ...payload, enabled: true });
+      return payload;
+    });
+    registerMock("credential_upsert", () => ({}));
+    registerMock("credential_set_secret", () => undefined);
+    registerMock("provider_test", () => ({
+      ok: true,
+      status: 200,
+      latency_ms: 12,
+      probe: "models",
+      note: null,
+    }));
+
+    await openWizard();
+    fillStep1();
+    fireEvent.click(screen.getByTestId("pw-test"));
+    await screen.findByTestId("pw-test-result");
+
+    // 明文已经抹掉（纪律），而清单里已经有自己刚建的那一份
+    expect(inputOf("pw-key").value).toBe("");
+    expect(listed).toHaveLength(2);
+
+    // 这一步以前是死的：预检会同时报「名称被占用」+「密钥必填」
+    fireEvent.click(screen.getByTestId("pw-next"));
+    await screen.findByTestId("provider-wizard-step2");
+    expect(screen.queryByText(/已经被占用/)).toBeNull();
+
+    // 两次落库用的是**同一个 id**：再保存一次不该造出第二个服务商
+    const ids = provider.calls.map(
+      (call) => (call["provider"] as Record<string, unknown>)["id"],
+    );
+    expect(ids).toEqual(["my-gateway", "my-gateway"]);
   });
 
   it("status=404 && probe=models 显示「上游没有 /models 端点」，绝不渲染成连接失败", async () => {
