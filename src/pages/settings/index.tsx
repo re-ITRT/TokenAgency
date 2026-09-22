@@ -14,8 +14,9 @@
  *      开关写的是**系统事实**（`actual`），配置里的期望值只作对照；`drifted` 时才给"重新对齐"。
  *    - 检查更新（app_check_update）→ **已接**：点了才发请求，失败如实报错，
  *      只有在后端明确返回"没有新版本"（`null`）时才说没有新版本。
- *    - 日志导出（log_export）→ 还没接：没有导出按钮，只有一行说明。
- *    - 文件监听模式（config_set_file_watch_mode）→ 还没接：同上。
+ *    - 日志导出（log_export）→ 这一页没有导出按钮：导出在日志页（/logs），那里才是它该在的地方。
+ *    - 文件监听模式（config_set_file_watch_mode）→ **已接**：写的是配置，
+ *      而后端明确回 `restart_required: true`（监听器本身还没实现）→ 只说"需要重启"，绝不说"已生效"。
  * 3. **不许假成功**：`config_validate` 只有显式 `ok: true` 才允许继续；
  *    `config_apply` 只有显式 `applied: true` 才提示"已写入"。读不出来的返回按"未通过"处理。
  *
@@ -330,6 +331,14 @@ export default function SettingsPage() {
   });
   /** 检查更新：点了真的调后端；失败就显示失败原因。 */
   const checkUpdate = useCommandMutation("app_check_update");
+  /**
+   * 配置文件的监听模式：写的是**配置**（`config_set_file_watch_mode`），
+   * 但**监听器本身还没实现** —— 后端 `set_file_watch_mode` 里就有这句 warn，
+   * 并且它恒定回 `restart_required: true`。所以这里**只可能**说"需要重启"，绝不说"已生效"。
+   */
+  const setFileWatch = useCommandMutation("config_set_file_watch_mode", {
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: qk.config }),
+  });
 
   const [draft, setDraft] = useState<ConfigDoc | undefined>(undefined);
   const [pristine, setPristine] = useState<ConfigDoc | undefined>(undefined);
@@ -1036,23 +1045,66 @@ export default function SettingsPage() {
             onChange={onChange}
             kind="bool"
           />
-          <ReadonlyRow
-            label={t("settings.tray.fileWatch")}
-            value={
-              draft === undefined
-                ? DASH
-                : draft.system_integration.file_watch_mode
-                  ? t("settings.tray.on")
-                  : t("settings.tray.off")
-            }
-          />
-          <Typography
-            variant="body1"
-            data-testid="settings-file-watch-blocked"
-            sx={{ color: "text.secondary" }}
-          >
-            {t("settings.tray.fileWatch.blocked")}
-          </Typography>
+          {/* 开关写的是**配置**（不是系统状态），而且监听器还没实现：只可能得到"需要重启" */}
+          <Stack spacing={1}>
+            <Box data-testid="settings-file-watch-switch">
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={draft?.system_integration.file_watch_mode === true}
+                    disabled={draft === undefined || setFileWatch.isPending}
+                    onChange={(event) =>
+                      setFileWatch.mutate({
+                        enabled: event.target.checked,
+                        ...(draft?.system_integration.file_watch_path === undefined ||
+                        draft?.system_integration.file_watch_path === null
+                          ? {}
+                          : { path: draft.system_integration.file_watch_path }),
+                      })
+                    }
+                  />
+                }
+                label={t("settings.tray.fileWatch")}
+              />
+            </Box>
+            <Typography
+              variant="body1"
+              data-testid="settings-file-watch-config"
+              data-value={String(draft?.system_integration.file_watch_mode === true)}
+            >
+              {t("settings.tray.fileWatch.configValue", {
+                value:
+                  draft?.system_integration.file_watch_mode === true
+                    ? t("settings.tray.on")
+                    : t("settings.tray.off"),
+              })}
+            </Typography>
+            <Caption>{t("settings.tray.fileWatch.hint")}</Caption>
+          </Stack>
+
+          {setFileWatch.error !== null && setFileWatch.error !== undefined ? (
+            <Typography
+              variant="body1"
+              data-testid="settings-file-watch-error"
+              sx={{ color: "error.main" }}
+            >
+              {t("settings.tray.fileWatch.error", { message: errorMessage(setFileWatch.error) })}
+            </Typography>
+          ) : setFileWatch.data === undefined ? null : (
+            <Typography
+              variant="body1"
+              data-testid="settings-file-watch-result"
+              data-applied={String(setFileWatch.data.applied)}
+              data-restart-required={String(setFileWatch.data.restart_required)}
+              sx={{ color: setFileWatch.data.applied ? "text.primary" : "warning.main" }}
+            >
+              {setFileWatch.data.applied
+                ? setFileWatch.data.restart_required
+                  ? t("settings.tray.fileWatch.restart")
+                  : t("settings.tray.fileWatch.appliedNoRestart")
+                : t("settings.tray.fileWatch.notApplied")}
+            </Typography>
+          )}
         </SectionPaper>
 
         {/* ④ 记录与存储（命令已注册：真做） */}
@@ -1248,7 +1300,7 @@ export default function SettingsPage() {
                 {t("logs.clear.button")}
               </Button>
             </Box>
-            {/* 没有 log_export：不画按钮，只留一行说明 */}
+            {/* 导出在日志页（/logs）：这里不放按钮，只留一行指向说明（避免两处入口各说一半） */}
             <Typography
               variant="body1"
               data-testid="settings-no-log-export"
