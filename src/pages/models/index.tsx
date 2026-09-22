@@ -3,13 +3,13 @@
  * `pages: ["models", "models/index"]` —— 本文件是**文件夹形式**（与 `logs/index.tsx`、
  * `providers/index.tsx` 一致）。纯逻辑与整形在 `./model.ts`，那一层是单测的主要对象。
  *
- * 这一页**目前只做读**，取数只用 `model_list` / `pricing_unpriced_models` / `channel_list` /
- * `provider_list` / `credential_list`。
- * 写命令（`model_upsert` / `model_delete` / `model_import_from_provider` / `model_apply_import` /
+ * 这一页**读**用 `model_list` / `pricing_unpriced_models` / `channel_list` /
+ * `provider_list` / `credential_list`；**添加模型向导**（[docs/17 §3.2]）调 `model_upsert`，
+ * 成功后用**后端返回值**回显并 `invalidateQueries(qk.models)`。
+ * 其余写命令（`model_delete` / `model_import_from_provider` / `model_apply_import` /
  * `model_bulk_update`）**已在后端登记**（以 `src-tauri/src/commands/mod.rs` 的 `collect_commands!`
- * 为准，`src/app/commandSurface.guard.test.ts` 机械检查），**但本页的写入入口尚未接入**：
- * 后续一批接上编辑/导入按钮；在那之前空状态里说明"导入/编辑入口还没接线"，
- * **不放假按钮、也不放点了没反应的禁用占位**。
+ * 为准，`src/app/commandSurface.guard.test.ts` 机械检查），**入口尚未接线** ——
+ * 在那之前空状态里如实说明，**不放假按钮、也不放点了没反应的禁用占位**。
  *
  * 三条诚实纪律：
  * 1. **"被哪些通道引用"缺数据时不许说成"没有被引用"**：`channel_list` 读失败时，
@@ -19,17 +19,38 @@
  * 3. **本地筛选要自报家门**：筛选只作用在已加载的行上，界面上必须写明"不是后端检索"。
  */
 
-import { Box, Button, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography } from "@mui/material";
+import {
+  Box,
+  Button,
+  Checkbox,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  FormControlLabel,
+  Paper,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState, type ReactNode } from "react";
 
-import { errorMessage, qk, useCommandQuery } from "@/shared/api";
-import { PageHeader, StatusDot } from "@/shared/components";
-import { formatInt } from "@/shared/format";
+import { errorMessage, qk, useCommandMutation, useCommandQuery } from "@/shared/api";
+import type { Model } from "@/shared/bindings";
+import { PageHeader, StatusDot } from "@/shared/components";import { formatInt } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { radius, typography } from "@/theme";
 
 import {
   DASH,
+  EMPTY_MODEL_DRAFT,
+  draftToModel,
   filterModels,
   hasDiscrepancy,
   pricingDiscrepancy,
@@ -38,8 +59,11 @@ import {
   sortModels,
   summarizeModels,
   upstreamSummary,
+  validateModelDraft,
   type ChannelsLookup,
   type ModelChannelRef,
+  type ModelDraft,
+  type ModelDraftIssue,
   type ModelRowView,
   type PricingVerdict,
 } from "./model";
@@ -479,12 +503,20 @@ export function ModelsBody({
 
 export default function ModelsPage() {
   const { t } = useTranslation();
+  const qc = useQueryClient();
 
   const models = useCommandQuery("model_list", undefined, qk.models);
   const channels = useCommandQuery("channel_list", undefined, qk.channels);
   const providers = useCommandQuery("provider_list", undefined, qk.providers);
   const credentials = useCommandQuery("credential_list", undefined, qk.credentials);
   const unpriced = useCommandQuery("pricing_unpriced_models", undefined, qk.unpricedModels);
+
+  const upsert = useCommandMutation("model_upsert");
+  const [addOpen, setAddOpen] = useState(false);
+  const [draft, setDraft] = useState<ModelDraft>(EMPTY_MODEL_DRAFT);
+  const [issues, setIssues] = useState<readonly ModelDraftIssue[]>([]);
+  /** 成功后回显的是**后端返回的那个 Model**，不是我们提交的草稿。 */
+  const [added, setAdded] = useState<Model | undefined>(undefined);
 
   const lookup = useMemo<ChannelsLookup>(
     () => ({
@@ -497,12 +529,32 @@ export default function ModelsPage() {
 
   const rows = useMemo(() => readModelRows(models.data ?? [], lookup), [models.data, lookup]);
 
+  const existingIds = useMemo(() => (models.data ?? []).map((m) => m.model.id), [models.data]);
+
   const refresh = () => {
     void models.refetch();
     void channels.refetch();
     void providers.refetch();
     void credentials.refetch();
     void unpriced.refetch();
+  };
+
+  const submitAdd = () => {
+    const found = validateModelDraft(draft, existingIds);
+    setIssues(found);
+    // 本地预检不过 → **一次都不发**（与设置页 config_validate 的纪律一致）
+    if (found.length > 0) return;
+    upsert.mutate(
+      { model: draftToModel(draft) },
+      {
+        onSuccess: (saved) => {
+          setAdded(saved);
+          setDraft(EMPTY_MODEL_DRAFT);
+          setIssues([]);
+          void qc.invalidateQueries({ queryKey: qk.models });
+        },
+      },
+    );
   };
 
   return (
@@ -512,9 +564,22 @@ export default function ModelsPage() {
         description={t("models.description")}
         docRef="07 §4 模型目录"
         actions={
-          <Button variant="outlined" onClick={refresh}>
-            {t("common.refresh")}
-          </Button>
+          <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+            <Button variant="outlined" onClick={refresh}>
+              {t("common.refresh")}
+            </Button>
+            <Button
+              variant="contained"
+              data-testid="models-add-open"
+              onClick={() => {
+                setAdded(undefined);
+                setIssues([]);
+                setAddOpen(true);
+              }}
+            >
+              {t("models.add.open")}
+            </Button>
+          </Box>
         }
       />
       <ModelsBody
@@ -526,6 +591,99 @@ export default function ModelsPage() {
         error={models.error ?? undefined}
         onRetry={refresh}
       />
+
+      <Dialog open={addOpen} onClose={() => setAddOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>{t("models.add.title")}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <TextField
+              label={t("models.add.id")}
+              value={draft.id}
+              onChange={(e) => setDraft({ ...draft, id: e.target.value })}
+              {...{ "data-testid": "models-add-id" }}
+              helperText={t("models.add.id.hint")}
+              fullWidth
+            />
+            <TextField
+              label={t("models.add.aliases")}
+              value={draft.aliases}
+              onChange={(e) => setDraft({ ...draft, aliases: e.target.value })}
+              {...{ "data-testid": "models-add-aliases" }}
+              helperText={t("models.add.aliases.hint")}
+              fullWidth
+            />
+            <TextField
+              label={t("models.add.group")}
+              value={draft.group}
+              onChange={(e) => setDraft({ ...draft, group: e.target.value })}
+              {...{ "data-testid": "models-add-group" }}
+              helperText={t("models.add.group.hint")}
+              fullWidth
+            />
+            <TextField
+              label={t("models.add.order")}
+              value={draft.order}
+              onChange={(e) => setDraft({ ...draft, order: e.target.value })}
+              {...{ "data-testid": "models-add-order", inputMode: "numeric" }}
+              helperText={t("models.add.order.hint")}
+              fullWidth
+            />
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={draft.expose}
+                  onChange={(e) => setDraft({ ...draft, expose: e.target.checked })}
+                  {...{ "data-testid": "models-add-expose" }}
+                />
+              }
+              label={t("models.add.expose")}
+            />
+            <Typography variant="caption" sx={{ color: "text.secondary" }}>
+              {t("models.add.expose.hint")}
+            </Typography>
+
+            {/* 本地预检的错，按字段逐条显示（不解析文案，按机器可读的 reason 取 key） */}
+            {issues.map((issue) => (
+              <Typography
+                key={`${issue.field}-${issue.reason}`}
+                variant="body1"
+                data-testid={`models-add-issue-${issue.field}`}
+                sx={{ color: "error.main" }}
+              >
+                {t(`models.add.issue.${issue.field}.${issue.reason}` as I18nKey)}
+              </Typography>
+            ))}
+
+            {/* 后端的错原样显示（TA 码 + 文案），本地预检不替代它 */}
+            {upsert.error !== null ? (
+              <Typography variant="body1" data-testid="models-add-error" sx={{ color: "error.main" }}>
+                {errorMessage(upsert.error)}
+              </Typography>
+            ) : null}
+
+            {/* 成功：显示**后端返回值**（不是草稿） */}
+            {added !== undefined ? (
+              <Typography variant="body1" data-testid="models-add-result">
+                {t("models.add.result", {
+                  id: added.id,
+                  expose: added.expose ? t("models.add.result.expose") : t("models.add.result.hidden"),
+                })}
+              </Typography>
+            ) : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAddOpen(false)}>{t("models.add.close")}</Button>
+          <Button
+            variant="contained"
+            data-testid="models-add-submit"
+            disabled={upsert.isPending}
+            onClick={submitAdd}
+          >
+            {t("models.add.submit")}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </>
   );
 }

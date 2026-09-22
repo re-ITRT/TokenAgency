@@ -26,7 +26,7 @@
  * 这些偏差是**绑定生成（T1 的 `npm run gen:bindings`）落地前**的临时现实；生成物覆盖后并集读法仍然成立。
  */
 
-import type { Channel, CredentialView, ModelView, ProviderView } from "@/shared/bindings";
+import type { Channel, CredentialView, Model, ModelView, ProviderView } from "@/shared/bindings";
 
 /** 数值缺失一律画破折号（**不画 0**：0 是"确实是 0"，缺失是"不知道"）。 */
 export const DASH = "—";
@@ -262,4 +262,88 @@ export function filterModels(rows: readonly ModelRowView[], query: string): Mode
     const haystack = [r.id, r.group ?? "", ...r.aliases, ...r.upstreamNames];
     return haystack.some((v) => v.toLowerCase().includes(q));
   });
+}
+
+// ================================================================ 添加向导（[docs/17 §3.2]）
+
+/**
+ * 添加模型表单的草稿。**全部按"用户输入的原样"存**（`aliases` 是逗号分隔的字符串、
+ * `order` 是字符串），只在提交前才解释 —— 这样"用户输了什么"与"我们解释成什么"不会混在一起，
+ * 校验报错时也能准确指出是哪个输入。
+ */
+export type ModelDraft = {
+  id: string;
+  aliases: string;
+  group: string;
+  order: string;
+  expose: boolean;
+};
+
+/** [docs/17 §3.2] 规定的 id 形态。 */
+export const MODEL_ID_RE = /^[a-z0-9][a-z0-9._-]*$/i;
+
+export const EMPTY_MODEL_DRAFT: ModelDraft = {
+  id: "",
+  aliases: "",
+  group: "",
+  order: "0",
+  expose: true,
+};
+
+export type ModelDraftIssue = {
+  field: "id" | "order";
+  /** 机器可读的原因；UI 按它取文案，**不解析文案本身**。 */
+  reason: "required" | "shape" | "duplicate" | "notInteger" | "negative";
+};
+
+/** 别名：逗号分隔 → 去空、去重（保序）。重复不算错误，只是不该把同一个名字存两遍。 */
+export function parseAliases(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of raw.split(",")) {
+    const name = part.trim();
+    if (name.length === 0 || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+/**
+ * 本地预检。**只做"不用问后端就知道"的三件事**（必填 / 形态 / 与现有 `model_list` 重复）
+ * 加一条 order 非负整数。权威判定仍在后端 —— `model_upsert` 的错误（TA 码 + details）
+ * 原样显示，本地预检不替代它。
+ */
+export function validateModelDraft(
+  draft: ModelDraft,
+  existingIds: readonly string[],
+): ModelDraftIssue[] {
+  const issues: ModelDraftIssue[] = [];
+  const id = draft.id.trim();
+  if (id.length === 0) {
+    issues.push({ field: "id", reason: "required" });
+  } else if (!MODEL_ID_RE.test(id)) {
+    issues.push({ field: "id", reason: "shape" });
+  } else if (existingIds.some((known) => known === id)) {
+    issues.push({ field: "id", reason: "duplicate" });
+  }
+
+  const order = draft.order.trim();
+  if (!/^[0-9]+$/.test(order)) {
+    // 空串也走这一条：`display.order` 在契约里是 `number`，没有"留空"的语义
+    issues.push({ field: "order", reason: order.startsWith("-") ? "negative" : "notInteger" });
+  }
+
+  return issues;
+}
+
+/** 草稿 → 契约的 `Model`（`group` 空串 → `null`，那是契约允许的"没有分组"）。 */
+export function draftToModel(draft: ModelDraft): Model {
+  const group = draft.group.trim();
+  return {
+    id: draft.id.trim(),
+    aliases: parseAliases(draft.aliases),
+    display: { group: group.length === 0 ? null : group, order: Number(draft.order.trim()) },
+    expose: draft.expose,
+  };
 }
