@@ -3,12 +3,10 @@
  *
  * 三条纪律（这一页最容易违反，所以写在最上面）：
  *
- * 1. **只用已注册的命令**：整页取数只发 `policy_list`。
- *    写命令（`policy_upsert` / `policy_delete` / `policy_reorder` / `policy_set_enabled` /
- *    `policy_simulate`）**已在后端登记**（以 `src-tauri/src/commands/mod.rs` 的 `collect_commands!`
- *    为准，`src/app/commandSurface.guard.test.ts` 机械检查），**但本页的写入入口尚未接入** ——
- *    后续一批接上增删改与模拟器；在那之前**不放按钮，也不放点了没反应的禁用占位**，
- *    只在页头下方一句话说清现状。
+ * 1. **只用已注册的命令**：整页取数只发 `policy_list`；`policies-add-open` 打开的添加向导
+ *    另发 `model_list` / `channel_list`（只在向导打开时才查），提交走 `policy_upsert`。
+ *    其余写命令（`policy_reorder` / `policy_set_enabled` / `policy_simulate`）**后端已登记但本页没有入口** ——
+ *    **不放按钮，也不放点了没反应的禁用占位**（[docs/17 §3.4] 只要求"添加路由"这一条链路）。
  * 2. **顺序是后端的，不是我们排的**：`policy_list` 自己按 `priority` 升序排
  *    （`src-tauri/src/commands/catalog.rs:128-135`，注释明写"UI 的拖拽顺序就是求值顺序"）。
  *    页面照它返回的顺序画，**另外单列原始 `priority` 数值** —— 不让"第几行"冒充优先级。
@@ -22,6 +20,13 @@
 import {
   Box,
   Button,
+  Checkbox,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  FormControlLabel,
   Paper,
   Stack,
   Table,
@@ -29,12 +34,22 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ReactElement, ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState, type ReactElement, type ReactNode } from "react";
 
-import { errorMessage, qk, useCommandQuery } from "@/shared/api";
+import { errorMessage, qk, useCommandMutation, useCommandQuery, TokenAgencyError } from "@/shared/api";
+import type {
+  Backoff,
+  Channel,
+  ChannelId,
+  FailoverTrigger,
+  Policy,
+  Selector,
+} from "@/shared/bindings";
 import { PageHeader, StatusDot } from "@/shared/components";
 import { formatInt } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
@@ -542,11 +557,558 @@ export function PoliciesBody({ policies, isLoading, error, onRetry }: PoliciesBo
   );
 }
 
+// ================================================================ 能力一致性（[docs/17 §2]）
+
+/**
+ * 上游模型的能力声明（[docs/17 §2]）。
+ *
+ * **为什么这里自己写一份**：真正的契约字段（`Channel.capabilities`）由 task-31 落地。
+ * 在它出现之前，比对逻辑按 [docs/17 §2] 的形状写成**纯函数**并配测试；契约到了只换类型来源，
+ * 判断与文案不动。读取口 [`readCapabilities`] 对"没有 / 形状不对"一律返回 `null`
+ * —— **绝不编默认值**（"没声明"与"声明为 false"是两件事）。
+ */
+export type ChannelCapabilities = {
+  vision: boolean;
+  tools: boolean;
+  reasoning: boolean;
+  context_tokens: number;
+  max_output_tokens: number | null;
+  modalities: string[];
+};
+
+const CAPABILITY_FIELDS: (keyof ChannelCapabilities)[] = [
+  "vision",
+  "tools",
+  "reasoning",
+  "context_tokens",
+  "max_output_tokens",
+  "modalities",
+];
+
+/** 一个字段上的不一致：这个字段在各条线路上的值（原样，不翻译成"好/坏"）。 */
+export type CapabilityFieldDiff = {
+  field: keyof ChannelCapabilities;
+  values: { channelId: string; text: string }[];
+};
+
+export type CapabilityInput = { channelId: string; capabilities: ChannelCapabilities | null };
+
+export type CapabilityComparison = {
+  /** 至少两条线路且都声明了能力 → 才是真的比过了。 */
+  compared: boolean;
+  /** 读不到能力声明的线路 id（**不能**当成"一致"）。 */
+  unknown: string[];
+  /** 逐字段差异；空 = 一致。 */
+  diffs: CapabilityFieldDiff[];
+};
+
+function readBoolStrict(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function readIntStrict(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+/** 严格读取能力声明：任一必需字段缺失或类型不对 → `null`。 */
+export function readCapabilities(raw: unknown): ChannelCapabilities | null {
+  if (!isRecord(raw)) return null;
+  const vision = readBoolStrict(raw["vision"]);
+  const tools = readBoolStrict(raw["tools"]);
+  const reasoning = readBoolStrict(raw["reasoning"]);
+  const context = readIntStrict(raw["context_tokens"]);
+  const modalitiesRaw = raw["modalities"];
+  const modalities =
+    Array.isArray(modalitiesRaw) && modalitiesRaw.every((m) => typeof m === "string")
+      ? (modalitiesRaw as string[]).slice()
+      : null;
+  const maxRaw = raw["max_output_tokens"];
+  const maxOut = maxRaw === null || maxRaw === undefined ? null : readIntStrict(maxRaw);
+  if (
+    vision === null ||
+    tools === null ||
+    reasoning === null ||
+    context === null ||
+    modalities === null ||
+    (maxRaw !== null && maxRaw !== undefined && maxOut === null)
+  ) {
+    return null;
+  }
+  return { vision, tools, reasoning, context_tokens: context, max_output_tokens: maxOut, modalities };
+}
+
+/** `modalities` 比较前先排序去重（[docs/17 §2] 规则 2）。 */
+export function normalizeModalities(list: string[]): string[] {
+  return Array.from(new Set(list.map((m) => m.trim()).filter((m) => m !== ""))).sort();
+}
+
+function capabilityText(field: keyof ChannelCapabilities, caps: ChannelCapabilities): string {
+  const value = caps[field];
+  if (field === "modalities") return normalizeModalities(value as string[]).join(",");
+  return value === null ? "null" : String(value);
+}
+
+/**
+ * 逐字段比对（[docs/17 §2] 规则 2：一致 = 每个字段逐一相等，`modalities` 排序去重后比，
+ * `null` 只与 `null` 相等）。**不足两条 / 有线路没声明能力时 `compared: false`** ——
+ * 这两种情况都不许当成"一致"（那就成了猜）。
+ */
+export function compareCapabilities(entries: CapabilityInput[]): CapabilityComparison {
+  if (entries.length < 2) return { compared: false, unknown: [], diffs: [] };
+  const unknown = entries.filter((e) => e.capabilities === null).map((e) => e.channelId);
+  if (unknown.length > 0) return { compared: false, unknown, diffs: [] };
+  const diffs: CapabilityFieldDiff[] = [];
+  for (const field of CAPABILITY_FIELDS) {
+    const texts = entries.map((e) => capabilityText(field, e.capabilities as ChannelCapabilities));
+    if (new Set(texts).size > 1) {
+      diffs.push({
+        field,
+        values: entries.map((e, i) => ({ channelId: e.channelId, text: texts[i] ?? "" })),
+      });
+    }
+  }
+  return { compared: true, unknown: [], diffs };
+}
+
+// ================================================================ 添加路由向导（[docs/17 §3.4]）
+
+const SELECTOR_VALUES: Selector[] = [
+  "priority",
+  "sticky_then_priority",
+  "quota_first",
+  "cheapest",
+  "lowest_latency",
+  "weighted_random",
+  "round_robin",
+];
+
+const TRIGGER_VALUES: FailoverTrigger[] = [
+  "http429",
+  "http402",
+  "http5xx",
+  "timeout",
+  "connect_error",
+  "quota_exhausted",
+  "channel_tagged_out",
+  "capability_mismatch",
+];
+
+const BACKOFF_VALUES: Backoff[] = ["none", "exponential"];
+
+/** 非负整数：空串 → `null`（**不当成 0**）。 */
+function parseNonNegativeInt(text: string): number | null {
+  const trimmed = text.trim();
+  if (trimmed === "" || !/^\d+$/.test(trimmed)) return null;
+  return Number(trimmed);
+}
+
+function errorDetailsText(err: unknown): string | null {
+  if (!(err instanceof TokenAgencyError)) return null;
+  const details = err.details;
+  if (details === undefined || details === null) return null;
+  return typeof details === "string" ? details : JSON.stringify(details, null, 2);
+}
+
+export type PoliciesAddDialogProps = {
+  open: boolean;
+  onClose: () => void;
+};
+
+/**
+ * 「添加路由」向导：暴露哪个模型 → 选哪些线路 → 粘性 → 失败切换 → 优先级 → 保存。
+ *
+ * 两个"只暴露能表达的"决定（[docs/17 §3.4] + 主管纪律"不许发明契约里没有的开关"）：
+ * 1. **粘性**：策略里能表达的只有 `action.pin_sticky`（钉住优先线路）与 `action.selector`
+ *    （`sticky_then_priority` 等真实取值）。**真正的粘性窗口与派生键（`ttl_h` / `key`）挂在
+ *    `ChannelGroup.sticky` 上，`Policy` 没有对应字段** —— 所以这里不造那两个输入框，
+ *    只在控件下如实说明（缺的写进回报）。
+ * 2. **失败切换**：只写 `FailoverPolicy` 真实存在的四个字段（`on` / `max_attempts` /
+ *    `cooldown_s` / `backoff`）；不选任何触发条件 = 不写 `failover`（继承全局默认，
+ *    不是"填了一堆我们编的数字"）。
+ */
+export function PoliciesAddDialog({ open, onClose }: PoliciesAddDialogProps): ReactElement {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+
+  // 只在向导打开时查：页面本身仍然只发 policy_list（[docs/17 §3.4]）
+  const models = useCommandQuery("model_list", undefined, qk.models, { enabled: open });
+  const channels = useCommandQuery("channel_list", undefined, qk.channels, { enabled: open });
+  const upsert = useCommandMutation("policy_upsert");
+
+  const [id, setId] = useState("");
+  const [name, setName] = useState("");
+  const [model, setModel] = useState("");
+  const [selected, setSelected] = useState<ChannelId[]>([]);
+  const [pinSticky, setPinSticky] = useState("");
+  const [selector, setSelector] = useState("");
+  const [failoverOn, setFailoverOn] = useState<FailoverTrigger[]>([]);
+  const [maxAttempts, setMaxAttempts] = useState("3");
+  const [cooldownS, setCooldownS] = useState("120");
+  const [backoff, setBackoff] = useState<Backoff>("exponential");
+  const [priority, setPriority] = useState("1000");
+  const [saved, setSaved] = useState<Policy | null>(null);
+
+  const modelOptions = useMemo(
+    () => (models.data ?? []).map((view) => view.model.id),
+    [models.data],
+  );
+  const allChannels = useMemo<Channel[]>(() => channels.data ?? [], [channels.data]);
+  /** **只列 `model` 等于所选模型的线路**（[docs/17 §3.4]）。 */
+  const candidates = useMemo(
+    () => allChannels.filter((channel) => channel.model === model),
+    [allChannels, model],
+  );
+
+  const comparison = useMemo(
+    () =>
+      compareCapabilities(
+        selected.map((channelId) => {
+          const channel = allChannels.find((c) => c.id === channelId);
+          // `Channel.capabilities` 由 task-31 落契约；在它出现前从原始对象上读，读不到就是 null
+          const raw = channel as unknown as Record<string, unknown> | undefined;
+          return { channelId, capabilities: readCapabilities(raw?.["capabilities"]) };
+        }),
+      ),
+    [selected, allChannels],
+  );
+
+  const hasMismatch = comparison.compared && comparison.diffs.length > 0;
+  const priorityValue = parseNonNegativeInt(priority);
+  const attemptsValue = parseNonNegativeInt(maxAttempts);
+  const cooldownValue = parseNonNegativeInt(cooldownS);
+  const failoverOnInvalid =
+    failoverOn.length > 0 && (attemptsValue === null || cooldownValue === null);
+  const canSubmit =
+    id.trim() !== "" &&
+    name.trim() !== "" &&
+    model !== "" &&
+    selected.length > 0 &&
+    priorityValue !== null &&
+    !failoverOnInvalid &&
+    !hasMismatch &&
+    !upsert.isPending;
+
+  function toggleChannel(channelId: ChannelId, checked: boolean) {
+    setSelected((prev) =>
+      checked ? [...prev.filter((c) => c !== channelId), channelId] : prev.filter((c) => c !== channelId),
+    );
+  }
+
+  function toggleTrigger(trigger: FailoverTrigger, checked: boolean) {
+    setFailoverOn((prev) =>
+      checked ? [...prev.filter((x) => x !== trigger), trigger] : prev.filter((x) => x !== trigger),
+    );
+  }
+
+  function submit() {
+    if (!canSubmit || priorityValue === null) return;
+    const policy: Policy = {
+      id: id.trim(),
+      name: name.trim(),
+      enabled: true,
+      priority: priorityValue,
+      match: {
+        all: false,
+        model_matches: [model],
+        has_image: null,
+        header_matches: {},
+        ua_matches: null,
+        channel_tags_any: [],
+        channel_tags_all: [],
+        input_tokens_lt: null,
+        input_tokens_gt: null,
+        stream: null,
+        quota_remaining_lt: null,
+        time_window: null,
+        provider_in: [],
+      },
+      action: {
+        use_group: null,
+        use_channels: selected,
+        exclude_channels: [],
+        require_tag: null,
+        exclude_tag: null,
+        selector: selector === "" ? null : (selector as Selector),
+        failover:
+          failoverOn.length === 0
+            ? null
+            : {
+                on: failoverOn,
+                max_attempts: attemptsValue ?? 0,
+                cooldown_s: cooldownValue ?? 0,
+                backoff,
+              },
+        on_no_candidate: "error",
+        error_code: null,
+        pin_sticky: pinSticky === "" ? null : pinSticky,
+        use_lane: null,
+      },
+    };
+    upsert.mutate(
+      { policy },
+      {
+        onSuccess: (stored) => {
+          // 回显**后端返回的那一条**（不是我们本地拼的入参）
+          setSaved(stored);
+          void qc.invalidateQueries({ queryKey: qk.policies });
+        },
+      },
+    );
+  }
+
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
+      {/* `data-testid` 不能直接挂在 MUI 组件上（TS 会报未知属性）→ 包一层普通元素 */}
+      <Box data-testid="policies-add-dialog">
+      <DialogTitle>{t("policies.add.title")}</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ mt: 1 }}>
+          <TextField
+            size="small"
+            label={t("policies.add.id")}
+            value={id}
+            onChange={(e) => setId(e.target.value)}
+            inputProps={{ "data-testid": "policies-add-id" }}
+          />
+          <TextField
+            size="small"
+            label={t("policies.add.name")}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            inputProps={{ "data-testid": "policies-add-name" }}
+          />
+
+          <TextField
+            select
+            size="small"
+            SelectProps={{ native: true }}
+            label={t("policies.add.model")}
+            value={model}
+            onChange={(e) => {
+              setModel(e.target.value);
+              // 换模型 → 之前选的线路不属于这个模型了，必须清掉（否则会提交错的路由）
+              setSelected([]);
+            }}
+            inputProps={{ "data-testid": "policies-add-model" }}
+          >
+            <option value="">{t("policies.add.modelPlaceholder")}</option>
+            {modelOptions.map((modelId) => (
+              <option key={modelId} value={modelId}>
+                {modelId}
+              </option>
+            ))}
+          </TextField>
+
+          <Box data-testid="policies-add-channels">
+            <Typography variant="subtitle2">{t("policies.add.channels")}</Typography>
+            {model === "" ? (
+              <Caption>{t("policies.add.channelsNeedModel")}</Caption>
+            ) : candidates.length === 0 ? (
+              <Caption>{t("policies.add.channelsEmpty")}</Caption>
+            ) : (
+              candidates.map((channel) => (
+                <Box key={channel.id} data-testid={`policies-add-channel-${channel.id}`}>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        size="small"
+                        checked={selected.includes(channel.id)}
+                        onChange={(e) => toggleChannel(channel.id, e.target.checked)}
+                      />
+                    }
+                    label={`${channel.id} · ${channel.upstream_model}`}
+                  />
+                </Box>
+              ))
+            )}
+          </Box>
+
+          {/* 能力一致性：即时比对（[docs/17 §2] 规则 5） */}
+          <Box data-testid="policies-add-capabilities">
+            {comparison.compared && comparison.diffs.length === 0 && (
+              <Caption>{t("policies.add.capabilities.consistent")}</Caption>
+            )}
+            {hasMismatch && (
+              <Stack spacing={0.5} data-testid="policies-add-capability-mismatch">
+                <Typography variant="body2" sx={{ color: "warning.main" }}>
+                  {t("policies.add.capabilities.mismatch")}
+                </Typography>
+                {comparison.diffs.map((diff) => (
+                  <Typography
+                    key={diff.field}
+                    variant="caption"
+                    data-testid={`policies-add-capability-diff-${diff.field}`}
+                  >
+                    {/* 字段名就用契约里的名字（vision / tools / …）：这是接口字段，不翻译 */}
+                    {`${diff.field}：${diff.values
+                      .map((v) => `${v.channelId}=${v.text}`)
+                      .join(" / ")}`}
+                  </Typography>
+                ))}
+              </Stack>
+            )}
+            {!comparison.compared && comparison.unknown.length > 0 && (
+              <Caption>
+                {`${t("policies.add.capabilities.unknown")}：${comparison.unknown.join(", ")}`}
+              </Caption>
+            )}
+          </Box>
+
+          <Divider />
+          <TextField
+            select
+            size="small"
+            SelectProps={{ native: true }}
+            label={t("policies.add.sticky")}
+            value={pinSticky}
+            onChange={(e) => setPinSticky(e.target.value)}
+            inputProps={{ "data-testid": "policies-add-sticky" }}
+          >
+            <option value="">{t("policies.add.stickyNone")}</option>
+            {selected.map((channelId) => (
+              <option key={channelId} value={channelId}>
+                {channelId}
+              </option>
+            ))}
+          </TextField>
+          <TextField
+            select
+            size="small"
+            SelectProps={{ native: true }}
+            label={t("policies.add.selector")}
+            value={selector}
+            onChange={(e) => setSelector(e.target.value)}
+            inputProps={{ "data-testid": "policies-add-selector" }}
+          >
+            <option value="">{t("policies.add.selectorInherit")}</option>
+            {SELECTOR_VALUES.map((value) => (
+              <option key={value} value={value}>
+                {t(SELECTOR_KEY[value] as I18nKey)}
+              </option>
+            ))}
+          </TextField>
+          <Caption>{t("policies.add.stickyNote")}</Caption>
+
+          <Divider />
+          <Box data-testid="policies-add-failover">
+            <Typography variant="subtitle2">{t("policies.add.failover")}</Typography>
+            <Caption>{t("policies.add.failoverNone")}</Caption>
+            <Box>
+              {TRIGGER_VALUES.map((trigger) => (
+                <Box key={trigger} data-testid={`policies-add-failover-${trigger}`}>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        size="small"
+                        checked={failoverOn.includes(trigger)}
+                        onChange={(e) => toggleTrigger(trigger, e.target.checked)}
+                      />
+                    }
+                    label={t(TRIGGER_KEY[trigger] as I18nKey)}
+                  />
+                </Box>
+              ))}
+            </Box>
+            <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
+              <TextField
+                size="small"
+                type="number"
+                label={t("policies.add.failoverMax")}
+                value={maxAttempts}
+                onChange={(e) => setMaxAttempts(e.target.value)}
+                inputProps={{ "data-testid": "policies-add-failover-max" }}
+              />
+              <TextField
+                size="small"
+                type="number"
+                label={t("policies.add.failoverCooldown")}
+                value={cooldownS}
+                onChange={(e) => setCooldownS(e.target.value)}
+                inputProps={{ "data-testid": "policies-add-failover-cooldown" }}
+              />
+              <TextField
+                select
+                size="small"
+                SelectProps={{ native: true }}
+                label={t("policies.add.failoverBackoff")}
+                value={backoff}
+                onChange={(e) => setBackoff(e.target.value as Backoff)}
+                inputProps={{ "data-testid": "policies-add-failover-backoff" }}
+              >
+                {BACKOFF_VALUES.map((value) => (
+                  <option key={value} value={value}>
+                    {t(BACKOFF_KEY[value] as I18nKey)}
+                  </option>
+                ))}
+              </TextField>
+            </Stack>
+          </Box>
+
+          <Divider />
+          <TextField
+            size="small"
+            type="number"
+            label={t("policies.add.priority")}
+            value={priority}
+            onChange={(e) => setPriority(e.target.value)}
+            inputProps={{ "data-testid": "policies-add-priority" }}
+          />
+
+          {upsert.error !== null && (
+            <Box data-testid="policies-add-error">
+              {/* 后端说的话**原样**显示：[TA-xxxx] + message（不翻译、不改写） */}
+              <Typography
+                variant="body2"
+                sx={{ color: "error.main" }}
+                data-testid="policies-add-error-text"
+              >
+                {errorMessage(upsert.error)}
+              </Typography>
+              {errorDetailsText(upsert.error) !== null && (
+                <Box
+                  component="pre"
+                  data-testid="policies-add-error-details"
+                  sx={{ fontFamily: typography.fontMono, m: 0, whiteSpace: "pre-wrap" }}
+                >
+                  {errorDetailsText(upsert.error)}
+                </Box>
+              )}
+            </Box>
+          )}
+
+          {saved !== null && (
+            <Box data-testid="policies-add-result">
+              <Typography variant="body2">
+                {`${t("policies.add.saved", { id: saved.id })} · ${saved.name}`}
+              </Typography>
+            </Box>
+          )}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} data-testid="policies-add-cancel">
+          {t("policies.add.cancel")}
+        </Button>
+        <Button
+          variant="contained"
+          onClick={submit}
+          disabled={!canSubmit}
+          data-testid="policies-add-submit"
+        >
+          {t("policies.add.submit")}
+        </Button>
+      </DialogActions>
+      </Box>
+    </Dialog>
+  );
+}
+
 // ================================================================ 数据层
 
 export default function PoliciesPage(): ReactElement {
   const { t } = useTranslation();
   const policies = useCommandQuery("policy_list", undefined, qk.policies);
+  const [addOpen, setAddOpen] = useState(false);
 
   return (
     <>
@@ -555,9 +1117,18 @@ export default function PoliciesPage(): ReactElement {
         description={t("policies.description")}
         docRef="07 §5 路由策略 · 02 §2.8 policy.match / policy.action"
         actions={
-          <Button variant="outlined" onClick={() => void policies.refetch()}>
-            {t("policies.refresh")}
-          </Button>
+          <Stack direction="row" spacing={1}>
+            <Button
+              variant="contained"
+              onClick={() => setAddOpen(true)}
+              data-testid="policies-add-open"
+            >
+              {t("policies.add.open")}
+            </Button>
+            <Button variant="outlined" onClick={() => void policies.refetch()}>
+              {t("policies.refresh")}
+            </Button>
+          </Stack>
         }
       />
       <PoliciesBody
@@ -566,6 +1137,7 @@ export default function PoliciesPage(): ReactElement {
         error={policies.error ?? undefined}
         onRetry={() => void policies.refetch()}
       />
+      <PoliciesAddDialog open={addOpen} onClose={() => setAddOpen(false)} />
     </>
   );
 }

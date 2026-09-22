@@ -14,12 +14,11 @@
 
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import PoliciesPage, { PoliciesBody, readPolicyList, type PoliciesBodyProps } from "@/pages/policies";
-import { TokenAgencyError } from "@/shared/api";
-import { registerBaselineMocks } from "@/shared/api/mock";
+import { registerBaselineMocks, registerMock, TokenAgencyError } from "@/shared/api";
 import type { Policy } from "@/shared/bindings";
 import { i18n } from "@/shared/i18n";
 import { zhCN } from "@/shared/i18n/zh-CN";
@@ -154,10 +153,13 @@ describe("[只读] 未实现的命令不许出现在界面上（不按钮、不�
     expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
 
-  it("页头操作区只有「刷新」：没有排序 / 启停 / 模拟入口", () => {
+  it("页头操作区只有「添加路由」与「刷新」：没有排序 / 启停 / 模拟入口", () => {
     renderPage();
     const buttons = screen.queryAllByRole("button");
-    expect(buttons.map((b) => b.textContent)).toEqual([zhCN["policies.refresh"]]);
+    expect(buttons.map((b) => b.textContent)).toEqual([
+      zhCN["policies.add.open"],
+      zhCN["policies.refresh"],
+    ]);
     // 未实现的命令名不许出现在界面上（既不是按钮，也不是文案里的操作）
     for (const name of ["policy_reorder", "policy_set_enabled", "policy_simulate"]) {
       expect(screen.queryAllByRole("button", { name: new RegExp(name) })).toHaveLength(0);
@@ -339,5 +341,325 @@ describe("空态与错误态都说实话", () => {
     });
     expect(screen.getByTestId("policies-count").textContent).toContain("2");
     expect(screen.getByTestId("policies-count").textContent).toContain("1");
+  });
+});
+
+// ================================================================ ④ 添加路由向导（[docs/17 §3.4]）
+
+const MODEL = "deepseek-v4.1flash";
+const OTHER_MODEL = "qwen3-max";
+
+/** 一条线路（`channel_list` 的形状）。`capabilities` 由 task-31 落契约，这里按 [docs/17 §2] 造。 */
+function channel(id: string, model: string, capabilities?: unknown): Record<string, unknown> {
+  return {
+    id,
+    model,
+    provider: "p-" + id,
+    credential: "c-" + id,
+    lane: "direct",
+    upstream_model: id + "-upstream",
+    priority: 100,
+    weight: 10,
+    tags: [],
+    target_override: null,
+    enabled: true,
+    ...(capabilities === undefined ? {} : { capabilities }),
+  };
+}
+
+function capabilities(contextTokens: number, vision: boolean) {
+  return {
+    vision,
+    tools: true,
+    reasoning: false,
+    context_tokens: contextTokens,
+    max_output_tokens: 8192,
+    modalities: ["image", "text"],
+  };
+}
+
+type UpsertCall = { policy: Policy };
+
+/**
+ * 注册向导需要的三个命令。
+ * `channel_list` 的返回**故意带上 `capabilities`** —— 契约字段还没落地，但读取口
+ * （`readCapabilities`）就是按 [docs/17 §2] 的形状读的，这里正好把它钉住。
+ */
+function registerWizardMocks(options: {
+  channels: Record<string, unknown>[];
+  upsert?: (args: UpsertCall) => Policy;
+  calls?: UpsertCall[];
+}): UpsertCall[] {
+  const calls = options.calls ?? [];
+  registerMock("model_list", () => [
+    {
+      model: { id: MODEL, aliases: [], expose: true, display: null },
+      channel_count: 2,
+      upstream_names: [],
+      priced: false,
+    },
+    {
+      model: { id: OTHER_MODEL, aliases: [], expose: true, display: null },
+      channel_count: 1,
+      upstream_names: [],
+      priced: false,
+    },
+  ]);
+  registerMock("channel_list", () => options.channels);
+  registerMock("policy_list", () => []);
+  registerMock("policy_upsert", (args) => {
+    const call = args as unknown as UpsertCall;
+    calls.push(call);
+    if (options.upsert !== undefined) return options.upsert(call);
+    // 默认：像后端那样把存下来的那条原样返回
+    return call.policy;
+  });
+  return calls;
+}
+
+async function openWizard() {
+  renderPage();
+  fireEvent.click(screen.getByTestId("policies-add-open"));
+  await screen.findByTestId("policies-add-dialog");
+}
+
+/**
+ * 选模型，并等**线路列表真的渲染出来**。
+ * `model_list` / `channel_list` 都是异步 query；不等就断言，会在"还没加载"时得到假结论
+ * （尤其"某条线路不出现"这种反向断言 —— 那会假绿）。
+ */
+async function selectModel(model: string, expectedFirstChannel: string) {
+  // **先等这个模型出现在下拉里**：原生 select 在选项不存在时会把 value 重置成 ""
+  // （于是 onChange 拿到空串，后面所有断言都会在"其实没选上"的假状态下跑）
+  await screen.findByRole("option", { name: model });
+  fireEvent.change(screen.getByTestId("policies-add-model"), { target: { value: model } });
+  await screen.findByTestId(`policies-add-channel-${expectedFirstChannel}`);
+}
+
+async function toggleChannelCheckbox(channelId: string) {
+  const box = await screen.findByTestId(`policies-add-channel-${channelId}`);
+  fireEvent.click(within(box).getByRole("checkbox"));
+}
+
+describe("[添加路由] 向导：真输入 → 真调用 → 入参形状正确", () => {
+  it("点「添加路由」打开向导，命令入口都是已注册的那三个", async () => {
+    registerWizardMocks({ channels: [channel("ch-1", MODEL, capabilities(1_050_000, true))] });
+    await openWizard();
+    expect(screen.getByTestId("policies-add-dialog")).toBeTruthy();
+    expect(screen.getByTestId("policies-add-model")).toBeTruthy();
+    expect(screen.getByTestId("policies-add-channels")).toBeTruthy();
+    expect(screen.getByTestId("policies-add-sticky")).toBeTruthy();
+    expect(screen.getByTestId("policies-add-failover")).toBeTruthy();
+    expect(screen.getByTestId("policies-add-priority")).toBeTruthy();
+    expect(screen.getByTestId("policies-add-submit")).toBeTruthy();
+  });
+
+  it("线路列表只列 `model` 等于所选模型的线路（其它模型的线路一条都不出现）", async () => {
+    registerWizardMocks({
+      channels: [
+        channel("ch-1", MODEL, capabilities(1_050_000, true)),
+        channel("ch-2", MODEL, capabilities(1_050_000, true)),
+        channel("ch-9", OTHER_MODEL, capabilities(1_050_000, true)),
+      ],
+    });
+    await openWizard();
+    await selectModel(MODEL, "ch-1");
+
+    expect(screen.getByTestId("policies-add-channel-ch-1")).toBeTruthy();
+    expect(screen.getByTestId("policies-add-channel-ch-2")).toBeTruthy();
+    expect(screen.queryByTestId("policies-add-channel-ch-9")).toBeNull();
+  });
+
+  it("选了线路后，粘性（pin_sticky）的下拉只列已选线路 —— 不发明契约外的开关", async () => {
+    registerWizardMocks({
+      channels: [
+        channel("ch-1", MODEL, capabilities(1_050_000, true)),
+        channel("ch-2", MODEL, capabilities(1_050_000, true)),
+      ],
+    });
+    await openWizard();
+    await selectModel(MODEL, "ch-1");
+    await toggleChannelCheckbox("ch-2");
+
+    const select = screen.getByTestId("policies-add-sticky") as HTMLSelectElement;
+    const values = Array.from(select.options).map((o) => o.value);
+    expect(values).toContain("ch-2");
+    expect(values).not.toContain("ch-1");
+  });
+});
+
+describe("[添加路由] 能力一致性：不一致就禁用提交并写出逐字段差异", () => {
+  it("能力不一致 → 提交按钮禁用 + 逐字段差异（字段名 + 各线路的值）", async () => {
+    registerWizardMocks({
+      channels: [
+        channel("ch-1", MODEL, capabilities(1_050_000, true)),
+        channel("ch-2", MODEL, capabilities(131_072, false)),
+      ],
+    });
+    await openWizard();
+    await selectModel(MODEL, "ch-1");
+    await toggleChannelCheckbox("ch-1");
+    await toggleChannelCheckbox("ch-2");
+    // **先把其它必填项填满**：否则"禁用"可能只是因为 id/name 没填，
+    // 这条测试就会变成假绿（把不一致的判断删掉它照样通过 —— 实测踩过）。
+    fireEvent.change(screen.getByTestId("policies-add-id"), { target: { value: "pol-ds" } });
+    fireEvent.change(screen.getByTestId("policies-add-name"), { target: { value: "DS 路由" } });
+
+    expect(screen.getByTestId("policies-add-capability-mismatch")).toBeTruthy();
+    // vision：ch-1=true / ch-2=false
+    expect(screen.getByTestId("policies-add-capability-diff-vision").textContent).toContain(
+      "ch-1=true / ch-2=false",
+    );
+    // context_tokens：两条各自的值都要写出来
+    const contextDiff = screen.getByTestId("policies-add-capability-diff-context_tokens").textContent ?? "";
+    expect(contextDiff).toContain("ch-1=1050000");
+    expect(contextDiff).toContain("ch-2=131072");
+
+    expect((screen.getByTestId("policies-add-submit") as HTMLButtonElement).disabled).toBe(true);
+
+    // **因果反证**：取消一条（只剩一条线路，无需比对）→ 提交立刻可用。
+    // 这一半证明"禁用确实来自不一致"，而不是来自别的必填项。
+    await toggleChannelCheckbox("ch-2");
+    expect((screen.getByTestId("policies-add-submit") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("能力一致 → 不报差异、提交可用", async () => {
+    registerWizardMocks({
+      channels: [
+        channel("ch-1", MODEL, capabilities(1_050_000, true)),
+        channel("ch-2", MODEL, capabilities(1_050_000, true)),
+      ],
+    });
+    await openWizard();
+    await selectModel(MODEL, "ch-1");
+    await toggleChannelCheckbox("ch-1");
+    await toggleChannelCheckbox("ch-2");
+
+    expect(screen.queryByTestId("policies-add-capability-mismatch")).toBeNull();
+    // 必填项（id/name）还没填 → 仍然禁用；填完就该可用
+    expect((screen.getByTestId("policies-add-submit") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("policies-add-id"), { target: { value: "pol-ds" } });
+    fireEvent.change(screen.getByTestId("policies-add-name"), { target: { value: "DS 路由" } });
+    expect((screen.getByTestId("policies-add-submit") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("没有声明能力的线路：不当成一致（如实说无法比对），也不禁用提交（后端裁决）", async () => {
+    registerWizardMocks({
+      channels: [channel("ch-1", MODEL, capabilities(1_050_000, true)), channel("ch-2", MODEL)],
+    });
+    await openWizard();
+    await selectModel(MODEL, "ch-1");
+    await toggleChannelCheckbox("ch-1");
+    await toggleChannelCheckbox("ch-2");
+
+    expect(screen.queryByTestId("policies-add-capability-mismatch")).toBeNull();
+    expect(screen.getByTestId("policies-add-capabilities").textContent).toContain("ch-2");
+    fireEvent.change(screen.getByTestId("policies-add-id"), { target: { value: "pol-ds" } });
+    fireEvent.change(screen.getByTestId("policies-add-name"), { target: { value: "DS 路由" } });
+    expect((screen.getByTestId("policies-add-submit") as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe("[添加路由] 提交：真实入参 + 回显后端返回值 + 原样显示后端错误", () => {
+  it("入参是 policy_upsert({policy})：model_matches / use_channels / pin_sticky / selector / failover / priority", async () => {
+    const calls = registerWizardMocks({
+      channels: [
+        channel("ch-1", MODEL, capabilities(1_050_000, true)),
+        channel("ch-2", MODEL, capabilities(1_050_000, true)),
+      ],
+    });
+    await openWizard();
+    await selectModel(MODEL, "ch-1");
+    await toggleChannelCheckbox("ch-1");
+    await toggleChannelCheckbox("ch-2");
+    fireEvent.change(screen.getByTestId("policies-add-id"), { target: { value: "pol-ds" } });
+    fireEvent.change(screen.getByTestId("policies-add-name"), { target: { value: "DS 路由" } });
+    fireEvent.change(screen.getByTestId("policies-add-priority"), { target: { value: "42" } });
+    fireEvent.change(screen.getByTestId("policies-add-sticky"), { target: { value: "ch-2" } });
+    fireEvent.change(screen.getByTestId("policies-add-selector"), {
+      target: { value: "sticky_then_priority" },
+    });
+    const http429Box = screen.getByTestId("policies-add-failover-http429");
+    fireEvent.click(within(http429Box).getByRole("checkbox"));
+    fireEvent.change(screen.getByTestId("policies-add-failover-max"), { target: { value: "5" } });
+    fireEvent.change(screen.getByTestId("policies-add-failover-cooldown"), {
+      target: { value: "30" },
+    });
+    fireEvent.change(screen.getByTestId("policies-add-failover-backoff"), {
+      target: { value: "none" },
+    });
+    fireEvent.click(screen.getByTestId("policies-add-submit"));
+
+    // mutate 是异步的：等成功回显出现再断言"真的调用了、入参是这些"
+    await screen.findByTestId("policies-add-result");
+    expect(calls).toHaveLength(1);
+    const sent = calls[0]!.policy;
+    expect(sent.id).toBe("pol-ds");
+    expect(sent.name).toBe("DS 路由");
+    expect(sent.enabled).toBe(true);
+    expect(sent.priority).toBe(42);
+    expect(sent.match.model_matches).toEqual([MODEL]);
+    expect(sent.match.all).toBe(false);
+    expect(sent.action.use_channels).toEqual(["ch-1", "ch-2"]);
+    expect(sent.action.pin_sticky).toBe("ch-2");
+    expect(sent.action.selector).toBe("sticky_then_priority");
+    expect(sent.action.failover).toEqual({
+      on: ["http429"],
+      max_attempts: 5,
+      cooldown_s: 30,
+      backoff: "none",
+    });
+    expect(sent.action.on_no_candidate).toBe("error");
+  });
+
+  it("成功后显示的是**后端返回的那一条**（不是本地输入）", async () => {
+    registerWizardMocks({
+      channels: [channel("ch-1", MODEL, capabilities(1_050_000, true))],
+      upsert: (call) => ({ ...call.policy, id: "pol-backend", name: "后端存下来的名字" }),
+    });
+    await openWizard();
+    await selectModel(MODEL, "ch-1");
+    await toggleChannelCheckbox("ch-1");
+    fireEvent.change(screen.getByTestId("policies-add-id"), { target: { value: "pol-typed" } });
+    fireEvent.change(screen.getByTestId("policies-add-name"), { target: { value: "我输的名字" } });
+    fireEvent.click(screen.getByTestId("policies-add-submit"));
+
+    const result = await screen.findByTestId("policies-add-result");
+    expect(result.textContent).toContain("pol-backend");
+    expect(result.textContent).toContain("后端存下来的名字");
+  });
+
+  it("后端拒绝时：原样显示 [TA-xxxx] + message + details（不翻译、不改写）", async () => {
+    const details = {
+      model: MODEL,
+      channels: ["ch-1", "ch-2"],
+      differences: [{ field: "vision", values: { "ch-1": true, "ch-2": false } }],
+    };
+    registerWizardMocks({
+      channels: [
+        channel("ch-1", MODEL, capabilities(1_050_000, true)),
+        channel("ch-2", MODEL, capabilities(1_050_000, true)),
+      ],
+      upsert: () => {
+        throw new TokenAgencyError({
+          code: "TA-4001",
+          message: "同一条路由下的线路能力不一致：vision（ch-1=true / ch-2=false）",
+          details,
+        });
+      },
+    });
+    await openWizard();
+    await selectModel(MODEL, "ch-1");
+    await toggleChannelCheckbox("ch-1");
+    await toggleChannelCheckbox("ch-2");
+    fireEvent.change(screen.getByTestId("policies-add-id"), { target: { value: "pol-ds" } });
+    fireEvent.change(screen.getByTestId("policies-add-name"), { target: { value: "DS 路由" } });
+    fireEvent.click(screen.getByTestId("policies-add-submit"));
+
+    const text = await screen.findByTestId("policies-add-error-text");
+    expect(text.textContent).toContain("TA-4001");
+    expect(text.textContent).toContain("vision（ch-1=true / ch-2=false）");
+    const detailsBox = screen.getByTestId("policies-add-error-details");
+    expect(detailsBox.textContent).toContain('"field": "vision"');
   });
 });
