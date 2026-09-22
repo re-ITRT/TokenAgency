@@ -767,9 +767,19 @@ async function step11(wd) {
   await shot(wd, "step11-form-opened");
   await wdPickOption(wd, "policies-add-model", evidence, /ta-e2e-m-add/i);
   await sleep(500);
-  // 多选线路：点第一个可选项（能力一致时保存应当成功；不一致时界面应当禁用提交并给出差异）
-  await wdPickOption(wd, "policies-add-channels", evidence);
-  await sleep(500);
+  // 多选线路：用户的原话是"暴露 deepseek → 指向 1、2"，所以这里**要选两条**才能进到
+  // "能力不一致 → 禁用提交并显示差异"那个分支（界面规则是"选中 ≥2 条才比对"）。
+  // 选不到第二条时如实记录，不假装进过那个分支。
+  const picked = [];
+  for (let i = 0; i < 2; i++) {
+    const before = await wd.pageText();
+    const ok = await wdPickOption(wd, "policies-add-channels", evidence);
+    await sleep(400);
+    if (!ok) break;
+    const after = await wd.pageText();
+    picked.push(after === before ? `第${i + 1}次点选后页面无变化（可能没选上）` : `第${i + 1}次点选有效`);
+  }
+  evidence.push(`线路多选尝试: ${JSON.stringify(picked)}`);
   const mismatchText = await wd.pageText();
   const mismatchShown = /能力不一致|capabilities differ/i.test(mismatchText);
   evidence.push(`是否显示能力不一致提示: ${mismatchShown}`);
