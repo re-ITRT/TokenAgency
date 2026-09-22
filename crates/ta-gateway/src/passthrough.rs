@@ -362,6 +362,16 @@ fn values_of(map: &HeaderMap, name: &HeaderName) -> Vec<String> {
         .collect()
 }
 
+/// 按 `provider.auth` + 明文 secret 生成鉴权头（**与转发路径同一份实现**：内部就是 [`rewrite_auth`]）。
+///
+/// 给命令层的探测用：向导第 1 步只有 provider + key、没有 channel；让调用方自己拼
+/// `authorization` / `x-api-key` 会立刻与转发路径漂移（同一件事两套实现）。
+pub fn auth_headers(provider: Option<&Provider>, secret: &str) -> HeaderMap {
+    let mut out = HeaderMap::new();
+    rewrite_auth(&mut out, provider, secret);
+    out
+}
+
 /// 供 trace / 快照使用的稳定头视图（排序 + 多值展开）。
 pub fn canonical_headers(map: &HeaderMap) -> BTreeMap<String, Vec<String>> {
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();

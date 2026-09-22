@@ -16,9 +16,11 @@ pub mod ingress;
 pub mod meter;
 pub mod passthrough;
 pub mod pipeline;
+pub mod probe;
 pub mod runtime;
 pub mod trace;
 
+pub use probe::{read_body_bounded, ProbeKind, ProbeProviderRequest, ProbeResult, UpstreamProbe};
 pub use runtime::{build_runtime, kernel_dialer, GatewayRuntime, LiveRouter, RuntimeParts};
 
 /// 网关运行时共享状态。**所有子模块通过它取依赖，不各自持有全局变量。**
