@@ -537,6 +537,21 @@ export type ProviderLaneRow = {
   laneReadable: boolean;
 };
 
+/** 五级继承里某一级的名字（`lane_assignments` 的 `source` → 文案 key）。 */
+const LANE_SOURCE_LABEL: Record<string, I18nKey> = {
+  policy: "network.assignments.source.policy",
+  channel: "network.assignments.source.channel",
+  credential: "network.assignments.source.credential",
+  provider: "network.assignments.source.provider",
+  default: "network.assignments.source.default",
+};
+
+/** **后端**说这条结论来自哪一级。词表外的取值原样显示（是后端说的话，不改写）。 */
+export function laneSourceLabel(source: string | undefined): I18nKey | undefined {
+  if (source === undefined) return undefined;
+  return LANE_SOURCE_LABEL[source];
+}
+
 /** 倒排的一行：谁**显式**引用了这条线。 */
 export type ReverseLaneRow = {
   laneId: string;

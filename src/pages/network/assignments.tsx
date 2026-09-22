@@ -5,37 +5,53 @@
  *
  * [04 §8.1] 的线路继承是五级：`policy.use_lane` → `channel.lane` → `credential.lane`
  * → `provider.lane` → `net.default_lane` → 兜底 `direct`。**最终生效线路的解析归后端**
- * （`lane_assignments` / `lane_reverse_lookup`，两者都后端已可用、本页尚未接入）。
+ * （`lane_assignments`）—— 这一页把它的返回原样摆出来（`LaneChainSections`）。
  *
- * 所以这一页**不自己算一个"最终生效线路"**：那是把后端的判定在前端复刻一遍，
- * 必然产生两个真相源，而且漂了不会报错。它只做两件**不需要解析**的事：
+ * 这一页自己**不**算"最终生效线路"：那是把后端的判定在前端复刻一遍，
+ * 必然产生两个真相源，而且漂了不会报错。所以分工是：
  *
- * 1. 把**每一级显式写了什么**列出来（`null` = 未指定 / 继承上一级；键不存在 = 未读取）；
- * 2. 收集**谁显式引用了这条线**的倒排（[04 §8.4] 反向视图的显式部分）。
+ * 1. `AssignmentsBody`（从 `config_get`）列出**每一级显式写了什么**（`null` = 未指定 /
+ *    继承上一级；键不存在 = 未读取），以及显式引用者的倒排；
+ * 2. `LaneChainSections` 显示**后端算的结论**：`lane_assignments`（最终走哪条线 + 来自哪一级）、
+ *    `lane_pick_options`（候选清单）、`lane_reverse_lookup`（"删 lane 之前先看谁在引用它"）。
  *
- * 第 2 条刻意与"实际走了这条线"划清界限：继承下来的使用者不在倒排里，
- * 需要后端的 `lane_reverse_lookup` 才算得准 —— 页面上把这句话原样写出来。
+ * 第 1 与第 2 互补：一个说"配置里写了什么"，一个说"后端据此算出了什么"。
  *
  * ## I2
  *
- * 这一页显示的每一个值都是"改分配"的入口所在处，所以更要紧的是**一个写入口都没有**：
- * 调用的是 `config_get` 一条只读命令（命令面守卫见 `src/app/network.test.tsx`），
- * 更不碰系统代理 / DNS / 路由 / 网卡。
+ * 这一页**一个写入口都没有**：调用的是只读命令（`config_get` / `lane_list` /
+ * `lane_assignments` / `lane_pick_options` / `lane_reverse_lookup`，命令面守卫见
+ * `src/app/network.test.tsx`），更不碰系统代理 / DNS / 路由 / 网卡。
+ * 要改分配请去 `/network`（订阅与线路的写界面在那里）。
  */
 
-import { Box, Button, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
+import {
+  Box,
+  Button,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  Typography,
+} from "@mui/material";
 import { Link } from "react-router-dom";
 
-import { errorMessage, qk, useCommandQuery } from "@/shared/api";
+import { errorMessage, qk, useCommandMutation, useCommandQuery } from "@/shared/api";
 import type { ConfigDoc } from "@/shared/bindings";
 import { PageHeader } from "@/shared/components";
+import { formatLatency } from "@/shared/format";
 import { useTranslation } from "@/shared/i18n";
 import { typography } from "@/theme";
 
 import { Caption, SectionPaper, Unreadable, ZeroSideEffectNotice } from "./index";
 import {
   DASH,
+  laneKindLabel,
+  laneSourceLabel,
   readAssignments,
+  readLane,
   type AssignmentView,
   type LaneRef,
 } from "./model";
@@ -361,6 +377,226 @@ export function AssignmentsBody({ doc, isLoading, error, onRetry }: AssignmentsB
   );
 }
 
+// ================================================================ 后端算的链路（`lane_assignments` 等三条只读命令）
+
+/**
+ * 三节**后端结论**：最终生效线路、候选清单、按 lane 查引用。
+ *
+ * 为什么单独一个组件、由页面挂在 `AssignmentsBody` 之后：`AssignmentsBody` 是**纯 props**
+ * 的展示件（测试直接喂夹具就能测"有数据 / 空 / 读不到"三态）。把三条 query 塞进去会让
+ * 那些测试变成"必须先注册 mock"，反而看不清它在展示什么。**读与写都不在这里**：
+ * 这里只有只读 query + 一个只读 mutation（`lane_reverse_lookup` 是查询命令，不是写）。
+ */
+export function LaneChainSections() {
+  const { t } = useTranslation();
+  const resolved = useCommandQuery("lane_assignments", undefined, qk.laneAssignments);
+  const pickOptions = useCommandQuery("lane_pick_options", undefined, qk.lanePickOptions);
+  const lanes = useCommandQuery("lane_list", undefined, qk.lanes);
+  // `lane_reverse_lookup(lane_id)` 是后端按 lane 现算的倒排；`useCommandMutation` 只是
+  // "点了才发"的那条路径（命令本身只读，命令面守卫把它列在只读白名单里）。
+  const lookup = useCommandMutation("lane_reverse_lookup");
+
+  const laneRows = (lanes.data ?? []).map((item) => readLane(item));
+
+  return (
+    <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+      {/* ① 后端算的最终生效线路（与上面那节"配置里显式写了什么"互补） */}
+      <SectionPaper
+        title={t("network.assignments.chain.title")}
+        hintTestId="network-assignments-chain-hint"
+        hint={<Caption>{t("network.assignments.chain.hint")}</Caption>}
+        testId="network-assignments-resolved"
+      >
+        {resolved.error !== undefined && resolved.error !== null ? (
+          <Typography variant="body1" data-testid="network-assignments-resolved-error" sx={{ color: "error.main" }}>
+            {errorMessage(resolved.error)}
+          </Typography>
+        ) : resolved.data === undefined ? (
+          <Typography variant="body1" sx={{ color: "text.secondary" }}>
+            {resolved.isPending ? t("common.loading") : DASH}
+          </Typography>
+        ) : resolved.data.length === 0 ? (
+          <Typography variant="body1" data-testid="network-assignments-resolved-empty">
+            {t("network.assignments.chain.empty")}
+          </Typography>
+        ) : (
+          <Box sx={{ overflowX: "auto" }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>{t("network.assignments.chain.col.model")}</TableCell>
+                  <TableCell>{t("network.assignments.chain.col.channel")}</TableCell>
+                  <TableCell>{t("network.assignments.chain.col.lane")}</TableCell>
+                  <TableCell>{t("network.assignments.chain.col.source")}</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {resolved.data.map((row) => {
+                  const sourceLabel = laneSourceLabel(row.source);
+                  return (
+                    <TableRow key={`${row.channel_id}:${row.lane_id}`} hover>
+                      <TableCell sx={{ fontFamily: typography.fontMono }}>{row.model_id}</TableCell>
+                      <TableCell sx={{ fontFamily: typography.fontMono }}>{row.channel_id}</TableCell>
+                      <TableCell sx={{ fontFamily: typography.fontMono }}>{row.lane_id}</TableCell>
+                      <TableCell>
+                        {/* 词表外的 source 原样显示（后端说的话，不改写） */}
+                        {sourceLabel === undefined ? row.source : t(sourceLabel)}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </Box>
+        )}
+      </SectionPaper>
+
+      {/* ② 候选清单（`lane_pick_options`） */}
+      <SectionPaper
+        title={t("network.assignments.pick.title")}
+        hintTestId="network-assignments-pick-hint"
+        hint={<Caption>{t("network.assignments.pick.hint")}</Caption>}
+        testId="network-assignments-pick-options"
+      >
+        {pickOptions.error !== undefined && pickOptions.error !== null ? (
+          <Typography variant="body1" data-testid="network-assignments-pick-error" sx={{ color: "error.main" }}>
+            {errorMessage(pickOptions.error)}
+          </Typography>
+        ) : pickOptions.data === undefined ? (
+          <Typography variant="body1" sx={{ color: "text.secondary" }}>
+            {pickOptions.isPending ? t("common.loading") : DASH}
+          </Typography>
+        ) : pickOptions.data.length === 0 ? (
+          <Typography variant="body1" data-testid="network-assignments-pick-empty">
+            {t("network.assignments.pick.empty")}
+          </Typography>
+        ) : (
+          <Stack spacing={4}>
+            {pickOptions.data.map((group) => (
+              <Stack key={group.group} spacing={2}>
+                <Typography variant="h5">{group.group}</Typography>
+                <Stack spacing={1}>
+                  {group.options.map((option) => {
+                    const kindLabel = laneKindLabel(option.kind);
+                    return (
+                      <Stack
+                        key={option.lane_id}
+                        direction="row"
+                        spacing={3}
+                        sx={{ flexWrap: "wrap", alignItems: "baseline" }}
+                      >
+                        <Typography variant="body1">{option.name}</Typography>
+                        <Caption>{kindLabel === undefined ? option.kind : t(kindLabel)}</Caption>
+                        {option.node_count === undefined ? null : (
+                          <Caption>
+                            {t("network.assignments.pick.nodeCount", { n: option.node_count })}
+                          </Caption>
+                        )}
+                        {option.latency_ms === undefined || option.latency_ms === null ? null : (
+                          <Caption>{formatLatency(option.latency_ms)}</Caption>
+                        )}
+                      </Stack>
+                    );
+                  })}
+                </Stack>
+              </Stack>
+            ))}
+          </Stack>
+        )}
+      </SectionPaper>
+
+      {/* ③ 按 lane 查引用（`lane_reverse_lookup`）：删 lane 之前先看这一眼 */}
+      <SectionPaper
+        title={t("network.assignments.reverseLookup.title")}
+        hintTestId="network-assignments-reverse-lookup-hint"
+        hint={<Caption>{t("network.assignments.reverseLookup.hint")}</Caption>}
+        testId="network-assignments-reverse-lookup-section"
+      >
+        {lanes.error !== undefined && lanes.error !== null ? (
+          <Typography variant="body1" data-testid="network-assignments-reverse-lookup-lanes-error" sx={{ color: "error.main" }}>
+            {errorMessage(lanes.error)}
+          </Typography>
+        ) : lanes.data === undefined ? (
+          <Typography variant="body1" sx={{ color: "text.secondary" }}>
+            {lanes.isPending ? t("common.loading") : DASH}
+          </Typography>
+        ) : laneRows.length === 0 ? (
+          <Typography variant="body1" data-testid="network-assignments-reverse-lookup-no-lanes">
+            {t("network.assignments.reverseLookup.noLanes")}
+          </Typography>
+        ) : (
+          <Box sx={{ overflowX: "auto" }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>{t("network.assignments.reverseLookup.col.lane")}</TableCell>
+                  <TableCell align="right">
+                    {t("network.assignments.reverseLookup.button")}
+                  </TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {laneRows.map((row) => (
+                  <TableRow key={row.id} hover>
+                    <TableCell>{row.name === undefined ? row.id : row.name}</TableCell>
+                    <TableCell align="right">
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        data-testid="network-assignments-reverse-lookup"
+                        disabled={lookup.isPending}
+                        onClick={() => {
+                          lookup.reset();
+                          lookup.mutate({ lane_id: row.id });
+                        }}
+                      >
+                        {t("network.assignments.reverseLookup.button")}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Box>
+        )}
+
+        {lookup.error === undefined || lookup.error === null ? null : (
+          <Typography
+            variant="body1"
+            data-testid="network-assignments-reverse-lookup-error"
+            sx={{ color: "error.main", overflowWrap: "anywhere" }}
+          >
+            {errorMessage(lookup.error)}
+          </Typography>
+        )}
+
+        {lookup.data === undefined ? null : (
+          <Typography
+            variant="body1"
+            data-testid="network-assignments-reverse-lookup-result"
+            sx={{ overflowWrap: "anywhere" }}
+          >
+            {`${t("network.assignments.reverseLookup.resultFor", {
+              lane: lookup.variables?.lane_id ?? "",
+            })}：`}
+            {lookup.data.channel_ids.length === 0 && lookup.data.model_ids.length === 0
+              ? t("network.assignments.reverseLookup.none")
+              : `${t("network.assignments.reverseLookup.channels")} ${
+                  lookup.data.channel_ids.length === 0
+                    ? t("network.assignments.reverseLookup.none")
+                    : lookup.data.channel_ids.join(" · ")
+                } · ${t("network.assignments.reverseLookup.models")} ${
+                  lookup.data.model_ids.length === 0
+                    ? t("network.assignments.reverseLookup.none")
+                    : lookup.data.model_ids.join(" · ")
+                }`}
+          </Typography>
+        )}
+      </SectionPaper>
+    </Box>
+  );
+}
+
 // ================================================================ 数据层
 
 export default function AssignmentsPage() {
@@ -392,6 +628,8 @@ export default function AssignmentsPage() {
         error={config.error ?? undefined}
         onRetry={() => void config.refetch()}
       />
+      {/* 后端算的结论（lane_assignments / lane_pick_options / lane_reverse_lookup） */}
+      <LaneChainSections />
     </>
   );
 }

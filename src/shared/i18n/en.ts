@@ -945,8 +945,37 @@ export const en: Record<I18nKey, string> = {
     "Precedence: policy use_lane → channel lane → credential lane → provider lane → global default → direct.",
   "network.assignments.noResolve.title": "This page does not compute an “effective lane”",
   "network.assignments.noResolve.body":
-    "Resolving that inheritance chain is the backend's job (lane_assignments is available in the backend but not wired into this page yet). Computing it again in the frontend would create two sources of truth, and drift would not raise any error — so only what each level explicitly says is listed here.",
+    "Resolving that inheritance chain is the backend's job: the section “Effective lanes computed by the backend” below is exactly what lane_assignments returns. Computing it again in the frontend would create two sources of truth, and drift would not raise any error — so this section only lists what each level explicitly says, and the backend's answer is the verdict.",
   "network.assignments.notSet": "Not set (inherits from the level above)",
+  "network.assignments.chain.title": "Effective lanes computed by the backend",
+  "network.assignments.chain.hint":
+    "This section is what lane_assignments returns: which lane each channel ends up on, and which level of the five-level inheritance produced that verdict. The frontend does not compute it.",
+  "network.assignments.chain.empty": "The backend returned no per-channel resolution.",
+  "network.assignments.chain.col.model": "Model",
+  "network.assignments.chain.col.channel": "Channel",
+  "network.assignments.chain.col.lane": "Effective lane",
+  "network.assignments.chain.col.source": "Resolved by",
+  "network.assignments.source.policy": "policy level",
+  "network.assignments.source.channel": "channel level",
+  "network.assignments.source.credential": "credential level",
+  "network.assignments.source.provider": "provider level",
+  "network.assignments.source.default": "global default",
+  "network.assignments.pick.title": "Candidate lanes (the backend's list)",
+  "network.assignments.pick.hint":
+    "lane_pick_options is the candidate list grouped by subscription: pick lanes from it instead of assembling a list in the frontend.",
+  "network.assignments.pick.empty": "The backend returned no candidate lanes.",
+  "network.assignments.pick.nodeCount": "nodes {{n}}",
+  "network.assignments.reverseLookup.title": "Who references this lane (backend reverse lookup)",
+  "network.assignments.reverseLookup.hint":
+    "lane_reverse_lookup takes a lane id and returns channels and models. Look at this before deleting a lane: the backend refuses to delete a lane that is referenced.",
+  "network.assignments.reverseLookup.button": "Look up references",
+  "network.assignments.reverseLookup.col.lane": "Lane",
+  "network.assignments.reverseLookup.noLanes":
+    "The lane list (lane_list) is unreadable, so there is nothing to look up.",
+  "network.assignments.reverseLookup.resultFor": "Backend references ({{lane}})",
+  "network.assignments.reverseLookup.channels": "channels",
+  "network.assignments.reverseLookup.models": "models",
+  "network.assignments.reverseLookup.none": "No channel or model explicitly references it",
   "network.assignments.unread.title": "config_get did not return this data ({{field}})",
   "network.assignments.unread.body":
     "So it shows “Not read” here rather than being treated as “empty in the config”.",

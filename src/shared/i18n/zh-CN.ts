@@ -893,8 +893,37 @@ export const zhCN = {
     "优先顺序：策略级 use_lane → 通道级 lane → 套餐级 lane → 服务商级 lane → 全局默认 → 直连。",
   "network.assignments.noResolve.title": "本页不自己算「最终生效线路」",
   "network.assignments.noResolve.body":
-    "解析这条继承链是后端的职责（lane_assignments 后端已可用、本页尚未接入）。前端再算一遍就会有两个真相源，而且漂了不会报错 —— 所以这里只列出每一级显式写了什么。",
+    "解析这条继承链是后端的职责：下面「后端算的最终生效线路」就是 lane_assignments 的返回。前端再算一遍就会有两个真相源，而且漂了不会报错 —— 所以这一节只列出每一级**显式**写了什么，结论以后端那份为准。",
   "network.assignments.notSet": "未指定（继承上一级）",
+  "network.assignments.chain.title": "后端算的最终生效线路",
+  "network.assignments.chain.hint":
+    "这一节是 lane_assignments 的返回：每条通道最终走哪条线，以及这个结论来自五级继承的哪一级。前端不自己算。",
+  "network.assignments.chain.empty": "后端没有返回任何通道级解析结果。",
+  "network.assignments.chain.col.model": "模型",
+  "network.assignments.chain.col.channel": "通道",
+  "network.assignments.chain.col.lane": "最终线路",
+  "network.assignments.chain.col.source": "来自哪一级",
+  "network.assignments.source.policy": "策略级",
+  "network.assignments.source.channel": "通道级",
+  "network.assignments.source.credential": "套餐级",
+  "network.assignments.source.provider": "服务商级",
+  "network.assignments.source.default": "全局默认",
+  "network.assignments.pick.title": "候选线路（后端给的清单）",
+  "network.assignments.pick.hint":
+    "lane_pick_options 是按订阅分组的候选清单：通道 / 策略要选线路时用它，而不是前端自己拼一份。",
+  "network.assignments.pick.empty": "后端没有返回任何候选线路。",
+  "network.assignments.pick.nodeCount": "节点数 {{n}}",
+  "network.assignments.reverseLookup.title": "这条线被谁引用（后端倒排）",
+  "network.assignments.reverseLookup.hint":
+    "lane_reverse_lookup 按 lane id 查通道与模型。删一条线之前先看这一眼：被引用的线后端会拒绝删除。",
+  "network.assignments.reverseLookup.button": "查引用",
+  "network.assignments.reverseLookup.col.lane": "线路",
+  "network.assignments.reverseLookup.noLanes":
+    "读不到线路清单（lane_list），所以这里没有可查的对象。",
+  "network.assignments.reverseLookup.resultFor": "后端的引用（{{lane}}）",
+  "network.assignments.reverseLookup.channels": "通道",
+  "network.assignments.reverseLookup.models": "模型",
+  "network.assignments.reverseLookup.none": "没有任何通道或模型显式引用它",
   "network.assignments.unread.title": "config_get 没有给出这段数据（{{field}}）",
   "network.assignments.unread.body": "所以这里显示「未读取」，不把它当成「配置里是空的」。",
 

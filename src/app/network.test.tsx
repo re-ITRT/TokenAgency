@@ -403,8 +403,11 @@ const ALLOWED = new Set([...READ_ONLY_ALLOWED, ...CONFIG_WRITES_ALLOWED]);
  */
 const DIRECTLY_REFERENCED = [
   "config_get",
+  "lane_assignments",
   "lane_delete",
   "lane_list",
+  "lane_pick_options",
+  "lane_reverse_lookup",
   "lane_set_node",
   "lane_upsert",
   "subscription_delete",
@@ -1330,5 +1333,81 @@ describe("⑫ /network 线路写界面：lane_upsert / lane_delete / lane_set_no
     const error = await screen.findByTestId("network-lanes-write-error");
     expect(error.textContent).toContain("TA-5001");
     expect(error.textContent).toContain("net.default_lane");
+  });
+});
+
+// ================================================================ ⑬ /network/assignments：后端算的五级链路
+//
+// 这一页**刻意不自己算**"最终生效线路"（算两遍必然与后端漂）。所以它必须把后端算的那份
+// 摆出来：`lane_assignments`（最终走哪条线 + 来自哪一级）、`lane_pick_options`（候选）、
+// `lane_reverse_lookup`（"删 lane 之前先看谁在引用它"）。这一组测的就是这三个入口真的在页面上。
+
+describe("⑬ /network/assignments：显示后端算的五级链路，而不是前端自己推一遍", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("lane_assignments：每条通道的最终线路与来源级别都画出来", async () => {
+    registerMock("lane_assignments", () => [
+      { model_id: "m-backend", channel_id: "ch-backend", lane_id: "lane-backend", source: "policy" as const },
+    ]);
+
+    renderPage(<AssignmentsPage />);
+    const table = within(await screen.findByTestId("network-assignments-resolved"));
+    expect(await table.findByText("ch-backend")).toBeTruthy();
+    expect(table.getByText("lane-backend")).toBeTruthy();
+    // source 也翻成用户能读的级别名，而不是把契约值直接印出来
+    expect(table.getByText("策略级")).toBeTruthy();
+  });
+
+  it("lane_pick_options：候选线路按订阅分组列出（含每组的节点数）", async () => {
+    registerMock("lane_pick_options", () => [
+      {
+        group: "后端分组",
+        options: [
+          { lane_id: "lane-a", name: "线路甲", kind: "direct" as const },
+          { lane_id: "lane-b", name: "线路乙", kind: "subscription_group" as const, node_count: 7 },
+        ],
+      },
+    ]);
+
+    renderPage(<AssignmentsPage />);
+    const list = within(await screen.findByTestId("network-assignments-pick-options"));
+    expect(await list.findByText("后端分组")).toBeTruthy();
+    expect(list.getByText("线路甲")).toBeTruthy();
+    expect(list.getByText("线路乙")).toBeTruthy();
+    expect(list.getByText("节点数 7")).toBeTruthy();
+  });
+
+  it("lane_reverse_lookup：按 lane id 查引用，入参是 lane_id，结果显示后端返回的通道与模型", async () => {
+    registerMock("lane_list", () => [contractLane()]);
+    const lookup = recordingMock({ channel_ids: ["ch-1", "ch-2"], model_ids: ["m-1"] });
+    registerMock("lane_reverse_lookup", lookup.handler);
+
+    renderPage(<AssignmentsPage />);
+    const button = (await screen.findAllByTestId("network-assignments-reverse-lookup"))[0]!;
+    fireEvent.click(button);
+
+    await waitFor(() => expect(lookup.calls).toHaveLength(1));
+    expect(lookup.calls[0]).toEqual({ lane_id: "lane-jp" });
+
+    const result = await screen.findByTestId("network-assignments-reverse-lookup-result");
+    expect(result.textContent).toContain("ch-1");
+    expect(result.textContent).toContain("ch-2");
+    expect(result.textContent).toContain("m-1");
+  });
+
+  it("查引用失败：TA 码原样显示（不吞错）", async () => {
+    registerMock("lane_list", () => [contractLane()]);
+    registerMock("lane_reverse_lookup", () => {
+      throw new TokenAgencyError({ code: "TA-1004", message: "请求格式错误" });
+    });
+
+    renderPage(<AssignmentsPage />);
+    fireEvent.click((await screen.findAllByTestId("network-assignments-reverse-lookup"))[0]!);
+
+    expect(
+      (await screen.findByTestId("network-assignments-reverse-lookup-error")).textContent,
+    ).toContain("TA-1004");
   });
 });
