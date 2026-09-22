@@ -1364,6 +1364,13 @@ export const zhCN = {
   "network.sub.traffic.expire": "到期：{{date}}",
   "wizard.invalidNumber": "必须是数字（可留空）",
   "channels.add.noCredentials": "这个服务商还没有凭据 —— 先去「服务商 / 密钥」加一条",
+  "credentials.add.id": "ID",
+  "credentials.add.label": "名称",
+  "credentials.add.provider": "服务商",
+  "credentials.add.quota": "额度（可留空）",
+  "credentials.add.quotaLimit": "额度上限",
+  "credentials.add.currency": "币种",
+  "credentials.add.window": "额度窗口",
 } as const;
 
 /** 全部 i18n key。新增 key 必须同时补 `en.ts`。 */

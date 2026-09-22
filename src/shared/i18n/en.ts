@@ -1440,4 +1440,11 @@ export const en: Record<I18nKey, string> = {
   "network.sub.traffic.expire": "Expires: {{date}}",
   "wizard.invalidNumber": "Must be a number (may be left empty)",
   "channels.add.noCredentials": "This provider has no credential yet — add one under Providers / Keys",
+  "credentials.add.id": "ID",
+  "credentials.add.label": "Label",
+  "credentials.add.provider": "Provider",
+  "credentials.add.quota": "Quota (optional)",
+  "credentials.add.quotaLimit": "Quota limit",
+  "credentials.add.currency": "Currency",
+  "credentials.add.window": "Quota window",
 };
