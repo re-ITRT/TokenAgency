@@ -86,9 +86,19 @@ fn not_found(what: &str, id: &str) -> IpcError {
 /// "被引用，禁止删除" → `TaError::Referenced`（TA-5002，HTTP 409）。
 ///
 /// `refs` 是**人话清单**（"通道 ch-a、定价条目 #2"），前端直接显示。
-fn referenced(what: &str, refs: &[String]) -> IpcError {
+///
+/// `force_capable` = 调用方**真的有** `force` 参数。只有它有资格在消息里承诺
+/// "要连带删除请传 force=true"：`channel_delete` / `group_delete` 没有这个参数，
+/// 对它们说这句话就是**撒谎**（第 73 轮真机 E2E 抓到的原文里就带着这句），
+/// 所以这类调用方只报"先解除引用"。
+fn referenced(what: &str, refs: &[String], force_capable: bool) -> IpcError {
+    let hint = if force_capable {
+        "；要连带删除请传 force=true"
+    } else {
+        "；要先解除这些引用再删"
+    };
     IpcError::from(TaError::Referenced {
-        what: format!("{what}（引用它的地方：{}；要连带删除请传 force=true）", refs.join("、")),
+        what: format!("{what}（引用它的地方：{}{hint}）", refs.join("、")),
     })
 }
 
@@ -261,7 +271,7 @@ pub async fn delete_provider(state: &AppState, id: &str, force: bool) -> IpcResu
             refs.push("gateway.fallback_provider".to_string());
         }
         if !refs.is_empty() {
-            return Err(referenced("服务商", &refs));
+            return Err(referenced("服务商", &refs, true));
         }
     }
 
@@ -353,7 +363,7 @@ pub async fn delete_credential(state: &AppState, id: &str, force: bool) -> IpcRe
         }
         refs.extend(pricing_refs);
         if !refs.is_empty() {
-            return Err(referenced("凭据", &refs));
+            return Err(referenced("凭据", &refs, true));
         }
     }
 
@@ -559,7 +569,7 @@ pub async fn delete_channel(state: &AppState, id: &str) -> IpcResult<()> {
         }
     }
     if !blocking.is_empty() {
-        return Err(referenced("通道", &blocking));
+        return Err(referenced("通道", &blocking, false));
     }
 
     let removed: BTreeSet<String> = [id.to_string()].into_iter().collect();
@@ -867,7 +877,7 @@ pub async fn delete_group(state: &AppState, id: &str) -> IpcResult<()> {
         .map(|p| format!("策略 {} 的 action.use_group", p.id))
         .collect();
     if !users.is_empty() {
-        return Err(referenced("通道组", &users));
+        return Err(referenced("通道组", &users, false));
     }
 
     doc.channel_groups.retain(|g| g.id.as_str() != id);
@@ -1014,7 +1024,7 @@ pub async fn delete_model(state: &AppState, id: &str, force: bool) -> IpcResult<
             refs.push(format!("{} 个通道组（{}）", group_ids.len(), group_ids.join(", ")));
         }
         if !refs.is_empty() {
-            return Err(referenced("模型", &refs));
+            return Err(referenced("模型", &refs, true));
         }
     }
 
@@ -1897,6 +1907,29 @@ mod tests {
         assert_eq!(after.channels[0].lane, None, "通道的 lane 也不许被写坏");
     }
 
+    /// 拒绝消息里**只说真话**：`force=true` 只能出现在**真有** `force` 参数的命令上。
+    ///
+    /// 第 73 轮真机 E2E 抓到 `channel_delete` 的拒绝原文里带着 "要连带删除请传 force=true"，
+    /// 而它根本没有这个参数 —— 用户照着做只会再撞一次墙。
+    #[test]
+    fn referenced_message_only_promises_force_where_a_force_parameter_exists() {
+        let refs = vec!["策略 pol-1 的 action.use_channels".to_string()];
+
+        let with_force = referenced("凭据", &refs, true);
+        assert_eq!(with_force.code, "TA-5002");
+        assert!(with_force.message.contains("force=true"), "{}", with_force.message);
+
+        let without_force = referenced("通道", &refs, false);
+        assert_eq!(without_force.code, "TA-5002");
+        assert!(!without_force.message.contains("force"), "{}", without_force.message);
+        assert!(without_force.message.contains("先解除"), "{}", without_force.message);
+        assert!(
+            without_force.message.contains("策略 pol-1 的 action.use_channels"),
+            "引用清单一个字都不能丢：{}",
+            without_force.message
+        );
+    }
+
     #[tokio::test]
     async fn channel_delete_prunes_dead_refs_but_refuses_when_it_changes_routing() {
         let state = seeded("ch-del").await;
@@ -1908,6 +1941,13 @@ mod tests {
         let err = delete_channel(&state, "ch-a").await.expect_err("点名选中的通道不许删");
         assert_eq!(err.code, "TA-5002");
         assert!(err.message.contains("use_channels"), "{}", err.message);
+        // `channel_delete` **没有** `force` 参数：谁在拒绝消息里承诺 force=true 谁就是在撒谎。
+        assert!(
+            !err.message.contains("force"),
+            "通道删除没有 force 参数，不许承诺级联：{}",
+            err.message
+        );
+        assert!(err.message.contains("先解除"), "要给出真能走通的路：{}", err.message);
         assert!(state.doc().channels.iter().any(|c| c.id.as_str() == "ch-a"));
 
         // ② 摘掉点名 → 但策略还通过"只剩 ch-a 一个成员"的组依赖它 → 仍然拒绝
@@ -1919,6 +1959,7 @@ mod tests {
         let err = delete_channel(&state, "ch-a").await.expect_err("组只剩它 → 不许删");
         assert_eq!(err.code, "TA-5002");
         assert!(err.message.contains("g-a"), "{}", err.message);
+        assert!(!err.message.contains("force"), "通道删除没有 force 参数：{}", err.message);
 
         // ③ 策略不再依赖组，只在 exclude_channels 里点名（死引用）→ 删得掉，且排除项被顺手摘掉
         rewrite_doc(&state, |d| {
@@ -2516,6 +2557,11 @@ mod tests {
         // 有通道引用 → 拒绝，且**配置没被动过**
         let err = delete_credential(&state, "c-a", false).await.expect_err("有引用必须拒绝");
         assert_eq!(err.code, "TA-5002");
+        assert!(
+            err.message.contains("force=true"),
+            "凭据删除**真有** force 参数，就该在拒绝时说清怎么级联：{}",
+            err.message
+        );
         assert!(cred_exists(&state, "c-a"), "被拒绝时不许改配置");
         assert_eq!(state.config.load().await.expect("load").channels.len(), 1, "库里也不许变");
 
@@ -2543,6 +2589,7 @@ mod tests {
         assert_eq!(err.code, "TA-5002");
         assert!(err.message.contains("凭据"), "报错要说清被什么引用：{}", err.message);
         assert!(err.message.contains("通道"));
+        assert!(err.message.contains("force=true"), "服务商删除有 force：{}", err.message);
 
         delete_provider(&state, "p-a", true).await.expect("force 级联");
         let after = state.config.load().await.expect("load");
