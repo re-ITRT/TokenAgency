@@ -22,8 +22,10 @@
  * 所以"拼错成契约里没有的名字"它抓不到 —— 那类由 tsc 抓（`invokeCommand` 的入参是
  * `CommandName` 联合类型，拼错即编译错）。
  *
- * **它今天应当是红的**：`src/app/StatusBar.tsx` 引用了 `app_pause_gateway` /
- * `app_resume_gateway`，而这两条尚未注册（主管已追加给 E3 的 task-13）。E3 落地后自动转绿。
+ * **它现在应当是绿的**：`StatusBar.tsx` 引用的 `app_pause_gateway` / `app_resume_gateway`
+ * 已在 `collect_commands!` 里注册（task-13 已落地），`net::` 那一整组
+ * （`subscription_*` / `lane_*` / `kernel_*`）也已登记。
+ * 若它变红，先看报出来的 file:line 是不是自己新引用了未注册命令 —— 不要靠 mock 让它"看起来能用"。
  */
 
 import { readFileSync } from "node:fs";

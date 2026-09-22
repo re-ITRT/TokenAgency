@@ -26,6 +26,7 @@ import {
   PAGE_SIZE,
   attemptsTotalMs,
   buildLogQuery,
+  exportOutcome,
   filterFingerprint,
   isErrorCodeShape,
   logQueryArgs,
@@ -178,8 +179,8 @@ describe("[C2] log_query 的查询形状（契约与 Rust 不一致处，两种�
     // Rust 侧字段（ta-store trace_store.rs:189-216）
     expect(wire["from_ms"]).toBeLessThan(wire["to_ms"] as number);
     expect(wire["to_ms"]).toBe(1_770_000_000_000);
-    // 冻结契约的字段（bindings.ts:848）
-    expect(wire["range"]).toEqual({ preset: "today" });
+    // 冻结契约的字段（bindings.ts:848）；线上值 = Rust `TimeRange` 的裸 snake_case 变体名
+    expect(wire["range"]).toBe("today");
     expect(wire["limit"]).toBe(PAGE_SIZE);
   });
 
@@ -639,5 +640,40 @@ describe("文案里不留未替换的占位符", () => {
   it("渲染出来的正文里不该出现双花括号占位符", () => {
     renderBody({ query: { ...makeProps().query, rows: [readLogRow(contractRow())], total: 1 } });
     expect(document.body.textContent ?? "").not.toMatch(/\{\{\w+\}\}/);
+  });
+});
+
+// ================================================================ ⑨ 日志导出：两种后端形态都要如实显示
+
+describe("[task-23] log_export 的返回形态：A1（回执路径）与现状（void）都要能如实显示", () => {
+  it("后端回执了 { path, bytes } → written，用**后端给的**路径与字节数", () => {
+    const out = exportOutcome(
+      { path: "C:\\Users\\me\\AppData\\Local\\TokenAgency\\logs\\export-1.csv", bytes: 2048 },
+      "C:\\填错的路径.csv",
+    );
+    expect(out.kind).toBe("written");
+    // 必须是后端那个路径，而不是我们传进去的 —— 否则"真实落盘路径"就成了自述
+    expect(out.path).toBe("C:\\Users\\me\\AppData\\Local\\TokenAgency\\logs\\export-1.csv");
+    expect(out.kind === "written" ? out.bytes : undefined).toBe(2048);
+  });
+
+  it("后端仍返回 void（现状）→ requested，只声称「已请求」，不声称已写入", () => {
+    for (const result of [undefined, null, {}, []]) {
+      const out = exportOutcome(result, "C:\\logs\\export.csv");
+      expect(out.kind, `result=${JSON.stringify(result)}`).toBe("requested");
+      expect(out.path).toBe("C:\\logs\\export.csv");
+    }
+  });
+
+  it("回执对象但没带 path → 退化成 requested（不许拿我们自己的路径冒充后端确认）", () => {
+    const out = exportOutcome({ bytes: 12 }, "C:\\logs\\export.csv");
+    expect(out.kind).toBe("requested");
+    expect(out.path).toBe("C:\\logs\\export.csv");
+  });
+
+  it("bytes 不是数字时不硬编一个 0（宁可只报路径）", () => {
+    const out = exportOutcome({ path: "C:\\a.csv", bytes: "2048" }, "C:\\b.csv");
+    expect(out.kind).toBe("written");
+    expect(out.kind === "written" ? out.bytes : "x").toBeUndefined();
   });
 });

@@ -20,7 +20,7 @@
  *
  * 数据流（哪个门面 → 哪个命令）：
  * - `useCommandQuery("usage_query", usageQueryArgs(buildUsageQuery(applied)), qk.usage(fp))` → 明细表与图表
- * - `useCommandQuery("usage_dashboard", {range:{preset:"today"}}, qk.dashboard("today"))`      → 概览卡与今日趋势
+ * - `useCommandQuery("usage_dashboard", {range:"today"}, qk.dashboard("today"))`           → 概览卡与今日趋势
  * - `useCommandQuery("usage_token_kinds", undefined, qk.usageTokenKinds)`                      → 指标候选
  * - `useCommandQuery("usage_request_stream_snapshot", {limit}, qk.usage("recent:…"))`          → 最近请求
  * - `useCommandQuery("pricing_unpriced_models", undefined, qk.unpricedModels)`                 → 未定价模型
@@ -82,13 +82,13 @@ const QUERY_LIMIT = 200;
 const DASH = "—";
 
 /**
- * 契约里的范围预设 → **Rust `TimeRange` 的变体名**（`crates/ta-core/src/clock.rs:77-88`，
- * snake_case：`today` / `last7d` / `last30d` / `this_month` / `all`）。
+ * 页面自己的范围词（`7d` / `30d` / `month`，只用于 i18n 与 query key）→
+ * **`TimeRange` 的线上值**（`crates/ta-core/src/clock.rs:77-88` 的裸 snake_case 变体名）。
  *
- * 契约（`bindings.ts` 的 `TimeRange`）写的是 `7d` / `30d` / `month`，**与 Rust 不一致** ——
- * 按契约发 `{preset:"7d"}` 真机上会被 serde 判成未知变体。这里发 Rust 认的名字。
+ * 这是**界面词汇与线上词汇之间唯一的翻译点**：翻译后就是 `TimeRange` 本身，
+ * 不再需要 `as unknown as` 之类的断言（断言正是上一版 `{preset:…}` 能溜过去的原因）。
  */
-const RUST_PRESET: Record<UsageRange, string> = {
+const RANGE_TO_TIME_RANGE: Record<UsageRange, TimeRange> = {
   today: "today",
   "7d": "last7d",
   "30d": "last30d",
@@ -181,9 +181,9 @@ export function costFilterFingerprint(filter: CostFilter): string {
   ].join("|");
 }
 
-/** 契约里的 `TimeRange` → 发出去的（Rust 认的）预设名。 */
+/** 界面范围词 → 发出去的 `TimeRange`（线上形状；`explicit` 走 `{explicit:{from_ms,to_ms}}`）。 */
 function rustRange(preset: UsageRange): TimeRange {
-  return { preset: RUST_PRESET[preset] } as unknown as TimeRange;
+  return RANGE_TO_TIME_RANGE[preset];
 }
 
 /**
@@ -1165,7 +1165,7 @@ export default function CostPage(): ReactElement {
   const tokenKinds = useCommandQuery("usage_token_kinds", undefined, qk.usageTokenKinds);
   const dashboard = useCommandQuery(
     "usage_dashboard",
-    { range: { preset: "today" } },
+    { range: rustRange("today") },
     qk.dashboard("today"),
   );
   const unpriced = useCommandQuery("pricing_unpriced_models", undefined, qk.unpricedModels);

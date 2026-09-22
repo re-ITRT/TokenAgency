@@ -302,6 +302,30 @@ export type Provider = {
   enabled: boolean;
 };
 
+/**
+ * `provider_upsert` 的入参形态：**只需 4 个必填字段**，其余省略由 Rust 的 `#[serde(default)]` 补默认。
+ *
+ * 与 [`Provider`] 的唯一区别 = 这些字段在 Rust 侧带 `#[serde(default)]`
+ * （`crates/ta-core/src/domain/mod.rs:693` 起）：`auth` / `lane` / `headers` /
+ * `on_header_conflict` / `passthrough` / `timeout` / `tls` / `model_prefix` / `enabled`。
+ * `auth` 只在真的填了 API Key 时才带；`AuthConfig` 自身所有字段也有默认值
+ * （`scheme` 默认 Bearer，见同文件的 `impl Default for AuthConfig`）。
+ *
+ * **不硬编默认值、也不复制模板**：默认值的唯一真相源是 Rust 的 `Default`。
+ * 漏同步会被 `src/app/serdeDefault.guard.test.ts` 机械拦下（契约比线上严/松都红）。
+ */
+export type ProviderInput = Pick<Provider, "id" | "name" | "protocol" | "base_url"> & {
+  auth?: AuthConfig;
+  lane?: LaneId | null;
+  headers?: Record<string, string>;
+  on_header_conflict?: HeaderConflict;
+  passthrough?: ProviderPassthrough;
+  timeout?: TimeoutConfig;
+  tls?: TlsConfig;
+  model_prefix?: string | null;
+  enabled?: boolean;
+};
+
 export type QuotaConfig = {
   metric: QuotaMetric;
   limit?: number | null;
@@ -764,7 +788,30 @@ export type OnboardingInput = {
 
 // ================================================================ 用量 / 成本 / 日志（docs/10 §2.4、§2）
 
-export type TimeRange = { from: number; to: number } | { preset: "today" | "7d" | "30d" | "month" };
+/**
+ * 时间范围（查询用）。
+ *
+ * **线上形状以 Rust 实现为准**：`ta_core::clock::TimeRange`
+ * （`crates/ta-core/src/clock.rs:77-88`）是 `#[serde(rename_all = "snake_case")]` 的
+ * **外部标记枚举**（externally tagged），所以合法的 JSON 是：
+ *
+ * - 预设：**裸字符串** `"today"` / `"last7d"` / `"last30d"` / `"this_month"` / `"all"`
+ * - 显式区间：`{ "explicit": { "from_ms": …, "to_ms": … } }`（左闭右开，Unix 毫秒）
+ *
+ * **不合法**（真机上 serde 直接报错，实测见 `src/app/argsShape.guard.test.ts` 的文件头）：
+ * - `{ "preset": "last7d" }` → `unknown variant \`preset\`` —— 枚举里**没有 `preset` 这个变体**
+ * - `{ "from": …, "to": … }` → `invalid value: map, expected map with a single key`
+ *
+ * 这两个错形状都曾经写在本文件里，且浏览器里因为 `mock.ts` 忽略参数而"看起来能用"。
+ * 现在由 `src/app/argsShape.guard.test.ts` 对着 `clock.rs` 机械比对，防止再次漂移。
+ */
+export type TimeRange =
+  | "today"
+  | "last7d"
+  | "last30d"
+  | "this_month"
+  | "all"
+  | { explicit: { from_ms: number; to_ms: number } };
 
 export type Num = { value: number; prev?: number };
 
@@ -1017,7 +1064,7 @@ export type CommandMap = {
   // ---- provider
   provider_list: { args: undefined; result: ProviderView[] };
   provider_get: { args: { id: ProviderId }; result: ProviderView };
-  provider_upsert: { args: { provider: Provider }; result: Provider };
+  provider_upsert: { args: { provider: ProviderInput }; result: Provider };
   provider_delete: { args: { id: ProviderId; force: boolean }; result: void };
   provider_test: { args: { id: ProviderId; model?: string }; result: ProbeResult };
   provider_echo: {

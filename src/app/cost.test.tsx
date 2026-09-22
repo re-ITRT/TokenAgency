@@ -313,21 +313,12 @@ describe("图表的输入只来自后端（不插点、不补 0）", () => {
 // ================================================================ ③ 查询形状（两套参数名）
 
 describe("usage_query 的查询形状（契约与 Rust 不一致处，两种都发）", () => {
-  it("时间范围发 Rust 的预设名（7d → last7d），不是契约里的 7d", () => {
-    const q = buildUsageQuery({ ...DEFAULT_COST_FILTER, range: "7d" }) as unknown as {
-      range: { preset: string };
-    };
-    expect(q.range).toEqual({ preset: "last7d" });
-    expect(
-      (buildUsageQuery({ ...DEFAULT_COST_FILTER, range: "month" }) as unknown as {
-        range: { preset: string };
-      }).range,
-    ).toEqual({ preset: "this_month" });
-    expect(
-      (buildUsageQuery({ ...DEFAULT_COST_FILTER, range: "today" }) as unknown as {
-        range: { preset: string };
-      }).range,
-    ).toEqual({ preset: "today" });
+  it("时间范围发 Rust 的线上值（7d → last7d，裸字符串），不是旧契约里的 {preset:7d}", () => {
+    const q = buildUsageQuery({ ...DEFAULT_COST_FILTER, range: "7d" });
+    expect(q.range).toBe("last7d");
+    expect(buildUsageQuery({ ...DEFAULT_COST_FILTER, range: "month" }).range).toBe("this_month");
+    expect(buildUsageQuery({ ...DEFAULT_COST_FILTER, range: "30d" }).range).toBe("last30d");
+    expect(buildUsageQuery({ ...DEFAULT_COST_FILTER, range: "today" }).range).toBe("today");
   });
 
   it("参数名两写：Rust 取 q、契约写 query（少一个就会在真机上失败）", () => {

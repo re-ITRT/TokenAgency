@@ -384,7 +384,10 @@ export type LogQueryArgs = { query: LogQuery; q: Record<string, unknown> };
 export function recentLogQueryArgs(limit: number, nowMs: number = Date.now()): LogQueryArgs {
   const fromMs = nowMs - 7 * DAY_MS;
   const query = {
-    range: { preset: "7d" as const },
+    // `range` 是契约字段（`LogQuery.range: TimeRange`），线上值必须是
+    // `crates/ta-core/src/clock.rs` 的裸 snake_case 变体名 —— 不是 `{preset:…}`。
+    // 真机生效靠下面的 `q.from_ms` / `q.to_ms`（Rust 的 `LogQuery` 没有 `range` 字段）。
+    range: "last7d" as const,
     group_by: [],
     metrics: [],
     format: "table" as const,

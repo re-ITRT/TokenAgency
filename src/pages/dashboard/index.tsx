@@ -11,8 +11,7 @@
 
 import { Box, Button, Paper, Stack, Tooltip, Typography } from "@mui/material";
 import { useTranslation } from "@/shared/i18n";
-import { useState, type ReactNode } from "react";
-
+import { useMemo, useState, type ReactNode } from "react";
 import {
   errorCode,
   errorMessage,
@@ -20,7 +19,7 @@ import {
   useAppStatus,
   useCommandQuery,
 } from "@/shared/api";
-import type { AppStatus, DashboardData } from "@/shared/bindings";
+import type { AppStatus, CommandArgs, DashboardData, TimeRange } from "@/shared/bindings";
 import { formatMoney, formatPercent } from "@/shared/format";
 import {
   KernelStateDot,
@@ -35,6 +34,20 @@ import { radius } from "@/theme";
 function ratio(now: number, prev: number | undefined): number | undefined {
   if (prev === undefined || prev === 0) return undefined;
   return (now - prev) / prev;
+}
+
+/**
+ * 看板用的时间范围。目前固定"今天"，但形状必须是 `TimeRange` 的线上值
+ * （**裸字符串**）—— 曾经写成 `{preset:"today"}`，真机上 `usage_dashboard`
+ * 会被 serde 判成未知变体直接失败（见 `src/app/argsShape.guard.test.ts`）。
+ */
+export const DASHBOARD_RANGE = "today";
+
+/** `usage_dashboard` 的入参（抽成纯函数，好让形状守卫直接调用真货而不是复述）。 */
+export function dashboardRangeArgs(
+  range: TimeRange = DASHBOARD_RANGE,
+): CommandArgs<"usage_dashboard"> {
+  return { range };
 }
 
 /** 「可用性」一行：只陈述事实，事实拿不到就写"未知"。 */
@@ -281,13 +294,13 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
 
 export default function DashboardPage() {
   const { t } = useTranslation();
-  const [range] = useState<"today">("today");
+  // 显式 `"today"`（不给 `useState` 推断的余地）：`useState("today")` 会被推断成 `string`，
+  // 那样 `range` 就不再是 `TimeRange` 了 —— 形状守卫要的正是"类型上就发不出错的形状"。
+  const [range] = useState<"today">(DASHBOARD_RANGE);
   const status = useAppStatus({ refetchInterval: 5_000 });
-  const dashboard = useCommandQuery(
-    "usage_dashboard",
-    { range: { preset: range } },
-    qk.dashboard(range),
-  );
+  // 入参引用要稳定，否则每次渲染都换新对象 → react-query 反复重查
+  const args = useMemo(() => dashboardRangeArgs(range), [range]);
+  const dashboard = useCommandQuery("usage_dashboard", args, qk.dashboard(range));
 
   return (
     <>

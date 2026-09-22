@@ -12,7 +12,7 @@
  * | 项 | 冻结契约（`src/shared/bindings.ts`，本任务不许改） | Rust 实现（权威） |
  * |---|---|---|
  * | `log_query` 参数名 | `{ query }`（bindings.ts:1127） | `q`（`src-tauri/src/commands/log.rs:17-20`） |
- * | 时间窗 | `LogQuery.range: TimeRange`（bindings.ts:848/767） | `LogQuery.from_ms` / `to_ms`（`crates/ta-store/src/trace_store.rs:189-216`） |
+ * | 时间窗 | `LogQuery.range: TimeRange`（bindings.ts:848/767，线上值 = 裸 snake_case 字符串） | `LogQuery.from_ms` / `to_ms`（`crates/ta-store/src/trace_store.rs:189-216`） |
  * | 行字段 | `TraceRow.{channel_id, credential_id, lane_id, node, upstream_model, latency_ms, total_tokens, cost, error_type}`（bindings.ts:859-877） | `TraceRow.{client, protocol_in, protocol_out, stream, policy_id, group_id, chosen_channel, attempts: u32, total_ms, ttfb_ms, tokens, error, mode, has_body, body_bytes}`（trace_store.rs:130-158） |
  *
  * 所以本页：
@@ -51,9 +51,26 @@ export const PAGE_SIZE = 100;
  */
 export const SEARCH_SCAN_ROWS = 2_000;
 
-/** 时间范围预设。取值与契约 `TimeRange` 的 preset（`today | 7d | 30d | month`）一致。 */
+/** 时间范围预设（**界面词汇**）。线上词汇见下面的 `RANGE_TO_TIME_RANGE`。 */
 export type RangePreset = "today" | "7d" | "30d" | "month";
 export const RANGE_PRESETS: readonly RangePreset[] = ["today", "7d", "30d", "month"];
+
+/**
+ * 界面范围词 → `TimeRange` 的**线上值**（`crates/ta-core/src/clock.rs:77-88`，
+ * `rename_all = "snake_case"` 的外部标记枚举，所以是**裸字符串**）。
+ *
+ * 注意：本页的时间窗**真正生效靠 `from_ms`/`to_ms`**（见 `buildLogQuery`）；`range` 这个键
+ * 是冻结契约里的字段（`bindings.ts` 的 `LogQuery.range`），而 Rust 的
+ * `ta_store::LogQuery` **没有这个字段**（`trace_store.rs:189-216`）→ 它被 serde 忽略。
+ * 即便如此也必须发**正确形状**：一个发不出去的形状在真机上要么报错、要么在
+ * 后端将来接上 `range` 时静默失效 —— 两种都不是我们想要的。
+ */
+const RANGE_TO_TIME_RANGE: Record<RangePreset, string> = {
+  today: "today",
+  "7d": "last7d",
+  "30d": "last30d",
+  month: "this_month",
+};
 
 /** 「结果级别」筛选 —— 与契约 `LogQuery.status`（`ok | retried | failed`）一致。 */
 export type Level = "ok" | "retried" | "failed";
@@ -157,7 +174,8 @@ export function buildLogQuery(
   }
   // 冻结契约里的 `range`（bindings.ts:848）。Rust 侧没有这个字段 → 被忽略；
   // 但**只发它不发 from_ms 就等于没有时间筛选**，所以两个都发。
-  wire.range = { preset: filter.preset };
+  // 形状用 `TimeRange` 的线上值（裸字符串）—— 不是 `{preset:…}`（那会被 serde 判成未知变体）。
+  wire.range = RANGE_TO_TIME_RANGE[filter.preset];
   return wire;
 }
 
@@ -383,6 +401,42 @@ export function readStorageStats(stats: StorageStats | undefined): StorageView |
     oldestTs: pickNum(row, "oldest_ts"),
     newestTs: pickNum(row, "newest_ts"),
   };
+}
+
+// ================================================================ 日志导出（log_export）
+
+/**
+ * 导出结果。**两种形态都要能显示**，因为后端契约正在从 `void` 升级成回执对象（task-25）：
+ * - `written`：后端回执了 `{ path, bytes }` → 这才是"后端确认写到哪"；
+ * - `requested`：后端当前不回报（`result: void`）→ 只能如实说"已请求导出到 <path>"。
+ *
+ * **为什么要有这个纯函数**：升级落地的**同一天**界面就该自动显示真值，而不需要再改一次 UI。
+ * 这里刻意不去猜"大概写成功了"：只有后端回执了对象才算 `written`。
+ */
+export type ExportOutcome =
+  | { kind: "written"; path: string; bytes?: number }
+  | { kind: "requested"; path: string };
+
+/**
+ * 归一化 `log_export` 的返回。`requestedPath` 是**我们自己传进去**的路径
+ * （注册表里没有保存对话框命令，所以路径由用户填/核对；见 [task-23] B 裁决）。
+ *
+ * 判定规则（宁少不猜）：
+ * - 返回对象且带**非空 `path`** → `written`（用后端给的 path；`bytes` 是数字才带上）；
+ * - 其它一切（`undefined` / `null` / 非对象 / 对象但没 path）→ `requested`。
+ */
+export function exportOutcome(result: unknown, requestedPath: string): ExportOutcome {
+  if (result !== null && typeof result === "object") {
+    const row = result as Record<string, unknown>;
+    const path = row["path"];
+    if (typeof path === "string" && path.length > 0) {
+      const bytes = row["bytes"];
+      return typeof bytes === "number"
+        ? { kind: "written", path, bytes }
+        : { kind: "written", path };
+    }
+  }
+  return { kind: "requested", path: requestedPath };
 }
 
 // ================================================================ 轨迹（log_get_trace）

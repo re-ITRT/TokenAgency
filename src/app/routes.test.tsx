@@ -90,7 +90,12 @@ describe("路由外壳", () => {
           screen.queryByTestId("page-placeholder"),
           `${url} 页面已存在，不应再走占位壳`,
         ).toBeNull();
-        await waitFor(() => expect(screen.queryByTestId("page-header")).toBeTruthy());
+        // 逐条串行挂载 + 懒加载分包 + 每页自带查询，默认 1s 的 waitFor 会偶发超时；
+        // 10s 只是等待上限，断言本身没有放宽。
+        await waitFor(
+          () => expect(screen.queryByTestId("page-header"), `${url} 没能渲染出页头`).toBeTruthy(),
+          { timeout: 10_000 },
+        );
       }
       view.unmount();
     }
@@ -149,7 +154,7 @@ describe("路由外壳", () => {
     expect(() => registerDevMocks()).not.toThrow();
     // 走完整链路：api.app.status() → call() → mock（基准场景：网关运行中）
     await expect(api.app.status()).resolves.toMatchObject({ gateway: "running" });
-    await expect(api.usage.dashboard({ preset: "today" })).resolves.toMatchObject({
+    await expect(api.usage.dashboard("today")).resolves.toMatchObject({
       cards: { requests: { value: 1_284 } },
     });
   });
