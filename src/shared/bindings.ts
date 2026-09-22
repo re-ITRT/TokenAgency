@@ -547,6 +547,13 @@ export type ApplyResult = {
   kernel_reload: boolean;
 };
 
+/** `log_export` 的回执（docs/10 §2.2）。**path 是后端解析后的最终路径，不是入参** ——
+ *  传目录进来时后端会补 `tokenagency-diagnostic-<时间戳>.zip`。 */
+export type LogExportReceipt = {
+  path: string;
+  bytes: number;
+};
+
 export type Snapshot = {
   id: string;
   label: string;
@@ -1207,7 +1214,7 @@ export type CommandMap = {
   log_set_retention: { args: { retention: Retention }; result: void };
   log_storage_stats: { args: undefined; result: StorageStats };
   log_clear: { args: { mode: ClearMode }; result: void };
-  log_export: { args: { query: LogQuery; path: string }; result: void };
+  log_export: { args: { query: LogQuery; path: string }; result: LogExportReceipt };
 
   // ---- onboarding / tray
   onboarding_detect: {

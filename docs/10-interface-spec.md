@@ -364,7 +364,23 @@ type UsageQuery = {
 | `log_set_retention` | `retention: "7d"\|"30d"\|"90d"\|"forever"` | `void` |
 | `log_storage_stats` | — | `{ rows, bytes, oldest_ts, newest_ts }` |
 | `log_clear` | `mode: "all"\|"bodies_only"` | `void` |
-| `log_export` | `LogQuery, path` | `void` |
+| `log_export` | `LogQuery, path` | `LogExportReceipt` |
+
+`LogExportReceipt`（`log_export` 的回执）：
+
+```ts
+type LogExportReceipt = {
+  /** **实际落盘路径** —— 后端解析后的最终值。传目录进来时后端会补
+   *  `tokenagency-diagnostic-<时间戳>.zip`，所以它**不等于**入参 path */
+  path: string;
+  /** 磁盘上的真实字节数 */
+  bytes: number;
+};
+```
+
+> **为什么不回 `void`**：界面需要如实显示"导出到了哪里"。沿用 `void` 时前端只能显示自己
+> 传进去的路径，而那个路径上可能并没有文件（传目录时确实没有）—— 用户会以为后端确认了。
+> 导出失败时按 `TaError` 报错，**不返回半成品回执**。
 
 ### onboarding / 首启向导
 

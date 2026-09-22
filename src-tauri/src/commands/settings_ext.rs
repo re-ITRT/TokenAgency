@@ -646,10 +646,44 @@ pub async fn log_export(
     state: State<'_, AppState>,
     query: LogQuery,
     path: String,
-) -> IpcResult<()> {
+) -> IpcResult<LogExportReceipt> {
     let log_dir = crate::logging::log_dir();
-    log_export_to(&state, query, Path::new(&path), log_dir.as_deref()).await?;
-    Ok(())
+    log_export_with_receipt(&state, query, Path::new(&path), log_dir.as_deref()).await
+}
+
+/// `log_export` 的回执（[docs/10 §2.2]）。
+///
+/// **为什么必须回执**：后端会把"目录"解析成
+/// `tokenagency-diagnostic-<时间戳>.zip`（见 [`resolve_export_target`]），
+/// 所以**入参根本不是落盘路径**。沿用 `void` 时界面只能显示自己传进去的路径，
+/// 用户会以为后端确认了 —— 而那个路径上并没有文件。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct LogExportReceipt {
+    /// **实际落盘路径**（后端解析后的最终值，不是入参）
+    pub path: String,
+    /// 磁盘上的真实字节数
+    pub bytes: u64,
+}
+
+/// 真正导出并回执（`log_export` 的实现体；测试直接调它，不经 Tauri `State`）。
+pub async fn log_export_with_receipt(
+    state: &AppState,
+    query: LogQuery,
+    path: &Path,
+    log_dir: Option<&Path>,
+) -> IpcResult<LogExportReceipt> {
+    let target = log_export_to(state, query, path, log_dir).await?;
+    // 字节数**从磁盘上取**：回执说的是文件的事实，不是我们的估算、也不是入参。
+    // 读不到元数据就报错 —— **不回半成品回执**（那会让界面显示一个假字节数）。
+    let bytes = std::fs::metadata(&target)
+        .map_err(|e| {
+            IpcError::from(TaError::Internal(format!(
+                "导出后读取文件信息失败（{}）：{e}",
+                target.display()
+            )))
+        })?
+        .len();
+    Ok(LogExportReceipt { path: target.to_string_lossy().into_owned(), bytes })
 }
 
 // ================================================================ ⑤ 首启向导
@@ -1667,6 +1701,39 @@ mod tests {
         let state =
             AppState::bootstrap(scratch.path().join("db.sqlite")).await.expect("bootstrap 真库");
         (scratch, state)
+    }
+
+    /// ★ `log_export` 的回执必须描述**磁盘上真实发生的事**（task-25）。
+    ///
+    /// 传**目录**进去：后端会自己补 `tokenagency-diagnostic-<时间戳>.zip`。
+    /// 所以"把入参原样回传"一定是错的 —— 这条测试就是钉这一点，
+    /// 外加"字节数必须等于磁盘真实字节数"（不是 0、不是估算）。
+    #[tokio::test]
+    async fn log_export_receipt_describes_the_file_actually_written() {
+        let (scratch, state) = test_state("export-receipt").await;
+        let log_dir = scratch.path().join("logs");
+        std::fs::create_dir_all(&log_dir).expect("建日志目录");
+        std::fs::write(log_dir.join("tokenagency.log"), "INFO 一行日志\n").expect("写日志");
+
+        let requested = scratch.path().join("exports");
+        std::fs::create_dir_all(&requested).expect("建导出目录");
+
+        let receipt =
+            log_export_with_receipt(&state, LogQuery::default(), &requested, Some(&log_dir))
+                .await
+                .expect("导出应成功");
+
+        let actual = PathBuf::from(&receipt.path);
+        assert!(actual.is_file(), "回执说的文件必须真的存在：{}", actual.display());
+        assert_ne!(
+            actual, requested,
+            "回执必须是后端解析后的**最终路径**，不是入参（入参是目录，不是文件）"
+        );
+        assert!(actual.starts_with(&requested), "文件应落在请求的目录里：{}", actual.display());
+
+        let on_disk = std::fs::metadata(&actual).expect("读元数据").len();
+        assert_eq!(receipt.bytes, on_disk, "回执字节数必须等于磁盘上的真实字节数");
+        assert!(receipt.bytes > 0, "一个诊断包不可能 0 字节");
     }
 
     async fn put_doc(state: &AppState, doc: &ConfigDoc) {
