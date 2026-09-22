@@ -180,7 +180,8 @@ export const channel = {
   upsert: (c: Channel) => invokeCommand("channel_upsert", { channel: c }) as Promise<Channel>,
   remove: (id: ChannelId) => invokeCommand("channel_delete", { id }),
   setEnabled: (id: ChannelId, enabled: boolean) => invokeCommand("channel_set_enabled", { id, enabled }),
-  bulkAssignLane: (channelIds: ChannelId[], laneId: LaneId) =>
+  /** [docs/21 §4.1]：`laneId = null` = 清空（回到继承链，末端直连）。 */
+  bulkAssignLane: (channelIds: ChannelId[], laneId: LaneId | null) =>
     invokeCommand("channel_bulk_assign_lane", { channel_ids: channelIds, lane_id: laneId }) as Promise<ApplyResult>,
   setTags: (channelIds: ChannelId[], add: string[], remove: string[]) =>
     invokeCommand("channel_set_tags", { channel_ids: channelIds, add, remove }) as Promise<ApplyResult>,

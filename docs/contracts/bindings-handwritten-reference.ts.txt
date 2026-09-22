@@ -1143,7 +1143,11 @@ export type CommandMap = {
   channel_upsert: { args: { channel: Channel }; result: Channel };
   channel_delete: { args: { id: ChannelId }; result: void };
   channel_set_enabled: { args: { id: ChannelId; enabled: boolean }; result: void };
-  channel_bulk_assign_lane: { args: { channel_ids: ChannelId[]; lane_id: LaneId }; result: ApplyResult };
+  /** `lane_id: null` = 清空（回到继承链，末端直连）；`"<id>"` 必须存在于配置里（docs/21 §4.1）。 */
+  channel_bulk_assign_lane: {
+    args: { channel_ids: ChannelId[]; lane_id: LaneId | null };
+    result: ApplyResult;
+  };
   channel_set_tags: {
     args: { channel_ids: ChannelId[]; add: string[]; remove: string[] };
     result: ApplyResult;

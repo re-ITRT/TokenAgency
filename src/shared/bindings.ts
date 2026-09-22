@@ -1283,7 +1283,16 @@ export type CommandMap = {
   channel_upsert: { args: { channel: Channel }; result: Channel };
   channel_delete: { args: { id: ChannelId }; result: void };
   channel_set_enabled: { args: { id: ChannelId; enabled: boolean }; result: void };
-  channel_bulk_assign_lane: { args: { channel_ids: ChannelId[]; lane_id: LaneId }; result: ApplyResult };
+  /**
+   * 把一批通道钉到同一条线路上（[docs/21 §4.1]）。
+   *
+   * `lane_id: null` = **清空**这批通道的 lane（回到五级继承链，末端就是直连）——
+   * 通道页的「直连（继承）」选的就是这一档；`"<id>"` = 该 id 必须存在于配置里。
+   */
+  channel_bulk_assign_lane: {
+    args: { channel_ids: ChannelId[]; lane_id: LaneId | null };
+    result: ApplyResult;
+  };
   channel_set_tags: {
     args: { channel_ids: ChannelId[]; add: string[]; remove: string[] };
     result: ApplyResult;

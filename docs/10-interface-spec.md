@@ -257,7 +257,7 @@ type AutostartState = {
 | `channel_upsert` | `channel: Channel` | `Channel` |
 | `channel_delete` | `id` | `void` |
 | `channel_set_enabled` | `id, enabled` | `void` |
-| `channel_bulk_assign_lane` | `channel_ids: string[], lane_id: string` | `ApplyResult` |
+| `channel_bulk_assign_lane` | `channel_ids: string[], lane_id: string \| null` | `ApplyResult`；`lane_id: null` = 清空该批通道的 `lane`（回到五级继承链，末端直连）——通道页的「直连（继承）」选的就是这一档（[21 §4.1](21-delete-and-lane-settings.md)） |
 | `channel_set_tags` | `channel_ids: string[], add: string[], remove: string[]` | `ApplyResult` |
 
 #### `Channel` 的形状（[17 §2]）
