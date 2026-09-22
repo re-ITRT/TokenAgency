@@ -1053,8 +1053,14 @@ async function fillFormHeuristic(wd, values) {
     else if (/(^|[^a-z])id([^a-z]|$)|-id/.test(k)) v = values.id;
     else if (/name/.test(k)) v = values.name;
     else continue;
-    const sel = `[data-testid="${f.key}"] input,[data-testid="${f.key}"] textarea,[data-testid="${f.key}"] [role="combobox"],[data-testid="${f.key}"]`;
-    const el = (await wd.findElement(sel)) ?? (await wd.findElement(`[data-testid="${f.key}"]`));
+    // ★ 不要用一个多选择器一次查询：`[data-testid="X"]` 这种"容器"匹配项在文档顺序上
+    // **先于**它内部的 input，于是 querySelector 会返回那个不可交互的容器 → 真机上得到
+    // `element not interactable`（实测踩到过，整轮 harness 因此中断）。
+    // 正确顺序：先单独找内部控件，再退回容器本身。
+    const inner = await wd.findElement(
+      `[data-testid="${f.key}"] input,[data-testid="${f.key}"] textarea,[data-testid="${f.key}"] [role="combobox"]`,
+    );
+    const el = inner ?? (await wd.findElement(`[data-testid="${f.key}"]`));
     if (el === null) continue;
     if (f.role === "combobox" || f.tag === "select") {
       // MUI select：点开，选第一个选项
@@ -1066,8 +1072,14 @@ async function fillFormHeuristic(wd, values) {
         filled[f.key] = `${v} (选第一项)`;
       }
     } else {
-      await wd.fill(el, v);
-      filled[f.key] = v;
+      // 单个字段填不进去**不能让整轮中断**：如实记下来、继续跑其余步骤，
+      // 由后续断言（列表/落库）决定这一步到底算不算过。
+      try {
+        await wd.fill(el, v);
+        filled[f.key] = v;
+      } catch (err) {
+        filled[f.key] = `（填不进去：${String(err.message ?? err).slice(0, 140)}）`;
+      }
     }
   }
   return filled;
