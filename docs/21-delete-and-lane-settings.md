@@ -21,7 +21,7 @@
 | 前端 `api` 封装也都有 `remove(...)` | `src/shared/api/commands.ts:128,140,157,181,192,202,212,229,271` |
 | 但**页面只接了 3 处删除**：订阅、线路、API key | `network-subscriptions-delete` / `network-lanes-delete` / `api-key-delete` |
 | 服务商 / 凭据 / 模型 / 通道 / 分组 / 策略 / 计费 **一个删除入口都没有** | 全仓 `data-testid="*delete*"` 只有上面 3 处（+ api-key 的确认按钮） |
-| `channel_bulk_assign_lane` 只接受**已存在的** lane id，**没有"清空/回到继承"** | `entity.rs:635-663`（`if !doc.lanes.iter().any(...) { not_found }`；`c.lane = Some(...)`） |
+| `channel_bulk_assign_lane` 只接受**已存在的** lane id，**没有"清空/回到继承"** | `entity.rs` 的 `channel_bulk_assign_lane`（`if !doc.lanes.iter().any(...) { not_found }`；`c.lane = Some(...)`） |
 | 通道页**只显示**实际生效的线路、不能改 | `channels/index.tsx:495-508`（`channels-lane` 是纯展示 + 一行"继承"提示） |
 | 改"某个模型/通道走哪条线路"目前**只能进服务商向导** | `providerWizard.tsx` 的 `pw-model-lane`（第 72 轮加的） |
 | 设置页**已有**快照列表与回滚 UI | `settings/index.tsx:320`（`config_history_list`）、`:329`（`config_rollback`）、`:1521`（快照区） |
@@ -49,7 +49,7 @@
      `referenced(what, refs, force_capable)`（`entity.rs`），夹具同时钉住"没有 force 的实体，原文里不许出现 force"。
 4. 成功：`invalidateQueries` 覆盖受影响的查询（该实体的列表 + `qk.channelMatrix` / `qk.models` / `qk.credentials` 等），
    并在结果区如实写"已删除 <名称>"；失败：原样显示后端原文（**含 TA 码**）。
-5. `pricing_delete` 的入参是 **index**（`entity.rs:1532`），所以：
+5. `pricing_delete` 的入参是 **index**（`entity.rs` 的 `delete_price(state, index: usize)`），所以：
    - 删之前**重新读一次** `pricing_list`，**逐字段比对**要删的那条仍然在那个下标上（`JSON.stringify` 全等）；
    - 不一致（列表变了）→ **拒绝并报错**，让用户重看一遍，绝不在错位上下手。
 
@@ -164,10 +164,21 @@ channel_bulk_assign_lane: { args: { channel_ids: ChannelId[]; lane_id: LaneId | 
 1. 单测（先证明会红）：每类实体的"点了真调什么载荷 / 二次确认 / 被引用时原样显示后端原文 + 级联按钮 /
    批量逐条汇报（含部分失败）/ pricing 的下标比对拒绝错位"；通道页线路下拉的三种取值（直连=null、线路=id、失败原样显示）；
    服务商向导里不再发 `model_bulk_update`。
-2. 真机 E2E 新增 `step21`：真删一条**模型**、一条**凭据**、一条**通道**、一条**策略**、一条**通道组**、一条**定价条目**
-   （每条都要 config 表里真的少一行，且删除前出现确认框），再验一次**批量删除**（至少 2 条，逐条汇报）；
-   并在通道页把某条通道改成 `ta-e2e-lane`（config 里该通道的 `lane` 真的变了）。
-   既有步骤必须继续全绿（不许放宽旧断言）——特别是 `step2`/`step20`（它们依赖向导里的 lane 行为，要跟着 §4.3 调整）。
+2. 真机 E2E `step21`（**实际验了什么，就写什么**）：
+   - 通道页改线路：选 `ta-e2e-lane` → config 里该通道的 `lane` 真的变；选「直连（继承）」→ 真的变回 `null`。
+   - 实体删除：**真删掉**了模型 / 凭据 / 服务商 / 策略 / 定价条目各一条（config 表里真的少一行，
+     且每条都先出现确认框）；模型与服务商走了级联按钮，凭据是 `force=false` 就删掉了。
+   - 通道：① **被策略 `action.use_channels` 点名的那条必须被拒绝**（`TA-5002` + 原文 + 没有级联按钮
+     + 库里一条没少 + 原文里没有 `force=true`）；② 没有引用的那条必须**真删掉**；
+     ③ 再按原文的建议走一遍：删掉点名它的策略 → 再删那次通道**必须真的少一条**。
+     夹具的判据是 `/TA-500[12]/` + 原文含"先解除" + 不含 `force=true` + `removed === 0` + 无级联按钮；
+     **"必须拒绝"那一档如果反而删成功了会判红**（把被引用的实体删掉是缺陷，不是合格）。
+   - **没验到的**：`delete_channel` 的另外两类引用（`pin_sticky`、"组里只剩它一个成员"）在 E2E 配置里
+     造不出来 → 由 Rust 单测覆盖；通道组在 E2E 配置里是 0 条 → 这一档如实跳过并记录理由；
+     `policy_delete` **没有**被引用检查（策略 id 不被任何东西引用），所以它不存在"被拒绝"这一档。
+   - 批量删除：勾选 ≥2 条 → 逐条汇报（成功/失败都算结论，只要如实）。
+   - 既有步骤必须继续全绿（不许放宽旧断言）——特别是 `step2`/`step20`（它们依赖向导里的 lane 行为，
+     要跟着 §4.3 调整）。
 3. 干净快照全量门禁 + 重出安装包 + A3/A4 不变量。
 
 ---
