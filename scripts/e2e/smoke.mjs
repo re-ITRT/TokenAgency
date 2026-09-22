@@ -781,6 +781,14 @@ async function wdFillByTid(wd, tid, value, evidence) {
 }
 
 /**
+ * DOM click 兜底被用过几次（**要在结论里露出来**）。
+ *
+ * 兜底绕过了 WebDriver 的"可点击性"判定，所以它必须可见：一次都没有是常态，
+ * 突然变多说明某个控件的位置/遮挡变了，值得看一眼，而不是悄悄被平均掉。
+ */
+let domClickFallbacks = 0;
+
+/**
  * 把**唯一**目标滚进视口并打上 `data-e2e-click` 标记，返回被标记元素的文本（找不到返回 null）。
  *
  * 为什么要先"标记"而不是直接 `findElement` 再点：
@@ -789,7 +797,8 @@ async function wdFillByTid(wd, tid, value, evidence) {
  * - 行内的 `data-testid` 是**每行一个**（`pricing-delete` / `policies-delete` / `channels-delete`…），
  *   只按 testid 找永远只能找到第一行 —— 想删"被策略点名的那一条通道"就必须按行文本定位。
  *
- * `rowTid` + `match` 给定时先在这些行里按行文本找（`match` 是行文本必须同时包含的子串），再在行内找控件。
+ * `rowTid` + `match` 给定时先在这些行里按行文本找（`match` 是行文本里必须出现的**整词**），
+ * 再在行内找控件。整词而不是子串：子串会让 `ch-a` 命中 `ch-a2` 那一行（删错实体）。
  */
 async function markForClick(wd, selector, { rowTid = null, match = [] } = {}) {
   const res = await wd
@@ -798,12 +807,22 @@ async function markForClick(wd, selector, { rowTid = null, match = [] } = {}) {
       const rowTid = ${JSON.stringify(rowTid)};
       const match = ${JSON.stringify(match)};
       document.querySelectorAll('[data-e2e-click]').forEach((n) => n.removeAttribute('data-e2e-click'));
+      // id 允许的字符：字母数字、下划线、短横线（配置里的 id 形状）——两侧都不是这些才算"整词"。
+      const idChar = (ch) => ch !== '' && /[A-Za-z0-9_-]/.test(ch);
+      const hasWord = (text, m) => {
+        let i = text.indexOf(m);
+        while (i >= 0) {
+          if (!idChar(i === 0 ? '' : text[i - 1]) && !idChar(text[i + m.length] ?? '')) return true;
+          i = text.indexOf(m, i + 1);
+        }
+        return false;
+      };
       let el = null;
       if (rowTid === null) {
         el = document.querySelector(sel);
       } else {
         const rows = [...document.querySelectorAll('[data-testid="' + rowTid + '"]')];
-        const row = rows.find((r) => match.every((m) => (r.textContent || '').includes(m)));
+        const row = rows.find((r) => match.every((m) => hasWord(r.textContent || '', m)));
         el = row ? row.querySelector(sel) : null;
       }
       if (!el) return null;
@@ -835,6 +854,7 @@ async function clickResolved(wd, el, tid, evidence) {
       `)
       .catch(() => false);
     if (done === true) {
+      domClickFallbacks += 1;
       evidence.push(`控件 ${tid}：原生 click 被拦（${why}）→ 用 DOM click 兜底点下去了`);
       return true;
     }
@@ -875,9 +895,16 @@ async function clickBySelector(wd, selector, tid, evidence, row = null) {
     return false;
   }
   await sleep(150);
-  const el = await wd.findElement('[data-e2e-click="1"]');
+  let el = await wd.findElement('[data-e2e-click="1"]');
   if (el === null) {
-    evidence.push(`缺控件 ${tid}（标记过却找不到它）`);
+    // React 重渲染可能把带标记的节点换掉 → 重新标一次。
+    // 丢标记是**挂具**的事，不该记成"缺控件"的假红。
+    await markForClick(wd, selector, row ?? {});
+    await sleep(120);
+    el = await wd.findElement('[data-e2e-click="1"]');
+  }
+  if (el === null) {
+    evidence.push(`缺控件 ${tid}（标记过却找不到它，重标一次仍没有）`);
     return false;
   }
   return clickResolved(wd, el, tid, evidence);
@@ -2536,6 +2563,7 @@ async function step20(wd) {
  */
 async function step21(wd) {
   const evidence = [];
+  const fallbacksBefore = domClickFallbacks;
   const kindCount = (kind, tag) => configIds(dumpScratchDb(tag), kind).length;
   /**
    * 某一类实体在库里的条数。
@@ -2620,8 +2648,12 @@ async function step21(wd) {
 
   // ---------------------------------------------------------------- B. 单条删除（每类实体）
   /**
-   * 删掉某一类的第一条：点删除 → 确认框必须出现 → 确认；被引用且该类有级联时点级联。
+   * 删掉某一类的一条：点删除 → 确认框必须出现 → 确认；被引用且该类有级联时点级联。
    * 返回如实的结果（成功、条数变化、后端原文）。
+   *
+   * `mayRefuse`：被引用 → **如实拒绝**算合格（`channel` / `channel_group` 没有 force 参数）。
+   * `mustRefuse`：这一档**必须**被拒绝，真删掉了要判红（用于"明知被引用"的那一档）。
+   * `rowMatch`：`[行 testid, [行文本里必须出现的整词…]]` —— 行内 testid 每行一个，只能按行定位。
    */
   const runDelete = async ({
     hash,
@@ -2631,6 +2663,7 @@ async function step21(wd) {
     cascade = false,
     waitTid = null,
     mayRefuse = false,
+    mustRefuse = false,
     rowMatch = null,
   }) => {
     // 等**删除按钮本身**出现再点（`waitTid` 只在调用方显式给了别的锚点时用）。
@@ -2668,36 +2701,44 @@ async function step21(wd) {
     const afterN = countOf(kind, `step21-${kind}-a`);
     const removed = beforeN - afterN;
     const backend = errText === null ? null : String(errText).replace(/\s+/g, " ").trim();
-    // 「被引用 → 拒绝」是**正确行为**，不是"删除失败"（[docs/21 §1.1]）：`channel` / `channel_group` /
-    // `policy` 根本没有 `force` 参数，被点名时只能拒绝。夹具认这种结局合格 —— 但必须同时验三件事，
-    // 否则一句"被拒绝"就能把真缺陷掩盖过去：
-    //   ① 后端原文真摆出来了（含 TA 码，用户要知道被谁引用）；
-    //   ② 库里一条都没少（拒绝 = 一个字节都不许改）；
-    //   ③ 没有"确认级联删除"假按钮，且原文里**不许**承诺 `force=true`
+    // 「被引用 → 拒绝」是**正确行为**，不是"删除失败"（[docs/21 §1.1]）：`channel` / `group` 没有
+    // `force` 参数，被点名时只能拒绝。夹具认这种结局合格 —— 但判据必须**紧**，否则一句
+    // "被拒绝了"就能把真缺陷洗白：
+    //   ① 码必须是"被引用"这一档（`TA-5002` / `TA-5001`）。用 `/TA-\d{4}/` 会把
+    //      TA-1004（实体的 id 写错了）和 TA-9001（内部错误）也认成"如实拒绝"——那是真失败；
+    //   ② 后端原文真摆出来了，并且给出**可执行的去处**（"先解除这些引用"）；
+    //   ③ 没有"确认级联删除"假按钮，且原文里**不许**出现 `force=true`
     //      —— `channel_delete` 没有这个参数，第 73 轮真机抓到的原文里就带着这句假话。
+    //      （只看 `force=true` 而不是 "force"：引用清单里会回显实体 id，id 里带 force 的字样
+    //       会让一次正确的拒绝被误判成失败。）
+    //   ④ `removed === 0`：拒绝 = 一个字节都不许改。
     const cascadeTid = dialogTid.replace(/-delete-dialog$/, "-delete-cascade");
     const hasCascadeButton = (await wd.probeTestIds()).includes(cascadeTid);
     const refusedHonestly =
-      mayRefuse &&
       removed === 0 &&
       backend !== null &&
-      /TA-\d{4}/.test(backend) &&
-      !backend.includes("force") &&
+      /TA-500[12]/.test(backend) &&
+      backend.includes("先解除") &&
+      !/force\s*=\s*true/.test(backend) &&
       !hasCascadeButton;
-    const ok = removed >= 1 || refusedHonestly;
+    // `mustRefuse`：这一档**必须**被拒绝。被引用的实体真被删掉了，那是产品缺陷
+    // （把还在被路由引用的东西删了），绝不能因为"少了一条"就判合格。
+    const ok = mustRefuse ? refusedHonestly : removed >= 1 || (mayRefuse && refusedHonestly);
     evidence.push(
       `${label}: 删除前 ${beforeN} 条 → 删除后 ${afterN} 条（少 ${removed}）` +
         `；后端原文=${JSON.stringify(backend === null ? null : backend.slice(0, 120))}；用过级联=${cascaded}` +
-        `；级联按钮=${hasCascadeButton}；拒绝且如实=${refusedHonestly}`,
+        `；级联按钮=${hasCascadeButton}；拒绝且如实=${refusedHonestly}；要求必须拒绝=${mustRefuse}`,
     );
     return {
       label,
       ok,
       note:
         removed >= 1
-          ? `少 ${removed} 条`
+          ? mustRefuse
+            ? `少 ${removed} 条，但这一档本该被拒绝`
+            : `少 ${removed} 条`
           : refusedHonestly
-            ? "被引用 → 如实拒绝（原文已展示、没有假级联按钮、库里没少）"
+            ? "被引用 → 如实拒绝（原文已展示、给出先解除的去处、没有假级联按钮、库里没少）"
             : `少 ${removed} 条，且不是一次诚实的拒绝`,
       removed,
       backend,
@@ -2711,12 +2752,33 @@ async function step21(wd) {
     const d = dumpScratchDb("step21-topology");
     const chans = configEntities(d, "channel").map((c) => c.entityId);
     const policies = configEntities(d, "policy");
-    const referenced = new Set();
-    for (const p of policies) for (const c of p.json?.action?.use_channels ?? []) referenced.add(c);
+    const groups = configEntities(d, "channel_group");
+    const membersOf = (gid) =>
+      groups.find((g) => g.entityId === gid)?.json?.members ?? [];
+    /**
+     * 拦住一条通道删除的**原因分类** —— 与 `delete_channel` 里的 `blocking` 三类一一对应
+     * （`entity.rs` 的 `delete_channel`：use_channels / pin_sticky / "组里只剩它一个成员"）。
+     */
+    const blockedBy = (cid) => {
+      const kinds = [];
+      for (const p of policies) {
+        const a = p.json?.action ?? {};
+        if ((a.use_channels ?? []).includes(cid)) kinds.push("use_channels");
+        if (a.pin_sticky === cid) kinds.push("pin_sticky");
+        const g = a.use_group;
+        if (g != null && membersOf(g).length === 1 && membersOf(g)[0] === cid) kinds.push("group");
+      }
+      return kinds;
+    };
+    const all = chans.map((cid) => ({ cid, kinds: blockedBy(cid) }));
     return {
       chans,
-      blockedChan: chans.find((c) => referenced.has(c)) ?? null,
-      freeChan: chans.find((c) => !referenced.has(c)) ?? null,
+      // 只挑"**仅仅**被 use_channels 拦住"的通道：B2 只会去删点名它的策略，而 pin_sticky /
+      // "组里只剩它"这两种引用删完策略还在 → 那次删除**应当**继续被拒绝，夹具就会假红。
+      blockedChan:
+        all.find((x) => x.kinds.length > 0 && x.kinds.every((k) => k === "use_channels"))?.cid ?? null,
+      freeChan: all.find((x) => x.kinds.length === 0)?.cid ?? null,
+      classified: all,
       policies: policies.map((p) => p.entityId),
     };
   })();
@@ -2724,25 +2786,32 @@ async function step21(wd) {
     `通道拓扑：共 ${topo.chans.length} 条；被策略点名=${JSON.stringify(topo.blockedChan)}；` +
       `没有引用=${JSON.stringify(topo.freeChan)}；策略=${JSON.stringify(topo.policies)}`,
   );
+  evidence.push(
+    `每条通道被拦的原因：${JSON.stringify(
+      topo.classified.filter((x) => x.kinds.length > 0).map((x) => `${x.cid}<-${x.kinds.join("+")}`),
+    )}`,
+  );
 
   const results = [];
   // 通道被策略点名：`channel_delete` **没有** force 语义 → 拒绝就是正确行为。
-  // 夹具认"原文 + 没有假级联按钮 + 库里没少"为合格（`mayRefuse`），接着在 B2 段
-  // 会按原文指的路真走一遍（解除引用 → 真能删）。
+  // 这里用 `mustRefuse`（不是 `mayRefuse`）：被点名的通道真被删掉了是**缺陷**，不是合格。
+  // 接着在 B2 段会按原文指的路真走一遍（解除引用 → 真能删）。
   if (topo.blockedChan !== null) {
     results.push(
       await runDelete({
         hash: "#/channels",
         kind: "channel",
         delTid: "channels-delete",
-        label: "删通道（被策略点名 → 应当如实拒绝）",
+        label: "删通道（被策略点名 → 必须如实拒绝）",
         waitTid: "channels-row",
-        mayRefuse: true,
+        mustRefuse: true,
         rowMatch: ["channels-row", [topo.blockedChan]],
       }),
     );
   } else {
-    evidence.push("E2E 配置里没有'被策略点名'的通道 → 拒绝路径这一档拿不到结论");
+    evidence.push(
+      "E2E 配置里没有'仅仅被 action.use_channels 点名'的通道 → 拒绝路径这一档拿不到结论",
+    );
   }
   // 没有引用的通道：**必须真删掉**（否则就只能靠"被拒绝"蒙混过关）
   if (topo.freeChan !== null) {
@@ -2758,9 +2827,14 @@ async function step21(wd) {
     );
   }
   // ---------------------------------------------------------------- B2. 按原文的建议走一遍
-  // 「被引用 → 拒绝」的原文是在告诉用户"先去解除引用再删"。夹具必须证明那句建议**真能走通**，
+  // 「被引用 → 拒绝」的原文是在告诉用户"先解除这些引用再删"。夹具必须证明那句建议**真能走通**，
   // 否则它只是一句搪塞：这里把还在点名那条通道的策略逐条删掉，再删一次通道 —— 必须真的少一条。
   // 放在这一段（而不是所有删除做完之后）是因为此刻引用链**一定还在**，否则这一档会静默变成空跑。
+  //
+  // 范围说明（别把没验的说成验过）：本档只覆盖 `action.use_channels` 这一种引用 ——
+  // `topo.blockedChan` 就是按"**仅仅**被 use_channels 拦住"挑出来的。`delete_channel` 的另外两类
+  // 引用（`pin_sticky`、"组里只剩它一个成员"）在 E2E 配置里造不出来，本档**没有**验证；
+  // 它们的拒绝行为由 Rust 单测 `channel_delete_prunes_dead_refs_but_refuses_when_it_changes_routing` 覆盖。
   if (topo.blockedChan !== null) {
     const blockers = configEntities(dumpScratchDb("step21-unlock-pols"), "policy").filter((p) =>
       (p.json?.action?.use_channels ?? []).includes(topo.blockedChan),
@@ -2811,13 +2885,22 @@ async function step21(wd) {
   results.push(
     await runDelete({ hash: "#/cost", kind: "pricing", delTid: "pricing-delete", label: "删定价条目" }),
   );
-  // 通道组：E2E 流程里不一定建过 → 没行就如实记 SKIP 理由
+  // 通道组：E2E 流程里不一定建过 → 没行就如实记 SKIP 理由。
+  // 有行时用 `mayRefuse`：不知道它有没有被策略 `use_group` 用着 —— 删得掉、或者如实拒绝，都算合格。
   const groupRows = kindCount("channel_group", "step21-groups");
   evidence.push(`通道组条目数=${groupRows}`);
   if (groupRows > 0) {
     results.push(
-      await runDelete({ hash: "#/channels", kind: "channel_group", delTid: "groups-delete", label: "删通道组" }),
+      await runDelete({
+        hash: "#/channels",
+        kind: "channel_group",
+        delTid: "groups-delete",
+        label: "删通道组",
+        mayRefuse: true,
+      }),
     );
+  } else {
+    evidence.push("通道组条目数=0 → 这一档没得删（如实跳过，不假装验过）");
   }
   // 模型 / 凭据 / 服务商：都有 force 语义，被引用时走级联
   results.push(
@@ -2886,19 +2969,26 @@ async function step21(wd) {
 
   // ---------------------------------------------------------------- 判定
   const failed = results.filter((r) => !r.ok);
+  // 库里真少了条数的那几档（"被拒绝"那几档不算）
+  const deletedKinds = results.filter((r) => r.removed >= 1).length;
+  const refusedKinds = results.filter((r) => r.refused === true).length;
+  const usedDomFallback = domClickFallbacks - fallbacksBefore;
   const deleteOk = results.length >= 5 && failed.length === 0;
   if (laneSetOk && laneClearOk && deleteOk && bulkOk) {
     record(
       "step21",
       "PASS",
-      `通道页改线路（选线路→库里变、选直连→库里清空）+ ${results.length} 类实体真删除（确认框先出现、被引用走级联）+ 批量删除逐条汇报`,
+      `通道页改线路（选线路→库里变、选直连→库里清空）+ ${results.length} 档删除：真删掉 ${deletedKinds} 档、` +
+        `被引用后如实拒绝 ${refusedKinds} 档（含"删掉引用它的策略后真能删"）+ 批量删除逐条汇报` +
+        `；DOM 兜底=${usedDomFallback} 次`,
       evidence,
     );
   } else {
     record(
       "step21",
       "FAIL",
-      `没做到位：通道线路 写入=${laneSetOk} 清空=${laneClearOk}；单条删除 ${results.length} 类里失败 ${failed.length} 类` +
+      `没做到位：通道线路 写入=${laneSetOk} 清空=${laneClearOk}；${results.length} 档删除里失败 ${failed.length} 档` +
+        `（真删掉 ${deletedKinds} 档、如实拒绝 ${refusedKinds} 档、DOM 兜底=${usedDomFallback} 次）` +
         `${failed.length > 0 ? "（" + failed.map((f) => `${f.label}:${f.note}`).join("；") + "）" : ""}；批量删除=${bulkOk}`,
       evidence,
     );
