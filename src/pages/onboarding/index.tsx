@@ -1,29 +1,29 @@
 /**
  * 首启向导页 `/onboarding`（[05 §2.4] 四步 · [12 §6 F4]）。
  *
- * ## 这一页要解决的真问题：**后端三条命令都还没注册**
+ * ## 三条命令都已注册，这一页**真调**它们
  *
- * `onboarding_detect` / `onboarding_test_all` / `onboarding_apply` 在
- * `src-tauri/src/commands/mod.rs` 的 `collect_commands!` 里都没有 —— 真机上调用就是失败。
- * 所以这一版**不做**下面这些事（做了就是骗人）：
+ * `onboarding_detect` / `onboarding_test_all` / `onboarding_apply` 都在
+ * `src-tauri/src/commands/mod.rs` 的 `collect_commands!` 里（实现见 `commands/settings_ext.rs`），
+ * 所以这一页做的是真流程，而不是"等后端"：
  *
- * - 不放「开始测试」按钮（`onboarding_test_all` 未注册）：点了不会成功的东西比没有按钮更糟。
- * - 不放「生成配置」按钮（`onboarding_apply` 未注册）。
- * - 不显示"建议的服务商"或"内核已找到"（那要 `onboarding_detect` 才知道）。
- * - 不显示任何测试结果：**没有结果**与**全部失败**是两件不同的事，结果区必须写清楚是前者。
+ * 1. **探测**：进页就调 `onboarding_detect`，把后端返回的三项（内核找到没有、是否已有配置、
+ *    建议的服务商）逐行显示；失败就显示失败原因，**不填默认值、不编一份建议清单**。
+ *    （契约里 `onboarding_detect` 的 TS 类型只有这三项，Rust 侧还序列化了
+ *    `kernel_checked` / `kernel_path` —— 前端拿不到，所以不显示它们，也不猜。）
+ * 2. **测试**：点「开始测试」真的调 `onboarding_test_all`，逐条显示 `ConnectivityRow`
+ *    （通过/失败、延迟、状态码、后端 `note` 原文，含 `ok` 的口径）；命令报错（例如没装配内核）
+ *    显示错误原文 —— **"没有结果"与"全部失败"是两件事**。
+ * 3. **应用**：点「应用这份配置」真的调 `onboarding_apply`，回显 `ApplyResult` 的**逐项事实**：
+ *    写入了没有、是否需要重启、是否需要重载内核。**不许把"需要重启"说成"已完成"**。
+ * 4. **跳过**：跳过只留下一句"没有写入任何配置"，页面上不会出现"已配置"这种话。
  *
- * ## 那这一版做了什么（都不是空壳）
+ * ## 仍然保留的诚实纪律
  *
- * 1. **四步骨架 + 真导航**：上一步 / 下一步，每步的"能不能继续"由模型层的本地校验决定
- *    （[05 §2.4] 的 Step 1/2/3 + 接入信息）。填错就卡住，并逐行给出行号级的原因。
- * 2. **真校验**（`./model`）：标识非空且唯一、名称非空、接口地址必须 http(s)、密钥非空；
- *    订阅链接同理。「我不用梯子」是一个**明确选择**，勾上后订阅列表就是空的。
- * 3. **真展开**：一行粘贴多个密钥 → 展开成多个凭据条目（提交契约每个条目只带一个密钥）。
- * 4. **真预览**：第 4 步把**将来会发给 `onboarding_apply` 的那份 payload** 原样打印出来
- *    （与将来真正提交用同一个 `buildOnboardingInput`，预览不会与真实请求分叉）。
- * 5. **真读接入信息**：`app_clipboard_access_info`（**已注册**）—— 不是拼出来的假地址。
- *
- * 另外两条纪律：不使用 router（本页可以被单独渲染），也不碰 i18n 之外的共享文件。
+ * - **预览与提交同源**：第 4 步打印的就是 `buildOnboardingInput` 算出来的那份 payload。
+ * - **本地校验与后端校验不互相替代**：本地按行给行号级错误，后端校验是另一层。
+ * - **接入信息是真读的**：`app_clipboard_access_info`（已注册）。
+ * - 不使用 router（本页可以被单独渲染）；i18n 之外不碰共享文件。
  */
 
 import {
@@ -39,16 +39,18 @@ import {
 } from "@mui/material";
 import { useMemo, useState, type ReactNode } from "react";
 
-import { errorMessage, qk, useCommandQuery } from "@/shared/api";
+import { errorMessage, qk, useCommandMutation, useCommandQuery } from "@/shared/api";
 import { PageHeader } from "@/shared/components";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { radius, typography } from "@/theme";
 
 import {
   PROTOCOLS,
+  applyFacts,
   buildOnboardingInput,
   credentialEntries,
   credentialLines,
+  detectFacts,
   laneCandidates,
   nextProviderRow,
   nextSubRow,
@@ -56,6 +58,7 @@ import {
   testMatrix,
   validateProviders,
   validateSubscriptions,
+  type ApplyFact,
   type ProviderRow,
   type SubRow,
 } from "./model";
@@ -71,6 +74,28 @@ const STEP_TITLE: Record<number, I18nKey> = {
 };
 
 const SECTION_SX = { p: 4, borderRadius: `${radius.surface}px` } as const;
+
+/** `ApplyResult` 的每一项事实 → i18n key（UI 只渲染事实，不做"已完成"这类翻译）。 */
+const APPLY_FACT_TEXT: Record<ApplyFact, I18nKey> = {
+  applied: "onboarding.apply.applied",
+  notApplied: "onboarding.apply.notApplied",
+  restart: "onboarding.apply.restart",
+  kernelReload: "onboarding.apply.kernelReload",
+  effective: "onboarding.apply.effective",
+};
+
+/**
+ * 事实 → `data-testid`。
+ * `applied` / `notApplied` 共用同一个 id（它们是同一格的两种取值，不可能同时出现），
+ * 用 `data-applied` 区分 —— 测试据此断言"后端到底写没写"。
+ */
+const APPLY_FACT_TESTID: Record<ApplyFact, string> = {
+  applied: "onboarding-apply-applied",
+  notApplied: "onboarding-apply-applied",
+  restart: "onboarding-apply-restart",
+  kernelReload: "onboarding-apply-kernel-reload",
+  effective: "onboarding-apply-effective",
+};
 
 /** 等宽小字：打印会被机器读的内容（payload、接入信息、标识符）。 */
 const MONO_PRE_SX = {
@@ -290,12 +315,21 @@ export default function OnboardingPage() {
   const [kernelPath, setKernelPath] = useState("");
   const [accessOpen, setAccessOpen] = useState(false);
   const [copyNote, setCopyNote] = useState<"done" | "unavailable" | undefined>(undefined);
+  /** 「跳过向导」是一个**明确选择**：跳过之后不会再提交任何东西。 */
+  const [skipped, setSkipped] = useState(false);
 
   /** 线路候选来自**当前配置**（只读）；接入信息来自后端原文。 */
   const config = useCommandQuery("config_get", undefined, qk.config);
   const access = useCommandQuery("app_clipboard_access_info", undefined, qk.clipboard, {
     enabled: accessOpen,
   });
+  /** 环境探测：`onboarding_detect`（已注册）。失败就显示失败原因。 */
+  const detect = useCommandQuery("onboarding_detect", undefined, ["onboarding", "detect"]);
+  /** 两条会改后端状态的命令：**只在用户点按钮时**调用，绝不自动触发。 */
+  const tests = useCommandMutation("onboarding_test_all");
+  const apply = useCommandMutation("onboarding_apply");
+
+  const detectResult = detect.data === undefined ? undefined : detectFacts(detect.data);
 
   const providerIssues = useMemo(() => validateProviders(providers), [providers]);
   const subIssues = useMemo(() => validateSubscriptions(subs), [subs]);
@@ -318,6 +352,14 @@ export default function OnboardingPage() {
     setProviders((prev) => prev.map((row, i) => (i === index ? next : row)));
   const updateSub = (index: number, next: SubRow) =>
     setSubs((prev) => prev.map((row, i) => (i === index ? next : row)));
+
+  /** 跳过：清掉"已经发生过"的调用结果，页面上只留一句"没有写入任何配置"。 */
+  const onSkip = () => {
+    setSkipped(true);
+    tests.reset();
+    apply.reset();
+  };
+  const onResume = () => setSkipped(false);
 
   const onCopyAccess = () => {
     const text = access.data ?? "";
@@ -369,14 +411,63 @@ export default function OnboardingPage() {
           <Box data-testid="onboarding-step-panel" data-step={String(step)}>
             {step === 1 ? (
               <Stack spacing={4}>
-                {/* 环境检测没有命令：如实说，并让用户手填内核路径 */}
-                <Typography
-                  variant="body1"
-                  data-testid="onboarding-detect-note"
-                  sx={{ color: "text.secondary" }}
-                >
-                  {t("onboarding.detect.blocked")}
-                </Typography>
+                {/* 环境探测：每一行都是 onboarding_detect 的返回，不是前端猜的 */}
+                <Stack spacing={1}>
+                  <Box sx={{ display: "flex", gap: 3, alignItems: "center", flexWrap: "wrap" }}>
+                    <Button
+                      data-testid="onboarding-detect-run"
+                      variant="outlined"
+                      disabled={detect.isFetching}
+                      onClick={() => void detect.refetch()}
+                    >
+                      {t("onboarding.detect.retry")}
+                    </Button>
+                    <Caption>{detect.isFetching ? t("common.loading") : t("onboarding.detect.hint")}</Caption>
+                  </Box>
+
+                  {detect.error !== null && detect.error !== undefined ? (
+                    <Typography
+                      variant="body1"
+                      data-testid="onboarding-detect-error"
+                      sx={{ color: "error.main" }}
+                    >
+                      {t("onboarding.detect.error", { message: errorMessage(detect.error) })}
+                    </Typography>
+                  ) : detectResult === undefined ? (
+                    <Typography variant="body1" sx={{ color: "text.secondary" }}>
+                      {t("common.loading")}
+                    </Typography>
+                  ) : (
+                    <Stack spacing={1}>
+                      <Typography
+                        variant="body1"
+                        data-testid="onboarding-detect-kernel"
+                        data-value={detectResult.kernel}
+                      >
+                        {detectResult.kernel === "found"
+                          ? t("onboarding.detect.kernelFound")
+                          : t("onboarding.detect.kernelMissing")}
+                      </Typography>
+                      <Typography
+                        variant="body1"
+                        data-testid="onboarding-detect-config"
+                        data-value={detectResult.config}
+                      >
+                        {detectResult.config === "existing"
+                          ? t("onboarding.detect.configExisting")
+                          : t("onboarding.detect.configMissing")}
+                      </Typography>
+                      <Typography variant="body1" data-testid="onboarding-detect-suggested">
+                        {detectResult.suggested.length === 0
+                          ? t("onboarding.detect.suggestedNone")
+                          : t("onboarding.detect.suggested", {
+                              list: detectResult.suggested.join(" · "),
+                            })}
+                      </Typography>
+                    </Stack>
+                  )}
+                </Stack>
+
                 <Box>
                   <Stack spacing={1}>
                     <Field
@@ -488,9 +579,19 @@ export default function OnboardingPage() {
                 <Typography variant="h4" component="h3">
                   {t("onboarding.test.title")}
                 </Typography>
-                <Typography variant="body1" data-testid="onboarding-test-blocked" sx={{ color: "warning.main" }}>
-                  {t("onboarding.test.blocked")}
-                </Typography>
+                <Box sx={{ display: "flex", gap: 3, alignItems: "center", flexWrap: "wrap" }}>
+                  {skipped ? null : (
+                    <Button
+                      data-testid="onboarding-test-run"
+                      variant="contained"
+                      disabled={tests.isPending}
+                      onClick={() => tests.mutate(undefined)}
+                    >
+                      {tests.isPending ? t("common.loading") : t("onboarding.test.run")}
+                    </Button>
+                  )}
+                  <Caption>{t("onboarding.test.blocked")}</Caption>
+                </Box>
 
                 <Stack spacing={1}>
                   <Caption>{t("onboarding.test.matrix")}</Caption>
@@ -520,9 +621,63 @@ export default function OnboardingPage() {
                     {t("onboarding.test.resultTitle")}
                   </Typography>
                   {/* 没有结果 != 全部失败：这句话必须留着 */}
-                  <Typography variant="body1" data-testid="onboarding-test-result" sx={{ color: "text.secondary" }}>
-                    {t("onboarding.test.resultNone")}
-                  </Typography>
+                  {skipped ? (
+                    <Typography
+                      variant="body1"
+                      data-testid="onboarding-test-result"
+                      sx={{ color: "text.secondary" }}
+                    >
+                      {t("onboarding.skip.skippedTest")}
+                    </Typography>
+                  ) : tests.error !== null && tests.error !== undefined ? (
+                    <Typography
+                      variant="body1"
+                      data-testid="onboarding-test-error"
+                      sx={{ color: "error.main" }}
+                    >
+                      {t("onboarding.test.error", { message: errorMessage(tests.error) })}
+                    </Typography>
+                  ) : tests.data === undefined ? (
+                    <Typography
+                      variant="body1"
+                      data-testid="onboarding-test-result"
+                      sx={{ color: "text.secondary" }}
+                    >
+                      {t("onboarding.test.resultNone")}
+                    </Typography>
+                  ) : (
+                    <Stack spacing={1} data-testid="onboarding-test-result">
+                      {tests.data.length === 0 ? (
+                        <Caption>{t("onboarding.test.resultEmpty")}</Caption>
+                      ) : null}
+                      {tests.data.map((row, index) => (
+                        <Box
+                          key={`${row.credential_id}-${row.lane_id}-${index}`}
+                          data-testid="onboarding-test-row"
+                          data-ok={String(row.ok)}
+                        >
+                          <Stack spacing={1}>
+                            <Typography variant="body1" sx={{ fontFamily: typography.fontMono }}>
+                              {`${row.credential_id} × ${row.lane_id} · ${
+                                row.ok ? t("onboarding.test.ok") : t("onboarding.test.fail")
+                              }${
+                                row.latency_ms === null || row.latency_ms === undefined
+                                  ? ""
+                                  : ` · ${row.latency_ms} ms`
+                              }${
+                                row.status === null || row.status === undefined
+                                  ? ""
+                                  : ` · HTTP ${row.status}`
+                              }`}
+                            </Typography>
+                            {row.note === null || row.note === undefined ? null : (
+                              <Caption>{t("onboarding.test.note", { note: row.note })}</Caption>
+                            )}
+                          </Stack>
+                        </Box>
+                      ))}
+                    </Stack>
+                  )}
                 </Stack>
               </Stack>
             ) : null}
@@ -532,9 +687,19 @@ export default function OnboardingPage() {
                 <Typography variant="h4" component="h3">
                   {t("onboarding.apply.title")}
                 </Typography>
-                <Typography variant="body1" data-testid="onboarding-apply-blocked" sx={{ color: "warning.main" }}>
-                  {t("onboarding.apply.blocked")}
-                </Typography>
+                <Box sx={{ display: "flex", gap: 3, alignItems: "center", flexWrap: "wrap" }}>
+                  {skipped ? null : (
+                    <Button
+                      data-testid="onboarding-apply-submit"
+                      variant="contained"
+                      disabled={apply.isPending}
+                      onClick={() => apply.mutate({ input })}
+                    >
+                      {apply.isPending ? t("common.loading") : t("onboarding.apply.submit")}
+                    </Button>
+                  )}
+                  <Caption>{t("onboarding.apply.blocked")}</Caption>
+                </Box>
 
                 <Stack spacing={1}>
                   <Caption>{t("onboarding.apply.payload")}</Caption>
@@ -553,16 +718,68 @@ export default function OnboardingPage() {
                   <Typography variant="h4" component="h3">
                     {t("onboarding.apply.resultTitle")}
                   </Typography>
-                  <Typography variant="body1" data-testid="onboarding-apply-result" sx={{ color: "text.secondary" }}>
-                    {t("onboarding.apply.resultNone")}
-                  </Typography>
+                  {skipped ? (
+                    <Typography
+                      variant="body1"
+                      data-testid="onboarding-apply-result"
+                      sx={{ color: "text.secondary" }}
+                    >
+                      {t("onboarding.skip.skippedApply")}
+                    </Typography>
+                  ) : apply.error !== null && apply.error !== undefined ? (
+                    <Typography
+                      variant="body1"
+                      data-testid="onboarding-apply-error"
+                      sx={{ color: "error.main" }}
+                    >
+                      {t("onboarding.apply.error", { message: errorMessage(apply.error) })}
+                    </Typography>
+                  ) : apply.data === undefined ? (
+                    <Typography
+                      variant="body1"
+                      data-testid="onboarding-apply-result"
+                      sx={{ color: "text.secondary" }}
+                    >
+                      {t("onboarding.apply.resultNone")}
+                    </Typography>
+                  ) : (
+                    // 逐项事实：写入了没有 / 要不要重启 / 要不要重载内核 —— 各说各的
+                    <Stack spacing={1} data-testid="onboarding-apply-result">
+                      {applyFacts(apply.data).map((fact) => (
+                        <Typography
+                          key={fact}
+                          variant="body1"
+                          data-testid={APPLY_FACT_TESTID[fact]}
+                          data-applied={
+                            fact === "applied" || fact === "notApplied"
+                              ? String(apply.data?.applied ?? false)
+                              : undefined
+                          }
+                          sx={{
+                            color:
+                              fact === "restart" || fact === "kernelReload"
+                                ? "warning.main"
+                                : fact === "notApplied"
+                                  ? "error.main"
+                                  : "text.primary",
+                          }}
+                        >
+                          {t(APPLY_FACT_TEXT[fact])}
+                        </Typography>
+                      ))}
+                      <Caption>{t("onboarding.apply.raw")}</Caption>
+                      <Box component="pre" sx={MONO_PRE_SX} data-testid="onboarding-apply-raw">
+                        {JSON.stringify(apply.data, null, 2)}
+                      </Box>
+                    </Stack>
+                  )}
                 </Stack>
               </Stack>
             ) : null}
           </Box>
 
-          {/* ③ 导航：第 4 步没有"下一步"（没有第 5 步），也不放提交按钮 */}
-          <Box sx={{ display: "flex", gap: 3, alignItems: "center", mt: 6 }}>
+          {/* ③ 导航：第 4 步没有"下一步"（没有第 5 步）；跳过是一个明确选择 */}
+          <Box sx={{ display: "flex", gap: 3, alignItems: "center", mt: 6, flexWrap: "wrap" }}>
             {step > 1 ? (
               <Button data-testid="onboarding-prev" variant="outlined" onClick={() => setStep(step - 1)}>
                 {t("onboarding.prev")}
@@ -578,7 +795,25 @@ export default function OnboardingPage() {
                 {t("onboarding.next")}
               </Button>
             ) : null}
+            {skipped ? (
+              <Button data-testid="onboarding-skip-resume" variant="outlined" onClick={onResume}>
+                {t("onboarding.skip.resume")}
+              </Button>
+            ) : (
+              <Button data-testid="onboarding-skip" variant="outlined" onClick={onSkip}>
+                {t("onboarding.skip")}
+              </Button>
+            )}
           </Box>
+          {skipped ? (
+            <Typography
+              variant="body1"
+              data-testid="onboarding-skip-note"
+              sx={{ color: "text.secondary", mt: 3 }}
+            >
+              {t("onboarding.skip.done")}
+            </Typography>
+          ) : null}
         </Paper>
 
         {/* ④ 接入信息：**任何一步都能看**（它来自当前配置，与向导是否提交无关） */}
