@@ -100,6 +100,10 @@ const STEP_TITLES = {
   step5: "设置页：自启动开关 / 文件监听是否真控件",
   step6: "附加：真界面写操作落库证明（settings 改字段 → config_apply）",
   step7: "收尾隔离复查（全程结束后真实目录仍未变）",
+  step10: "线路添加向导：能力声明 + 计费落地，线路与定价都进库",
+  step11: "路由向导：能力不一致时必须显示逐字段差异并禁用提交",
+  step14: "数据安全回归：设置页「校验并应用」之后，之前建的线路必须还在",
+  step15: "能力一致的两条线路可路由；把已归组的线路改成不一致 → 后端必须拒绝并点出字段",
 };
 
 // ================================================================ 小工具
@@ -322,6 +326,60 @@ class WebDriver {
     return null;
   }
 
+  /**
+   * 当前弹层里的选项：元素 id + 文案 + 是否已选（`aria-selected`）。没有弹层就是空数组。
+   *
+   * 为什么需要它：多选（MUI `multiple`）**选完不关弹层**，要连点多个选项就必须拿着弹层里
+   * 元素的真实 id 去点；只靠"再点一次控件"会被 backdrop 拦下（`element click intercepted`）。
+   */
+  async optionItems() {
+    const r = await this.raw("POST", `/session/${this.sessionId}/elements`, {
+      using: "css selector",
+      value: 'li[role="option"]',
+    });
+    const out = [];
+    for (const el of r.value ?? []) {
+      const id = el[ELEM_KEY];
+      const rect = await this.raw("GET", `/session/${this.sessionId}/element/${id}/rect`).catch(() => null);
+      if (rect !== null && ((rect.value?.width ?? 0) === 0 || (rect.value?.height ?? 0) === 0)) continue;
+      out.push({
+        id,
+        text: (await this.text(id).catch(() => "")).replace(/\s+/g, " ").trim(),
+        selected: (await this.attr(id, "aria-selected").catch(() => null)) === "true",
+      });
+    }
+    return out;
+  }
+
+  /**
+   * 弹层真开着才收（判据 `[role=listbox]`：MUI 的 Select 即使 0 个选项也会渲染这个 ul）。
+   *
+   * ★ 关键在"Esc 送给谁"：**送到 listbox 元素自己身上**（`POST /element/{id}/value`），
+   * 而不是全局送键。这样 keydown 只在**弹层内部**冒泡 → 弹层正常关闭；而 Dialog 是另一个
+   * portal（不是 listbox 的祖先）**收不到**这个事件 → 不会连带把整个对话框关掉。
+   * 反面教材（都实测过）：全局 Esc → 对话框被关；点视口角落 → 退场动画里那一下落到
+   * Dialog 自己的 backdrop 上 → 对话框同样被关。
+   */
+  async closeMenuIfOpen() {
+    const lb = await this.findElement('[role="listbox"]');
+    if (lb === null) return false;
+    await this.raw("POST", `/session/${this.sessionId}/element/${lb}/value`, {
+      text: "\uE00C",
+      value: ["\uE00C"],
+    }).catch(() => {});
+    if (await this.waitGone('[role="listbox"]', 1200)) return true;
+    // 退场动画 / stale：再拿一次 listbox 重试一遍
+    const again = await this.findElement('[role="listbox"]');
+    if (again !== null) {
+      await this.raw("POST", `/session/${this.sessionId}/element/${again}/value`, {
+        text: "\uE00C",
+        value: ["\uE00C"],
+      }).catch(() => {});
+      await this.waitGone('[role="listbox"]', 1200);
+    }
+    return true;
+  }
+
   async waitFor(selector, timeoutMs = 15000, pollMs = 200) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -357,11 +415,72 @@ class WebDriver {
     });
   }
 
-  /** 真输入：先点（拿焦点）、清空、再逐字送键。**React 受控组件必须走真事件。** */
+  /**
+   * 真输入：先点（拿焦点）、清空、再逐字送键。**React 受控组件必须走真事件。**
+   *
+   * ⚠ `clear()`（W3C 的 element clear）**对部分 MUI 受控输入框是 no-op** —— 它不发键盘事件，
+   * 而 MUI 的受控 input 由 React 的 `value` 驱动，清空后没被 React 重新渲染回来就"看起来没清"。
+   * 真机实测的后果是**追加而不是替换**：`channels-add-contextTokens ← "200000"` 读回 `"0200000"`、
+   * `channels-add-modalities ← "text,image"` 读回 `"texttext,image"`、
+   * 首启向导的 id 框 `"p1" → "p1ta-e2e-provider"`。数字凑巧解析成同一个值，所以这次没炸，
+   * 但任何"替换值"的用例都会踩到 —— 必须补一次**真键盘**的清空。
+   *
+   * 做法：Home → Delete × 当前长度（\uE011 / \uE017 是 W3C 的 Home / Delete）。
+   * 清不干净就在日志里说一声（**不静默**）：那说明这个控件还有别的毛病，值得看一眼。
+   */
   async fill(elId, text) {
     await this.click(elId).catch(() => {});
     await this.clear(elId).catch(() => {});
+    const leftover = await this.attr(elId, "value").catch(() => null);
+    if (typeof leftover === "string" && leftover.length > 0) {
+      const keys = `\uE011${"\uE017".repeat(leftover.length)}`;
+      await this.raw("POST", `/session/${this.sessionId}/element/${elId}/value`, {
+        text: keys,
+        value: [...keys],
+      }).catch(() => {});
+      const stillThere = await this.attr(elId, "value").catch(() => null);
+      if (typeof stillThere === "string" && stillThere.length > 0) {
+        log(`        · 注意：${JSON.stringify(leftover)} 没清干净（现值 ${JSON.stringify(stillThere)}）→ 本次输入是追加`);
+      }
+    }
     await this.type(elId, text);
+  }
+
+  /**
+   * 送一次 Esc（W3C actions，**全局**送键）。
+   *
+   * ⚠️ **不要用它来收下拉弹层**：全局送键会落到 `document.activeElement`，而空下拉时焦点还在
+   * Dialog 里 → 整个对话框被关掉（真机实测）。收弹层用 `closeMenuIfOpen()`。
+   */
+  async pressEscape() {
+    await this.raw("POST", `/session/${this.sessionId}/actions`, {
+      actions: [
+        {
+          type: "key",
+          id: "keyboard",
+          actions: [
+            { type: "keyDown", value: "\uE00C" },
+            { type: "keyUp", value: "\uE00C" },
+          ],
+        },
+      ],
+    });
+    await this.raw("DELETE", `/session/${this.sessionId}/actions`).catch(() => {});
+  }
+
+  /** 关掉当前 MUI Dialog（真点它的「取消/关闭」按钮；找不到就退化为 Esc）。 */
+  async closeDialog() {
+    const clicked = await this.exec(`
+      const dlg = document.querySelector('[role="dialog"]');
+      if (!dlg) return false;
+      const btn = [...dlg.querySelectorAll('button')].find((b) => /取消|关闭|Cancel|Close/i.test(b.innerText || ''));
+      if (!btn) return false;
+      btn.click();
+      return true;
+    `);
+    if (clicked !== true) await this.pressEscape();
+    await this.waitGone('[role="dialog"]', 4000);
+    return clicked === true;
   }
 
   async text(elId) {
@@ -588,24 +707,52 @@ function dbFingerprint(dump) {
 // 这四步就是去真窗口里把「添加」走一遍，并按固定 testid 驱动（契约见 docs/17）。
 // 约定与其它步骤一致：**入口不存在就是 SKIP，绝不用替代路径凑 PASS**；每一步都查 `config` 表确认真的落库。
 
+/** WebDriver 错误原文：去掉会话/元素 id 的长噪音，保留**错误码与原因**（截断会把原因吃掉）。 */
+function wdErrText(err, max = 240) {
+  return String(err?.message ?? err)
+    .replace(/\/session\/[0-9a-f-]+/gi, "/session/<id>")
+    .replace(/\/element\/[^/ ]+/g, "/element/<el>")
+    .replace(/\s+/g, " ")
+    .slice(0, max);
+}
+
+/**
+ * 一个 testid 对应控件的**可交互本体**：内部 `[role=combobox]` / 输入框优先，最后退回容器。
+ *
+ * 两种真实形状都要认：`Select` 的 testid 挂在**容器**上（内部是真控件），
+ * `TextField` 的 testid 直接挂在 `input` 上（容器就是控件本身）。
+ * 取容器去点/去填会得到 `element not interactable`。
+ */
+async function wdControlForTid(wd, tid) {
+  return (
+    (await wd.findElement(`[data-testid="${tid}"] [role="combobox"]`)) ??
+    (await wd.findElement(`[data-testid="${tid}"] input:not([type="hidden"]), [data-testid="${tid}"] textarea`)) ??
+    (await wd.findElement(`[data-testid="${tid}"]`))
+  );
+}
+
 /** 按 testid 填字段：内部 input/textarea 优先，取不到再退回容器本身；填不进去只记录、不中断。 */
 async function wdFillByTid(wd, tid, value, evidence) {
-  const inner = await wd.findElement(`[data-testid="${tid}"] input,[data-testid="${tid}"] textarea`);
-  const el = inner ?? (await wd.findElement(`[data-testid="${tid}"]`));
+  // 先把遗留弹层收掉：它盖在页面上时，连输入框都点不动（假失败）。
+  await wd.closeMenuIfOpen();
+  const el = await wdControlForTid(wd, tid);
   if (el === null) {
     evidence.push(`缺控件 ${tid}`);
     return false;
   }
   try {
     await wd.fill(el, value);
+    const back = await wd.attrOf(`[data-testid="${tid}"]`, "value");
+    evidence.push(`真输入 ${tid} ← ${JSON.stringify(value)}（读回 value=${JSON.stringify(back)}）`);
     return true;
   } catch (err) {
-    evidence.push(`控件 ${tid} 填不进去：${String(err.message ?? err).slice(0, 140)}`);
+    evidence.push(`控件 ${tid} 填不进去：${wdErrText(err)}`);
     return false;
   }
 }
 
 async function wdClickTid(wd, tid, evidence) {
+  await wd.closeMenuIfOpen();
   const el = await wd.findElement(`[data-testid="${tid}"]`);
   if (el === null) {
     evidence.push(`缺控件 ${tid}`);
@@ -615,25 +762,177 @@ async function wdClickTid(wd, tid, evidence) {
     await wd.click(el);
     return true;
   } catch (err) {
-    evidence.push(`控件 ${tid} 点不动：${String(err.message ?? err).slice(0, 140)}`);
+    evidence.push(`控件 ${tid} 点不动：${wdErrText(err)}`);
     return false;
   }
 }
 
-/** MUI Select：点开控件，挑一个选项（默认第一项；给了 prefer 就按文案挑）。 */
-async function wdPickOption(wd, tid, evidence, prefer) {
-  if (!(await wdClickTid(wd, tid, evidence))) return false;
-  await sleep(300);
-  const opt =
-    prefer === undefined
-      ? await wd.waitFor('li[role="option"]', 3000)
-      : (await wd.findByText('li[role="option"]', prefer)) ?? (await wd.waitFor('li[role="option"]', 3000));
-  if (opt === null) {
-    evidence.push(`${tid} 点开后没有可选项`);
-    return false;
+/** 点开一个下拉并读出弹层里的选项（真机证据：选项文案就是"配置里有什么"）。 */
+async function wdOpenSelect(wd, tid, evidence) {
+  await wd.closeMenuIfOpen();
+  const ctl = await wdControlForTid(wd, tid);
+  if (ctl === null) {
+    evidence.push(`缺控件 ${tid}`);
+    return { ok: false, items: [] };
   }
-  await wd.click(opt).catch(() => {});
-  return true;
+  try {
+    await wd.click(ctl);
+  } catch (err) {
+    evidence.push(`「${tid}」点不开：${wdErrText(err)}`);
+    await wd.closeMenuIfOpen();
+    return { ok: false, items: [] };
+  }
+  await sleep(250);
+  let items = await wd.optionItems();
+  if (items.length === 0) {
+    // 弹层动画 / 选项数据还在飞：再给一小会儿
+    await sleep(450);
+    items = await wd.optionItems();
+  }
+  return { ok: true, items };
+}
+
+/** MUI Select（单选）：点开控件，挑一个选项（默认第一项；给了 prefer 就按文案挑）。
+ *  返回**选中的文案**（选不上返回 null）—— 调用方常要拿它当下一个字段的值。 */
+async function wdPickOption(wd, tid, evidence, prefer) {
+  const opened = await wdOpenSelect(wd, tid, evidence);
+  if (!opened.ok) return null;
+  const items = opened.items;
+  if (items.length === 0) {
+    // **空下拉**：如实记录（配置里确实没有这类实体），然后把弹层收掉 —— 不收掉的话它的
+    // backdrop 会让后面每一个控件都报 not interactable，一个根因被放大成一片假失败。
+    // 同时把 DOM 现场量出来：菜单有没有开、控件自己显示的是"必填"还是某个值
+    // （区分"下拉真的空"与"菜单压根没打开/被挡住"）。
+    const dom = await wd
+      .exec(`
+      const el = document.querySelector('[data-testid="' + ${JSON.stringify(tid)} + '"]');
+      return {
+        listboxes: document.querySelectorAll('[role="listbox"]').length,
+        optionLis: document.querySelectorAll('li[role="option"]').length,
+        controlText: el ? (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 120) : null,
+        dialog: document.querySelector('[role="dialog"]') !== null,
+      };
+    `)
+      .catch(() => null);
+    evidence.push(
+      `「${tid}」下拉为空（DOM 实测: ${JSON.stringify(dom)}）→ 配置里没有可用选项；收掉弹层继续`,
+    );
+    await wd.closeMenuIfOpen();
+    return null;
+  }
+  const target = items.find((it) => prefer !== undefined && prefer.test(it.text)) ?? items[0];
+  try {
+    await wd.click(target.id);
+  } catch (err) {
+    evidence.push(`选项「${target.text}」点不动：${wdErrText(err)}`);
+    await wd.closeMenuIfOpen();
+    return null;
+  }
+  await sleep(200);
+  // ★ 单选点完弹层**会自己关**（带退场动画）。先让动画走完再判断：
+  //   在它退场的过程中去"收弹层"是**危险**的（拿到的是正在消失的 listbox，
+  //   真机实测：多服务商场景下这一下之后整个「添加线路」对话框不见了 → 后面全"缺控件"）。
+  if ((await wd.findElement('[role="listbox"]')) !== null && !(await wd.waitGone('[role="listbox"]', 700))) {
+    // 700ms 还在 = 不是退场动画（多选就是不关）→ 这时才动手收
+    await wd.closeMenuIfOpen();
+  }
+  evidence.push(`「${tid}」选中「${target.text}」（弹层共 ${items.length} 项）`);
+  return target.text;
+}
+
+/**
+ * MUI Select（**多选**）：把**已选中但不需要**的项取消掉，只留匹配 `keepRe` 的那些。
+ *
+ * 为什么需要它：策略向导在"选完模型"后会**默认全选**该模型的所有线路（页面 `selectedTouched=false`
+ * 时的 effect）—— 真机实测：step10 留下一条声明 `vision` 的线路之后，全选必然"能力不一致
+ * → 提交被禁用"，想让两条默认能力的线路路由到一起就必须先**取消**那一条。
+ * MUI 多选里对**已选项再点一次 = 取消**。
+ *
+ * 返回保留下来的选项文案（用于证据与"已经选对了"的判断）。
+ */
+async function wdKeepOptions(wd, tid, evidence, keepRe) {
+  const opened = await wdOpenSelect(wd, tid, evidence);
+  if (!opened.ok) return [];
+  const removed = [];
+  for (let i = 0; i < 12; i++) {
+    const items = await wd.optionItems();
+    const target = items.find((it) => it.selected && !keepRe.test(it.text));
+    if (target === undefined) break;
+    try {
+      await wd.click(target.id);
+    } catch (err) {
+      evidence.push(`取消「${target.text}」失败：${wdErrText(err)}`);
+      break;
+    }
+    removed.push(target.text);
+    await sleep(300);
+  }
+  const left = (await wd.optionItems()).filter((it) => it.selected && keepRe.test(it.text));
+  await wd.closeMenuIfOpen();
+  evidence.push(
+    `「${tid}」取消 ${removed.length} 条未匹配项: ${JSON.stringify(removed.map((t) => t.slice(0, 40))).slice(0, 240)}；` +
+      `保留 ${left.length} 条: ${JSON.stringify(left.map((t) => t.text.slice(0, 40))).slice(0, 240)}`,
+  );
+  return left.map((it) => it.text);
+}
+
+/**
+ * MUI Select（**多选**）：弹层打开一次，在里面连点 N 个选项。
+ *
+ * 为什么不能"点一次控件选一项"：`multiple` 的弹层选完**不会关**，第二次去点控件时
+ * 弹层还盖在上面 → WebDriver 直接报 `element click intercepted`（真机实测：step11 只能选上 1 条）。
+ */
+async function wdPickOptions(wd, tid, want, evidence, prefer) {
+  const opened = await wdOpenSelect(wd, tid, evidence);
+  if (!opened.ok) return [];
+  evidence.push(
+    `「${tid}」弹层选项(${opened.items.length}): ${JSON.stringify(opened.items.map((it) => it.text)).slice(0, 320)}`,
+  );
+  const picked = [];
+  for (let i = 0; i < want; i++) {
+    const items = await wd.optionItems();
+    const target = items.find((it) => !it.selected && (prefer === undefined || prefer.test(it.text)));
+    if (target === undefined) {
+      evidence.push(`「${tid}」没有更多可选项（已选 ${picked.length} 条）`);
+      break;
+    }
+    try {
+      await wd.click(target.id);
+    } catch (err) {
+      evidence.push(`选项「${target.text}」点不动：${wdErrText(err)}`);
+      break;
+    }
+    picked.push(target.text);
+    await sleep(300);
+  }
+  await wd.closeMenuIfOpen();
+  evidence.push(`「${tid}」已选 ${picked.length} 条: ${JSON.stringify(picked)}`);
+  return picked;
+}
+
+/**
+ * 直接探测一个下拉：真点开 → 数 `li[role="option"]` → 收掉弹出层。
+ * 只用于**证据**（把"有没有选项"这件事本身量出来），选中仍然走 `wdPickOption`。
+ */
+async function probeSelect(wd, tid, evidence) {
+  const host = await wd.exec(`
+    const el = document.querySelector('[data-testid="' + ${JSON.stringify(tid)} + '"]');
+    if (!el) return { found: false };
+    const r = el.getBoundingClientRect();
+    return { found: true, text: (el.innerText || '').trim().slice(0, 60), w: Math.round(r.width), h: Math.round(r.height) };
+  `);
+  if (!host || host.found !== true) {
+    evidence.push(`下拉 ${tid}: 不存在`);
+    return { found: false };
+  }
+  const opened = await wdOpenSelect(wd, tid, evidence);
+  if (!opened.ok) return { found: true, opened: false };
+  // ★ 只有"弹层真开着"才收（判据 `[role=listbox]`）；收的时候 Esc 只送到 listbox 自己身上，
+  //   绝不用全局 Esc —— 那会连整个 Dialog 一起关掉（真机实测踩到过）。
+  await wd.closeMenuIfOpen();
+  const menu = { count: opened.items.length, texts: opened.items.map((it) => it.text) };
+  evidence.push(`下拉 ${tid}: 现值 ${JSON.stringify(host.text)} · 打开后选项 ${JSON.stringify(menu)}`);
+  return { found: true, opened: true, ...menu };
 }
 
 /** `config` 表里某个 kind 的实体 id 列表。 */
@@ -708,47 +1007,512 @@ async function step9(wd) {
   else record("step9", "FAIL", `新增后不一致：列表=${inList} 落库=${landed}`, evidence);
 }
 
-async function step10(wd) {
-  const evidence = [];
-  const page = await gotoPage(wd, "#/channels");
+// ================================================================ step10 / step11 的**数据前提**
+//
+// 「添加线路」「添加路由」两个向导的下拉是**读配置**的：配置里没有的实体，下拉就如实为空 ——
+// 这是产品语义，**不是缺陷**。所以这两步开跑前必须确认前提存在：全流程跑（step2…step9）
+// 会经界面把 provider / credential / model / lane 都造出来；`--only step10,step11` 这种
+// 跳步跑法没有前提，这里就**先经真界面把前提补齐**。全程只用真控件（点 / 填 / 提交），
+// 并且把"造了什么、走的哪条界面路径"逐条写进证据。
+
+/** 读 config 表的 kind 计数（决定要不要补前提）。 */
+function configKinds(tag) {
+  const dump = dumpScratchDb(tag);
+  return { dump, kinds: configEntityKinds(dump) };
+}
+
+/** 一条 channel 的 `model`（从 config 行的 json 里读；读不出来返回 null）。 */
+function channelModelOf(row) {
+  try {
+    return JSON.parse(String(row.json)).model ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 经 /models 的「添加模型」向导真建一个模型。 */
+async function addModelViaDialog(wd, evidence, id = "ta-e2e-m-add") {
+  const page = await gotoPage(wd, "#/models");
   if (page === null) {
-    record("step10", "FAIL", "/channels 页面没渲染出来", evidence);
-    return;
+    evidence.push("/models 没渲染出来，建不了模型");
+    return false;
+  }
+  if (!(await wdClickTid(wd, "models-add-open", evidence))) return false;
+  await wdFillByTid(wd, "models-add-id", id, evidence);
+  await wdFillByTid(wd, "models-add-aliases", `${id}-alias`, evidence);
+  await wdClickTid(wd, "models-add-submit", evidence);
+  await sleep(1200);
+  const { kinds } = configKinds("prereq-model-write");
+  evidence.push(`建模型后 config kind 计数 = ${JSON.stringify(kinds)}`);
+  return (kinds.model ?? 0) > 0;
+}
+
+/** 经 /network 的「新建 / 覆盖线路」表单真建一条线路（网络未配置时那一区不渲染，如实记录）。 */
+async function addLaneViaForm(wd, evidence, id = "ta-e2e-lane", name = "TA E2E 线路") {
+  const page = await gotoPage(wd, "#/network");
+  if (page === null) {
+    evidence.push("/network 没渲染出来，建不了线路");
+    return false;
   }
   const ids = await wd.probeTestIds();
-  evidence.push(`/channels 命中 data-testid: ${ids.slice(0, 35).join(", ")}`);
+  if (!ids.includes("network-lanes-add-id")) {
+    evidence.push(
+      `/network 没有线路表单（network-* testid: ${ids.filter((t) => t.startsWith("network")).join(", ") || "（无）"}）` +
+        "—— 网络未配置时那一区按产品语义不渲染，先要有订阅",
+    );
+    return false;
+  }
+  await wdFillByTid(wd, "network-lanes-add-id", id, evidence);
+  await wdFillByTid(wd, "network-lanes-add-name", name, evidence);
+  await wdClickTid(wd, "network-lanes-add-submit", evidence);
+  await sleep(1200);
+  const { kinds } = configKinds("prereq-lane-write");
+  evidence.push(`建线路后 config kind 计数 = ${JSON.stringify(kinds)}`);
+  return (kinds.lane ?? 0) > 0;
+}
+
+/**
+ * 补齐 step10 / step11 的前提：provider + credential（首启向导一次 apply —— 界面上**只有**
+ * 它带密钥字段，密钥会派生 `<provider>-default` 凭据）、model（/models 向导）、lane（/network 表单）。
+ */
+async function ensureAddPrereqs(wd, fixture, evidence) {
+  const { kinds } = configKinds("prereq-before");
+  evidence.push(`前提探测：config kind 计数 = ${JSON.stringify(kinds)}`);
+  const made = [];
+  if ((kinds.provider ?? 0) === 0 || (kinds.credential ?? 0) === 0) {
+    const wiz = await runOnboardingWizard(wd, fixture, evidence);
+    if (!wiz.ok) {
+      evidence.push(`首启向导也不可用：${wiz.reason}`);
+      return { ok: false, made };
+    }
+    made.push("provider+credential（首启向导：真表单 + 真 apply）");
+  }
+  const s1 = configKinds("prereq-provider");
+  if ((s1.kinds.model ?? 0) === 0) {
+    if (await addModelViaDialog(wd, evidence)) made.push("model（/models 向导 models-add-*）");
+  }
+  const s2 = configKinds("prereq-model");
+  if ((s2.kinds.lane ?? 0) === 0) {
+    if (await addLaneViaForm(wd, evidence)) made.push("lane（/network「新建 / 覆盖线路」表单 network-lanes-add-*）");
+  }
+  const final = configKinds("prereq-after");
+  evidence.push(`前提补齐动作: ${made.length > 0 ? made.join("；") : "不需要（配置里已经有了）"}`);
+  evidence.push(`前提补齐后 config kind 计数 = ${JSON.stringify(final.kinds)}`);
+  const ok =
+    (final.kinds.provider ?? 0) > 0 && (final.kinds.credential ?? 0) > 0 && (final.kinds.model ?? 0) > 0;
+  return { ok, made, kinds: final.kinds };
+}
+
+/**
+ * MUI Switch / Checkbox 的 `data-testid` 落在**根 span** 上，内层才是 `input[type=checkbox]`
+ * （与 `/models` 的 `models-add-expose` 同形状）。`wdFillByTid` 对 checkbox 无效 —— 必须真点。
+ * 按"当前值 → 目标值"点，点完**回读真实 checked** 作为证据（不靠假设）。
+ */
+async function wdSetSwitch(wd, tid, target, evidence) {
+  const read = () =>
+    wd.exec(`
+      const host = document.querySelector('[data-testid="' + ${JSON.stringify(tid)} + '"]');
+      if (host === null) return { found: false };
+      const input = host.matches('input') ? host : host.querySelector('input[type="checkbox"],input');
+      return { found: true, checked: input === null ? null : input.checked === true };
+    `);
+  const st = await read();
+  if (st === null || st.found !== true) {
+    evidence.push(`开关 ${tid}: 不存在（能力块没接？）`);
+    return false;
+  }
+  if (st.checked === target) {
+    evidence.push(`开关 ${tid}: 已经是 ${target ? "开" : "关"}（无需点）`);
+    return true;
+  }
+  const el = await wd.findElement(`[data-testid="${tid}"]`);
+  if (el === null) {
+    evidence.push(`开关 ${tid}: 找不到元素`);
+    return false;
+  }
+  try {
+    await wd.click(el);
+  } catch (err) {
+    evidence.push(`开关 ${tid} 点不动：${String(err.message ?? err).slice(0, 120)}`);
+    return false;
+  }
+  await sleep(250);
+  const after = await read();
+  evidence.push(`开关 ${tid}: 点一次后 checked=${JSON.stringify(after === null ? null : after.checked)}（目标 ${target}）`);
+  return after !== null && after.checked === target;
+}
+
+/** 把界面上的文案当**字面量**匹配（文案里带 `.` / `-` / 括号时不能当正则）。 */
+function reEsc(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 从 `config` 里挑一对**真的成对存在**的 `(provider, credential)`。
+ *
+ * 为什么必须挑成对的：界面上的凭据下拉是**按 provider 过滤**的（`credentialOptionsFor`），
+ * 而服务商下拉的文案是**名称** —— 真机实测有 3 个服务商、其中两个同名，挑到"没有凭据的那个"
+ * 之后，凭据下拉如实为空（0 项），而凭据是必填 → 后面每一步都是连带失败。
+ * 这里直接读 config（只读证据）挑一对，不靠猜文案。
+ */
+function providerCredentialPair(dump, preferRe, credentialRe) {
+  const rows = (kind) =>
+    (dump.config ?? [])
+      .filter((r) => r.kind === kind)
+      .map((r) => {
+        try {
+          return JSON.parse(String(r.json));
+        } catch {
+          return null;
+        }
+      })
+      .filter((x) => x !== null);
+  const providers = rows("provider");
+  const credentials = rows("credential");
+  // ① 指定了凭据 → 用**它自己的 provider**（这样"第二条线换一份凭据"才真的换得动）
+  if (credentialRe !== undefined) {
+    const hit = credentials.find(
+      (c) => credentialRe.test(String(c.label ?? "")) || credentialRe.test(String(c.id)),
+    );
+    if (hit !== undefined) {
+      const owner = providers.find((p) => p.id === hit.provider);
+      if (owner !== undefined) return { p: owner, c: hit };
+    }
+  }
+  const pairs = providers
+    .map((p) => ({ p, c: credentials.find((c) => c.provider === p.id) }))
+    .filter((x) => x.c !== undefined);
+  if (pairs.length === 0) return null;
+  const wanted =
+    preferRe === undefined
+      ? pairs
+      : pairs.filter((x) => preferRe.test(String(x.p.id)) || preferRe.test(String(x.p.name ?? "")));
+  return wanted[0] ?? pairs[0];
+}
+
+/**
+ * 经 /channels 的「添加线路」向导**真建 / 真覆盖一条线路**（前提：provider/credential/model 都在）。
+ *
+ * 返回 `{ id, error }`：
+ * - `id` = `config` 里那条线路的 id；**null 表示没落库**（提交被本地预检或后端拒了）
+ * - `error` = `channels-add-error` 的原文（后端 TA 码 + details 就靠它取证；成功时为 null）
+ *
+ * `opts`：
+ * - `preferProvider` / `preferCredential` / `preferModel`：下拉选项的文案正则
+ * - `capabilities`：`{ vision?: boolean }` —— 真点 `channels-add-vision` 这些开关
+ * - `priceInput` / `priceOutput` / `priceCached`：计费三项（非空才触发 `pricing_upsert`）
+ *
+ * **结束时一定关掉对话框**：不关的话下一次调用点 `channels-add-open` 会被 Dialog 的
+ * backdrop 拦下（`element click intercepted`），一个收尾疏漏会变成下游的一串假失败。
+ */
+async function addChannelViaDialog(wd, evidence, opts = {}) {
+  const page = await gotoPage(wd, "#/channels");
+  if (page === null) {
+    evidence.push("/channels 没渲染出来");
+    return { id: null, error: null };
+  }
+  const ids = await wd.probeTestIds();
   if (!ids.includes("channels-add-open")) {
-    record("step10", "SKIP", "界面缺入口：channels-add-open 不存在（线路添加向导还没接）", evidence);
+    evidence.push("界面缺入口：channels-add-open 不存在（线路添加向导还没接）");
+    return { id: null, error: null };
+  }
+  if (!(await wdClickTid(wd, "channels-add-open", evidence))) return { id: null, error: null };
+  await shot(wd, "channels-add-opened");
+  // ★ 服务商下拉的文案是**名称**（同一个名字可能对应多个 id），而凭据下拉是按 provider 过滤的：
+  //   挑到"没有凭据"的那个服务商，凭据下拉就如实为空（0 项），后面每一步都是连带失败。
+  //   所以这里从 config 里挑一对**真的成对存在**的 (provider, credential)，按**名称/标签**去选。
+  const pairDump = configKinds("channels-add-pair").dump;
+  const pair = providerCredentialPair(pairDump, opts.preferProvider ?? /ta-e2e|TA E2E|p1/i, opts.preferCredential);
+  if (pair === null) {
+    evidence.push("config 里找不到任何 (provider, credential) 成对的组合 —— 凭据是必填项，这条线建不出来");
+  } else {
+    evidence.push(
+      `成对的服务商/凭据（读 config）: provider=${JSON.stringify(pair.p.id)}「${String(pair.p.name ?? "")}」/ credential=${JSON.stringify(pair.c.id)}「${String(pair.c.label ?? "")}」`,
+    );
+  }
+  const providerRe =
+    opts.preferProvider ??
+    (pair === null ? undefined : new RegExp(reEsc(pair.p.name ?? pair.p.id), "i"));
+  // 凭据下拉的文案是**标签**（不是 id）：所以按**选中的那一对**里的标签去选，
+  // 保证"换一份凭据建第二条线"真的换得动（否则会退回第一项、覆盖掉同一条线）。
+  const credentialRe =
+    pair === null ? opts.preferCredential : new RegExp(reEsc(pair.c.label ?? pair.c.id), "i");
+  // 先量下拉里有什么（证据），再按正常路径选。
+  await probeSelect(wd, "channels-add-provider", evidence);
+  await probeSelect(wd, "channels-add-lane", evidence);
+  await wdPickOption(wd, "channels-add-provider", evidence, providerRe);
+  await wdPickOption(wd, "channels-add-credential", evidence, credentialRe);
+  const pickedModel = await wdPickOption(wd, "channels-add-model", evidence, opts.preferModel ?? /ta-e2e-m-add/i);
+  await wdFillByTid(wd, "channels-add-upstreamModel", opts.upstream ?? pickedModel ?? "ta-e2e-m-add", evidence);
+  // 网络下拉的文案是线路**名称**（不一定带"直连"字样）：选第一项即可，空下拉就按继承走（lane 可空）。
+  await wdPickOption(wd, "channels-add-lane", evidence);
+  // 上游能力声明（[docs/17 §2]）：不点就是契约默认（全 false / context_tokens 0 / modalities ["text"]）。
+  if (opts.capabilities !== undefined) {
+    const caps = opts.capabilities;
+    for (const [field, tid] of [
+      ["vision", "channels-add-vision"],
+      ["tools", "channels-add-tools"],
+      ["reasoning", "channels-add-reasoning"],
+    ]) {
+      if (caps[field] === true) await wdSetSwitch(wd, tid, true, evidence);
+    }
+    if (caps.contextTokens !== undefined) {
+      await wdFillByTid(wd, "channels-add-contextTokens", String(caps.contextTokens), evidence);
+    }
+    if (caps.modalities !== undefined) {
+      await wdFillByTid(wd, "channels-add-modalities", caps.modalities, evidence);
+    }
+  }
+  // 计费（美元 / 百万 token，可留空 = 不计价）
+  for (const [field, tid] of [
+    ["priceInput", "channels-add-price-input"],
+    ["priceOutput", "channels-add-price-output"],
+    ["priceCached", "channels-add-price-cached"],
+  ]) {
+    if (opts[field] !== undefined) await wdFillByTid(wd, tid, String(opts[field]), evidence);
+  }
+  await wdFillByTid(wd, "channels-add-priority", "10", evidence);
+  await wdFillByTid(wd, "channels-add-weight", "1", evidence);
+  await shot(wd, "channels-add-filled");
+  await wdClickTid(wd, "channels-add-submit", evidence);
+  await sleep(1500);
+  await shot(wd, "channels-add-after-submit");
+  const dump = dumpScratchDb("channels-add");
+  const channels = (dump.config ?? []).filter((r) => r.kind === "channel");
+  evidence.push(`config kind 计数: ${JSON.stringify(configEntityKinds(dump))}`);
+  const errorText = await wd.textOf('[data-testid="channels-add-error"]');
+  const error = errorText === null ? null : errorText.replace(/\s+/g, " ").trim();
+  if (channels.length === 0) {
+    for (const t of ["channels-add-error", "channels-add-issues"]) {
+      const txt = await wd.textOf(`[data-testid="${t}"]`);
+      if (txt !== null) evidence.push(`${t}: ${JSON.stringify(txt.replace(/\s+/g, " ").slice(0, 300))}`);
+    }
+    await wd.closeDialog();
+    return { id: null, error };
+  }
+  const id = String(channels[channels.length - 1].entity_id);
+  if (error !== null) evidence.push(`channels-add-error（有错误但库里有线路）: ${JSON.stringify(error)}`);
+  await wd.closeDialog();
+  return { id, error };
+}
+
+/**
+ * 让"某个模型有 ≥2 条线路"成立 —— 能力一致性只有 **≥2 条** 时才会比对（`compareCapabilities`）。
+ * 线路 id 由 `provider × credential × model` 派生，所以第二条必须换一份**凭据**：
+ * 走 /providers 的「添加密钥」向导真表单造一份，再用 /channels 向导建第二条线。
+ */
+async function ensureSecondChannelForModel(wd, evidence, model) {
+  const ofModel = (dump) =>
+    (dump.config ?? []).filter((r) => r.kind === "channel" && channelModelOf(r) === model);
+  let { dump } = configKinds("policy-prereq-before");
+  const first = ofModel(dump)[0];
+  if (first === undefined) {
+    evidence.push(`配置里没有 model=${model} 的线路，无法做能力一致性比对`);
+    return false;
+  }
+  let channel = null;
+  try {
+    channel = JSON.parse(String(first.json));
+  } catch {
+    /* 读不出来就不换凭据，下面会如实返回 false */
+  }
+  if (channel === null) return false;
+  if (ofModel(dump).length >= 2) {
+    evidence.push(`model=${model} 已经有 ${ofModel(dump).length} 条线路，不用再建`);
+    return true;
+  }
+
+  // ① 第二份凭据（同一服务商、不同 id）：/providers 的「添加密钥」向导
+  const credId = "ta-e2e-cred-2";
+  const page = await gotoPage(wd, "#/providers");
+  if (page === null) {
+    evidence.push("/providers 没渲染出来，造不了第二份凭据");
+    return false;
+  }
+  if (!(await wdClickTid(wd, "credentials-add-open", evidence))) return false;
+  await wdFillByTid(wd, "credentials-add-id", credId, evidence);
+  await wdFillByTid(wd, "credentials-add-label", "TA E2E 密钥 2", evidence);
+  await wdPickOption(wd, "credentials-add-provider", evidence, new RegExp(String(channel.provider), "i"));
+  await wdFillByTid(wd, "credentials-add-secret", "sk-ta-e2e-secret-2", evidence);
+  await wdClickTid(wd, "credentials-add-submit", evidence);
+  await sleep(1500);
+  await shot(wd, "policy-prereq-credential");
+  await wd.closeDialog();
+  ({ dump } = configKinds("policy-prereq-credential"));
+  const credOk = configIds(dump, "credential").includes(credId);
+  evidence.push(`第二份凭据 ${credId} 落库=${credOk}（config kind 计数 = ${JSON.stringify(configEntityKinds(dump))}）`);
+  if (!credOk) return false;
+
+  // ② 用这份凭据建第二条线（同一个模型）
+  //    ⚠ 注意：这里必须按**凭据的 label**挑，不能按 id 挑 —— 下拉里显示的是 label
+  //    （`credentials-add-label`），`wdPickOption` 的 `prefer` 是拿正则去比选项文案的；
+  //    按 id 挑会匹配不上，然后**退化为第一项**（= 第一份凭据），于是派生出的 channel id
+  //    与第一条完全相同 —— upsert 覆盖同一条，同模型永远只有 1 条线路
+  //    （第 70 轮实测踩到过：`model=... 的线路数 = 1`，能力一致性压根不会被比对）。
+  const made = await addChannelViaDialog(wd, evidence, {
+    preferProvider: new RegExp(String(channel.provider), "i"),
+    preferCredential: /密钥 2/,
+    preferModel: new RegExp(model, "i"),
+  });
+  ({ dump } = configKinds("policy-prereq-channel2"));
+  const n = ofModel(dump).length;
+  evidence.push(`第二条线路 id=${JSON.stringify(made.id)}（error=${JSON.stringify(made.error)}），model=${model} 的线路数 = ${n}`);
+  return n >= 2;
+}
+
+async function step10(wd, fixture) {
+  const evidence = [];
+  // ★ 前提：四个下拉都读配置。缺前提就**先经界面造出来**（空下拉是数据前提，不是产品缺陷）。
+  const prereq = await ensureAddPrereqs(wd, fixture, evidence);
+  if (!prereq.ok) {
+    record("step10", "SKIP", "界面缺前提：配置里没有服务商/凭据/模型，且经界面也造不出来（见证据）", evidence);
     return;
   }
+  // 先量一下 `/network` 的线路区现状：`lane_list` 有没有把已有的线路读出来？这决定了
+  // 后面"网络下拉没有可选项"是**接口/缓存缺陷**还是**配置里真的没有线路**。
+  await gotoPage(wd, "#/network");
+  const laneState = await wd.exec(`
+    return {
+      table: document.querySelector('[data-testid="network-lanes-table"]') !== null,
+      rows: document.querySelectorAll('[data-testid="network-lane-row"]').length,
+      empty: document.querySelector('[data-testid="network-lanes-empty"]') !== null,
+      error: document.querySelector('[data-testid="network-lanes-error"]')?.innerText ?? null,
+      setupOnly: document.querySelector('[data-testid="network-lanes-setup"]') !== null,
+    };
+  `);
+  evidence.push(`/network 线路区现状（诊断 lane_list）: ${JSON.stringify(laneState)}`);
+
+  // 能力块与计费块是 [docs/17 §3.3] 的**必需控件**（用户硬要求③⑤）：缺一个就是没交付。
+  const wantTids = [
+    "channels-add-vision",
+    "channels-add-tools",
+    "channels-add-reasoning",
+    "channels-add-contextTokens",
+    "channels-add-modalities",
+    "channels-add-price-input",
+    "channels-add-price-output",
+    "channels-add-price-cached",
+  ];
+  await gotoPage(wd, "#/channels");
+  // ★ 这 8 个控件全在 `ChannelAddDialog` 里，而 MUI `Dialog open={false}` **整棵子树都不在 DOM 里** ——
+  //   所以必须在**打开对话框之后**再探这些 testid。真机实测（同一构建、同一数据）：
+  //   对话框关着时命中 0/8，打开后 8/8。之前在这里"关着探"得到的是**假失败**
+  //   （报"界面缺能力块/计费块控件"，其实控件都在，只是对话框没开）。
   if (!(await wdClickTid(wd, "channels-add-open", evidence))) {
     record("step10", "FAIL", "点不开「添加线路」", evidence);
     return;
   }
-  await shot(wd, "step10-form-opened");
-  // 服务商 / 凭据 / 模型 / 网络 是下拉：挑一个（优先挑 E2E 自己造的那些）
-  await wdPickOption(wd, "channels-add-provider", evidence, /ta-e2e|TA E2E|p1/i);
-  await wdPickOption(wd, "channels-add-credential", evidence);
-  await wdPickOption(wd, "channels-add-model", evidence, /ta-e2e-m-add/i);
-  await wdFillByTid(wd, "channels-add-upstreamModel", "ta-e2e-m-add", evidence);
-  await wdPickOption(wd, "channels-add-lane", evidence, /直连|direct/i);
-  await wdFillByTid(wd, "channels-add-priority", "10", evidence);
-  await wdFillByTid(wd, "channels-add-weight", "1", evidence);
-  await shot(wd, "step10-form-filled");
-  await wdClickTid(wd, "channels-add-submit", evidence);
-  await sleep(1500);
-  await shot(wd, "step10-after-submit");
-  const dump = dumpScratchDb("step10");
-  evidence.push(`config kind 计数: ${JSON.stringify(configEntityKinds(dump))}`);
-  const channels = (dump.config ?? []).filter((r) => r.kind === "channel");
-  evidence.push(`config(kind=channel): ${JSON.stringify(channels).slice(0, 700)}`);
-  const landed = channels.length > 0;
-  if (landed) record("step10", "PASS", `线路经真界面（/channels 向导）新增并落库（${channels.length} 条）`, evidence);
-  else record("step10", "FAIL", "点了保存但 config 表里没有 channel", evidence);
+  await sleep(700);
+  const ids10 = await wd.probeTestIds();
+  const missingTids = wantTids.filter((t) => !ids10.includes(t));
+  evidence.push(`能力块 + 计费块 testid（打开对话框后实测）: 应有 ${wantTids.length} 个，缺 ${JSON.stringify(missingTids)}`);
+  // 探完关掉：下面 `addChannelViaDialog` 要从"点开入口"开始走同一条真路径
+  await wd.closeDialog();
+  if (missingTids.length > 0) {
+    record("step10", "FAIL", `界面缺能力块/计费块控件（${missingTids.join(", ")}）`, evidence);
+    return;
+  }
+
+  // ① 第一条线路：**显式声明 vision / context_tokens / modalities** + 计费三项
+  //    （计费非空 → `channel_upsert` 成功后自动触发 `pricing_upsert`）。
+  //
+  //    为什么把"声明能力"放在**第一次**建线时做，而不是回头再 upsert 一次第二条：
+  //    第 70 轮实测过，多插一次"回头改能力"的向导流程会踩 MUI 弹层/Dialog 的时序
+  //    （`channels-add-credential` 那一步探到整个对话框已经不在 DOM 里 → 之后所有控件"缺控件"）。
+  //    覆盖的东西完全一样：同一模型下**一条声明了 vision、一条用契约默认**，
+  //    差别只在于少走一次界面往返。真机不再依赖那次时序。
+  const first = await addChannelViaDialog(wd, evidence, {
+    capabilities: { vision: true, contextTokens: 200000, modalities: "text,image" },
+    priceInput: "1.5",
+    priceOutput: "6",
+    priceCached: "0.15",
+  });
+  if (first.id === null) {
+    record("step10", "FAIL", "点了保存但 config 表里没有 channel", evidence);
+    return;
+  }
+  const madeId = first.id;
+  let { dump } = configKinds("step10-first");
+  const firstRow = (dump.config ?? []).find((r) => r.kind === "channel" && String(r.entity_id) === madeId);
+  const model = firstRow === undefined ? null : channelModelOf(firstRow);
+  if (model === null) {
+    record("step10", "FAIL", `建出来的线路读不到 model（id=${madeId}）`, evidence);
+    return;
+  }
+  evidence.push(`第一条线路 id=${madeId}，model=${JSON.stringify(model)}（声明 vision=true + context_tokens=200000）`);
+
+  // ② 同模型第二条线路：**换一份凭据**才可能有第二个 channel id（id = provider×credential×model），
+  //    这条**不碰能力块** → 契约默认能力。于是"能力不一致"那一对线路就位（step11/step15 要用）。
+  const two = await ensureSecondChannelForModel(wd, evidence, model);
+  if (!two) evidence.push("未能让同模型有 ≥2 条线路（能力一致性比对与能力规则都依赖这一点）");
+
+  // ④ 列表这一侧：回到 /channels 看列表里有没有第一条
+  await gotoPage(wd, "#/channels");
+  const listTids = await wd.probeTestIds();
+  const listText = await wd.pageText();
+  const inList = listTids.includes("channels-row") && listText.includes(madeId);
+  evidence.push(
+    `回到 /channels：channels-row 存在=${listTids.includes("channels-row")}，列表文本含 ${madeId}=${listText.includes(madeId)}`,
+  );
+
+  // ⑤ 落库断言：两条同模型线路（其中一条 `"vision":true`）+ 计费进了 pricing section
+  const after = configKinds("step10-after");
+  const channels = (after.dump.config ?? []).filter((r) => r.kind === "channel");
+  const sameModel = channels.filter((r) => channelModelOf(r) === model);
+  const visionRows = sameModel.filter((r) => /"vision"\s*:\s*true/.test(String(r.json)));
+  evidence.push(`config(kind=channel) 共 ${channels.length} 条；model=${model} 的 ${sameModel.length} 条；声明 vision 的 ${visionRows.length} 条`);
+  evidence.push(`config(kind=channel) 原文: ${JSON.stringify(sameModel).slice(0, 700)}`);
+  const pricingRow = (after.dump.config ?? []).find(
+    (r) => r.kind === "section" && String(r.entity_id) === "pricing",
+  );
+  const pricingJson = pricingRow === undefined ? "" : String(pricingRow.json);
+  const priceLanded = /"input"\s*:\s*1\.5/.test(pricingJson);
+  evidence.push(`定价 section 里有 input=1.5: ${priceLanded}（原文片段: ${JSON.stringify(pricingJson.slice(0, 400))}）`);
+
+  const ok = inList && sameModel.length >= 2 && visionRows.length >= 1 && priceLanded;
+  if (ok) {
+    record(
+      "step10",
+      "PASS",
+      `线路向导：能力块/计费块齐全；两条同模型线路落库（其中 1 条 vision=true）+ 定价落库（input=1.5）`,
+      evidence,
+    );
+  } else {
+    record(
+      "step10",
+      "FAIL",
+      `线路落地不完整：列表=${inList} 同模型线路数=${sameModel.length}(需要 2) vision 条数=${visionRows.length}(需要 1) 定价=${priceLanded}`,
+      evidence,
+    );
+  }
 }
 
-async function step11(wd) {
+async function step11(wd, fixture) {
   const evidence = [];
+  const prereq = await ensureAddPrereqs(wd, fixture, evidence);
+  if (!prereq.ok) {
+    record("step11", "SKIP", "界面缺前提：配置里没有服务商/凭据/模型，且经界面也造不出来（见证据）", evidence);
+    return;
+  }
+  // `--only step11` 时库里可能一条线路都没有 → 先用同一条界面路径建一条（否则"没有候选线路"压根谈不上路由）。
+  let { dump } = configKinds("step11-prereq");
+  if ((dump.config ?? []).filter((r) => r.kind === "channel").length === 0) {
+    evidence.push("配置里还没有任何线路 → 先经 /channels 向导建一条（与 step10 同一条界面路径）");
+    await addChannelViaDialog(wd, evidence);
+    ({ dump } = configKinds("step11-prereq-channel"));
+  }
+  const channels = (dump.config ?? []).filter((r) => r.kind === "channel");
+  const model = channels.map(channelModelOf).find((m) => m !== null && m !== undefined) ?? null;
+  evidence.push(`候选线路 ${channels.length} 条，取 model=${JSON.stringify(model)} 做路由`);
+  if (model === null) {
+    record("step11", "FAIL", "配置里没有可用的模型/线路（经界面也建不出来）", evidence);
+    return;
+  }
+  // 「≥2 条才比对」是页面的规则：只有一条线路时能力一致性**不会被比对**，
+  // 所以这里先让同模型的线路凑够两条，才能真的走到"比对"那一步。
+  const two = await ensureSecondChannelForModel(wd, evidence, model);
+  if (!two) evidence.push("未能让同模型有 ≥2 条线路 → 能力一致性不会被比对（页面规则），下面会如实说明");
+
   const page = await gotoPage(wd, "#/policies");
   if (page === null) {
     record("step11", "FAIL", "/policies 页面没渲染出来", evidence);
@@ -765,42 +1529,368 @@ async function step11(wd) {
     return;
   }
   await shot(wd, "step11-form-opened");
-  await wdPickOption(wd, "policies-add-model", evidence, /ta-e2e-m-add/i);
-  await sleep(500);
-  // 多选线路：用户的原话是"暴露 deepseek → 指向 1、2"，所以这里**要选两条**才能进到
-  // "能力不一致 → 禁用提交并显示差异"那个分支（界面规则是"选中 ≥2 条才比对"）。
-  // 选不到第二条时如实记录，不假装进过那个分支。
-  const picked = [];
-  for (let i = 0; i < 2; i++) {
-    const before = await wd.pageText();
-    const ok = await wdPickOption(wd, "policies-add-channels", evidence);
-    await sleep(400);
-    if (!ok) break;
-    const after = await wd.pageText();
-    picked.push(after === before ? `第${i + 1}次点选后页面无变化（可能没选上）` : `第${i + 1}次点选有效`);
-  }
-  evidence.push(`线路多选尝试: ${JSON.stringify(picked)}`);
-  const mismatchText = await wd.pageText();
-  const mismatchShown = /能力不一致|capabilities differ/i.test(mismatchText);
-  evidence.push(`是否显示能力不一致提示: ${mismatchShown}`);
+  await wdPickOption(wd, "policies-add-model", evidence, new RegExp(model, "i"));
+  await sleep(600);
+  // 多选线路：**弹层打开一次，在里面连点**（MUI multiple 选完不关弹层）。
+  const picked = await wdPickOptions(wd, "policies-add-channels", 3, evidence);
+  // id / 名称：页面在"选模型"时会按模型派生（可改）。派生不出来就如实填进去（它们是必填项）。
+  const idNow = await wd.attrOf('[data-testid="policies-add-id"]', "value");
+  const nameNow = await wd.attrOf('[data-testid="policies-add-name"]', "value");
+  evidence.push(`id/名称现值: id=${JSON.stringify(idNow)} name=${JSON.stringify(nameNow)}`);
+  if (idNow === null || idNow === "") await wdFillByTid(wd, "policies-add-id", `pol-${model}`, evidence);
+  if (nameNow === null || nameNow === "") await wdFillByTid(wd, "policies-add-name", model, evidence);
+
+  const capText = await wd.textOf('[data-testid="policies-add-capabilities"]');
+  const capFlat = (capText ?? "").replace(/\s+/g, " ").slice(0, 300);
+  const nowTids = await wd.probeTestIds();
+  const mismatchPresent = nowTids.includes("policies-add-capability-mismatch");
+  const diffPresent = nowTids.some((t) => t.startsWith("policies-add-capability-diff-"));
+  const consistentShown = /能力一致|identical capabilities/i.test(capFlat);
+  evidence.push(`能力区块原文: ${JSON.stringify(capFlat)}`);
+  evidence.push(
+    `能力比对：已选线路 ${picked.length} 条；不一致元素存在=${mismatchPresent}，逐字段差异元素存在=${diffPresent}，显示"能力一致"=${consistentShown}`,
+  );
   await shot(wd, "step11-form-filled");
-  const disabled = await wd.exec(`
+  const submit = await wd.exec(`
     const b = document.querySelector('[data-testid="policies-add-submit"]');
     return b ? { found: true, disabled: b.disabled === true || b.getAttribute("aria-disabled") === "true" } : { found: false };
   `);
-  evidence.push(`提交按钮: ${JSON.stringify(disabled)}`);
-  if (disabled && disabled.found && disabled.disabled === true && mismatchShown) {
-    record("step11", "PASS", "能力不一致时界面禁用提交并显示差异（用户硬规则）", evidence);
+  evidence.push(`提交按钮: ${JSON.stringify(submit)}`);
+
+  // ① 能力不一致：界面必须**禁用提交并显示差异**（用户硬规则），而且点了不落库。
+  if (mismatchPresent || diffPresent) {
+    if (!submit.found || submit.disabled !== true) {
+      record("step11", "FAIL", `显示了能力不一致却没有禁用提交（submit=${JSON.stringify(submit)}）`, evidence);
+      return;
+    }
+    await wdClickTid(wd, "policies-add-submit", evidence); // 真点一次：禁用的话这一下不该生效
+    await sleep(600);
+    const after = dumpScratchDb("step11-mismatch");
+    const landed = (after.config ?? []).some((r) => r.kind === "policy");
+    if (landed) record("step11", "FAIL", "能力不一致时提交竟然落库了（界面禁用形同虚设）", evidence);
+    else record("step11", "PASS", "能力不一致：界面显示逐字段差异并禁用提交，点了也不落库（用户硬规则）", evidence);
+    return;
+  }
+
+  // ② 能力一致（或只有一条线路 → 页面按规则不比对）：提交必须可用，并且真的落库 + 列表出现。
+  if (!submit.found) {
+    record("step11", "FAIL", "找不到提交按钮 policies-add-submit", evidence);
+    return;
+  }
+  if (submit.disabled === true) {
+    record("step11", "FAIL", "能力一致/未比对时提交按钮却是禁用的（id、名称或线路没填全？见证据）", evidence);
     return;
   }
   await wdClickTid(wd, "policies-add-submit", evidence);
   await sleep(1500);
-  const dump = dumpScratchDb("step11");
-  evidence.push(`config kind 计数: ${JSON.stringify(configEntityKinds(dump))}`);
-  const policies = (dump.config ?? []).filter((r) => r.kind === "policy");
-  const landed = policies.length > 0;
-  if (landed) record("step11", "PASS", `路由经真界面（/policies 向导）新增并落库（${policies.length} 条）`, evidence);
-  else record("step11", "FAIL", "点了保存但 config 表里没有 policy", evidence);
+  await shot(wd, "step11-after-submit");
+  const dump2 = dumpScratchDb("step11");
+  const policies = (dump2.config ?? []).filter((r) => r.kind === "policy");
+  evidence.push(`config kind 计数: ${JSON.stringify(configEntityKinds(dump2))}`);
+  evidence.push(`config(kind=policy): ${JSON.stringify(policies).slice(0, 500)}`);
+  if (policies.length === 0) {
+    const err = await wd.textOf('[data-testid="policies-add-error-text"]');
+    if (err !== null) evidence.push(`policies-add-error: ${JSON.stringify(err)}`);
+    record("step11", "FAIL", "点了保存但 config 表里没有 policy", evidence);
+    return;
+  }
+  const pid = String(policies[policies.length - 1].entity_id);
+  await gotoPage(wd, "#/policies");
+  const listTids = await wd.probeTestIds();
+  const listText = await wd.pageText();
+  const inList = listTids.includes("policies-row") && listText.includes(pid);
+  evidence.push(
+    `回到 /policies：policies-row 存在=${listTids.includes("policies-row")}，列表文本含 ${pid}=${listText.includes(pid)}`,
+  );
+  const note = two
+    ? "能力一致性已按规则比对（≥2 条线路，结论见证据里的能力区块原文）"
+    : "只有一条线路，页面按规则不做能力比对";
+  if (inList) record("step11", "PASS", `路由经真界面新增：列表与 config 表都出现（id=${pid}）；${note}`, evidence);
+  else record("step11", "FAIL", `落库=true 但列表里看不到新路由（id=${pid}）`, evidence);
+}
+
+// ---------------------------------------------------------------- step14 数据安全回归
+
+/**
+ * **数据安全回归：设置页「校验并应用」之后，之前建的线路必须还在。**
+ *
+ * 为什么必须有这一步（真机 E2E 抓到过用户可见的数据丢失）：
+ * `config_apply` 是**整份覆盖**（`config_store.rs::write_rows` 先 `DELETE FROM config` 再按传入的
+ * `ConfigDoc` 插入），而设置页是"读到什么就整份写回什么"。如果前端手里那份 `qk.config` 是旧的
+ * （`staleTime: 5_000`），提交上去的 doc 里就没有刚建的线路 → 线路被**静默删掉**。
+ * 原始铁证（`config_snapshot` 表）：label=`lane_upsert` 的 doc 有 1 条 lane，label=`apply` 的有 0 条。
+ *
+ * 红先绿后：修复前这一步必然 FAIL（线路消失）；修复后必须 PASS。**不许放宽**成"差异可接受"。
+ */
+async function step14(wd) {
+  const evidence = [];
+  // 前提：至少有一条线路（经真界面造，不依赖前面步骤跑过）。
+  let { dump } = configKinds("step14-before");
+  if ((dump.config ?? []).filter((r) => r.kind === "lane").length === 0) {
+    evidence.push("配置里还没有线路 → 先经 /network 的「新建 / 覆盖线路」表单建一条");
+    if (!(await addLaneViaForm(wd, evidence))) {
+      record("step14", "FAIL", "造不出线路（界面缺入口或写入失败），无法验证数据安全", evidence);
+      return;
+    }
+    ({ dump } = configKinds("step14-lane-made"));
+  }
+  const lanesBefore = (dump.config ?? []).filter((r) => r.kind === "lane");
+  const laneIds = lanesBefore.map((r) => String(r.entity_id));
+  evidence.push(`应用前 config(kind=lane) ${lanesBefore.length} 条: ${JSON.stringify(laneIds)}`);
+
+  // 真界面：设置页改一个字段并点「校验并应用」（与 step6 同一条路径）
+  const page = await gotoPage(wd, "#/settings", '[data-testid="settings-page"]');
+  if (page === null) {
+    record("step14", "FAIL", "/settings 没渲染出来", evidence);
+    return;
+  }
+  const before = await wd.attrOf('[data-testid="settings-field-autostartDelay"]', "value");
+  const target = before === "37" ? "38" : "37";
+  await wdFillByTid(wd, "settings-field-autostartDelay", target, evidence);
+  await sleep(300);
+  const dirty = await wd.textOf('[data-testid="settings-dirty"]');
+  evidence.push(`settings-dirty: ${JSON.stringify((dirty ?? "").replace(/\s+/g, " ").trim())}`);
+  await wdClickTid(wd, "settings-apply", evidence);
+  await sleep(1500);
+  const applyResult = await wd.textOf('[data-testid="settings-apply-result"]');
+  evidence.push(`settings-apply-result: ${JSON.stringify((applyResult ?? "").replace(/\s+/g, " ").trim())}`);
+  await shot(wd, "step14-after-apply");
+
+  const after = configKinds("step14-after");
+  const lanesAfter = (after.dump.config ?? []).filter((r) => r.kind === "lane");
+  const idsAfter = lanesAfter.map((r) => String(r.entity_id));
+  evidence.push(`应用后 config(kind=lane) ${lanesAfter.length} 条: ${JSON.stringify(idsAfter)}`);
+  evidence.push(
+    `应用后 config kind 计数: ${JSON.stringify(configEntityKinds(after.dump))}（对比应用前: ${JSON.stringify(configEntityKinds(dump))}）`,
+  );
+
+  // 列表这一侧也要看：线路表里那一行还在不在
+  await gotoPage(wd, "#/network");
+  const rows = await wd.exec(
+    `return document.querySelectorAll('[data-testid="network-lane-row"]').length;`,
+  );
+  evidence.push(`回到 /network：network-lane-row 行数 = ${rows}`);
+
+  const survived = laneIds.every((id) => idsAfter.includes(id));
+  if (survived && lanesAfter.length >= lanesBefore.length) {
+    record("step14", "PASS", `设置页「校验并应用」之后线路仍在（${idsAfter.join(", ")}）；列表行数 ${rows}`, evidence);
+  } else {
+    record(
+      "step14",
+      "FAIL",
+      `应用后线路丢了：应用前 ${JSON.stringify(laneIds)} → 应用后 ${JSON.stringify(idsAfter)}`,
+      evidence,
+    );
+  }
+}
+
+// ---------------------------------------------------------------- step15 能力规则的强制面
+
+/** 经 /providers 的「添加密钥」向导造一份凭据（返回 { id, error }）。 */
+async function addCredentialViaDialog(wd, evidence, { id, label }) {
+  const page = await gotoPage(wd, "#/providers");
+  if (page === null) {
+    evidence.push("/providers 没渲染出来");
+    return { id: null, error: "页面没渲染" };
+  }
+  if (!(await wdClickTid(wd, "credentials-add-open", evidence))) return { id: null, error: "点不开添加密钥" };
+  await wdFillByTid(wd, "credentials-add-id", id, evidence);
+  await wdFillByTid(wd, "credentials-add-label", label, evidence);
+  await wdPickOption(wd, "credentials-add-provider", evidence); // 第一项 = 与现有线路同一服务商
+  await wdFillByTid(wd, "credentials-add-secret", `sk-${id}`, evidence);
+  await wdClickTid(wd, "credentials-add-submit", evidence);
+  await sleep(1500);
+  const errorText = await wd.textOf('[data-testid="credentials-add-error"]');
+  const error = errorText === null ? null : errorText.replace(/\s+/g, " ").trim();
+  await wd.closeDialog();
+  const { dump } = configKinds("credential-made");
+  const ok = configIds(dump, "credential").includes(id);
+  evidence.push(`凭据 ${id} 落库=${ok}（error=${JSON.stringify(error)}）`);
+  return { id: ok ? id : null, error };
+}
+
+/**
+ * **能力规则的强制面**（[docs/17 §4.3] 的反向验证 + 用户硬要求⑤）：
+ *
+ * 1. **能力一致的两条线路可以路由到一起** —— 真界面选中它们 → 页面显示"能力一致"、提交可用
+ *    → `policy_upsert` 落库，且 `use_channels` 真的带上这两条（读库验证）。
+ * 2. **把已经被路由归组的线路改成能力不一致** —— `channel_upsert` 必须被后端**拒绝**，
+ *    错误里要**点出差异字段**（`TA-2007` + `vision`），而且库里那条线路的能力**一个字节都没变**。
+ *
+ * 第 2 条为什么重要：界面上的"禁用提交"只是第一道；真正不允许出现"同一路由下能力不一致"的是后端。
+ * 只测界面 = 只测了提示，没测规则。
+ */
+async function step15(wd, fixture) {
+  const evidence = [];
+  const prereq = await ensureAddPrereqs(wd, fixture, evidence);
+  if (!prereq.ok) {
+    record("step15", "SKIP", "界面缺前提：服务商/凭据/模型都造不出来", evidence);
+    return;
+  }
+  // 保证有 ≥2 条同模型线路，再分别取"契约默认能力"与"声明 vision"的两类。
+  let { dump } = configKinds("step15-before");
+  let channels = (dump.config ?? []).filter((r) => r.kind === "channel");
+  if (channels.length === 0) {
+    const a = await addChannelViaDialog(wd, evidence);
+    if (a.id === null) {
+      record("step15", "FAIL", "造不出第一条线路，无法验证能力规则", evidence);
+      return;
+    }
+    ({ dump } = configKinds("step15-channel1"));
+    channels = (dump.config ?? []).filter((r) => r.kind === "channel");
+  }
+  const model = channels.map(channelModelOf).find((m) => m !== null && m !== undefined) ?? null;
+  if (model === null) {
+    record("step15", "FAIL", "配置里读不到 model", evidence);
+    return;
+  }
+  const sameModel = () => {
+    const d = configKinds("step15-probe").dump;
+    return (d.config ?? []).filter((r) => r.kind === "channel" && channelModelOf(r) === model);
+  };
+  const isVision = (row) => /"vision"\s*:\s*true/.test(String(row.json));
+
+  // 凑够两条"默认能力"的线路（能力一致才能路由到一起）。
+  let defaults = sameModel().filter((r) => !isVision(r));
+  if (defaults.length < 2) {
+    evidence.push(`默认能力的线路只有 ${defaults.length} 条 → 造第三份凭据，再建一条默认能力的线路`);
+    const cred3 = await addCredentialViaDialog(wd, evidence, { id: "ta-e2e-cred-3", label: "TA E2E 密钥 3" });
+    if (cred3.id === null) {
+      record("step15", "FAIL", "造不出第三份凭据，无法凑出两条能力一致的线路", evidence);
+      return;
+    }
+    const c = await addChannelViaDialog(wd, evidence, {
+      preferCredential: /密钥 3/,
+      preferModel: new RegExp(model, "i"),
+    });
+    if (c.id === null) {
+      record("step15", "FAIL", `第三条线路没落库（error=${JSON.stringify(c.error)}）`, evidence);
+      return;
+    }
+    defaults = sameModel().filter((r) => !isVision(r));
+  }
+  const pair = defaults.slice(0, 2).map((r) => String(r.entity_id));
+  evidence.push(`用来路由的两条能力一致线路: ${JSON.stringify(pair)}（model=${model}）`);
+  if (pair.length < 2) {
+    record("step15", "FAIL", `同模型默认能力线路不足两条（${JSON.stringify(pair)}）`, evidence);
+    return;
+  }
+
+  // ---- ① 能力一致 → 真的能存路由，并且 use_channels 带上这两条 ----
+  const page = await gotoPage(wd, "#/policies");
+  if (page === null) {
+    record("step15", "FAIL", "/policies 没渲染出来", evidence);
+    return;
+  }
+  if (!(await wdClickTid(wd, "policies-add-open", evidence))) {
+    record("step15", "FAIL", "点不开「添加路由」", evidence);
+    return;
+  }
+  await wdPickOption(wd, "policies-add-model", evidence, new RegExp(model, "i"));
+  await sleep(600);
+  // 选项文案是 `<channel.id> · <upstream_model>`：按 id 精确挑这两条（id 只含 [a-z0-9-]，无需转义）
+  const only = new RegExp(pair.join("|"));
+  // ★ 页面在"选完模型"后会**默认全选**该模型的全部线路（`selectedTouched=false` 时的 effect），
+  //   而 step10 会留下一条声明 vision 的线路 —— 全选就必然"能力不一致 → 提交被禁用"。
+  //   所以先把不在 `pair` 里的选中项**取消**，再确认这两条已经在选中集里。
+  const kept = await wdKeepOptions(wd, "policies-add-channels", evidence, only);
+  const picked = kept.length >= 2 ? kept : await wdPickOptions(wd, "policies-add-channels", 2, evidence, only);
+  await sleep(400);
+  const capText = (await wd.textOf('[data-testid="policies-add-capabilities"]')) ?? "";
+  const capFlat = capText.replace(/\s+/g, " ").slice(0, 200);
+  const tids = await wd.probeTestIds();
+  evidence.push(`能力区块原文: ${JSON.stringify(capFlat)}`);
+  evidence.push(`不一致元素存在=${tids.includes("policies-add-capability-mismatch")}`);
+  const submitState = await wd.exec(`
+    const b = document.querySelector('[data-testid="policies-add-submit"]');
+    return b ? { found: true, disabled: b.disabled === true || b.getAttribute("aria-disabled") === "true" } : { found: false };
+  `);
+  evidence.push(`已选 ${picked.length} 条；提交按钮: ${JSON.stringify(submitState)}`);
+  const polId = `pol-${model}`.replace(/[^a-z0-9._-]/gi, "-");
+  const idNow = await wd.attrOf('[data-testid="policies-add-id"]', "value");
+  if (idNow === null || idNow === "") await wdFillByTid(wd, "policies-add-id", polId, evidence);
+  const nameNow = await wd.attrOf('[data-testid="policies-add-name"]', "value");
+  if (nameNow === null || nameNow === "") await wdFillByTid(wd, "policies-add-name", `路由 ${model}`, evidence);
+  await wdClickTid(wd, "policies-add-submit", evidence);
+  await sleep(1500);
+  await shot(wd, "step15-policy-saved");
+  const saved = configKinds("step15-policy");
+  const policies = (saved.dump.config ?? []).filter((r) => r.kind === "policy");
+  const last = policies[policies.length - 1];
+  const polJson = last === undefined ? "" : String(last.json);
+  const bothUsed = pair.every((id) => polJson.includes(id));
+  evidence.push(`config(kind=policy) ${policies.length} 条；最后一条含两条线路=${bothUsed}`);
+  evidence.push(`policy 原文: ${JSON.stringify(polJson.slice(0, 400))}`);
+  if (policies.length === 0 || !bothUsed) {
+    const err = await wd.textOf('[data-testid="policies-add-error-text"]');
+    if (err !== null) evidence.push(`policies-add-error: ${JSON.stringify(err)}`);
+    record("step15", "FAIL", "能力一致的两条线路没能存成一条路由（读库没有两条 use_channels）", evidence);
+    return;
+  }
+  await wd.closeDialog();
+
+  // ---- ② 把已归组的线路改成能力不一致 → 后端必须拒绝并点出 vision ----
+  // 目标线路必须**精确**命中：线路 id = provider × credential × model，
+  // 所以 provider 与 credential 两个下拉都要按库里读到的**文案**挑，不能靠"第一项"。
+  const targetId = pair[1];
+  const allRows = configKinds("step15-target").dump.config ?? [];
+  const beforeRow = allRows.find((r) => r.kind === "channel" && String(r.entity_id) === targetId);
+  const beforeJson = beforeRow === undefined ? "" : String(beforeRow.json);
+  evidence.push(`改能力前的 ${targetId}: ${JSON.stringify(beforeJson.slice(0, 300))}`);
+  let targetProviderId = null;
+  let targetCredentialId = null;
+  try {
+    const parsed = JSON.parse(beforeJson);
+    targetProviderId = parsed.provider ?? null;
+    targetCredentialId = parsed.credential ?? null;
+  } catch {
+    /* 读不出来就走 undefined（下面会如实记录没精确命中） */
+  }
+  const jsOf = (kind, id) => {
+    const row = allRows.find((r) => r.kind === kind && String(r.entity_id) === id);
+    if (row === undefined) return null;
+    try {
+      return JSON.parse(String(row.json));
+    } catch {
+      return null;
+    }
+  };
+  const provName = (jsOf("provider", targetProviderId) ?? {}).name ?? null;
+  const credLabel = (jsOf("credential", targetCredentialId) ?? {}).label ?? null;
+  const esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  evidence.push(
+    `目标线路的 provider=${JSON.stringify(targetProviderId)}(${JSON.stringify(provName)}) credential=${JSON.stringify(targetCredentialId)}(${JSON.stringify(credLabel)})`,
+  );
+  const upd = await addChannelViaDialog(wd, evidence, {
+    preferProvider: provName === null ? undefined : new RegExp(esc(provName)),
+    preferCredential: credLabel === null ? undefined : new RegExp(esc(credLabel)),
+    preferModel: new RegExp(esc(model)),
+    capabilities: { vision: true },
+  });
+  const afterJson =
+    (configKinds("step15-after").dump.config ?? [])
+      .filter((r) => r.kind === "channel" && String(r.entity_id) === targetId)
+      .map((r) => String(r.json))[0] ?? "";
+  const unchanged = afterJson === beforeJson;
+  const errText = upd.error ?? "";
+  const pointsAtField = /TA-2007/.test(errText) && /vision/.test(errText);
+  evidence.push(`改能力时的后端原文: ${JSON.stringify(errText)}`);
+  evidence.push(`TA-2007 且点出 vision: ${pointsAtField}；库里的线路能力未变: ${unchanged}`);
+  if (pointsAtField && unchanged) {
+    record(
+      "step15",
+      "PASS",
+      `能力规则双向成立：能力一致的 ${pair.join(" / ")} 可路由（policy 已落库）；把 ${targetId} 改成 vision=true 时后端拒绝（TA-2007 点出 vision）且库里未变`,
+      evidence,
+    );
+  } else {
+    record(
+      "step15",
+      "FAIL",
+      `强制面不成立：后端原文含 TA-2007=${/TA-2007/.test(errText)}(点出 vision=${/vision/.test(errText)})，库里未变=${unchanged}`,
+      evidence,
+    );
+  }
 }
 
 async function step12(wd) {
@@ -1087,11 +2177,17 @@ async function main() {
     // ============================================================ 第 61 轮：四个添加向导（服务商/模型/线路/路由）
     if (want("step8")) await step8(wd);
     if (want("step9")) await step9(wd);
-    if (want("step10")) await step10(wd);
-    if (want("step11")) await step11(wd);
+    if (want("step10")) await step10(wd, fixture);
+    if (want("step11")) await step11(wd, fixture);
 
     // ============================================================ step13 订阅流量与更新时间可见（需要先有订阅）
     if (want("step13")) await step13(wd);
+
+    // ============================================================ step14 数据安全回归（设置页应用后线路必须还在）
+    if (want("step14")) await step14(wd);
+
+    // ============================================================ step15 能力规则的强制面
+    if (want("step15")) await step15(wd, fixture);
 
     // ============================================================ 收尾：再查一次隔离
     await stepIsolationAfter(wd);
@@ -1319,19 +2415,20 @@ async function step2(wd, fixture) {
   evidence.push(`路由: #/providers；命中 data-testid: ${tids.join(", ")}`);
   evidence.push(`列表状态: ${tids.includes("providers-empty") ? "providers-empty（后端返回 0 条 → 真 IPC 通了）" : tids.includes("providers-table") ? "providers-table 有行" : "既无空态也无表格"}`);
   evidence.push(`providers-error 是否存在: ${tids.includes("providers-error") ? await wd.text(await wd.findElement('[data-testid="providers-error"]')) : "否"}`);
+  // 用户硬要求①：这一页必须给出**两个各司其职**的添加入口 —— 添加服务商 / 添加密钥。
+  // 第 61 轮之前这里用 `findAddControl` 抓"任意一个 add 控件"，结果抓到 `credentials-add-open`，
+  // 拿密钥表单去填服务商字段 → 失败原因与用例名（供应商页新增供应商）根本不是一回事。
+  const hasProviderEntry = tids.includes("providers-add-open");
+  const hasCredentialEntry = tids.includes("credentials-add-open");
+  evidence.push(`添加入口: providers-add-open=${hasProviderEntry} credentials-add-open=${hasCredentialEntry}`);
 
-  const add = await findAddControl(wd);
-  if (add === null) {
-    evidence.push("找过：data-testid 匹配 /(^|-)add|new|create|upsert/i 的可见控件 → 无");
-    evidence.push('找过：可见 button/[role=button] 文案匹配 /新增|添加|新建|创建|Add|New|Create/i → 无');
-    evidence.push("页面上实际存在的可见控件：");
+  if (!hasProviderEntry) {
+    // 真实缺陷：/providers 没有任何"添加服务商"入口。如实记录，并走界面里**真实存在**的另一条
+    // 路径（首启向导第 1 步）把"这个操作能不能在软件里完成"这件事测完。
+    evidence.push("→ /providers 没有新增服务商入口（真实缺陷，已记录）；改走界面里真实存在的另一条路径：首启向导 /onboarding 第 1 步");
     evidence.push(...(await controlEvidence(wd)));
     evidence.push(`页面文本片段: ${JSON.stringify(bodyText.replace(/\s+/g, " ").slice(0, 300))}`);
     await shot(wd, "step2-providers-no-entry");
-    // 这一页确实是只读的（**真实缺陷，证据留在上面**）。但界面里**确实存在**另一条
-    // "加供应商"的路径：首启向导 `/onboarding` 第 1 步 —— 它有真输入框、真提交按钮。
-    // 任务要的是"这个操作能不能在软件里完成"，所以走向导，并把两个事实都写清楚。
-    evidence.push("→ /providers 没有新增入口（真实缺陷，已记录）；改走界面里真实存在的另一条路径：首启向导 /onboarding 第 1 步");
     const wiz = await ensureWizardRun(wd, fixture, evidence);
     if (!wiz.ok) {
       record("step2", "SKIP", `界面缺入口：/providers 没有新增控件，且首启向导也不可用（${wiz.reason}）`, evidence);
@@ -1341,39 +2438,78 @@ async function step2(wd, fixture) {
     return;
   }
 
-  await wd.click(add.el);
-  await shot(wd, "step2-form-opened");
-  const filled = await fillFormHeuristic(wd, {
-    id: "ta-e2e-provider",
-    name: "TA E2E 供应商",
-    base_url: "http://127.0.0.1:9/v1",
-    protocol: "openai",
-  });
-  evidence.push(`新增入口: ${add.how}`);
-  evidence.push(`填写的字段: ${JSON.stringify(filled)}`);
-
-  const submit = await wd.findByText("button", /保存|提交|确定|创建|Save|Submit|Create|OK/i);
-  if (submit === null) {
-    evidence.push("填完找不到提交按钮（保存/提交/确定/创建）");
-    await shot(wd, "step2-no-submit");
-    record("step2", "FAIL", "新增表单打开了但没有提交按钮", evidence);
+  // ---- ① 添加服务商：走 /providers 页头那个专用入口（真输入 → 真提交 → 后端返回值回显 + 落库）----
+  const pid = "ta-e2e-provider";
+  if (!(await wdClickTid(wd, "providers-add-open", evidence))) {
+    record("step2", "FAIL", "点不开「添加服务商」", evidence);
     return;
   }
-  await wd.click(submit);
+  await shot(wd, "step2-form-opened");
+  await wdFillByTid(wd, "providers-add-id", pid, evidence);
+  await wdFillByTid(wd, "providers-add-name", "TA E2E 供应商", evidence);
+  await wdFillByTid(wd, "providers-add-baseUrl", "http://127.0.0.1:9/v1", evidence);
+  await shot(wd, "step2-form-filled");
+  await wdClickTid(wd, "providers-add-submit", evidence);
   await sleep(1500);
   await shot(wd, "step2-after-submit");
+  const providerResult = await wd.textOf('[data-testid="providers-add-result"]');
+  evidence.push(`providers-add-result: ${JSON.stringify((providerResult ?? "").replace(/\s+/g, " ").trim())}`);
+  const providerError = await wd.textOf('[data-testid="providers-add-error"]');
+  if (providerError !== null) evidence.push(`providers-add-error: ${JSON.stringify(providerError)}`);
 
-  const dump = dumpScratchDb("step2");
-  const kinds = configEntityKinds(dump);
-  evidence.push(`db(config 表) kind 计数: ${JSON.stringify(kinds)}`);
-  evidence.push(`db(providers 命中): ${JSON.stringify((dump.config ?? []).filter((r) => r.kind.includes("provider")))}`);
+  const dump1 = dumpScratchDb("step2-provider");
+  evidence.push(`db(config 表) kind 计数: ${JSON.stringify(configEntityKinds(dump1))}`);
+  const providerInDb = configIds(dump1, "provider").includes(pid);
+  const providerInUi = (providerResult ?? "").includes(pid);
+  evidence.push(`服务商: 落库=${providerInDb} 后端回显=${providerInUi}`);
 
-  const inList = (await wd.probeTestIds()).includes("providers-row") || (await wd.pageText()).includes("ta-e2e-provider");
-  const inDb = JSON.stringify(dump.config ?? []).includes("ta-e2e-provider");
-  if (inList && inDb) {
-    record("step2", "PASS", "供应商经真界面新增，列表与 db 都出现", evidence);
+  // 关掉服务商对话框再开密钥对话框：两个 MUI Dialog 叠着会让后者点不动（同一个根因放大成假失败）。
+  await wd.closeDialog();
+  await sleep(400);
+
+  // ---- ② 添加密钥：明文只进密钥仓库；成功后显示的是**后端返回的那个 Credential** ----
+  const cid = "ta-e2e-cred";
+  let credentialInDb = false;
+  let credentialInUi = false;
+  if (!hasCredentialEntry) {
+    evidence.push("→ /providers 没有「添加密钥」入口（真实缺陷，已记录）");
+  } else if (!(await wdClickTid(wd, "credentials-add-open", evidence))) {
+    evidence.push("失败：点不开「添加密钥」");
   } else {
-    record("step2", "FAIL", `新增后不一致：列表=${inList} 落库=${inDb}`, evidence);
+    await shot(wd, "step2-credential-form-opened");
+    await wdFillByTid(wd, "credentials-add-id", cid, evidence);
+    await wdFillByTid(wd, "credentials-add-label", "TA E2E 密钥", evidence);
+    await wdPickOption(wd, "credentials-add-provider", evidence, /ta-e2e-provider|TA E2E 供应商/i);
+    await wdFillByTid(wd, "credentials-add-secret", "sk-ta-e2e-secret", evidence);
+    await shot(wd, "step2-credential-form-filled");
+    await wdClickTid(wd, "credentials-add-submit", evidence);
+    await sleep(1500);
+    await shot(wd, "step2-credential-after-submit");
+    const credResult = await wd.textOf('[data-testid="credentials-add-result"]');
+    evidence.push(`credentials-add-result: ${JSON.stringify((credResult ?? "").replace(/\s+/g, " ").trim())}`);
+    const credError = await wd.textOf('[data-testid="credentials-add-error"]');
+    if (credError !== null) evidence.push(`credentials-add-error: ${JSON.stringify(credError)}`);
+    const dump2 = dumpScratchDb("step2-credential");
+    evidence.push(`db(config 表) kind 计数: ${JSON.stringify(configEntityKinds(dump2))}`);
+    credentialInDb = configIds(dump2, "credential").includes(cid);
+    credentialInUi = (credResult ?? "").includes(cid);
+    evidence.push(`密钥: 落库=${credentialInDb} 后端回显=${credentialInUi}`);
+    // 明文**不许**出现在页面上（它只进密钥仓库）
+    const pageAfter = await wd.pageText();
+    evidence.push(`页面上能否搜到明文 sk-ta-e2e-secret: ${pageAfter.includes("sk-ta-e2e-secret")}`);
+    await wd.closeDialog();
+  }
+
+  const ok = providerInDb && providerInUi && credentialInDb && credentialInUi;
+  if (ok) {
+    record("step2", "PASS", "服务商与密钥都经真界面（/providers 两个向导）新增：后端回显 + config 表都出现", evidence);
+  } else {
+    record(
+      "step2",
+      "FAIL",
+      `新增后不一致：服务商(回显=${providerInUi} 落库=${providerInDb}) 密钥(回显=${credentialInUi} 落库=${credentialInDb})`,
+      evidence,
+    );
   }
 }
 
@@ -1868,12 +3004,25 @@ async function step4(wd) {
   const dur = dumpScratchDb("step4");
   const laneRows = (dur.config ?? []).filter((r) => r.kind === "lane");
   evidence.push(`db(config, kind=lane) 共 ${laneRows.length} 行: ${JSON.stringify(laneRows).slice(0, 500)}`);
-  const inList4 = (await wd.pageText()).includes(laneId);
+  // 列表这一侧：`/network` 的线路表**第一列是名称**（有 name 就显示 name，没有才显示 id，
+  // 见 network/index.tsx 的 `row.name === undefined ? row.id : row.name`），所以"新线路出现在列表里"
+  // 的正确判据是 **id 或名称命中**，并额外要求那一行本身存在（`network-lane-row`）。
+  const laneTable = await wd.exec(`
+    return {
+      table: document.querySelector('[data-testid="network-lanes-table"]') !== null,
+      rows: document.querySelectorAll('[data-testid="network-lane-row"]').length,
+      empty: document.querySelector('[data-testid="network-lanes-empty"]') !== null,
+      error: document.querySelector('[data-testid="network-lanes-error"]')?.innerText ?? null,
+    };
+  `);
+  evidence.push(`/network 线路列表 DOM: ${JSON.stringify(laneTable)}`);
+  const pageAfterWrite = await wd.pageText();
+  const inList4 = laneTable.rows > 0 && (pageAfterWrite.includes(laneId) || pageAfterWrite.includes("TA E2E 线路"));
   const inDb4 = laneRows.some(
     (r) => String(r.entity_id) === laneId || String(r.json).includes(laneId),
   );
   if (inList4 && inDb4) {
-    record("step4", "PASS", "线路经真界面（lane_upsert）新增，列表与 config 表都出现", evidence);
+    record("step4", "PASS", `线路经真界面（lane_upsert）新增，列表（${laneTable.rows} 行）与 config 表都出现`, evidence);
   } else {
     record("step4", "FAIL", `新增后不一致：列表=${inList4} 落库=${inDb4}`, evidence);
   }
@@ -1998,10 +3147,21 @@ async function step6(wd) {
   evidence.push(`db 里含 autostart_delay_s 的行: ${JSON.stringify(hit).slice(0, 600)}`);
   evidence.push(`store_setting: ${JSON.stringify(after.store_setting ?? []).slice(0, 400)}`);
 
+  // ★ `config_apply` 是**全量覆盖**：它只能改用户在这页动过的东西，绝不能把别的写路径
+  //   （/network 的线路、/channels 的通道、向导写的服务商与订阅…）刚建好的实体抹掉。
+  //   真机实测踩到过：点一次「应用」把 `lane/ta-e2e-lane` 整条删了（页面那份 doc 是旧的）。
+  //   这条断言就是那个用户可见数据丢失的回归闸门 —— 只允许**新增/修改**，不允许**消失**。
+  const key = (r) => `${r.kind}/${r.entity_id}`;
+  const beforeKeys = new Set((before.config ?? []).map(key));
+  const lost = [...beforeKeys].filter((k) => !(after.config ?? []).some((r) => key(r) === k));
+  evidence.push(`应用前后实体集合: 之前 ${beforeKeys.size} 条 → 之后 ${(after.config ?? []).length} 条；丢失=${JSON.stringify(lost)}`);
+
   const changed = dbFingerprint(before) !== dbFingerprint(after);
   const wrote17 = JSON.stringify(after.config ?? []).includes('"autostart_delay_s":17');
-  if (changed && (wrote17 || hit.length > 0)) {
-    record("step6", "PASS", "真界面真输入 + 点击「校验并应用」→ config_apply 真落库（db 内容变化）", evidence);
+  if (lost.length > 0) {
+    record("step6", "FAIL", `「校验并应用」抹掉了别的写路径建好的实体：${lost.join(", ")}（config_apply 是全量覆盖，页面拿的是旧 doc）`, evidence);
+  } else if (changed && (wrote17 || hit.length > 0)) {
+    record("step6", "PASS", "真界面真输入 + 点击「校验并应用」→ config_apply 真落库（db 内容变化，且没抹掉别人的实体）", evidence);
   } else {
     record("step6", "FAIL", `点应用后 db 指纹未变（changed=${changed}, wrote17=${wrote17}）`, evidence);
   }

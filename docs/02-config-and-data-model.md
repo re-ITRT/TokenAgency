@@ -352,11 +352,32 @@ CREATE TABLE secret_meta (              -- key 的元数据，值在钥匙串/�
 | **真源** | `<AppData>/TokenAgency/db.sqlite` 的 `config` 表（一行一实体的 JSON，事务写入） |
 | **YAML 的角色** | ① 导入/导出（`ta export` / `ta import`）② 分享与迁移 ③ 可 git 管理的快照 |
 | **文件监听模式**（可选） | 给"我就是想手写 YAML 并用 git 管"的用户：开启后以 `<AppData>/TokenAgency/tokenagency.yaml` 为真源，文件变更热重载；**此时 GUI 的编辑写回会覆盖文件，UI 上必须明确警告** |
-| 改配置的路径（默认模式） | GUI 修改 → 写 DB（事务）→ 校验 → 应用 → `emit("config-changed")` → 托盘与 UI 刷新，**无需重启** |
+| 改配置的路径（默认模式） | GUI 修改 → 校验 → 事务写 DB + 留快照 → 换内存快照 → **让前端的 `qk.config` 失效**（见下面两条铁律）→ 托盘与 UI 刷新，**无需重启** |
 | 配置校验 | 由 Rust 类型经 `schemars` 导出 JSON Schema + 语义校验（引用完整性、lane 引用了不存在的订阅、channel 引用了不存在的 credential、端口冲突等），错误定位到具体字段路径（`serde_path_to_error`） |
 | 便携导出 | `ta export --with-secrets` 生成加密包（age / AES-GCM，口令解锁） |
 | 版本化 | 每次成功应用配置留一份带时间戳的 YAML 快照，可回滚（最近 N 份） |
 | **数据根覆盖**（`TA_DATA_DIR`） | 环境变量存在且非空时，数据根改为该目录：库 = `<TA_DATA_DIR>/db.sqlite`，日志 = `<TA_DATA_DIR>/logs`，内核与订阅目录同样从它派生。**它是数据根的唯二来源之一**（另一个是 `<AppData>/TokenAgency`），解析只在一个地方（`state::AppState::app_data_root`）。用途：端到端验证必须在**不碰用户真实数据**的前提下驱动真界面；Windows 上 `dirs::data_dir()` 读系统已知文件夹，改 `%APPDATA%` 无效，所以只能由应用自己读。空值（`TA_DATA_DIR=`）不算设置，避免数据静默落到当前目录 |
+
+### 4.1 写配置的两条铁律（真机 E2E 抓到用户可见的数据丢失之后固化）
+
+1. **`config_apply` 是「整份覆盖」，不是「按字段合并」**：`crates/ta-store/src/config_store.rs::write_rows`
+   先 `DELETE FROM config` 再按传入的那一份 `ConfigDoc` 逐实体插入。等价说法：
+   **提交的 doc 里没有的实体 = 库里会被删掉**。
+2. **因此，任何写命令成功后前端必须让 `qk.config` 失效**：`qk.config` 是全局共享缓存
+   （`src/main.tsx` 的 `staleTime: 5_000`），而设置页是"读到什么就整份写回什么"的唯一页面。
+   旧快照会把用户在别处刚写进去的实体静默删掉 —— 实测路径：
+   在 `/network` 建一条线路（`lane_upsert`）→ 5 秒内打开设置页（缓存仍算 fresh → 不重取）→
+   改一个字段点「校验并应用」→ **线路从 `config` 表消失**（`config_snapshot` 里
+   label=`lane_upsert` 的 doc 有 1 条 lane、label=`apply` 的 doc 有 0 条，是可复现的铁证）。
+   - 实现地点**只有一处**：`src/shared/api/queries.ts` 的 `useCommandMutation`（集中失效，
+     不靠每个调用点自觉 —— 那是会漏的）；设置页另加 `refetchOnMount: "always"` 作为第二道保险。
+   - 守卫/回归测试：`src/app/configWriteInvalidation.test.tsx`；
+     真机回归：`scripts/e2e/smoke.mjs` 的 step14（建线路 → 设置页应用 → 线路必须还在）。
+   - 设计上本该兜底的那条通道是 `config:changed` 事件（`src/shared/api/keys.ts` 的
+     `EVENT_INVALIDATIONS["config:changed"]` 已经覆盖全部实体 query key），但它**目前没有生产端生产者**
+     （`TaEvent::ConfigChanged` 只在 `gateway.rs` 的测试里被构造过）。
+     所以第 2 条是**必需品**；后端将来真的发出该事件时它仍然无害（重复失效是幂等的）。
+
 
 ## 5. secrets 引用语法
 

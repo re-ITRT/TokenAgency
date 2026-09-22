@@ -7,13 +7,16 @@
  * - **读**：列表 + 按服务商分组，取数用 `channel_list` / `provider_list` / `credential_list` /
  *   `lane_list` / `group_list` / `quota_limit_gaps`；
  * - **写**（本轮 task-33）：页头的「添加」打开线路向导 ——
- *   服务商 / 凭据（按 provider 过滤）/ 模型（下拉 + 可直接输入）/ 上游模型名 / 网络 / 优先级 /
- *   权重 → `channel_upsert({ channel })`，成功后用**后端返回值**回显并失效重取。
+ *   服务商 / 凭据（按 provider 过滤）/ 模型（下拉 + 可直接输入）/ 上游模型名 / 网络 /
+ *   优先级 / 权重 / **上游能力声明** / **计费** →
+ *   `channel_upsert({ channel })`，成功后用**后端返回值**回显并失效重取；
+ *   计费三项里有任意一项非空时，**通道落库之后**再调 `pricing_upsert({ entry })`，
+ *   同样回显后端返回值；计费失败时错误原样显示，且**不显示"已保存"**（不许谎报整条线配好了）。
  *   固定 testid 见 [docs/17 §3.3]（`channels-add-*`），真机 E2E 按它们驱动，**不许改名**。
  *
- * **本轮不做**：能力块（`channels-add-vision|tools|reasoning|contextTokens|modalities`）与
- * 计费块（`channels-add-price-*`）—— 能力要等 `ChannelCapabilities` 进契约（task-31），计费下轮一起。
- * 所以这里既不放禁用占位，也不自己造一个 `capabilities` 字段发出去（契约先行）。
+ * 能力块的默认值与 Rust `ChannelCapabilities::default` **逐字一致**（全 false / `context_tokens` 0 /
+ * `max_output_tokens` null / `modalities ["text"]`）。`max_output_tokens` 本页**不做输入**
+ * （载荷里恒为 `null` = 未声明），所以这里既没有它的控件、也没有禁用占位。
  * 其余写命令（`channel_set_enabled` / `channel_bulk_assign_lane` / `channel_set_tags` /
  * `channel_delete`）仍**没有**入口，空状态里也不再声称"入口还没接线"（那已经变成假话）。
  *
@@ -31,9 +34,11 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   MenuItem,
   Paper,
   Stack,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -69,11 +74,16 @@ import {
   credentialOptionsFor,
   defaultLaneId,
   groupByProvider,
+  hasPrice,
   laneOptionsOf,
+  priceEntryFor,
   readChannelRows,
   summarizeChannels,
   type ChannelDraft,
   type ChannelDraftField,
+  type ChannelDraftIssue,
+  type ChannelDraftProblem,
+  type ChannelNumberField,
   type ChannelRowContext,
   type ChannelRowView,
   type LaneResolution,
@@ -546,11 +556,21 @@ export function ChannelsBody({
 // ================================================================ 添加线路向导（task-33）
 
 /** 本地预检点名的字段 → 既有 i18n 键（**不新造键**：缺键由主管统一补，见 [docs/17 §3.0]）。 */
-const DRAFT_FIELD_LABEL: Record<ChannelDraftField, I18nKey> = {
+const DRAFT_FIELD_LABEL: Record<ChannelDraftField | ChannelNumberField, I18nKey> = {
   provider: "channels.add.provider",
   credential: "channels.add.credential",
   model: "channels.add.model",
   upstreamModel: "channels.add.upstreamModel",
+  contextTokens: "capabilities.contextTokens",
+  priceInput: "channels.add.priceInput",
+  priceOutput: "channels.add.priceOutput",
+  priceCached: "channels.add.priceCached",
+};
+
+/** 本地预检的两类问题各自的文案（**必填**与**不是数字**是两件事，不许混成一句话）。 */
+const DRAFT_PROBLEM_LABEL: Record<ChannelDraftProblem, I18nKey> = {
+  required: "wizard.required",
+  number: "wizard.invalidNumber",
 };
 
 /**
@@ -626,11 +646,16 @@ export type ChannelAddDialogProps = {
  * 「添加线路」向导（[docs/17 §3.3]）。
  *
  * 顺序就是用户描述的顺序：服务商 → 凭据（按 provider 过滤）→ 模型（下拉 + 可直接输入新名字）
- * → 上游模型名 → 网络（默认直连）→ 优先级 / 权重 → 保存。
+ * → 上游模型名 → 网络（默认直连）→ 优先级 / 权重 → 上游能力声明 → 计费 → 保存。
  *
- * 保存只做一件事：`channel_upsert({ channel })`；成功区显示的是**后端返回的那个 Channel**
- * （不是草稿），然后失效 `qk.channels` / `qk.models` 重取。
- * 能力块与计费块本轮不做（见文件头），所以这里**没有**它们的控件，也没有禁用占位。
+ * 保存是**两条命令、有先后**：
+ * 1. `channel_upsert({ channel })` —— 载荷里**永远**带 `capabilities`（默认值 = Rust 的默认值）；
+ * 2. 计费三项里有任意一项非空时，**通道成功之后**才 `pricing_upsert({ entry })` ——
+ *    价格不许指向一条没落库的线。
+ *
+ * 成功区显示的两块都是**后端返回值**（不是草稿）。计费失败时：通道确实已经落库（后端返回的
+ * Channel 照旧显示），但**不显示"已保存"这句成功文案**，后端错误（含 TA 码）原样显示 ——
+ * 那才是这一刻的真实状态。
  */
 export function ChannelAddDialog({
   open,
@@ -643,9 +668,10 @@ export function ChannelAddDialog({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const upsert = useCommandMutation("channel_upsert");
+  const pricing = useCommandMutation("pricing_upsert");
 
   const [draft, setDraft] = useState<ChannelDraft>(EMPTY_CHANNEL_DRAFT);
-  const [issues, setIssues] = useState<readonly ChannelDraftField[]>([]);
+  const [issues, setIssues] = useState<readonly ChannelDraftIssue[]>([]);
 
   const set = <K extends keyof ChannelDraft>(key: K, value: ChannelDraft[K]): void =>
     setDraft((previous) => ({ ...previous, [key]: value }));
@@ -673,6 +699,7 @@ export function ChannelAddDialog({
     setDraft(EMPTY_CHANNEL_DRAFT);
     setIssues([]);
     upsert.reset();
+    pricing.reset();
     onClose();
   };
 
@@ -684,9 +711,11 @@ export function ChannelAddDialog({
   const submit = (): void => {
     const found = channelDraftIssues(draft);
     setIssues(found);
-    // 本地预检不过 → **一次都不发**（与设置页 config_validate 的纪律一致）
+    // 本地预检不过 → **一次都不发**（与设置页 config_validate 的纪律一致）。
+    // 价格与上下文窗口的非法输入在这一步就被挡住，所以两条命令都不会被调用。
     if (found.length > 0) return;
     upsert.reset();
+    pricing.reset();
     upsert.mutate(
       { channel: channelPayload(draft) },
       {
@@ -694,12 +723,28 @@ export function ChannelAddDialog({
           void queryClient.invalidateQueries({ queryKey: qk.channels });
           // 通道数会变（`model_list` 的 channel_count），模型页也一起刷新
           void queryClient.invalidateQueries({ queryKey: qk.models });
+
+          // 计费就在**这里**发：它必须排在 `channel_upsert` 成功之后（价格不许指向
+          // 一条没落库的线）。三项全空 = 不计价 → 这一整条命令都不发。
+          if (!hasPrice(draft)) return;
+          pricing.mutate(
+            { entry: priceEntryFor(draft) },
+            {
+              onSuccess: () => {
+                void queryClient.invalidateQueries({ queryKey: qk.pricing });
+              },
+            },
+          );
         },
       },
     );
   };
 
   const saved = upsert.data;
+  const priced = pricing.data;
+  /** 计费失败：通道确实落库了，但**不许**把这一刻说成"已保存"（错误原文会显示在下面）。 */
+  const priceFailed = pricing.error !== null && pricing.error !== undefined;
+  const failure = upsert.error ?? pricing.error;
 
   return (
     <Dialog open={open} onClose={close} fullWidth maxWidth="sm">
@@ -788,33 +833,140 @@ export function ChannelAddDialog({
             />
           </Box>
 
-          {/* 本地预检的错：逐个点名缺哪个（文案用既有键，不新造） */}
+          {/* 上游能力声明（[docs/17 §3.3] / §2）：默认值与 Rust `ChannelCapabilities::default`
+              逐字一致。`max_output_tokens` 本页不做输入 -> 载荷里恒为 null，
+              **不放禁用占位控件**（放一个点不动的框就是假界面）。 */}
+          <Stack spacing={2}>
+            <Typography variant="body1">{t("capabilities.title")}</Typography>
+            <Caption>{t("capabilities.hint")}</Caption>
+            <Box sx={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    size="small"
+                    checked={draft.vision}
+                    onChange={(event) => set("vision", event.target.checked)}
+                    data-testid="channels-add-vision"
+                  />
+                }
+                label={t("capabilities.vision")}
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    size="small"
+                    checked={draft.tools}
+                    onChange={(event) => set("tools", event.target.checked)}
+                    data-testid="channels-add-tools"
+                  />
+                }
+                label={t("capabilities.tools")}
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    size="small"
+                    checked={draft.reasoning}
+                    onChange={(event) => set("reasoning", event.target.checked)}
+                    data-testid="channels-add-reasoning"
+                  />
+                }
+                label={t("capabilities.reasoning")}
+              />
+            </Box>
+            {/* 上下文窗口只放数字进来（与优先级/权重同一个 intInputFilter）：本地就不会有 NaN */}
+            <TextField
+              label={t("capabilities.contextTokens")}
+              value={draft.contextTokens}
+              onChange={(event) => set("contextTokens", intInputFilter(event.target.value, false))}
+              size="small"
+              fullWidth
+              slotProps={{
+                htmlInput: { "data-testid": "channels-add-contextTokens", inputMode: "numeric" },
+              }}
+            />
+            <TextField
+              label={t("capabilities.modalities")}
+              value={draft.modalities}
+              onChange={(event) => set("modalities", event.target.value)}
+              size="small"
+              fullWidth
+              slotProps={{ htmlInput: { "data-testid": "channels-add-modalities" } }}
+            />
+          </Stack>
+
+          {/* 计费（[docs/17 §3.3]）：单位是"美元 / 百万 token"（`PricingConfig.unit` 的默认
+              `per_1m`），**可留空 = 不计价**。三项全空时一条定价都不写 —— 不写 0
+              （0 是"免费"，是另一个意思）。这里**不净化输入**：非法价格要点名，不许被悄悄吞掉。 */}
+          <Stack spacing={2}>
+            <Caption>{t("channels.add.price")}</Caption>
+            <Box sx={{ display: "flex", gap: 2 }}>
+              <TextField
+                label={t("channels.add.priceInput")}
+                value={draft.priceInput}
+                onChange={(event) => set("priceInput", event.target.value)}
+                size="small"
+                fullWidth
+                slotProps={{ htmlInput: { "data-testid": "channels-add-price-input", inputMode: "decimal" } }}
+              />
+              <TextField
+                label={t("channels.add.priceOutput")}
+                value={draft.priceOutput}
+                onChange={(event) => set("priceOutput", event.target.value)}
+                size="small"
+                fullWidth
+                slotProps={{ htmlInput: { "data-testid": "channels-add-price-output", inputMode: "decimal" } }}
+              />
+              <TextField
+                label={t("channels.add.priceCached")}
+                value={draft.priceCached}
+                onChange={(event) => set("priceCached", event.target.value)}
+                size="small"
+                fullWidth
+                slotProps={{ htmlInput: { "data-testid": "channels-add-price-cached", inputMode: "decimal" } }}
+              />
+            </Box>
+          </Stack>
+
+          {/* 本地预检的错：逐个点名是哪个字段的哪一类问题（文案用既有键，不新造）。
+              「必填」与「必须是数字」是两件事，所以分开渲染，不混成一句。 */}
           {issues.length > 0 ? (
             <Stack spacing={1} data-testid="channels-add-issues">
-              {issues.map((field) => (
-                <Typography key={field} variant="body1" sx={{ color: "error.main" }}>
-                  {`${t(DRAFT_FIELD_LABEL[field])}：${t("wizard.required")}`}
+              {issues.map((issue) => (
+                <Typography
+                  key={`${issue.field}:${issue.problem}`}
+                  variant="body1"
+                  sx={{ color: "error.main" }}
+                >
+                  {`${t(DRAFT_FIELD_LABEL[issue.field])}：${t(DRAFT_PROBLEM_LABEL[issue.problem])}`}
                 </Typography>
               ))}
             </Stack>
           ) : null}
 
-          {/* 后端的错原样显示（TA 码 + 字段路径），本地预检不替代它 */}
-          {upsert.error !== null ? (
+          {/* 后端的错原样显示（TA 码 + 字段路径），本地预检不替代它；
+              计费的错也走这里 —— 两条命令各自的失败原因都不能被吞掉 */}
+          {failure !== null && failure !== undefined ? (
             <Typography variant="body1" data-testid="channels-add-error" sx={{ color: "error.main" }}>
-              {errorMessage(upsert.error)}
+              {errorMessage(failure)}
             </Typography>
           ) : null}
 
-          {/* 成功：显示**后端返回的那个 Channel**（不是我们提交的草稿） */}
+          {/* 成功：显示**后端返回的那个 Channel**（不是我们提交的草稿）；
+              调了计费就再显示**后端返回的 PriceEntry 原样**（JSON 原样，不自己拼一句概述）。
+              计费失败时**不显示"已保存"** —— 那一刻整条线还没配好；但通道的身份仍然如实列出来
+              （id 在第一位），用户才知道库里多了/改了哪一条。 */}
           {saved !== undefined ? (
             <Stack spacing={1} data-testid="channels-add-result">
-              <Typography variant="body1">{t("wizard.saved", { id: saved.id })}</Typography>
+              {priceFailed ? null : (
+                <Typography variant="body1">{t("wizard.saved", { id: saved.id })}</Typography>
+              )}
               <Typography
                 variant="body1"
                 sx={{ fontFamily: typography.fontMono, overflowWrap: "anywhere" }}
               >
                 {[
+                  saved.id,
                   saved.model,
                   saved.provider,
                   saved.credential,
@@ -824,6 +976,18 @@ export function ChannelAddDialog({
                   formatInt(saved.weight),
                 ].join(" · ")}
               </Typography>
+              {priced !== undefined ? (
+                <Typography
+                  variant="body1"
+                  sx={{
+                    fontFamily: typography.fontMono,
+                    overflowWrap: "anywhere",
+                    whiteSpace: "pre-wrap",
+                  }}
+                >
+                  {JSON.stringify(priced, null, 2)}
+                </Typography>
+              ) : null}
             </Stack>
           ) : null}
         </Stack>
@@ -833,7 +997,7 @@ export function ChannelAddDialog({
         <Button
           variant="contained"
           data-testid="channels-add-submit"
-          disabled={upsert.isPending}
+          disabled={upsert.isPending || pricing.isPending}
           onClick={submit}
         >
           {t("common.save")}

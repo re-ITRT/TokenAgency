@@ -34,6 +34,7 @@ import type {
   Credential,
   CredentialView,
   LaneView,
+  PriceEntry,
   ProviderView,
   QuotaConfig,
 } from "@/shared/bindings";
@@ -752,9 +753,9 @@ describe("文案里不留未替换的占位符", () => {
 //   3. 成功区显示的是**后端返回的那个 Channel**，不是前端拼的一句「添加成功」——
 //      所以下面的 mock 故意返回与输入完全不同的值，只有显示的是后端真值，这些断言才会过。
 //
-// 本轮**不做**能力块（`channels-add-vision|tools|reasoning|contextTokens|modalities`）与计费块
-// （`channels-add-price-*`）：能力等 `ChannelCapabilities` 进 `bindings.ts`（task-31），计费下轮一起。
-// 所以这里也断言**没有**自己造一个 `capabilities` 字段发出去。
+// 本轮以外的东西（能力块的控件与开关、计费的三个字段、`pricing_upsert` 的先后与入参）在 ⑪/⑫
+// 里钉。这里保留一句反向断言：能力**永远是六个字段的完整对象**（不是只发用户碰过的那几个），
+// 默认值逐字等于 Rust `ChannelCapabilities::default`。
 
 /** MUI 的 Select 在 jsdom 里是个 div：先 `mouseDown` 打开菜单，再点角色为 option 的项。 */
 async function chooseOption(testId: string, optionName: RegExp | string): Promise<void> {
@@ -905,8 +906,16 @@ describe("⑨ /channels 线路添加向导：真控件 → 真的调 channel_ups
     for (const absent of ["transform", "tags", "enabled"]) {
       expect(absent in ch, `${absent} 不该由前端硬编（Rust 有 serde(default)）`).toBe(false);
     }
-    // 本轮不做能力块 -> 更不许自己造一个 capabilities 字段
-    expect("capabilities" in ch).toBe(false);
+    // 能力块是**唯一例外：永远发全六个字段**，默认值逐字等于 Rust `ChannelCapabilities::default`
+    // （`[]` 与"没写"不是一回事，所以这里不能省字段 —— 详见 ⑪ 的第一条与 `model.ts` 的注释）
+    expect(ch["capabilities"]).toEqual({
+      vision: false,
+      tools: false,
+      reasoning: false,
+      context_tokens: 0,
+      max_output_tokens: null,
+      modalities: ["text"],
+    });
 
     // 回显的是**后端返回的那个 Channel**
     const saved = await screen.findByTestId("channels-add-result");
@@ -996,5 +1005,330 @@ describe("线路 id 由「模型 x 服务商 x 凭据」派生：换上游名/�
     expect(filled.lane).toBe("lane-direct");
     expect(filled.priority).toBe(5);
     expect(filled.weight).toBe(20);
+  });
+});
+
+// ================================================================ ⑪ 能力块 + 计费块（docs/17 §3.3）
+//
+// 用户原话里的「线路1/线路2」除了身份（服务商 x 凭据 x 模型）与网络，还带**能力**与**计费**：
+//   线路1: 服务商 Ollama        模型 deepseek-v4.1flash  网络 直连  计费信息
+//   线路2: 服务商 CommandCode   模型 deepseek-v4.1flash  网络 直连  计费信息
+// 这一组钉四件事（都是只有机械检查才抓得住的）：
+//
+//   1. **五个能力控件与三个计费控件真的在页面上**，testid 就是真机 E2E 要用的那一串；
+//   2. 不碰能力块时，载荷里的 `capabilities` **逐字等于 Rust `ChannelCapabilities::default`**
+//      （全 false / `context_tokens` 0 / `max_output_tokens` null / `modalities` `["text"]`）——
+//      默认值本身就是契约的一部分（老配置不写也能用），前端**不许**发明另一套默认值；
+//      `max_output_tokens` 本页不做输入，所以载荷里恒为 `null`（不放假控件）；
+//   3. 计费三项全空 -> **一次都不调** `pricing_upsert`；有任意一项非空 -> `channel_upsert`
+//      **成功之后**才调 `pricing_upsert({ entry })`，`match` = { model, provider }、
+//      `rates` 只放填了的键（`input` / `output` / `input_cached` = ta-core `TokenKind::as_key()`）；
+//   4. 成功区显示的是**两条命令各自的后端返回值**（mock 故意返回与提交完全不同的值），
+//      计费失败时后端错误原样带 TA 码，且**不显示**"已保存"这句成功文案（不许谎报）。
+//
+// 「真的调了命令」为什么不用任务书里写的 `vi.spyOn(client, "invokeCommand")`：
+// `src/shared/api/client.ts` 里**没有** `invokeCommand`（唯一入口是 `commands.ts` 的
+// `invokeCommand` → `client.call`），ESM 的命名导出绑定又打不进 `vi.spyOn`
+// （`models.test.tsx` ⑦ 已经踩过同一个坑，见那里的长注释）。
+// 所以这里沿用 ⑨ 的办法：`registerMock(命令名, 记录入参的 handler)` —— handler 只有
+// **命令名真的对得上**才会被调用，于是"拼错命令名"与"根本没发请求"都会立刻红。
+
+/** MUI Switch：`data-testid` 落在根 `span` 上（与 `models-add-expose` 的 Checkbox 同一形状），
+ *  里面那个真正的 `input[type=checkbox]` 才是可点的 —— 与真机 E2E「先找容器内的 input」同口径。 */
+function switchInput(testId: string): HTMLInputElement {
+  const host = screen.getByTestId(testId);
+  const input = host.tagName === "INPUT" ? host : host.querySelector("input");
+  if (input === null) throw new Error(`${testId} 里没有可交互的 input`);
+  return input as HTMLInputElement;
+}
+
+/** 本轮新增的控件（能力块 + 计费块）。**不许改名**：真机 E2E 按它们驱动。 */
+const CAPABILITY_AND_PRICE_CONTROLS = [
+  "channels-add-vision",
+  "channels-add-tools",
+  "channels-add-reasoning",
+  "channels-add-contextTokens",
+  "channels-add-modalities",
+  "channels-add-price-input",
+  "channels-add-price-output",
+  "channels-add-price-cached",
+] as const;
+
+/** Rust `ChannelCapabilities::default` 的**逐字**形状（[docs/17 §2] 明说它是契约的一部分）。 */
+const RUST_DEFAULT_CAPABILITIES = {
+  vision: false,
+  tools: false,
+  reasoning: false,
+  context_tokens: 0,
+  max_output_tokens: null,
+  modalities: ["text"],
+} as const;
+
+describe("⑪ 线路向导的能力块与计费块：真控件 → 真载荷 → 计费按后端顺序单独落库", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  /** 把必填的四项填好（与 ⑨ 同一套）。 */
+  async function fillRequired(): Promise<void> {
+    await chooseOption("channels-add-provider", "command code");
+    await chooseOption("channels-add-credential", /command code · 按量/);
+    typeIntoField("channels-add-model", MODEL_ID);
+    typeIntoField("channels-add-upstreamModel", `${MODEL_ID}-2026`);
+  }
+
+  /** 打开向导并等它可用。 */
+  async function openWizard(): Promise<void> {
+    renderPage();
+    fireEvent.click(await screen.findByTestId("channels-add-open"));
+  }
+
+  it("能力的五个控件与计费的三个控件一个不少，且打开时就是 Rust 的默认值", async () => {
+    await openWizard();
+
+    for (const id of CAPABILITY_AND_PRICE_CONTROLS) {
+      expect(screen.getByTestId(id), `缺控件 ${id}`).toBeTruthy();
+    }
+
+    // 三个开关默认关（= Rust 默认 false）
+    for (const id of ["channels-add-vision", "channels-add-tools", "channels-add-reasoning"]) {
+      expect(switchInput(id).checked, `${id} 默认必须是关的`).toBe(false);
+    }
+    // 上下文窗口默认 0；模态默认 text（= Rust 默认 ["text"]）——不是空、也不是别的词
+    expect((screen.getByTestId("channels-add-contextTokens") as HTMLInputElement).value).toBe("0");
+    expect((screen.getByTestId("channels-add-modalities") as HTMLInputElement).value).toBe("text");
+    // 三项计费默认全空 = 不计价（**不放 0**：0 是"免费"，不是"没填"）
+    for (const id of ["channels-add-price-input", "channels-add-price-output", "channels-add-price-cached"]) {
+      expect((screen.getByTestId(id) as HTMLInputElement).value).toBe("");
+    }
+  });
+
+  it("不碰能力块 -> 载荷里的 capabilities 逐字等于 Rust 默认；计费全空 -> 一次都不调 pricing_upsert", async () => {
+    const upsert = recordingMock(channel({ id: "ch-backend" }));
+    const pricing = recordingMock({} as PriceEntry);
+    registerMock("channel_upsert", upsert.handler);
+    registerMock("pricing_upsert", pricing.handler);
+
+    await openWizard();
+    await fillRequired();
+    fireEvent.click(screen.getByTestId("channels-add-submit"));
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    const ch = upsert.calls[0]!["channel"] as Record<string, unknown>;
+    expect(ch["capabilities"]).toEqual(RUST_DEFAULT_CAPABILITIES);
+    // 三项全空 = 不计价：`pricing_upsert` 一次都不许发
+    expect(pricing.calls).toHaveLength(0);
+  });
+
+  it("改过的能力真进载荷：开关 true、contextTokens 净化为非负整数、modalities 切片排序去重", async () => {
+    const upsert = recordingMock(channel());
+    registerMock("channel_upsert", upsert.handler);
+    registerMock("pricing_upsert", () => ({}) as PriceEntry);
+
+    await openWizard();
+    await fillRequired();
+
+    fireEvent.click(switchInput("channels-add-vision"));
+    fireEvent.click(switchInput("channels-add-tools"));
+    expect(switchInput("channels-add-vision").checked).toBe(true);
+    expect(switchInput("channels-add-tools").checked).toBe(true);
+    // 非数字字符进不来（与优先级/权重同一个 intInputFilter 手法）-> 载荷里不可能出现 NaN
+    typeIntoField("channels-add-contextTokens", "12abc8");
+    expect((screen.getByTestId("channels-add-contextTokens") as HTMLInputElement).value).toBe("128");
+    // 逗号分隔：trim -> 切 -> 去空 -> 排序去重（image 出现两次只留一个）
+    typeIntoField("channels-add-modalities", " image , text ,image, ");
+
+    fireEvent.click(screen.getByTestId("channels-add-submit"));
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    const caps = (upsert.calls[0]!["channel"] as Record<string, unknown>)["capabilities"] as Record<
+      string,
+      unknown
+    >;
+    expect(caps["vision"]).toBe(true);
+    expect(caps["tools"]).toBe(true);
+    expect(caps["reasoning"]).toBe(false);
+    expect(caps["context_tokens"]).toBe(128);
+    expect(caps["max_output_tokens"]).toBeNull();
+    expect(caps["modalities"]).toEqual(["image", "text"]);
+  });
+
+  it("填了计费 -> channel_upsert 成功之后才调 pricing_upsert({entry})，rates 只放填了的键", async () => {
+    const order: string[] = [];
+    const upsert = recordingMock(
+      channel({ id: "ch-backend", model: "m-backend", upstream_model: "up-backend" }),
+    );
+    // 后端返回的**与提交的完全不同**：只有显示的是后端真值，回显断言才会过
+    const savedEntry: PriceEntry = {
+      match: { model: "backend-priced-model", provider: "p-backend" },
+      rates: { input: 9.99 },
+      multiplier: 3,
+      currency: "USD",
+      source: "imported",
+      effective_from: "2026-01-01",
+    };
+    const pricing = recordingMock(savedEntry);
+    registerMock("channel_upsert", (args) => {
+      order.push("channel");
+      return upsert.handler(args);
+    });
+    registerMock("pricing_upsert", (args) => {
+      order.push("pricing");
+      return pricing.handler(args);
+    });
+
+    await openWizard();
+    await fillRequired();
+    typeIntoField("channels-add-price-input", "1.5");
+    // 输出留空 -> rates 里就没有 output 这个键
+    typeIntoField("channels-add-price-cached", "0.25");
+    fireEvent.click(screen.getByTestId("channels-add-submit"));
+
+    await waitFor(() => expect(pricing.calls).toHaveLength(1));
+    // 顺序是契约的一部分：线路没落库就不许写价（否则价格指向一条不存在的线）
+    expect(order).toEqual(["channel", "pricing"]);
+
+    const call = pricing.calls[0]!;
+    expect(Object.keys(call)).toEqual(["entry"]);
+    const entry = call["entry"] as Record<string, unknown>;
+    expect(entry["match"]).toEqual({ model: MODEL_ID, provider: "p-commandcode" });
+    expect(entry["rates"]).toEqual({ input: 1.5, input_cached: 0.25 });
+    expect(entry["multiplier"]).toBe(1);
+    expect(entry["source"]).toBe("manual");
+    expect(entry["currency"]).toBeNull();
+    expect(entry["effective_from"]).toBeNull();
+
+    // 成功区：**两条命令的后端返回值**都在（原样的后端值，不是我们提交的草稿）
+    const saved = await screen.findByTestId("channels-add-result");
+    expect(saved.textContent).toContain("ch-backend");
+    expect(saved.textContent).toContain("m-backend");
+    expect(saved.textContent).toContain("backend-priced-model");
+    expect(saved.textContent).toContain("9.99");
+    expect(saved.textContent).toContain("imported");
+  });
+
+  it("价格非法（负数 / 非数字）-> 本地预检点名，channel_upsert 与 pricing_upsert 一次都不发", async () => {
+    const upsert = recordingMock(channel());
+    const pricing = recordingMock({} as PriceEntry);
+    registerMock("channel_upsert", upsert.handler);
+    registerMock("pricing_upsert", pricing.handler);
+
+    await openWizard();
+    await fillRequired();
+    typeIntoField("channels-add-price-input", "-1");
+    typeIntoField("channels-add-price-output", "很贵");
+    fireEvent.click(screen.getByTestId("channels-add-submit"));
+
+    const issues = await screen.findByTestId("channels-add-issues");
+    expect(issues.textContent).toContain("输入：必须是数字（可留空）");
+    expect(issues.textContent).toContain("输出：必须是数字（可留空）");
+    expect(upsert.calls).toHaveLength(0);
+    expect(pricing.calls).toHaveLength(0);
+  });
+
+  it("channel_upsert 失败 -> 计费一次都不发（价格不许指向没落库的线）", async () => {
+    const pricing = recordingMock({} as PriceEntry);
+    registerMock("channel_upsert", () => {
+      throw new TokenAgencyError({ code: "TA-5003", message: "channels[0].model 引用的模型不存在" });
+    });
+    registerMock("pricing_upsert", pricing.handler);
+
+    await openWizard();
+    await fillRequired();
+    typeIntoField("channels-add-price-input", "2");
+    fireEvent.click(screen.getByTestId("channels-add-submit"));
+
+    const error = await screen.findByTestId("channels-add-error");
+    expect(error.textContent).toContain("TA-5003");
+    expect(pricing.calls).toHaveLength(0);
+  });
+
+  it("计费失败 -> 后端错误原样带 TA 码，且不许显示「已保存」成功文案", async () => {
+    registerMock("channel_upsert", () => channel({ id: "ch-backend" }));
+    registerMock("pricing_upsert", () => {
+      throw new TokenAgencyError({ code: "TA-2007", message: "定价条目非法：rates.input 为负" });
+    });
+
+    await openWizard();
+    await fillRequired();
+    typeIntoField("channels-add-price-input", "3");
+    fireEvent.click(screen.getByTestId("channels-add-submit"));
+
+    const error = await screen.findByTestId("channels-add-error");
+    expect(error.textContent).toContain("TA-2007");
+    expect(error.textContent).toContain("rates.input");
+    // 通道确实落库了（后端返回的 Channel 仍在），但**不许**声称整条线配好了
+    expect(screen.getByTestId("channels-add-result").textContent).toContain("ch-backend");
+    expect(screen.queryByText(/已保存/)).toBeNull();
+  });
+});
+
+// ================================================================ ⑫ 能力 / 计费的纯逻辑
+describe("⑫ 能力与计费的整形：默认值照抄 Rust、只发填了的价", () => {
+  const base: channelsModel.ChannelDraft = {
+    ...channelsModel.EMPTY_CHANNEL_DRAFT,
+    provider: "p-ollama",
+    credential: "c-ollama",
+    model: MODEL_ID,
+    upstreamModel: MODEL_ID,
+  };
+
+  it("modalities：trim -> 按逗号切 -> 去空 -> 排序去重；清空 = 显式声明「没有模态」（[] 不是 ['text']）", () => {
+    expect(channelsModel.parseModalities(" image , text ,image, ")).toEqual(["image", "text"]);
+    expect(channelsModel.parseModalities("text")).toEqual(["text"]);
+    expect(channelsModel.parseModalities("")).toEqual([]);
+  });
+
+  it("contextTokens：空 = 0（Rust 默认）；非数字一律不当数字用（返回 undefined，绝不 NaN）", () => {
+    expect(channelsModel.parseContextTokens("")).toBe(0);
+    expect(channelsModel.parseContextTokens("128000")).toBe(128_000);
+    expect(channelsModel.parseContextTokens("12.5")).toBeUndefined();
+    expect(channelsModel.parseContextTokens("-1")).toBeUndefined();
+    expect(Number.isNaN(channelsModel.channelPayload(base).capabilities?.context_tokens ?? 0)).toBe(
+      false,
+    );
+  });
+
+  it("价格：空 = 不计价（undefined）；非负数字才认；负号 / 非数字 / 半截小数都不认", () => {
+    expect(channelsModel.parsePrice("")).toBeUndefined();
+    expect(channelsModel.parsePrice("0")).toBe(0);
+    expect(channelsModel.parsePrice("1.25")).toBe(1.25);
+    expect(channelsModel.parsePrice("-1")).toBeUndefined();
+    expect(channelsModel.parsePrice("1.2.3")).toBeUndefined();
+    expect(channelsModel.parsePrice("abc")).toBeUndefined();
+  });
+
+  it("pricing 载荷：键名是 TokenKind::as_key() 的三个，只放填了的键；match 用所选模型与服务商", () => {
+    const entry = channelsModel.priceEntryFor({
+      ...base,
+      priceInput: "1",
+      priceOutput: "",
+      priceCached: "0.5",
+    });
+    expect(entry.rates).toEqual({ input: 1, input_cached: 0.5 });
+    expect(entry.match).toEqual({ model: MODEL_ID, provider: "p-ollama" });
+    expect(entry.multiplier).toBe(1);
+    expect(entry.source).toBe("manual");
+    expect(entry.currency).toBeNull();
+    expect(entry.effective_from).toBeNull();
+    // 三项全空 -> 没有任何 rate（页面据此完全不调 pricing_upsert）
+    expect(channelsModel.priceEntryFor({ ...base, priceInput: "", priceOutput: "", priceCached: "" }).rates).toEqual({});
+    expect(channelsModel.hasPrice({ priceInput: "", priceOutput: "", priceCached: "" })).toBe(false);
+    expect(channelsModel.hasPrice({ priceInput: "0", priceOutput: "", priceCached: "" })).toBe(true);
+  });
+
+  it("本地预检点名：必填缺项 + 价格非法（两类问题分开说，不混成一句「必填」）", () => {
+    const problems = channelsModel.channelDraftIssues({
+      ...channelsModel.EMPTY_CHANNEL_DRAFT,
+      priceInput: "-2",
+    });
+    expect(problems).toEqual([
+      { field: "provider", problem: "required" },
+      { field: "credential", problem: "required" },
+      { field: "model", problem: "required" },
+      { field: "upstreamModel", problem: "required" },
+      { field: "priceInput", problem: "number" },
+    ]);
+    expect(channelsModel.channelDraftIssues(base)).toEqual([]);
   });
 });

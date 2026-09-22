@@ -303,7 +303,20 @@ export default function SettingsPage() {
 
   const status = useAppStatus();
   const queryClient = useQueryClient();
-  const config = useCommandQuery("config_get", undefined, qk.config);
+  /**
+   * 这一份 doc 是**整份**写回去的（`config_apply` 是全量覆盖，见
+   * `src-tauri/src/commands/config.rs`）—— 所以编辑它之前必须拿到后端**当前**的那一份。
+   *
+   * 为什么这里显式写 `refetchOnMount: "always"`（两道保险的第二道）：
+   * `qk.config` 是全局共享缓存（`staleTime: 5_000`，`src/main.tsx`）。第一道保险是
+   * `useCommandMutation` 在**每个写命令成功后**集中失效 `qk.config`（见
+   * `src/shared/api/queries.ts`）—— 本该兜底的 `config:changed` 事件在生产代码里从未发出过
+   * （只有 `gateway.rs` 的测试里构造过 `TaEvent::ConfigChanged`），所以那道集中失效是必需品。
+   * 第二道就是这里：设置页是**唯一会把整份 doc 写回去**的页面，它的正确性不能依赖
+   * "别处有没有记得失效" —— 每次挂载都重读一次后端当前值。
+   * 真机 E2E 实测到过被抹掉：`lane/ta-e2e-lane` 在点「校验并应用」前后消失。
+   */
+  const config = useCommandQuery("config_get", undefined, qk.config, { refetchOnMount: "always" });
   const history = useCommandQuery("config_history_list", { limit: 20 }, qk.configHistory);
   const stats = useCommandQuery("log_storage_stats", undefined, qk.logStats);
   const recentArgs = useMemo(() => recentLogQueryArgs(1), []);

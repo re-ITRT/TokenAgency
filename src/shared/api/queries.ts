@@ -75,7 +75,28 @@ export function useCommandQuery<K extends CommandName>(
   });
 }
 
-/** 类型化 mutation：`mutate(args)` 的入参就是命令的入参。 */
+/**
+ * 类型化 mutation：`mutate(args)` 的入参就是命令的入参。
+ *
+ * **每个写命令成功后都必须让 `qk.config` 失效**（集中在这一处，不靠每个调用点自觉）。
+ *
+ * 为什么这是**必须**的（这不是"顺手刷新一下"，是一条数据安全规则）：
+ * `config_get` 返回的是**整份** `ConfigDoc`，而 `config_apply` 是**全量覆盖**
+ * （Rust `config_store.rs::write_rows` 先 `DELETE FROM config` 再插入，
+ * `src-tauri/src/commands/config.rs` 的 `config_apply` 直接 `save` + `set_doc`）。
+ * 于是"前端手里那份 `qk.config` 旧不旧"直接决定**用户的东西会不会被删掉**：
+ * 在 `/network` 建好一条线路 → 3 秒内打开设置页（`staleTime` 5s → 不重取）→
+ * 点「校验并应用」→ 提交的是**建线路之前**的那份 doc → **线路被静默抹掉**。
+ * 这个缺陷被真机 E2E 抓到过（`config_snapshot` 里 label=`lane_upsert` 的 doc 有 1 条 lane、
+ * label=`apply` 的 doc 有 0 条），修复方式就是这一行。
+ *
+ * 名字由设计兜底的那条通道（`config:changed` → `EVENT_INVALIDATIONS["config:changed"]`，
+ * 见 `keys.ts`）目前**没有生产端生产者**（`TaEvent::ConfigChanged` 只在测试里被构造），
+ * 所以这里必须自己失效；将来后端真的发出该事件，这一行仍然无害（重复失效是幂等的）。
+ *
+ * 代价：非配置类写命令（如 `log_clear`）也会多一次 `config_get`。那是**内存快照的克隆**，
+ * 且只在有观察者时才会重取 —— 用这点开销换"绝不静默删用户数据"，值得。
+ */
 export function useCommandMutation<K extends CommandName>(
   cmd: K,
   options?: Omit<
@@ -83,9 +104,15 @@ export function useCommandMutation<K extends CommandName>(
     "mutationFn"
   >,
 ) {
+  const queryClient = useQueryClient();
+  const { onSuccess, ...rest } = options ?? {};
   return useMutation<CommandMap[K]["result"], TokenAgencyError, CommandArgs<K>>({
     mutationFn: (args) => invokeCommand(cmd, args),
-    ...options,
+    ...rest,
+    onSuccess: (data, variables, context, mutation) => {
+      void queryClient.invalidateQueries({ queryKey: qk.config });
+      onSuccess?.(data, variables, context, mutation);
+    },
   });
 }
 
