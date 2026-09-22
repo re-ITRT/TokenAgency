@@ -319,12 +319,21 @@ export const en: Record<I18nKey, string> = {
   "settings.service.resume.done": "Gateway is accepting requests again.",
 
   "settings.startup.autostart": "Start on login",
-  "settings.startup.blocked.title": "There is no switch here",
-  "settings.startup.blocked.body":
-    "Starting on login is the only feature in this project that writes operating-system state, so a switch may only be shown when the real system state can be read. The commands that read and write it are not registered in the desktop build yet: app_get_autostart, app_set_autostart (and app_repair_autostart, used to fix drift). Until they land there is no switch here — and no disabled placeholder that does nothing when clicked.",
-  "settings.startup.configValue": "Value in the config (read from the config): {{value}}",
-  "settings.startup.configValue.hint":
-    "That is the configured expectation, not a system fact. The system fact requires the actual-state field of the autostart state, whose command is not registered — so nothing is inferred here, and “current system state” is not shown.",
+  "settings.startup.actual": "Actual system state: {{value}}",
+  "settings.startup.desired": "Value in the config: {{value}}",
+  "settings.startup.desired.hint":
+    "The config expectation is not a system fact. The switch shows the “actual system state” line above (the actual field of app_get_autostart).",
+  "settings.startup.drifted":
+    "Config expectation and system state disagree (drift): config {{desired}} / system {{actual}}. Press “Repair autostart” to register or remove it according to the config.",
+  "settings.startup.repair": "Repair autostart",
+  "settings.startup.switch.hint":
+    "The switch writes the **system fact**: toggling really calls app_set_autostart (registers or removes the OS startup entry) — it does not merely edit the config.",
+  "settings.startup.mechanism": "Mechanism: {{value}}",
+  "settings.startup.unsupported": "This platform does not support start-on-login: {{reason}}",
+  "settings.startup.loading": "Reading the system autostart state…",
+  "settings.startup.error": "Failed to read the autostart state: {{message}}",
+  "settings.startup.yes": "yes",
+  "settings.startup.no": "no",
   "settings.startup.mode": "Startup mode",
   "settings.startup.mode.tray": "Silently to tray",
   "settings.startup.mode.window": "Show window",
@@ -332,19 +341,19 @@ export const en: Record<I18nKey, string> = {
   "settings.startup.delay.hint":
     "Range 0–300. Disks and networks are busy at login; 20–60 seconds reduces the chance of the kernel failing its first start.",
   "settings.startup.writeHint":
-    "Editing these two only writes the config; the OS startup entry can be registered or removed only once the commands above land.",
+    "Editing these two only writes the config; the OS startup entry is handled by the switch above (it really registers or removes it).",
 
   "settings.tray.showLatency": "Show latency in the tray",
   "settings.tray.fileWatch": "Config file watch mode",
   "settings.tray.fileWatch.blocked":
-    "No switch: the dedicated command that writes it is not registered yet (config_set_file_watch_mode). While it is on, writing the config back from the UI would overwrite edits made in the file — a toggle with side effects, so the generic config apply is not used as a substitute.",
+    "No switch: the dedicated command that writes it, config_set_file_watch_mode, is registered, but this page does not call it yet. While it is on, writing the config back from the UI would overwrite edits made in the file — a toggle with side effects, so the generic config apply is not used as a substitute.",
   "settings.tray.on": "On",
   "settings.tray.off": "Off",
 
   "settings.storage.stats": "Storage usage",
   "settings.storage.toLogs": "Query on the request log page",
   "settings.storage.noExport":
-    "This page offers no log export: it needs the backend command log_export (not registered), so no button is drawn.",
+    "This page offers no log export: the backend command log_export is registered, but this page does not call it yet, so no button is drawn.",
   "settings.storage.modeWritten": "Recording mode written as {{mode}} in this session (backend confirmed).",
   "settings.storage.retentionWritten": "Retention written as {{value}} in this session (backend confirmed).",
   "settings.storage.modeEvidence": "Mode recorded on the newest log row: {{mode}} ({{time}})",
@@ -440,8 +449,16 @@ export const en: Record<I18nKey, string> = {
   "settings.about.uptime": "Uptime",
   "settings.about.lastError": "Last kernel error",
   "settings.about.checkUpdate": "Check for updates",
-  "settings.about.checkUpdate.blocked":
-    "No update check button: it needs the backend command app_check_update (not registered) — clicking would produce nothing.",
+  "settings.about.checkUpdate.run": "Check for updates",
+  "settings.about.checkUpdate.hint":
+    "Pressing it really calls app_check_update; if there is no result, the failure reason is shown — never “you are up to date”.",
+  "settings.about.checkUpdate.none":
+    "The backend returned no usable update information (this build has no update channel).",
+  "settings.about.checkUpdate.found": "New version reported by the backend: {{version}}",
+  "settings.about.checkUpdate.notes": "Release notes: {{notes}}",
+  "settings.about.checkUpdate.url": "Download URL: {{url}}",
+  "settings.about.checkUpdate.running": "Checking…",
+  "settings.about.checkUpdate.error": "Update check failed: {{message}}",
   "settings.about.license": "Licence",
   "settings.about.license.unknown":
     "No readable source (the command surface has no command that reads the licence), so nothing is invented.",
