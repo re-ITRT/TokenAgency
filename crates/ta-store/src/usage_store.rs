@@ -1094,10 +1094,18 @@ impl SqliteUsageStore {
     }
 
     async fn cards(&self, from: i64, to: i64) -> Result<(f64, f64, f64, f64)> {
+        // ★ `cost` 这一格**必须显式 CAST 成 REAL**：`COALESCE(SUM(cost), 0)` 在**空表**上返回的是
+        // **整数字面量 0** —— 聚合表达式没有列亲和性，不会因为 `cost REAL`（migrations/0001 §）就变 REAL。
+        // 而这里按 `f64`(REAL) 解码，sqlx 的 `Row::get` 对 INTEGER 值会**直接 panic**
+        // （真机证据：release 二进制打开看板 → `ColumnDecode { index: "cost", ... Rust type f64
+        // (as SQL type REAL) is not compatible with SQL type INTEGER }`，窗口随之失去会话）。
+        // 有数据行时反而不触发，所以这条缺陷**只在空库出现**，正是每个新用户的第一屏。
+        // 回归测试：`crates/ta-store/tests/p4_integration.rs`
+        //   `dashboard_on_an_empty_database_reports_zeros_instead_of_panicking`。
         let r = sqlx::query(
             "SELECT COUNT(*) AS requests,
                     COALESCE(SUM(total_tokens), 0) AS tokens,
-                    COALESCE(SUM(cost), 0) AS cost,
+                    CAST(COALESCE(SUM(cost), 0.0) AS REAL) AS cost,
                     COALESCE(SUM(CASE WHEN status >= 200 AND status < 300 AND error_type IS NULL
                                       THEN 1 ELSE 0 END), 0) AS ok_count
              FROM usage_request WHERE ts >= ? AND ts < ?",

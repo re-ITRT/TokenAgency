@@ -1194,3 +1194,33 @@ async fn csv_export_and_api_key_usage() {
 
     let _ = pool;
 }
+
+/// ★ **空库上必须能拿到看板**（首次启动、新装用户的库就是空的）。
+///
+/// 真机证据（release 二进制，`scripts/e2e/smoke.mjs`）：导航到任一调用 `usage_dashboard` 的页面时，
+/// tokio worker 反复 panic，窗口随后失去 WebDriver 会话：
+///
+/// ```text
+/// panicked at crates\ta-store\src\usage_store.rs:1112: called `Result::unwrap()` on an `Err` value:
+/// ColumnDecode { index: "\"cost\"", source: "mismatched types; Rust type `f64` (as SQL type `REAL`)
+/// is not compatible with SQL type `INTEGER`" }
+/// ```
+///
+/// 根因：`COALESCE(SUM(cost), 0)` 在**没有任何用量行**时返回的是**整数字面量 0**（聚合表达式没有列亲和性，
+/// 不会因为 `cost REAL` 就变成 REAL），而代码按 `f64`(REAL) 解码 → sqlx 的 `Row::get` 直接 panic。
+/// 有行的时候反而没事，所以这条缺陷**只在空库出现**——正是每个新用户的第一屏。
+#[tokio::test]
+async fn dashboard_on_an_empty_database_reports_zeros_instead_of_panicking() {
+    let (_pool, store) = usage_store(1_700_000_000_000).await;
+
+    let d = store
+        .dashboard(TimeRange::Last7d)
+        .await
+        .expect("空库也必须能出看板（不能 panic、不能报错）");
+
+    assert_eq!(d.cards.success_rate, 0.0, "空库的成功率是 0，不是 NaN/panic");
+    assert_eq!(d.trend.len(), 0, "空库没有趋势点");
+    // 成本卡走的就是那条 `COALESCE(SUM(cost), 0)` —— 它今天正是 panic 的地方。
+    assert!(d.cards.cost.amount.is_finite(), "空库成本必须是有限的数：{}", d.cards.cost.amount);
+    assert_eq!(d.cards.cost.amount, 0.0, "空库成本必须是 0");
+}
