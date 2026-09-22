@@ -106,7 +106,9 @@ const STEP_TITLES = {
   step15: "能力一致的两条线路可路由；把已归组的线路改成不一致 → 后端必须拒绝并点出字段",
   step17: "节点清单真出数据（/network/nodes ← subscription_nodes，含 fixture 节点）",
   step18: "访问密钥能管（创建/明文一次/列表无明文/启停/删除）；HTTP 鉴权段需网关在监听，否则如实记未验证",
-  step20: "服务商详情 →「编辑」进同一个向导的编辑模式：预填现有值、留空密钥不改、第 2 步能改该模型线路",
+  step20: "服务商详情 →「编辑」进同一个向导的编辑模式：预填现有值、留空密钥不改、第 2 步线路列只读",
+  step21: "各种项的删除（确认框 + 级联 + 批量逐条汇报）与通道页改线路",
+  step22: "长篇介绍收进「问号圆圈」：悬停/聚焦展开原文，版面上不再铺字",
 };
 
 // ================================================================ 小工具
@@ -2359,33 +2361,33 @@ async function step20(wd) {
     `留空密钥点下一步: 第 2 步命中=${step2Here}；该服务商已有模型行=${rowCount}；密钥框现值=${JSON.stringify(keyAfter)}`,
   );
 
-  // 改一行网络代理 → 库里该通道的 lane 必须真的变
-  const laneRows = configEntities(before, "lane");
-  const otherLane = laneRows.find((l) => !String(l.json?.name ?? "").includes("直连"));
-  let lanePicked = null;
-  let laneChanged = 0;
-  if (step2Here && otherLane !== undefined && rowCount > 0) {
-    lanePicked = await wdPickOption(
-      wd,
-      "pw-model-lane",
-      evidence,
-      new RegExp(String(otherLane.json?.name ?? otherLane.entityId)),
+  // 第 73 轮用户定了方向：「线路设置不能点进服务商里面去修改」→ 向导里这一列必须**只读**
+  // （设置入口在通道页，由 step21 验证"改了真的落库"）。这里断言"看不到可写控件 + 有指路文案"。
+  const laneProbe = await wd.exec(`
+    const rows = [...document.querySelectorAll('[data-testid="pw-model-row"]')];
+    return rows.map((r) => {
+      const box = r.querySelector('[data-testid="pw-model-lane"]');
+      const name = r.querySelector('[data-testid="pw-model-lane-name"]');
+      const hint = r.querySelector('[data-testid="pw-model-lane-readonly"]');
+      const writable = box ? box.querySelector('[role="combobox"], select, input') : null;
+      return {
+        hasLane: box !== null,
+        lane: name ? (name.textContent || '').replace(/\\s+/g, ' ').trim() : null,
+        readonly: box !== null && writable === null,
+        hint: hint ? (hint.textContent || '').replace(/\\s+/g, ' ').trim() : null,
+      };
+    });
+  `);
+  const readonlyOk =
+    Array.isArray(laneProbe) &&
+    laneProbe.length === rowCount &&
+    rowCount > 0 &&
+    laneProbe.every(
+      (l) => l.hasLane === true && l.readonly === true && typeof l.hint === "string" && l.hint.length > 0,
     );
-    await sleep(1600);
-    const after = dumpScratchDb("step20-after");
-    const mineAfter = configEntities(after, "channel").filter(
-      (c) => c.json?.provider === target.entityId,
-    );
-    laneChanged = mineAfter.filter((c) => c.json?.lane === otherLane.entityId).length;
-    evidence.push(
-      `改第一行网络代理 → 选了 ${JSON.stringify(lanePicked)}（目标 lane=${otherLane.entityId}「${String(otherLane.json?.name ?? "")}」）；` +
-        `库里该服务商下 lane 变成它的通道数=${laneChanged}（改前=${JSON.stringify(mineBefore.map((c) => c.json?.lane ?? null))}）`,
-    );
-  } else {
-    evidence.push(
-      `没能走到"改线路"这一档：第 2 步命中=${step2Here} 行数=${rowCount} 有非直连线路=${otherLane !== undefined}`,
-    );
-  }
+  evidence.push(
+    `第 2 步的线路列（必须只读）: ${JSON.stringify(laneProbe)}；只读判定=${readonlyOk}`,
+  );
 
   // 编辑不许派生出第二个服务商（id 复用）
   const afterAll = dumpScratchDb("step20-providers");
@@ -2398,13 +2400,13 @@ async function step20(wd) {
   await wd.closeDialog();
   await sleep(400);
 
-  const ok =
-    hasEdit && step1Here && prefilledOk && step2Here && lanePicked !== null && laneChanged > 0 && noDuplicate;
+  const ok = hasEdit && step1Here && prefilledOk && step2Here && readonlyOk && noDuplicate;
   if (ok) {
     record(
       "step20",
       "PASS",
-      `服务商图形化编辑：详情页「编辑」进同一个两步向导 · 第 1 步预填现有值 · 留空密钥也能到第 2 步（${rowCount} 行模型）· 行内改网络代理后库里通道 lane=${JSON.stringify(otherLane?.entityId ?? null)} · id 未派生新的`,
+      `服务商图形化编辑：详情页「编辑」进同一个两步向导 · 第 1 步预填现有值 · 留空密钥也能到第 2 步（${rowCount} 行模型）· ` +
+        `线路列只读（设置入口在通道页，改线路由 step21 验证）· id 未派生新的`,
       evidence,
     );
   } else {
@@ -2412,7 +2414,344 @@ async function step20(wd) {
       "step20",
       "FAIL",
       `服务商编辑没做到位：有编辑入口=${hasEdit} 进第 1 步=${step1Here} 预填一致=${prefilledOk} 进第 2 步=${step2Here} ` +
-        `改线路选中=${JSON.stringify(lanePicked)} 库里 lane 变化=${laneChanged} 无重复服务商=${noDuplicate}`,
+        `线路列只读=${readonlyOk} 无重复服务商=${noDuplicate}`,
+      evidence,
+    );
+  }
+}
+
+/**
+ * **step21：各种项的删除 + 通道页改线路**（[docs/21]，用户第 73 轮两条要求）。
+ *
+ * 用户原话：①「用户可能需要有各种项的删除」（并明确要**批量/危险**删除）；
+ * ②「线路设置不能点进服务商里面去修改」——所以线路的唯一编辑入口是**通道页**（step20 已经断言
+ * 向导里那一列只读）。
+ *
+ * 断言：
+ * - 通道页 `channels-lane-select`：选一条真实线路 → 库里**那条通道**的 `lane` 变成它；
+ *   再选「直连（继承）」→ 变回 `null`（这正是第 73 轮后端新补的"清空"能力）。
+ * - 每一类实体：点删除（`<prefix>-delete`）→ **必须先出现确认框** → 确认 → 库里少一条；
+ *   被引用时后端原文照显，`provider`/`credential`/`model` 才有 `…-delete-cascade`，点了它才真删。
+ * - 批量删除：选中 ≥2 条 → 删除选中 → 结果区**逐条汇报**（成功/失败都算结论，只要如实）。
+ *
+ * 顺序：跑在最后（删完不影响其它步骤），并且把"级联删服务商"放在最后一条。
+ */
+async function step21(wd) {
+  const evidence = [];
+  const kindCount = (kind, tag) => configIds(dumpScratchDb(tag), kind).length;
+  /**
+   * 某一类实体在库里的条数。
+   *
+   * **pricing 是特例**：它没有自己的 config kind —— 配置表里是一行 `kind=section, entity_id=pricing`
+   * 的 JSON（`{currency, unit, entries:[…]}`）。按 `kind=pricing` 去数永远是 0，那会让
+   * "删定价条目"这一档冤枉地判失败（真机跑出来就是"删除前 0 条 → 删除后 0 条"）。
+   */
+  const countOf = (kind, tag) => {
+    const dump = dumpScratchDb(tag);
+    if (kind !== "pricing") return configIds(dump, kind).length;
+    const row = (dump.config ?? []).find(
+      (r) => r.kind === "section" && String(r.entity_id) === "pricing",
+    );
+    if (row === undefined) return 0;
+    try {
+      const parsed = JSON.parse(String(row.json));
+      return Array.isArray(parsed?.entries) ? parsed.entries.length : 0;
+    } catch {
+      return 0;
+    }
+  };
+  /** 点了删除之后，弹层里出现的第一个 `*-delete-dialog` / `*-delete-confirm`（前缀由各页自定）。 */
+  const findTid = async (suffix) => {
+    const ids = await wd.probeTestIds();
+    return ids.find((t) => t.endsWith(suffix)) ?? null;
+  };
+
+  // ---------------------------------------------------------------- A. 通道页改线路
+  let laneSetOk = false;
+  let laneClearOk = false;
+  const chPage = await gotoPage(wd, "#/channels");
+  if (chPage === null) {
+    evidence.push("/channels 没渲染出来（通道页改线路这一档拿不到结论）");
+  } else {
+    const ids = await wd.probeTestIds();
+    const hasSelect = ids.includes("channels-lane-select");
+    const firstRow = await wd.exec(`
+      const rows = [...document.querySelectorAll('[data-testid="channels-row"]')];
+      const id = rows[0] ? rows[0].querySelector('[data-testid="channels-id"]') : null;
+      return { rows: rows.length, channel: id ? (id.textContent || '').trim() : null };
+    `);
+    evidence.push(
+      `通道页: channels-lane-select=${hasSelect}；通道行数=${firstRow?.rows}；首行通道=${JSON.stringify(firstRow?.channel)}`,
+    );
+    const laneDump = dumpScratchDb("step21-lanes");
+    const lanes = configEntities(laneDump, "lane");
+    const target = lanes.find((l) => String(l.json?.name ?? "").includes("TA E2E")) ?? lanes[0];
+    if (hasSelect && firstRow?.channel && target !== undefined) {
+      const picked = await wdPickOption(
+        wd,
+        "channels-lane-select",
+        evidence,
+        new RegExp(String(target.json?.name ?? target.entityId)),
+      );
+      await sleep(1500);
+      const row = configEntities(dumpScratchDb("step21-lane-set"), "channel").find(
+        (c) => c.entityId === firstRow.channel,
+      );
+      laneSetOk = picked !== null && row?.json?.lane === target.entityId;
+      evidence.push(
+        `选线路 ${JSON.stringify(picked)} → 库里 ${firstRow.channel}.lane=${JSON.stringify(row?.json?.lane ?? null)}` +
+          `（期望 ${JSON.stringify(target.entityId)}）→ ${laneSetOk}`,
+      );
+
+      const cleared = await wdPickOption(wd, "channels-lane-select", evidence, /直连|继承|Direct/);
+      await sleep(1500);
+      const row2 = configEntities(dumpScratchDb("step21-lane-clear"), "channel").find(
+        (c) => c.entityId === firstRow.channel,
+      );
+      laneClearOk = cleared !== null && (row2?.json?.lane ?? null) === null;
+      evidence.push(
+        `选「直连（继承）」${JSON.stringify(cleared)} → 库里 ${firstRow.channel}.lane=${JSON.stringify(row2?.json?.lane ?? null)}` +
+          `（期望 null）→ ${laneClearOk}`,
+      );
+    } else {
+      evidence.push(
+        `通道页这一档没跑到：有下拉=${hasSelect} 首行通道=${JSON.stringify(firstRow?.channel)} 可用线路=${lanes.length}`,
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------- B. 单条删除（每类实体）
+  /**
+   * 删掉某一类的第一条：点删除 → 确认框必须出现 → 确认；被引用且该类有级联时点级联。
+   * 返回如实的结果（成功、条数变化、后端原文）。
+   */
+  const runDelete = async ({ hash, kind, delTid, label, cascade = false, waitTid = null }) => {
+    // 等**删除按钮本身**出现再点（`waitTid` 只在调用方显式给了别的锚点时用）。
+    // 为什么不能只等 `page-header`：列表/表格是异步取数回来的，页头先渲染完就点删除按钮会撞上
+    // "控件还没出来"——那会被记成"找不到删除入口"，把一次竞态说成产品缺陷。
+    const waitFor = waitTid ?? delTid;
+    const page = await gotoPage(wd, hash, `[data-testid="${waitFor}"]`);
+    if (page === null) return { label, ok: false, note: `${hash} 渲染后没等到 [data-testid="${waitFor}"]` };
+    const beforeN = countOf(kind, `step21-${kind}-b`);
+    const clicked = await wdClickTid(wd, delTid, evidence);
+    if (!clicked) return { label, ok: false, note: `找不到 ${delTid}` };
+    await sleep(500);
+    const dialogTid = await findTid("-delete-dialog");
+    if (dialogTid === null) {
+      return { label, ok: false, note: `点了 ${delTid} 但没有出现任何 *-delete-dialog（确认框缺失）` };
+    }
+    evidence.push(`${label}: 确认框 = ${dialogTid}`);
+    await wdClickTid(wd, dialogTid.replace(/-delete-dialog$/, "-delete-confirm"), evidence);
+    await sleep(1800);
+
+    let errText = await wd.textOf(`[data-testid="${dialogTid.replace(/-delete-dialog$/, "-delete-error")}"]`);
+    let cascaded = false;
+    if (errText !== null && String(errText).trim() !== "" && cascade) {
+      const cascadeTid = dialogTid.replace(/-delete-dialog$/, "-delete-cascade");
+      if ((await wd.probeTestIds()).includes(cascadeTid)) {
+        await wdClickTid(wd, cascadeTid, evidence);
+        cascaded = true;
+        await sleep(1800);
+        errText = null;
+      }
+    }
+    const afterN = countOf(kind, `step21-${kind}-a`);
+    const removed = beforeN - afterN;
+    evidence.push(
+      `${label}: 删除前 ${beforeN} 条 → 删除后 ${afterN} 条（少 ${removed}）` +
+        `；后端原文=${JSON.stringify(errText === null ? null : String(errText).replace(/\s+/g, " ").slice(0, 100))}；用过级联=${cascaded}`,
+    );
+    return { label, ok: removed >= 1, note: `少 ${removed} 条`, removed, backend: errText, cascaded };
+  };
+
+  const results = [];
+  // 通道：没有 force 语义（被引用时只能显示原文）
+  results.push(await runDelete({ hash: "#/channels", kind: "channel", delTid: "channels-delete", label: "删通道" }));
+  // 策略
+  results.push(await runDelete({ hash: "#/policies", kind: "policy", delTid: "policies-delete", label: "删策略" }));
+  // 定价条目（在成本页）
+  results.push(
+    await runDelete({ hash: "#/cost", kind: "pricing", delTid: "pricing-delete", label: "删定价条目" }),
+  );
+  // 通道组：E2E 流程里不一定建过 → 没行就如实记 SKIP 理由
+  const groupRows = kindCount("channel_group", "step21-groups");
+  evidence.push(`通道组条目数=${groupRows}`);
+  if (groupRows > 0) {
+    results.push(
+      await runDelete({ hash: "#/channels", kind: "channel_group", delTid: "groups-delete", label: "删通道组" }),
+    );
+  }
+  // 模型 / 凭据 / 服务商：都有 force 语义，被引用时走级联
+  results.push(
+    await runDelete({ hash: "#/models", kind: "model", delTid: "models-delete", label: "删模型（可能级联）", cascade: true }),
+  );
+  const providerId = configIds(dumpScratchDb("step21-prov"), "provider")[0] ?? null;
+  if (providerId !== null) {
+    results.push(
+      await runDelete({
+        hash: `#/providers/${encodeURIComponent(providerId)}`,
+        kind: "credential",
+        delTid: "providers-credential-delete",
+        label: "删凭据（可能级联）",
+        cascade: true,
+      }),
+    );
+    results.push(
+      await runDelete({
+        hash: `#/providers/${encodeURIComponent(providerId)}`,
+        kind: "provider",
+        delTid: "providers-detail-delete",
+        label: "删服务商（可能级联）",
+        cascade: true,
+      }),
+    );
+  }
+
+  // ---------------------------------------------------------------- C. 批量删除（逐条汇报）
+  let bulkOk = false;
+  let bulkNote = "没跑到";
+  const bulkPage = await gotoPage(wd, "#/models", '[data-testid="models-row"]');
+  if (bulkPage === null) {
+    bulkNote = "/models 没有行（批量删除这一档拿不到结论）";
+  } else {
+    const beforeN = kindCount("model", "step21-bulk-b");
+    const picked = await wd.exec(`
+      const boxes = [...document.querySelectorAll('[data-testid="models-select"]')];
+      let n = 0;
+      for (const el of boxes) {
+        const target = el.matches('input') ? el : (el.querySelector('input') ?? el);
+        target.click();
+        n += 1;
+        if (n >= 2) break;
+      }
+      return { clicked: n, rows: document.querySelectorAll('[data-testid="models-row"]').length };
+    `);
+    evidence.push(`批量删除：勾选了 ${picked?.clicked} 条（行数 ${picked?.rows}）`);
+    const clickedBulk = await wdClickTid(wd, "models-delete-selected", evidence);
+    await sleep(600);
+    const dialogTid = await findTid("-delete-dialog");
+    if (clickedBulk && dialogTid !== null) {
+      await wdClickTid(wd, dialogTid.replace(/-delete-dialog$/, "-delete-confirm"), evidence);
+      await sleep(2200);
+    }
+    const afterN = kindCount("model", "step21-bulk-a");
+    const pageText = await wd.pageText();
+    const summary = pageText
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => /成功|失败|删除/.test(l))
+      .slice(0, 4);
+    bulkOk = picked?.clicked >= 2 && clickedBulk && dialogTid !== null && afterN < beforeN;
+    bulkNote = `勾选=${picked?.clicked} 确认框=${JSON.stringify(dialogTid)} 模型 ${beforeN} → ${afterN} 条；页面上与删除有关的文案=${JSON.stringify(summary)}`;
+    evidence.push(`批量删除结果: ${bulkNote}`);
+  }
+
+  // ---------------------------------------------------------------- 判定
+  const failed = results.filter((r) => !r.ok);
+  const deleteOk = results.length >= 5 && failed.length === 0;
+  if (laneSetOk && laneClearOk && deleteOk && bulkOk) {
+    record(
+      "step21",
+      "PASS",
+      `通道页改线路（选线路→库里变、选直连→库里清空）+ ${results.length} 类实体真删除（确认框先出现、被引用走级联）+ 批量删除逐条汇报`,
+      evidence,
+    );
+  } else {
+    record(
+      "step21",
+      "FAIL",
+      `没做到位：通道线路 写入=${laneSetOk} 清空=${laneClearOk}；单条删除 ${results.length} 类里失败 ${failed.length} 类` +
+        `${failed.length > 0 ? "（" + failed.map((f) => `${f.label}:${f.note}`).join("；") + "）" : ""}；批量删除=${bulkOk}`,
+      evidence,
+    );
+  }
+}
+
+/**
+ * **step22：长篇介绍收进「问号圆圈 + 悬停提示」**（[docs/22]，用户第 74 轮原话：
+ * 「里面的简介好长，好多字……那些比较介绍做成一个问好加一个圆圈，鼠标移上去能看到提示那种」）。
+ *
+ * 逐页断言：
+ * - 页头有 `page-header-help`，它的 `aria-label` 就是那段全文（**正文一个字都没丢**）；
+ * - 悬停/聚焦之后出现 `[role="tooltip"]`，文本就是那段全文；
+ * - 页头里**不再**内联那段正文（`header.textContent` 不含它）。
+ *
+ * MUI 的 `Tooltip` 悬停与聚焦都会展开，所以两条路各触发一次（聚焦也是键盘用户的路）。
+ */
+async function step22(wd) {
+  const evidence = [];
+  const pages = [
+    "#/providers",
+    "#/models",
+    "#/channels",
+    "#/policies",
+    "#/cost",
+    "#/network",
+    "#/logs",
+    "#/settings",
+  ];
+  let withHelp = 0;
+  let okCount = 0;
+  const bad = [];
+
+  for (const hash of pages) {
+    const page = await gotoPage(wd, hash, '[data-testid="page-header"]');
+    if (page === null) {
+      bad.push(`${hash}: 页头没渲染`);
+      continue;
+    }
+    const probe = await wd.exec(`
+      const btn = document.querySelector('[data-testid="page-header-help"]');
+      const header = document.querySelector('[data-testid="page-header"]');
+      return {
+        hasHelp: btn !== null,
+        label: btn ? (btn.getAttribute('aria-label') || '') : null,
+        headerText: header ? (header.textContent || '').replace(/\\s+/g, ' ').trim() : null,
+      };
+    `);
+    if (probe?.hasHelp !== true || !probe.label) {
+      evidence.push(`${hash}: 没有 page-header-help（这页要么没有说明，要么说明还在版面上）`);
+      continue;
+    }
+    withHelp += 1;
+    await wd.exec(`
+      const btn = document.querySelector('[data-testid="page-header-help"]');
+      if (!btn) return null;
+      btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      btn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      btn.focus();
+      return null;
+    `);
+    await sleep(600);
+    const tip = await wd.exec(`
+      const el = document.querySelector('[role="tooltip"]');
+      return { has: el !== null, text: el ? (el.textContent || '').replace(/\\s+/g, ' ').trim() : null };
+    `);
+    const label = String(probe.label);
+    const tipOk = tip?.has === true && typeof tip.text === "string" && tip.text.includes(label.slice(0, 24));
+    const notInline = !String(probe.headerText ?? "").includes(label);
+    evidence.push(
+      `${hash}: aria-label=${JSON.stringify(label.slice(0, 40))}；悬停/聚焦后 tooltip=${JSON.stringify(tip?.text ?? null).slice(0, 60)}` +
+        `；页头内联该正文=${JSON.stringify(!notInline)}；判定 tooltip=${tipOk} 不内联=${notInline}`,
+    );
+    if (tipOk && notInline) okCount += 1;
+    else bad.push(`${hash}(tooltip=${tipOk} 不内联=${notInline})`);
+    await wd.exec(`if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); return null;`);
+  }
+
+  const ok = withHelp >= 3 && bad.length === 0;
+  if (ok) {
+    record(
+      "step22",
+      "PASS",
+      `长篇介绍收进问号圆圈：${withHelp} 个页面的 page-header-help 悬停/聚焦都展开原文，且版面上不再有那段正文`,
+      evidence,
+    );
+  } else {
+    record(
+      "step22",
+      "FAIL",
+      `没做到位：有问号圆圈的页面 ${withHelp} 个（要求 ≥3），不合格：${bad.join("；") || "（无）"}`,
       evidence,
     );
   }
@@ -2739,6 +3078,12 @@ async function main() {
 
     // ============================================================ step20 服务商图形化编辑（需要先有线路可选）
     if (want("step20")) await step20(wd);
+
+    // ============================================================ step21 删除与通道页线路（跑在最后）
+    if (want("step21")) await step21(wd);
+
+    // ============================================================ step22 问号圆圈（[docs/22]）
+    if (want("step22")) await step22(wd);
 
     // ============================================================ 收尾：再查一次隔离
     await stepIsolationAfter(wd);
@@ -3081,23 +3426,28 @@ async function step2(wd, fixture) {
       evidence.push(`添加后 config(kind=model) = ${JSON.stringify(modelIds)}`);
       addedModels = modelIds.some((id) => id.startsWith("ta-e2e-scan-"));
 
-      // ★ 用户第 72 轮原话：「点击『添加』之后，并没有在上面看到可以编辑的东西，也没有地方编辑线路」
+      // ★ 用户第 72 轮原话：「点击『添加』之后，并没有在上面看到可以编辑的东西」
       //   + 「这个模型的线路是『未配置』，按理来说默认是直连」。
-      //   所以这里断言三件事，缺一条都不算做到：
+      //   第 73 轮用户又定了方向：「线路设置不能点进服务商里面去修改」→ 向导里的线路**只读**
+      //   （设置入口在通道页，由 step21 验证）。所以这里断言四件事，缺一条都不算做到：
       //     ① `pw-added-models` 里**立刻**出现刚加的行（不是等下次开窗）；
-      //     ② 每行都有 `pw-model-lane` 且显示的是「直连」（不是空白、不是"未配置"）；
-      //     ③ 库里真建出了通道（`ch-<provider>-...`）且通道带 lane —— "添加"就是把这个模型接到这个
-      //        服务商上；没有通道的模型既看不到也走不了流量。
+      //     ② 每行都有 `pw-model-lane` 且**读出**的是「直连」（不是空白、不是"未配置"）；
+      //     ③ 它是**只读**的（这一行里不再有 combobox/select），并且有指路文案；
+      //     ④ 库里真建出了通道（`ch-<provider>-...`）—— "添加"就是把这个模型接到这个服务商上。
       const addedProbe = await wd.exec(`
         const rows = [...document.querySelectorAll('[data-testid="pw-model-row"]')];
         return {
           rows: rows.length,
           lanes: rows.map((r) => {
             const box = r.querySelector('[data-testid="pw-model-lane"]');
-            const combo = box ? box.querySelector('[role="combobox"]') : null;
+            const name = r.querySelector('[data-testid="pw-model-lane-name"]');
+            const hint = r.querySelector('[data-testid="pw-model-lane-readonly"]');
+            const combo = box ? box.querySelector('[role="combobox"], select, input') : null;
             return {
               hasLane: box !== null,
-              lane: combo ? (combo.textContent || '').replace(/\\s+/g, ' ').trim() : null,
+              lane: name ? (name.textContent || '').replace(/\\s+/g, ' ').trim() : null,
+              readonly: box !== null && combo === null,
+              hint: hint ? (hint.textContent || '').replace(/\\s+/g, ' ').trim() : null,
               text: (r.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 90),
             };
           }),
@@ -3116,8 +3466,9 @@ async function step2(wd, fixture) {
         return { channel: c.entityId, lane: id, laneName: lane?.json?.name ?? null, upstream: c.json?.upstream_model ?? null };
       });
       evidence.push(
-        `添加后的「已添加的模型」: pw-model-row=${addedRowsVisible} 行；每行的网络代理文案=${JSON.stringify(addedLaneTexts)}；` +
-          `行内文本=${JSON.stringify((addedProbe?.lanes ?? []).map((l) => l.text))}`,
+        `添加后的「已添加的模型」: pw-model-row=${addedRowsVisible} 行；每行读出的线路=${JSON.stringify(addedLaneTexts)}；` +
+          `只读=${JSON.stringify((addedProbe?.lanes ?? []).map((l) => l.readonly))}；` +
+          `指路文案=${JSON.stringify((addedProbe?.lanes ?? [])[0]?.hint ?? null)}`,
       );
       const laneVals = newChannels.map((c) => c.json?.lane ?? null);
       evidence.push(
@@ -3128,7 +3479,14 @@ async function step2(wd, fixture) {
         addedRowsVisible > 0 &&
         (addedProbe?.lanes ?? []).length === addedRowsVisible &&
         (addedProbe?.lanes ?? []).every(
-          (l) => l.hasLane === true && typeof l.lane === "string" && l.lane.includes("直连"),
+          (l) =>
+            l.hasLane === true &&
+            typeof l.lane === "string" &&
+            l.lane.includes("直连") &&
+            // [docs/21 §4.3] 线路在向导里**只读**：这一行不许再出现下拉/输入
+            l.readonly === true &&
+            typeof l.hint === "string" &&
+            l.hint.length > 0,
         );
       // 「默认直连」的两种**都合规**的形态（[docs/20 §1.2] 第 3 步）：
       //   · 配置里有直连 lane → 通道必须**显式**写它（这就是"导入那一刻就写进配置"）；
