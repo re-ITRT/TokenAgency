@@ -17,7 +17,7 @@
  * 在这个文件里**没有任何类型、没有调用、也没有"降级实现"**：向导只做它能诚实做到的事。
  */
 
-import type { ConfigDoc, OnboardingInput, Protocol } from "@/shared/bindings";
+import type { ApplyResult, ConfigDoc, OnboardingInput, Protocol } from "@/shared/bindings";
 import type { I18nKey } from "@/shared/i18n";
 
 /** 协议取值**必须**与冻结契约的 `Protocol` 一致（少一个就等于悄悄禁掉一种协议）。 */
@@ -263,5 +263,56 @@ export function laneCandidates(doc: unknown): string[] {
     const name = typeof lane?.name === "string" && lane.name.trim() !== "" ? lane.name : lane?.id;
     if (typeof name === "string" && name.trim() !== "" && !out.includes(name)) out.push(name);
   }
+  return out;
+}
+
+// ================================================================ 后端返回 → 要显示的事实
+
+/**
+ * `onboarding_detect` 的返回（契约里是内联结构，见 `shared/bindings.ts` 的 `CommandMap`）。
+ *
+ * 注意它比 Rust 侧的 `settings_ext::OnboardingDetect` **窄**：Rust 还序列化
+ * `kernel_checked`（检查过哪些位置）与 `kernel_path`（命中的路径），但手写契约里没列，
+ * 所以前端拿不到它们 —— 这件事在页面上如实说明（不猜、也不自己拼一条"检查过的位置"）。
+ */
+export type DetectResult = {
+  kernel_found: boolean;
+  existing_config: boolean;
+  suggested_providers: string[];
+};
+
+export type DetectFacts = {
+  kernel: "found" | "missing";
+  config: "existing" | "missing";
+  suggested: string[];
+};
+
+/**
+ * 把后端布尔值压成"有 / 没有"两档。
+ *
+ * **只做映射**：不掺默认值、不在缺字段时补一个"看起来正常"的值 —— 三行显示什么，
+ * 完全由后端的返回决定（探测失败走的是另一条分支，显示失败原因）。
+ */
+export function detectFacts(d: DetectResult): DetectFacts {
+  return {
+    kernel: d.kernel_found ? "found" : "missing",
+    config: d.existing_config ? "existing" : "missing",
+    suggested: [...d.suggested_providers],
+  };
+}
+
+/**
+ * `ApplyResult` 拆成**逐项事实**：UI 只渲染这些事实，不做"已完成 / 已生成"这类翻译。
+ *
+ * `applied=false` 时说"后端没有写入"；`restart_required` / `kernel_reload` 各自单独一行；
+ * 两个都为 false 时才敢说"无需重启、也无需重载内核"。
+ */
+export type ApplyFact = "applied" | "notApplied" | "restart" | "kernelReload" | "effective";
+
+export function applyFacts(r: ApplyResult): ApplyFact[] {
+  const out: ApplyFact[] = [r.applied ? "applied" : "notApplied"];
+  if (r.restart_required) out.push("restart");
+  if (r.kernel_reload) out.push("kernelReload");
+  if (!r.restart_required && !r.kernel_reload) out.push("effective");
   return out;
 }

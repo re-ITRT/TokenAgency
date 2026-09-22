@@ -463,11 +463,25 @@ export const en: Record<I18nKey, string> = {
   "onboarding.step4": "Access info",
   "onboarding.prev": "Back",
   "onboarding.next": "Next",
-  "onboarding.detect.blocked":
-    "No environment detection was run: it needs the backend command onboarding_detect (not registered). It would return “kernel found, existing config, suggested providers”, so none of those three is shown here — nothing is guessed and no invented “suggested providers” list is offered. Enter the kernel path manually.",
+  "onboarding.skip": "Skip the wizard",
+  "onboarding.skip.resume": "Continue configuration",
+  "onboarding.skip.done":
+    "Skipped: nothing was written to the config and no test was submitted. Press “Continue configuration” anytime, or come back from the settings page later.",
+  "onboarding.skip.skippedTest": "Skipped: no test was run.",
+  "onboarding.skip.skippedApply": "Skipped: nothing was submitted.",
+  "onboarding.detect.hint":
+    "The three lines below are the backend's onboarding_detect response: whether the kernel was found, whether a config already exists, and which providers the backend suggests. If it fails, the failure reason is shown instead — no defaults are filled in.",
+  "onboarding.detect.retry": "Detect again",
+  "onboarding.detect.kernelFound": "Kernel executable: found by the backend",
+  "onboarding.detect.kernelMissing": "Kernel executable: not found by the backend",
+  "onboarding.detect.configExisting": "Existing config: yes (the backend read one)",
+  "onboarding.detect.configMissing": "Existing config: no (the backend read none)",
+  "onboarding.detect.suggested": "Providers the backend suggests: {{list}}",
+  "onboarding.detect.suggestedNone": "The backend suggested no providers.",
+  "onboarding.detect.error": "Detection failed: {{message}}",
   "onboarding.kernelPath": "Kernel executable path (optional)",
   "onboarding.kernelPath.hint":
-    "There is no detect command, so this is never prefilled; leaving it empty lets the backend decide.",
+    "Empty lets the backend decide. The detection result only says whether the backend found a kernel; this field is the path you specify yourself and it is written into the config on submit.",
 
   "onboarding.provider.title": "Providers & keys",
   "onboarding.provider.add": "Add provider",
@@ -503,7 +517,13 @@ export const en: Record<I18nKey, string> = {
 
   "onboarding.test.title": "Connectivity test",
   "onboarding.test.blocked":
-    "There is no “Start test” button here: it needs the backend command onboarding_test_all (not registered) — clicking would produce no result. Once it lands, the result table for every credential × every lane will appear here.",
+    "“Start test” really calls the backend command onboarding_test_all; the combination table above is a preview derived from your input, not a result.",
+  "onboarding.test.run": "Start test",
+  "onboarding.test.ok": "passed",
+  "onboarding.test.fail": "failed",
+  "onboarding.test.note": "Backend note: {{note}}",
+  "onboarding.test.error": "Test command failed: {{message}}",
+  "onboarding.test.resultEmpty": "The backend returned an empty result: there is no credential × lane combination to test right now.",
   "onboarding.test.matrix": "Combinations that would be tested (derived from the input above, not results):",
   "onboarding.test.matrixRow": "{{credential}} × {{lane}}",
   "onboarding.test.matrixEmpty": "Nothing to test: at least one provider with a key is required.",
@@ -512,16 +532,24 @@ export const en: Record<I18nKey, string> = {
     "The current config has no lanes: lanes come from subscriptions after submit, so the candidates are empty.",
   "onboarding.test.resultTitle": "Result",
   "onboarding.test.resultNone":
-    "No test results (the command is not registered and was never called — this is not “everything failed”).",
+    "No test result yet: press “Start test” above. (No result is not “everything failed”.)",
 
   "onboarding.apply.title": "Payload",
   "onboarding.apply.blocked":
-    "There is no “Generate config” button here: it needs the backend command onboarding_apply (not registered) — clicking would produce nothing. Below is the exact payload that would be sent, so you can check it first.",
+    "“Apply this config” really calls onboarding_apply (what you see below is exactly what will be sent).",
+  "onboarding.apply.submit": "Apply this config",
+  "onboarding.apply.applied": "The config was written.",
+  "onboarding.apply.notApplied": "The backend did not write the config (returned applied = false).",
+  "onboarding.apply.restart": "A restart is required for it to take effect (returned restart_required = true).",
+  "onboarding.apply.kernelReload": "The kernel config must be reloaded (returned kernel_reload = true).",
+  "onboarding.apply.effective": "No restart and no kernel reload are required.",
+  "onboarding.apply.error": "Apply failed: {{message}}",
+  "onboarding.apply.raw": "Verbatim backend response:",
   "onboarding.apply.payload": "What would be sent to the backend (preview, not submitted):",
   "onboarding.apply.summary": "{{providers}} credential entry/entries · {{subscriptions}} subscription(s)",
   "onboarding.apply.resultTitle": "Submit result",
   "onboarding.apply.resultNone":
-    "No submit result (the command is not registered and was never called — this is not “generated”).",
+    "No submit result yet: press “Apply this config” above. (No result is not “generated”.)",
 
   "onboarding.access.title": "Access info",
   "onboarding.access.hint":

@@ -2,28 +2,33 @@
 /**
  * 首启向导（[12 §6 F4] / [05 §2.4]）的验收。
  *
- * **这一页今天没有后端**：`onboarding_detect` / `onboarding_apply` / `onboarding_test_all`
- * 三条命令都还没在桌面端注册。所以这份测试要钉住的不是"功能好不好用"，而是**结构 + 诚实**：
+ * **三条命令都已注册**（`settings_ext.rs` 的 `onboarding_detect` / `onboarding_apply` /
+ * `onboarding_test_all`，见 `src-tauri/src/commands/mod.rs` 的 `collect_commands!`），
+ * 所以这一版钉的是**真流程 + 诚实**：
  *
- * 1. **步骤骨架是真的**（[05 §2.4] 的四步）：每一步都有输入、有本地校验、有结果区。
- * 2. **没有任何"点了会成功"的假按钮**：验证步不许有「开始测试」，提交步不许有「生成配置」；
- *    两处都必须点名缺的是哪条命令，并且结果区必须明确写"从未调用过"（不是"全部失败"）。
- * 3. **校验与展开是真逻辑**：一行粘贴多个密钥会展开成多个凭据条目（提交契约每个条目只带一个
- *    密钥），校验按行给出行号级的错误。
- * 4. **接入信息是真读的**：来自 `app_clipboard_access_info`（已注册），不是拼出来的假地址。
+ * 1. **探测行必须是后端真值**：内核找到与否、是否已有配置、后端建议的服务商，全部来自
+ *    `onboarding_detect` 的返回；探测失败就显示失败，不拿默认值糊过去。
+ * 2. **应用结果按 `ApplyResult` 如实显示**：`applied` / `restart_required` / `kernel_reload`
+ *    各说各的 —— **不许把"需要重启"翻译成"已完成"**。
+ * 3. **测试结果每条都来自 `onboarding_test_all`**：通过/失败、延迟、后端说明（含 `ok` 口径）
+ *    原样显示；"没有结果"与"全部失败"是两件事。
+ * 4. **跳过就是跳过**：跳过只留下一句"没有写入任何配置"，不许出现"已配置"。
+ * 5. 模型层仍是纯函数，单独测。
  */
 
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import OnboardingPage from "@/pages/onboarding";
 import {
   PROTOCOLS,
+  applyFacts,
   buildOnboardingInput,
   credentialEntries,
   credentialLines,
+  detectFacts,
   newProviderRow,
   newSubRow,
   payloadJson,
@@ -31,12 +36,17 @@ import {
   validateProviders,
   validateSubscriptions,
 } from "@/pages/onboarding/model";
+import { registerMock } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
 import { i18n } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
 
 beforeAll(async () => {
   await i18n.changeLanguage("zh-CN");
+});
+
+/** 每个测试都从基线 mock 开始，需要时再覆盖具体命令。 */
+beforeEach(() => {
   registerBaselineMocks();
 });
 
@@ -75,24 +85,226 @@ function fillValidProvider(): void {
   type("onboarding-provider-field-0-secret", "sk-first\nsk-second");
 }
 
-// ================================================================ ① 步骤骨架与本地校验
+/** 直接跳到第 n 步（填完第 1 步 + 勾「不用梯子」+ 逐次下一步）。 */
+function gotoStep(n: number): void {
+  fillValidProvider();
+  fireEvent.click(screen.getByTestId("onboarding-next"));
+  fireEvent.click(within(screen.getByTestId("onboarding-no-vpn")).getByRole("checkbox"));
+  while (Number(screen.getByTestId("onboarding-step-panel").getAttribute("data-step")) < n) {
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+  }
+}
+
+// ================================================================ ① 探测：每行都是后端真值
+
+describe("第 1 步：探测展示的是 onboarding_detect 的真值", () => {
+  it("内核 / 已有配置 / 建议服务商三行都来自后端返回", async () => {
+    registerMock("onboarding_detect", () => ({
+      kernel_found: true,
+      existing_config: false,
+      suggested_providers: ["字节方舟", "command code"],
+    }));
+    renderPage();
+
+    expect((await screen.findByTestId("onboarding-detect-kernel")).getAttribute("data-value")).toBe(
+      "found",
+    );
+    expect((await screen.findByTestId("onboarding-detect-config")).getAttribute("data-value")).toBe(
+      "missing",
+    );
+    const suggested = await screen.findByTestId("onboarding-detect-suggested");
+    expect(suggested.textContent).toContain("字节方舟");
+    expect(suggested.textContent).toContain("command code");
+    // 有探测命令就有按钮（不是"未注册所以没有"）
+    expect(screen.getByTestId("onboarding-detect-run")).toBeTruthy();
+  });
+
+  it("后端说没找到内核 / 已有配置时，页面照它说（不换成默认值）", async () => {
+    registerMock("onboarding_detect", () => ({
+      kernel_found: false,
+      existing_config: true,
+      suggested_providers: [],
+    }));
+    renderPage();
+
+    expect((await screen.findByTestId("onboarding-detect-kernel")).getAttribute("data-value")).toBe(
+      "missing",
+    );
+    expect((await screen.findByTestId("onboarding-detect-config")).getAttribute("data-value")).toBe(
+      "existing",
+    );
+    // 空建议列表：如实说"后端没有建议"，不编一个
+    expect((await screen.findByTestId("onboarding-detect-suggested")).textContent).toMatch(
+      /没有|没有给出/,
+    );
+  });
+
+  it("探测失败 → 显示失败原因，不显示任何「看起来正常」的默认值", async () => {
+    registerMock("onboarding_detect", () => {
+      throw new Error("探测炸了");
+    });
+    renderPage();
+
+    const err = await screen.findByTestId("onboarding-detect-error");
+    expect(err.textContent).toMatch(/探测失败/);
+    expect(err.textContent).toMatch(/探测炸了/);
+    // 失败时不许出现"已找到内核"这种没根据的行
+    expect(screen.queryByTestId("onboarding-detect-kernel")).toBeNull();
+  });
+});
+
+// ================================================================ ② 连通性测试：结果来自后端
+
+describe("第 3 步：onboarding_test_all 的结果原样显示", () => {
+  it("点「开始测试」真的调用命令，并逐条显示通过/失败与后端说明", async () => {
+    registerMock("onboarding_test_all", () => [
+      {
+        credential_id: "c-a",
+        lane_id: "direct",
+        ok: true,
+        latency_ms: 18,
+        status: null,
+        note: "口径：线路可达（内核真测延迟）+ 密钥引用可解析",
+      },
+      { credential_id: "c-b", lane_id: "jp", ok: false, note: "内核测速失败：超时" },
+    ]);
+    renderPage();
+    gotoStep(3);
+
+    expect(screen.getByTestId("onboarding-test-result").textContent).toMatch(/还没有|没有测试结果/);
+    fireEvent.click(screen.getByTestId("onboarding-test-run"));
+
+    const rows = await screen.findAllByTestId("onboarding-test-row");
+    expect(rows.length).toBe(2);
+    expect(rows[0]?.getAttribute("data-ok")).toBe("true");
+    expect(rows[1]?.getAttribute("data-ok")).toBe("false");
+    expect(rows[0]?.textContent).toContain("c-a");
+    expect(rows[0]?.textContent).toContain("direct");
+    expect(rows[0]?.textContent).toContain("18");
+    // 后端说明（含 ok 口径）原文出现，且失败原因不丢
+    expect(rows[0]?.textContent).toContain("口径：线路可达");
+    expect(rows[1]?.textContent).toContain("内核测速失败：超时");
+  });
+
+  it("命令失败（例如没装配内核）→ 显示错误原文，不当成「全部失败」", async () => {
+    registerMock("onboarding_test_all", () => {
+      throw new Error("没有装配内核");
+    });
+    renderPage();
+    gotoStep(3);
+    fireEvent.click(screen.getByTestId("onboarding-test-run"));
+
+    const err = await screen.findByTestId("onboarding-test-error");
+    expect(err.textContent).toMatch(/没有装配内核/);
+    expect(screen.queryAllByTestId("onboarding-test-row").length).toBe(0);
+  });
+});
+
+// ================================================================ ③ 应用：按 ApplyResult 如实说
+
+describe("第 4 步：onboarding_apply 的结果按 ApplyResult 如实显示", () => {
+  it("restart_required=true → 显示「需要重启」，不许说「已完成」", async () => {
+    registerMock("onboarding_apply", () => ({
+      applied: true,
+      restart_required: true,
+      kernel_reload: false,
+    }));
+    renderPage();
+    gotoStep(4);
+
+    fireEvent.click(screen.getByTestId("onboarding-apply-submit"));
+    expect((await screen.findByTestId("onboarding-apply-applied")).textContent).toMatch(/已写入/);
+    expect((await screen.findByTestId("onboarding-apply-restart")).textContent).toMatch(/重启/);
+    expect(screen.queryByTestId("onboarding-apply-kernel-reload")).toBeNull();
+
+    const text = screen.getByTestId("onboarding-apply-result").textContent ?? "";
+    expect(text).not.toMatch(/已完成|已生成|全部完成/);
+  });
+
+  it("kernel_reload=true → 显示「需要重载内核」，两条都为 false 才说无需重启", async () => {
+    registerMock("onboarding_apply", () => ({
+      applied: true,
+      restart_required: false,
+      kernel_reload: true,
+    }));
+    renderPage();
+    gotoStep(4);
+    fireEvent.click(screen.getByTestId("onboarding-apply-submit"));
+
+    expect((await screen.findByTestId("onboarding-apply-kernel-reload")).textContent).toMatch(
+      /重载/,
+    );
+    expect(screen.queryByTestId("onboarding-apply-restart")).toBeNull();
+  });
+
+  it("applied=false → 如实说后端没有写入，而不是「已生成」", async () => {
+    registerMock("onboarding_apply", () => ({
+      applied: false,
+      restart_required: false,
+      kernel_reload: false,
+    }));
+    renderPage();
+    gotoStep(4);
+    fireEvent.click(screen.getByTestId("onboarding-apply-submit"));
+
+    const applied = await screen.findByTestId("onboarding-apply-applied");
+    expect(applied.getAttribute("data-applied")).toBe("false");
+    expect(applied.textContent).toMatch(/没有写入|未写入/);
+    expect(screen.getByTestId("onboarding-apply-result").textContent).not.toMatch(/已生成/);
+  });
+
+  it("命令失败 → 显示错误原文（含 TA-xxxx 时原样带出）", async () => {
+    registerMock("onboarding_apply", () => {
+      throw new Error("配置校验失败：providers[0].id");
+    });
+    renderPage();
+    gotoStep(4);
+    fireEvent.click(screen.getByTestId("onboarding-apply-submit"));
+
+    const err = await screen.findByTestId("onboarding-apply-error");
+    expect(err.textContent).toMatch(/providers\[0\]\.id/);
+  });
+});
+
+// ================================================================ ④ 跳过：跳过就是跳过
+
+describe("跳过向导：没有写入任何配置", () => {
+  it("跳过只留下「已跳过」，且不出现「已配置」", async () => {
+    renderPage();
+    fireEvent.click(screen.getByTestId("onboarding-skip"));
+
+    const note = await screen.findByTestId("onboarding-skip-note");
+    expect(note.textContent).toMatch(/已跳过/);
+    expect(note.textContent).toMatch(/没有写入/);
+    expect(document.body.textContent ?? "").not.toMatch(/已配置/);
+    // 跳过之后仍然可以回来继续（不是死路）
+    expect(screen.getByTestId("onboarding-skip-resume")).toBeTruthy();
+  });
+
+  it("跳过状态下不渲染「开始测试」/「应用这份配置」的提交入口", async () => {
+    renderPage();
+    fireEvent.click(screen.getByTestId("onboarding-skip"));
+    gotoStep(3);
+    expect(screen.queryByTestId("onboarding-test-run")).toBeNull();
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    expect(screen.queryByTestId("onboarding-apply-submit")).toBeNull();
+  });
+});
+
+// ================================================================ ⑤ 步骤骨架与本地校验（原有）
 
 describe("[05 §2.4] 四步骨架：每步都有输入 / 校验 / 结果区", () => {
   it("第 1 步：加了一行但没填完 → 下一步禁用，并列出要改的地方；填完就放行", () => {
     renderPage();
 
-    // 四步的进度与当前步都在页面上
     expect(screen.getByTestId("onboarding-step-panel").getAttribute("data-step")).toBe("1");
     expect(screen.getByText(/第 1 \/ 4 步/)).toBeTruthy();
-    // 没有任何服务商时不算"填错"：可以先去下一步，回头再配（说明里写了）
     expect(isDisabled(screen.getByTestId("onboarding-next"))).toBe(false);
 
     fireEvent.click(screen.getByTestId("onboarding-provider-add"));
-    const issues = screen.getByTestId("onboarding-step1-issues");
-    expect(issues.textContent).toMatch(/要改/);
+    expect(screen.getByTestId("onboarding-step1-issues").textContent).toMatch(/要改/);
     expect(isDisabled(screen.getByTestId("onboarding-next"))).toBe(true);
 
-    // 接口地址不是 http(s) 时要给出行级错误
     type("onboarding-provider-field-0-name", "字节方舟");
     type("onboarding-provider-field-0-baseUrl", "ark.example.com");
     type("onboarding-provider-field-0-secret", "sk-first");
@@ -114,7 +326,6 @@ describe("[05 §2.4] 四步骨架：每步都有输入 / 校验 / 结果区", ()
     }
     expect(isDisabled(screen.getByTestId("onboarding-next"))).toBe(false);
 
-    // 把第二行的标识改成与第一行相同（标识是会写进配置的 id，必须唯一）
     fireEvent.change(textbox("onboarding-provider-field-1-id"), { target: { value: "p1" } });
     expect(screen.getByTestId("onboarding-step1-issues").textContent).toMatch(/标识/);
     expect(isDisabled(screen.getByTestId("onboarding-next"))).toBe(true);
@@ -136,38 +347,10 @@ describe("[05 §2.4] 四步骨架：每步都有输入 / 校验 / 结果区", ()
     expect(screen.getByTestId("onboarding-no-vpn-hint").textContent).toMatch(/不是/);
   });
 
-  it("第 3 步：没有「开始测试」按钮，只给出将要测试的组合与未注册说明", async () => {
+  it("第 4 步：payload 是真算出来的（一行两个密钥 → 两个凭据条目）", async () => {
     renderPage();
-    fillValidProvider();
-    fireEvent.click(screen.getByTestId("onboarding-next"));
-    fireEvent.click(within(screen.getByTestId("onboarding-no-vpn")).getByRole("checkbox"));
-    fireEvent.click(screen.getByTestId("onboarding-next"));
-    expect(screen.getByTestId("onboarding-step-panel").getAttribute("data-step")).toBe("3");
+    gotoStep(4);
 
-    expect(screen.queryByTestId("onboarding-test-run")).toBeNull();
-    expect(screen.getByTestId("onboarding-test-blocked").textContent).toMatch(/onboarding_test_all/);
-
-    // 矩阵由输入推导（2 个凭据条目 × 线路候选，线路候选来自 config_get），不是测试结果
-    const rows = await screen.findAllByTestId("onboarding-test-matrix-row");
-    expect(rows.length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByTestId("onboarding-test-result").textContent).toMatch(
-      /从来没有|从未调用过|没有测试结果/,
-    );
-  });
-
-  it("第 4 步：没有「生成配置」按钮，只有 payload 预览与未注册说明", async () => {
-    renderPage();
-    fillValidProvider();
-    fireEvent.click(screen.getByTestId("onboarding-next"));
-    fireEvent.click(within(screen.getByTestId("onboarding-no-vpn")).getByRole("checkbox"));
-    fireEvent.click(screen.getByTestId("onboarding-next"));
-    fireEvent.click(screen.getByTestId("onboarding-next"));
-    expect(screen.getByTestId("onboarding-step-panel").getAttribute("data-step")).toBe("4");
-
-    expect(screen.queryByTestId("onboarding-apply-submit")).toBeNull();
-    expect(screen.getByTestId("onboarding-apply-blocked").textContent).toMatch(/onboarding_apply/);
-
-    // payload 是真算出来的：一行两个密钥 → 两个凭据条目
     const payloadText = (await screen.findByTestId("onboarding-apply-payload")).textContent ?? "{}";
     const payload = JSON.parse(payloadText) as {
       providers: { id: string; name: string; secret: string }[];
@@ -178,14 +361,10 @@ describe("[05 §2.4] 四步骨架：每步都有输入 / 校验 / 结果区", ()
     expect(payload.providers[1]?.secret).toBe("sk-second");
     expect(payload.subscriptions).toEqual([]);
     expect(screen.getByTestId("onboarding-apply-summary").textContent).toMatch(/2 个凭据条目/);
-    expect(screen.getByTestId("onboarding-apply-result").textContent).toMatch(/不等于|没有提交结果/);
   });
 
-  it("第 4 步：接入信息来自后端（app_clipboard_access_info），不是拼出来的", async () => {
+  it("接入信息来自后端（app_clipboard_access_info），不是拼出来的", async () => {
     renderPage();
-    expect(screen.getByTestId("onboarding-detect-note").textContent).toMatch(/onboarding_detect/);
-    expect(screen.queryByTestId("onboarding-detect-run")).toBeNull();
-
     fireEvent.click(screen.getByTestId("onboarding-access-show"));
     const out = await screen.findByTestId("onboarding-access-output");
     expect(out.textContent).toContain("BASE_URL=http://127.0.0.1:8787/v1");
@@ -202,7 +381,7 @@ describe("[05 §2.4] 四步骨架：每步都有输入 / 校验 / 结果区", ()
   });
 });
 
-// ================================================================ ② 模型层（纯函数）
+// ================================================================ ⑥ 模型层（纯函数）
 
 describe("向导模型层（纯函数）", () => {
   it("credentialLines：按行切、去空白、丢空行（一次粘贴多个密钥）", () => {
@@ -217,7 +396,6 @@ describe("向导模型层（纯函数）", () => {
     expect(entries.length).toBe(3);
     expect(new Set(entries.map((e) => e.id)).size).toBe(3);
     expect(entries.map((e) => e.secret)).toEqual(["k1", "k2", "k3"]);
-    // 单密钥时标识保持原样（不与多密钥的编号形式混淆）
     const single = credentialEntries([{ ...row, secret: "k1" }]);
     expect(single.length).toBe(1);
     expect(single[0]?.id).toBe(row.id);
@@ -233,7 +411,7 @@ describe("向导模型层（纯函数）", () => {
     expect(issues).toContain("0:name");
     expect(issues).toContain("0:base_url");
     expect(issues).toContain("0:secret");
-    expect(issues).toContain("2:id"); // 与第 1 行重复
+    expect(issues).toContain("2:id");
     expect(validateProviders([b])).toEqual([]);
   });
 
@@ -266,7 +444,6 @@ describe("向导模型层（纯函数）", () => {
     expect(noVpn.kernel_path).toBe("C:/ta/mihomo.exe");
     expect(noVpn.subscriptions).toEqual([]);
 
-    // payloadJson 是稳定可读的原文（预览与断言用同一份）
     expect(JSON.parse(payloadJson(noVpn))).toEqual(noVpn);
   });
 
@@ -281,5 +458,33 @@ describe("向导模型层（纯函数）", () => {
 
   it("协议清单与冻结契约的 Protocol 取值一致", () => {
     expect([...PROTOCOLS]).toEqual(["openai", "openai_responses", "anthropic", "gemini", "custom"]);
+  });
+
+  it("detectFacts：把后端布尔值变成「有/没有」两档，不掺默认值", () => {
+    expect(
+      detectFacts({ kernel_found: true, existing_config: false, suggested_providers: ["A"] }),
+    ).toEqual({ kernel: "found", config: "missing", suggested: ["A"] });
+    expect(
+      detectFacts({ kernel_found: false, existing_config: true, suggested_providers: [] }),
+    ).toEqual({ kernel: "missing", config: "existing", suggested: [] });
+  });
+
+  it("applyFacts：逐项列出后端说的事实；两个 false 才给「无需重启/重载」", () => {
+    expect(applyFacts({ applied: true, restart_required: true, kernel_reload: false })).toEqual([
+      "applied",
+      "restart",
+    ]);
+    expect(applyFacts({ applied: true, restart_required: false, kernel_reload: true })).toEqual([
+      "applied",
+      "kernelReload",
+    ]);
+    expect(applyFacts({ applied: true, restart_required: false, kernel_reload: false })).toEqual([
+      "applied",
+      "effective",
+    ]);
+    expect(applyFacts({ applied: false, restart_required: false, kernel_reload: false })).toEqual([
+      "notApplied",
+      "effective",
+    ]);
   });
 });
