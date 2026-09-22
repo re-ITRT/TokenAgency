@@ -3,10 +3,13 @@
  *
  * 三条硬纪律（写在最上面，这一页最容易违反）：
  *
- * 1. **只调用已注册的命令**：本页取数只用 `provider_list` / `credential_list`。
- *    写命令（新增/删除/连通性测试）的注册状态以 `src-tauri/src/commands/mod.rs` 的
- *    `collect_commands!` 为准 —— `src/app/commandSurface.guard.test.ts` 会机械检查这一条。
- *    **本页当前是只读列表**：新增/编辑入口在后续一批接入，期间不放假控件、也不放禁用占位。
+ * 1. **只调用已注册的命令**：本页取数只用 `provider_list` / `credential_list`；
+ *    写入口是页头的两个向导（见下），它们调 `provider_upsert` / `credential_upsert` /
+ *    `credential_set_secret` —— 三条都在 `src-tauri/src/commands/mod.rs` 的
+ *    `collect_commands!` 里（`src/app/commandSurface.guard.test.ts` 机械检查）。
+ *    **本页已有真入口**：`providers-add-open`（添加服务商，不填 API Key —— 密钥属凭据域）
+ *    与 `credentials-add-open`（添加密钥，明文只进密钥仓库）。编辑/删除/连通性测试**仍没有**
+ *    入口，那几处的实现见 `./wizards.tsx` 与 `./wizard.ts`；在那之前不放假控件、也不放禁用占位。
  * 2. **没有读取接口的就不猜**：状态灯、成功率、延迟、通道数都**只**取后端返回的那一列；
  *    后端没给（Rust 的 `provider_list` 返回的是完整 `Provider`，没有这几列）就显示「未知/—」。
  *    内核在跑**不等于**服务商可用（[06 §2.1] B2），所以绝不点一个假绿灯。
@@ -16,12 +19,13 @@
  * 数据流（哪个门面 → 哪个命令）：
  * - `useCommandQuery("provider_list", undefined, qk.providers)`   → 目录（详情页共用同一个 key）
  * - `useCommandQuery("credential_list", undefined, qk.credentials)`→ 凭据（用来数"挂载了几个凭据"）
+ * - 两个添加向导（`./wizards.tsx`）在成功后失效 `qk.providers` / `qk.credentials`
  *
  * 契约与 Rust 的字段偏差、以及"为什么详情页也从 `provider_list` 取行"见 `model.ts` 的文件头。
  */
 
 import { Box, Button, Link, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { errorMessage, qk, useCommandQuery } from "@/shared/api";
@@ -31,6 +35,7 @@ import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { radius, typography } from "@/theme";
 
 import { mountOf, readCredential, readProvider, type CredentialRow, type ProviderRow } from "./model";
+import { CredentialAddDialog, ProviderAddDialog } from "./wizards";
 
 // ================================================================ 文案映射（显式表，不用模板拼 key）
 
@@ -260,12 +265,20 @@ export default function ProvidersPage() {
   const providers = useCommandQuery("provider_list", undefined, qk.providers);
   const credentials = useCommandQuery("credential_list", undefined, qk.credentials);
 
+  /** 两个向导的开合。**列表页只读**，写全部落在 `./wizards.tsx` 的两个对话框里。 */
+  const [providerAddOpen, setProviderAddOpen] = useState(false);
+  const [credentialAddOpen, setCredentialAddOpen] = useState(false);
+
   const rows = useMemo(() => (providers.data ?? []).map((p) => readProvider(p)), [providers.data]);
   /** `undefined`（读不到）与 `[]`（确实是空）在这里被严格区分开。 */
   const credentialRows = useMemo(
     () => (credentials.data === undefined ? undefined : credentials.data.map((c) => readCredential(c))),
     [credentials.data],
   );
+
+  /** 本地去重用的现有 id：契约的视图与 Rust 的完整实体都有 `id`，两种形状都读得到。 */
+  const providerIds = useMemo(() => (providers.data ?? []).map((p) => p.id), [providers.data]);
+  const credentialIds = useMemo(() => (credentials.data ?? []).map((c) => c.credential.id), [credentials.data]);
 
   const refresh = () => {
     void providers.refetch();
@@ -279,9 +292,29 @@ export default function ProvidersPage() {
         description={t("providers.description")}
         docRef="07 §3.1 服务商列表"
         actions={
-          <Button variant="outlined" onClick={refresh}>
-            {t("providers.refresh")}
-          </Button>
+          <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+            <Button variant="outlined" onClick={refresh}>
+              {t("providers.refresh")}
+            </Button>
+            {/*
+              两个入口的按钮文案用各自的 **title 键**（「添加服务商」/「添加密钥」）而不是
+              `*.add.open`（那两个键的值都是「添加」）—— 并排两个「添加」用户分不出谁是谁。
+            */}
+            <Button
+              variant="outlined"
+              data-testid="credentials-add-open"
+              onClick={() => setCredentialAddOpen(true)}
+            >
+              {t("credentials.add.title")}
+            </Button>
+            <Button
+              variant="contained"
+              data-testid="providers-add-open"
+              onClick={() => setProviderAddOpen(true)}
+            >
+              {t("providers.add.title")}
+            </Button>
+          </Box>
         }
       />
 
@@ -294,6 +327,18 @@ export default function ProvidersPage() {
         credentialsError={credentials.error ?? undefined}
         onRetryCredentials={() => void credentials.refetch()}
         onOpen={(id) => navigate(`/providers/${encodeURIComponent(id)}`)}
+      />
+
+      <ProviderAddDialog
+        open={providerAddOpen}
+        existingIds={providerIds}
+        onClose={() => setProviderAddOpen(false)}
+      />
+      <CredentialAddDialog
+        open={credentialAddOpen}
+        providers={providers.data ?? []}
+        existingIds={credentialIds}
+        onClose={() => setCredentialAddOpen(false)}
       />
     </>
   );
