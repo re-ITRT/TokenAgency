@@ -63,13 +63,17 @@ pub fn matches_glob(pattern: &str, value: &str) -> bool {
 // ================================================================ Model
 
 impl Model {
-    /// 新逻辑模型：`expose = true`（出现在 `/v1/models`），无别名、不分组。
+    /// 新逻辑模型：`expose = true`（出现在 `/v1/models`），无别名、不分组、**不指定线路**。
+    ///
+    /// `default_lane = None` 的语义是"往下继承"（[docs/20 §1.2]）：界面据此显示直连，
+    /// 而不是显示一个不存在的"未配置"。
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             aliases: Vec::new(),
             display: DisplayConfig::default(),
             expose: true,
+            default_lane: None,
             extra: Map::new(),
         }
     }

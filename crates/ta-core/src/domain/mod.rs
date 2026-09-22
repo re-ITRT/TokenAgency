@@ -977,6 +977,14 @@ pub struct Model {
     pub display: DisplayConfig,
     #[serde(default = "default_true")]
     pub expose: bool,
+    /// 「下一次给这个模型建通道默认走哪条线」（[docs/20 §1.3]）。
+    ///
+    /// 它不是运行的生效值：流量挂的是 `ChannelConfig.lane`。这里只回答两个问题 ——
+    /// ① 界面上该模型那一行显示哪条线；② 新建通道时 `lane` 的默认值。
+    /// 真正生效的顺序仍是 [docs/04 §8.1] 的五级继承，
+    /// 所以 `None` **不是**"未配置"，而是"往下继承"（链路末端就是直连）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_lane: Option<LaneId>,
     #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -1630,5 +1638,35 @@ mod capability_contract_tests {
     fn new_channel_starts_from_the_default_capabilities() {
         let channel = ChannelConfig::new("ch-a", "m", "p", "c", "m-up");
         assert_eq!(channel.capabilities, documented_default());
+    }
+
+    /// `Model.default_lane`（[docs/20 §2.1]）：契约里是可选字段 —— serde 往返不许丢，
+    /// 没配时**不出现在序列化结果里**（老配置读进来也不会凭空多一个字段）。
+    #[test]
+    fn model_default_lane_round_trips_and_stays_absent_when_unset() {
+        let bare = Model::new("m-a");
+        assert_eq!(bare.default_lane, None, "Model::new 不指定线路");
+        let json = serde_json::to_value(&bare).expect("序列化");
+        assert!(json.get("default_lane").is_none(), "没配就不该出现在线上形态里：{json}");
+
+        // 老配置（没有这个字段）读进来是 `None`
+        let back: Model = serde_json::from_value(json).expect("读");
+        assert_eq!(back.default_lane, None);
+
+        // 显式 `null` 与缺省同义
+        let back: Model = serde_json::from_value(serde_json::json!({
+            "id": "m-a",
+            "default_lane": null,
+        }))
+        .expect("读");
+        assert_eq!(back.default_lane, None);
+
+        // 配了 → 原样往返
+        let mut model = Model::new("m-a");
+        model.default_lane = Some(LaneId::new("lane-jp-auto"));
+        let value = serde_json::to_value(&model).expect("序列化");
+        assert_eq!(value.get("default_lane").and_then(|v| v.as_str()), Some("lane-jp-auto"));
+        let back: Model = serde_json::from_value(value).expect("读");
+        assert_eq!(back.default_lane, Some(LaneId::new("lane-jp-auto")));
     }
 }

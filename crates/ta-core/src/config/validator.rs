@@ -870,6 +870,19 @@ fn check_references(doc: &ConfigDoc, ix: &Index<'_>, r: &mut ValidationReport) {
         }
     }
 
+    // ---- 模型（`default_lane` 是"下一次建通道的默认线"，同样必须指向存在的线路）
+    for (i, m) in doc.models.iter().enumerate() {
+        if let Some(l) = &m.default_lane {
+            ref_exists(
+                &ix.lanes,
+                l.as_str(),
+                &format!("models[{i}].default_lane"),
+                "lanes[].id",
+                r,
+            );
+        }
+    }
+
     // ---- 通道
     for (i, c) in doc.channels.iter().enumerate() {
         ref_exists(
@@ -1284,6 +1297,20 @@ mod tests {
 
         // 不填 lane 是合法的（继承 credential → provider → net.default_lane）
         assert_no_error_at(&check(&doc()), "channels[3].lane");
+    }
+
+    /// `Model.default_lane`（[docs/20 §1.3]）与通道的 `lane` 同一口径：写了就必须存在，
+    /// 不写 = 往下继承（合法）。
+    #[test]
+    fn model_default_lane_must_exist_when_set() {
+        let mut d = doc();
+        d.models[0].default_lane = Some(LaneId::new("lane-nope"));
+        assert_error(&check(&d), "models[0].default_lane", codes::NOT_FOUND);
+
+        let mut d = doc();
+        d.models[0].default_lane = Some(LaneId::new("lane-direct"));
+        assert_no_error_at(&check(&d), "models[0].default_lane");
+        assert_no_error_at(&check(&doc()), "models[0].default_lane");
     }
 
     #[test]
