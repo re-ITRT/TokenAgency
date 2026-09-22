@@ -78,13 +78,11 @@ App 的数据根只有**一个**解析口：`src-tauri/src/state.rs::AppState::a
 控制台是一行一步：
 
 ```
-PASS step2  供应商页新增供应商（列表 + 落库）
+PASS step2  供应商页新增供应商 + 密钥（两个向导各自：后端回显 + 落库）
      ...
-SKIP step4  界面缺入口：/channels 与 /network 都没有建通道/指派节点的控件（缺 selector：...）
-     找过：data-testid 匹配 /(^|-)add|new|create|upsert/i → 无
-     找过：按钮文案匹配 /新增|添加|新建|创建|Add|New|Create/i → 无
-     页面上实际存在的可见控件：
-     <button testid=channels-refresh> "刷新"
+FAIL step10 线路落地不完整：列表=true 同模型线路数=2(需要 2) vision 条数=0(需要 1) 定价=true
+      · 下拉 channels-add-lane: 现值 "…" · 打开后选项 {"count":1,"texts":["TA E2E 线路"]}
+      · 开关 channels-add-vision: 点一次后 checked=true（目标 true）
 ```
 
 三种状态的语义**不允许混淆**：
@@ -120,34 +118,57 @@ SKIP step4  界面缺入口：/channels 与 /network 都没有建通道/指派�
 | --- | --- | --- |
 | `step0` | 隔离断言 | scratch 出现 `db.sqlite`；真实目录文件级 diff 为空 |
 | `step1` | 起窗口、等首帧 | `[data-testid="page-header"]` 命中，并打印当前 hash 与页面 testid 清单 |
-| `step2` | 新增供应商：先在 `/providers` 找入口，找不到就走**首启向导**第 1 步（真填表单 → `onboarding-next` → `onboarding-apply-submit`） | 列表出现该供应商 **且** scratch `db.sqlite` 的 `config(kind='provider')` 里有它 |
-| `step3` | 新增 Clash 订阅：先在 `/network` 找入口，找不到就走首启向导第 2 步；URL 指向脚本自起的本地 fixture | 列表出现该订阅 **且** `config(kind='subscription')` 里有它 |
-| `step4` | 建通道并指派（契约 `lane_upsert` / `lane_set_node`）：在 `/channels`、`/network`、向导里找入口 | 界面出现该通道 |
+| `step2` | **服务商 + 密钥两个向导**：`providers-add-open` → `providers-add-id/-name/-baseUrl` → `providers-add-submit`；关掉对话框后再走 `credentials-add-open` → `credentials-add-id/-label/-provider/-secret` → `credentials-add-submit` | 两次都：后端返回值回显（`providers-add-result` / `credentials-add-result`）**且** `config(kind='provider'/'credential')` 里有它；另外断言**明文密钥不出现在页面上** |
+| `step3` | 新增 Clash 订阅：`/network` 的订阅写表单（`network-subscriptions-add-*`），URL 指向脚本自起的本地 fixture | 列表出现该订阅 **且** `config(kind='subscription')` 里有它 |
+| `step4` | 建线路：`/network` 的「新建 / 覆盖线路」（`network-lanes-add-*` → `lane_upsert`） | `network-lane-row` 行数 > 0，且该行命中 id **或名称**（表格第一列有名字就显示名字），并**且** `config(kind='lane')` 里有它 |
 | `step5` | `/settings` 自启动开关 / 文件监听是不是**真控件** | 区内存在归属到该语义的 `input[type=checkbox]` / `[role=switch]`。**只断言存在，绝不真的改本机自启动** |
-| `step6` | 附加证据：设置页改一个整数字段 → 点「校验并应用」 | scratch db 的 `config` 指纹发生变化（证明"真界面→真 IPC→真落库"这条链路是通的） |
+| `step6` | 设置页改一个整数字段 → 点「校验并应用」（`config_apply`） | 指纹变化（真界面→真 IPC→真落库）**且 `config_apply` 不许让任何已有实体消失**（见下） |
 | `step7` | 收尾隔离复查 | 真实目录文件级 diff 仍为空 |
+| `step8` | `/providers` 服务商向导 | `providers-add-*` 真表单 → 列表 + `config(kind='provider')` |
+| `step9` | `/models` 模型向导 | `models-add-*` → 列表 + `config(kind='model')` |
+| `step10` | `/channels` 线路向导：能力块 + 计费块 + 两条同模型线路 | 8 个能力/计费 testid **在打开对话框之后**必须齐全；两条同模型线路落库（**其中一条 `vision=true`**）；`pricing` section 里出现 `input=1.5`；列表出现第一条 |
+| `step11` | `/policies` 路由向导：**能力不一致**时必须被拦住 | 界面显示**逐字段差异**（`policies-add-capability-diff-*`）+ 禁用提交 + 点了不落库；能力一致时不禁用且真落库 |
+| `step12` | 网络**未配置**时 `/network` 不渲染任何网络区块 | 只有 `network-optional` + `network-optional-enable`，订阅/线路/分配那些 testid **一个都不存在**（反向断言） |
+| `step13` | 订阅流量与更新时间可见 | 行上出现「更新时间」「已用 92.9 GB / 130 GB」「71%」，且与 fixture 的 `subscription-userinfo` 字节数对得上；后端没给就不显示 |
+| `step14` | **数据安全回归**：经界面建线路 → 设置页「校验并应用」 | 应用前后 `config(kind='lane')` 的 id 集合不变，`network-lane-row` 仍在 |
+| `step15` | **能力规则双向**：能力一致的两条线路可路由；把已归组的线路改成不一致 | ① `policy` 真的落库且 `use_channels` 含这两条；② 改能力时后端拒绝，错误原文含 `TA-2007` 且**点出 `vision`**，同时库里那条线路**一个字节都没变** |
 
-`step6` 存在的理由：如果 `step2/3/4` 全靠 SKIP，你要能区分两种完全不同的结论 ——
-**"没有写入口"** 与 **"有入口但写不进库"**。`step6` 用界面里确实存在的写路径
-（`config_apply`）把后一种可能性排除掉。
+`step6` / `step14` 存在的理由：`config_apply` 是**整份覆盖**（`config_store.rs::write_rows` 先
+`DELETE FROM config` 再按传入的 `ConfigDoc` 插入），而设置页是"读到什么就整份写回什么"。
+如果前端手里那份 `qk.config` 是旧的（`staleTime: 5_000`），提交上去的 doc 里就没有刚建的实体 →
+**用户的线路被静默删掉**。第 70 轮真机实测到过（`config_snapshot` 表：label=`lane_upsert` 的 doc
+有 1 条 lane、label=`apply` 的有 0 条）。修法：`useCommandMutation` 成功后集中失效 `qk.config`
++ 设置页 `refetchOnMount: "always"`；上面两条断言就是那个缺陷的回归闸门。
 
-### 写入口在哪：`step2/step3` 的两级策略
+`step11` / `step15` 存在的理由（用户硬规则）：**只有能力完全一致才允许被同一路由指向**。
+界面上的"禁用提交 + 逐字段差异"只是第一道；`step15` 证明第二道（后端 `TA-2007`）在真机上也成立 ——
+只测界面等于只测了提示，没测规则。
 
-写命令（`provider_upsert` / `subscription_upsert` / `lane_upsert` / `lane_set_node`）在
-`src/shared/api/commands.ts` 里**都声明了**，但**声明 ≠ 有入口**。脚本因此按两级找：
+### 写入口在哪：两级策略
 
-1. **页面原生入口**：当前页上有没有 `data-testid` 带 `add|new|create|upsert` 的可见控件，
-   或文案是 `新增|添加|新建|创建|Add|New|Create` 的可见按钮。找到就点它，按字段名启发式填值。
-2. **首启向导**（`/onboarding`）：这是界面里**真实存在**的写路径 ——
-   `onboarding-provider-add` / `onboarding-provider-field-0-{id,name,baseUrl,secret}` /
-   `onboarding-sub-add` / `onboarding-sub-field-0-{name,url}` / `onboarding-apply-submit`，
-   第 4 步真的调 `onboarding_apply`。
+写命令（`provider_upsert` / `credential_upsert` / `model_upsert` / `channel_upsert` /
+`lane_upsert` / `policy_upsert` …）在 `src/shared/api/commands.ts` 里**都声明了**，
+但**声明 ≠ 有入口**。脚本按两级找：
+
+1. **页面专用入口**：`data-testid`（如 `providers-add-open` / `channels-add-*` / `policies-add-*`）。
+   第 70 轮之后四个向导都真实存在，所以这是主路径。
+2. **首启向导**（`/onboarding`）：只在专用入口缺失时兜底，并如实记录"走了兜底路径"。
 
 两级都没有 → 才记 SKIP。**SKIP 一定带"它找了哪些 selector"和"页面上实际有什么"**。
 
-> 注意：向导是**一次 apply 同时写供应商与订阅**的（界面只提供这一个提交按钮）。
-> `step3` 复用 `step2` 那次提交，证据里会写明是复用；后端是 upsert 合并语义
-> （`settings_ext.rs::apply_onboarding` 从 `state.doc()` 克隆），不会互相覆盖。
+`step10/step11/step15` 还需要"界面前提"（服务商/凭据/模型/线路）。`--only` 跳步跑时
+`ensureAddPrereqs()` 会**经真界面把前提造出来**（首启向导 → `/models` 向导 → `/network` 线路表单），
+而不是放宽断言。
+
+
+> 注意：首启向导是**一次 apply 同时写供应商与订阅**的（界面只提供这一个提交按钮）。
+> 后端是 upsert 合并语义（`settings_ext.rs::apply_onboarding` 从 `state.doc()` 克隆），不会互相覆盖。
+
+### `config` 表里还有哪些 kind
+
+除了下表，还有 `model` / `lane` / `channel` / `channel_group` / `policy`（都是单数），
+以及 **`pricing` 是 `kind='section', entity_id='pricing'`** —— 计费条目在它的 `json.entries[]` 里，
+不是独立的 kind。断言"计费落库"要去 section 里找。
 
 ### 数据库事实（实测，别猜）
 
@@ -184,6 +205,22 @@ SKIP step4  界面缺入口：/channels 与 /network 都没有建通道/指派�
   `onboarding-apply-raw`（只在 `apply.data` 到位后才渲染）。
 
 
+### 两个"必须记住"的 MUI 陷阱（第 70 轮真机踩出来的）
+
+1. **收 Select 弹层绝不能用"全局 Esc"，也不能点视口角落**：MUI 的 `Dialog` 也吃 Esc，
+   而空下拉时焦点还在 Dialog 里 → Esc 把**整个对话框**关掉；点角落那一下在退场动画期间会落到
+   Dialog 自己的 backdrop 上，同样关掉对话框。两者都会把一个"下拉为空"的根因放大成十条
+   "缺控件 / not interactable"的假失败。正确做法：**把 Esc 送到 `[role=listbox]` 元素自己身上**
+   （`POST /element/{id}/value`），事件只在弹层内部冒泡；而且成功选中后**先等 700ms**看弹层
+   是否自己退场，别去碰正在退场的弹层（`closeMenuIfOpen()` 里就是这么写的）。
+2. **真输入不能只靠 W3C `clear()`**：它对部分 MUI 受控输入框是 no-op，结果是**追加而不是替换**
+   （实测 `"200000"` → `"0200000"`、向导 id 框 `"p1"` → `"p1ta-e2e-provider"`）。
+   `wd.fill()` 现在补了一次真键盘清空（Home + Delete × 长度），清不干净会在日志里明说。
+
+另外：**多选（MUI `multiple`）选完不关弹层**，只能"弹层打开一次、在里面连点 N 个"
+（`wdPickOptions`）；而 `/policies` 向导在"选完模型"后会**默认全选**该模型的所有线路，
+想只留下能力一致的那两条必须显式取消其余的（`wdKeepOptions`）。
+
 ---
 
 ## 5. 已知限制
@@ -204,22 +241,17 @@ SKIP step4  界面缺入口：/channels 与 /network 都没有建通道/指派�
   向导第 3 步的 `onboarding_test_all` 会如实报
   `[TA-9001] 没有装配内核：无法测线路连通性`，脚本把它当**证据**记录，不当失败。
 - **窗口必须能画出来**。跑在有桌面会话的环境里；无头桌面下 WebView2 可能拿不到窗口。
-- **`step2/step3` 的表单填写是启发式的**。走页面原生入口时按
-  `id` / `name` / `base_url` / `url` / `protocol` 字段名匹配填值；表单结构差异大时
-  要按实际 DOM 调整 `fillFormHeuristic`。走向导时用的是**明确写死的 testid**，不靠猜。
 - **`--only step7` 不能单独跑**：`step7` 依赖 `real-data-before.json`，
   那是完整流程开头写下的。至少要跑过一次完整流程。
+- **同一构建的两条线路必须换凭据**：channel id 由 `provider × credential × model` 派生，
+  同 provider/同 credential/同 model 的第二次 upsert 是**覆盖**同一条，不会多出一条。
+  所以"同模型两条线路"在脚本里是靠**第二份凭据**（`ta-e2e-cred-2`）造出来的。
 
-### 当前状态下预期会 SKIP 的步骤（2026-09-22 观察）
+### 当前状态（2026-09-22 第 70 轮实测）
 
-- `step4`（建通道）：`/channels` 是只读矩阵、`/network` 是只读列表，
-  `lane_upsert` / `lane_set_node` 在**整个前端产物里从未被引用**（脚本会做这个交叉验证）。
-- `step5`（自启动开关 / 文件监听）：`settings-autostart-blocked` 与
-  `settings-file-watch-blocked` 都只是**说明文字**；那两个区里唯一的 bool 控件是
-  `settings-field-trayShowLatency`（托盘显示延迟），**不是**自启动开关、也不是文件监听开关。
+`PASS=19 SKIP=0 FAIL=0`（干净数据目录、release 包、单次全流程 90 秒左右）。
+四个添加向导（`/providers` 服务商与密钥、`/models`、`/channels`、`/policies`）都有专用入口，
+`step4` 的线路写入口在 `/network`；**上一版里"预期会 SKIP 的 step4/step5"与
+"`/providers` 仍是只读"的说法都已经过期，已删除。**
 
-`step2/step3` 能 PASS 靠的是 `/onboarding` 向导，不是页面原生入口 ——
-`/providers` 与 `/network` 目前仍是只读的（详情见任务报告里的缺陷清单）。
-
-如果哪天 `step4/step5` 变成 PASS，请同时删掉这一节。
 
