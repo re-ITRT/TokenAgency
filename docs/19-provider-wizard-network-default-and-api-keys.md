@@ -195,6 +195,17 @@ CREATE TABLE api_key (
 
 用量记账写 `api_key_usage(key_id, day, …)`（表已在，`key_id="local"` 也可记）。
 
+> **⚠ 已知缺口（第 71 轮收口时如实登记，不是"做完了"）**：上面这句**只落地了一半**。
+> `check_local_key` 已经返回 `KeyIdentity`（`Local` / `ApiKey(id)`，`key_id()` 就是账本里的值），
+> 但**下游没有消费者**：`ta-gateway/src/ingress.rs` 的 `handle` 里是 `let _identity = …`，
+> 而 `ta_core` 的 `UsageRecord` 没有 `key_id` 字段、meter 侧也没有调用点 ——
+> 所以 `ta_store::SqliteUsageStore::record_api_key_usage`（已实现、有测试）在生产路径上**零调用者**。
+> 后果：`/api-keys` 页的「用量」永远是空态（页面显示 `apiKeys.usageEmpty`，**不编数字** —— 这一点是诚实的）。
+> 要收口需要：① `ta_core::types::UsageRecord` 增加 `key_id: Option<String>`；
+> ② `ta-gateway` 把 `KeyIdentity` 传进 pipeline / meter，并调 `record_api_key_usage`；
+> ③ 请求日志/快照若要带这个身份，先在 `docs/14 §5` 登记字段名（`key_id` 已是白名单字段）。
+> 归口：`ta-gateway` 归 E5、`ta-core` 归决策层。**CRUD 与鉴权本身是完整可用的**（step18 已在真机验证 401/放行）。
+
 ### 3.4 页面（`/api-keys`）
 
 | 控件 | testid | 语义 |
