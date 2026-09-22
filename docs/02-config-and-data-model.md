@@ -142,7 +142,7 @@ policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.defau
 | `aliases` | 客户端可能写的其它名字（含带日期版本号、带 provider 前缀的形式） |
 | `display` | UI 排序、分组、图标 |
 | `expose` | 是否出现在 `/v1/models`（默认原样透传上游的列表） |
-| `default_lane` | **可选**（`#[serde(default)]`，[19 §1.5](19-provider-wizard-network-default-and-api-keys.md)）：这个模型默认走哪条线路。它是「添加模型」那一步唯一可改的字段；既作为"下次为它建 channel 时的默认 lane"，也会被 `model_bulk_update({ patch: { lane } })` 同步写到它**现有**的每个 channel 上。省略 / `null` = 直连 |
+| `default_lane` | **可选**（`#[serde(default, skip_serializing_if)]`，[20 §1.3](20-provider-model-lane-and-edit.md)）：这个模型默认走哪条线路。它是「添加模型」那一步唯一可改的字段；既作为"下次为它建 channel 时的默认 lane"，也会被 `model_bulk_update({ patch: { lane } })` 同步写到它**现有**的每个 channel 上。三态：字段缺失 = 不动；`null` = 清空（回到五级继承链，末端就是直连）；具体 lane id = 写该线路。**界面上没显式配就显示"直连"，不许显示"未配置"** |
 
 > 这里**没有 `capabilities` 字段**。模型能力不参与请求改写，只影响"发给谁"：能力声明在 **Channel** 上（[17 §2](17-add-flows-and-capability-routing.md) 的 `Channel.capabilities`）。上一版的能力矩阵/探测/学习已删除。
 

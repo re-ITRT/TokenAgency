@@ -590,6 +590,14 @@ export type ApplyResult = {
   applied: boolean;
   restart_required: boolean;
   kernel_reload: boolean;
+  /**
+   * 本次调用**真新建**的通道数（[docs/20 §1.1]）。
+   *
+   * 为什么要有这个数：`model_apply_import` 不只是在模型目录里塞一行 —— 它要把模型**接到**这个服务商上
+   * （建 `ch-<provider>-<credential>-<model>` 这条线）。界面得能如实说"接上了几条"，而不是让用户
+   * 自己去猜（第 71 轮的坑正是"点了添加、上面什么都没有"）。其它返回 `ApplyResult` 的命令填 0。
+   */
+  channels_created: number;
 };
 
 /** `log_export` 的回执（docs/10 §2.2）。**path 是后端解析后的最终路径，不是入参** ——
@@ -734,7 +742,10 @@ export type ImportPreview = {
 };
 
 export type ModelPatch = Partial<Pick<Model, "expose" | "aliases" | "display">> & {
-  /** 只改该模型（及其现有 channel）的网络线路；`null` = 直连（[docs/19 §1.5]）。 */
+  /**
+   * 只改该模型（及其现有 channel）的网络线路；三态见 [docs/20 §1.3]：
+   * 字段缺失 = 不动；`null` = 清空（回到继承链，末端就是直连）；具体 lane id = 写该线路。
+   */
   lane?: LaneId | null;
 };
 
@@ -1258,7 +1269,10 @@ export type CommandMap = {
     args: { provider_id: ProviderId; prefix_filter?: string };
     result: ImportPreview;
   };
-  model_apply_import: { args: { preview_token: string; selected: string[] }; result: ApplyResult };
+  model_apply_import: {
+    args: { preview_token: string; selected: string[]; lane?: LaneId | null };
+    result: ApplyResult;
+  };
   model_bulk_update: { args: { ids: ModelId[]; patch: ModelPatch }; result: ApplyResult };
 
   // ---- channel / group

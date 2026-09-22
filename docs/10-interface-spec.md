@@ -204,7 +204,7 @@ type AutostartState = {
 |---|---|---|
 | `config_get` | — | `ConfigDoc`（完整配置树） |
 | `config_validate` | `doc: ConfigDoc` | `ValidationReport { ok, errors: [{path, code, message}], warnings: [...] }` |
-| `config_apply` | `doc: ConfigDoc` | `ApplyResult { applied, restart_required: bool, kernel_reload: bool }` |
+| `config_apply` | `doc: ConfigDoc` | `ApplyResult { applied, restart_required: bool, kernel_reload: bool, channels_created: uint }`（`channels_created` 只有 `model_apply_import` 会 > 0，见 [20 §1.1](20-provider-model-lane-and-edit.md)） |
 | `config_export_yaml` | `with_secrets: bool` | `string` |
 | `config_import_yaml` | `yaml: string, mode: "merge"\|"replace"` | `ApplyResult` |
 | `config_history_list` | `limit: u32` | `Snapshot[]` |
@@ -242,12 +242,12 @@ type AutostartState = {
 | `model_list` | — | `ModelView[]`（含通道数、上游名映射、价格、暴露开关） |
 | `model_upsert` / `model_delete` | | |
 | `model_import_from_provider` | `provider_id, prefix_filter?` | `ImportPreview { preview_token, models: [{ upstream_model, suggested_id, exists }], skipped: [{ upstream_model, reason }] }`；`preview_token` 是**进程内存**里的短 TTL 句柄（5 分钟），**不落库** |
-| `model_apply_import` | `preview_token, selected: string[]` | `ApplyResult`；`exists=true` 的即使被选中也**不重复写**；token 过期/未知 → `TA-1004`（"预览已过期，请重新扫描"） |
-| `model_bulk_update` | `ids: string[], patch: ModelPatch` | `ApplyResult`；`patch.lane` 会把该模型**及其现有每个 channel** 的网络线路一起改（[19 §1.5](19-provider-wizard-network-default-and-api-keys.md)） |
+| `model_apply_import` | `preview_token, selected: string[], lane?: string \| null` | `ApplyResult`（含 `channels_created`）；对每条选中模型：模型不存在就建，且 `(provider, credential, model)` 还没有通道就建**一条** `ch-<provider>-<credential>-<model>`（`lane` 即入参，`upstream_model` 用扫描行）——**"添加模型"就是把模型接到这个服务商上**（[20 §1.1](20-provider-model-lane-and-edit.md)）；`exists=true` 的即使被选中也**不重复写**；provider 没有任何凭据 → `TA-1004`；token 过期/未知 → `TA-1004`（"预览已过期，请重新扫描"） |
+| `model_bulk_update` | `ids: string[], patch: ModelPatch` | `ApplyResult`；`patch.lane` 三态（缺省不动 / `null` 清空 / 值写入）：写 `Model.default_lane` 并把该模型**现有每个 channel** 的 `lane` 一起改（[20 §1.3](20-provider-model-lane-and-edit.md)） |
 
-> `Model.default_lane`（`#[serde(default)] pub default_lane: Option<LaneId>`）是「添加模型」那一步唯一可改的字段：
+> `Model.default_lane`（`#[serde(default, skip_serializing_if)] pub default_lane: Option<LaneId>`）是「添加模型」那一步唯一可改的字段：
 > 它既是"下次为这个模型建 channel 时的默认 lane"，也会被 `model_bulk_update({ patch: { lane } })` 同步到现有 channel。
-> 省略 / `null` = 直连。
+> **界面上的默认显示是"直连"**（继承链末端），只有在用户显式改成某条线路时才是别的值。
 
 ### channel / 通道
 

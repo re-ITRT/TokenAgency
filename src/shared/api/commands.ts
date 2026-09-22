@@ -160,8 +160,16 @@ export const model = {
       provider_id: providerId,
       prefix_filter: prefixFilter,
     }) as Promise<ImportPreview>,
-  applyImport: (previewToken: string, selected: string[]) =>
-    invokeCommand("model_apply_import", { preview_token: previewToken, selected }) as Promise<ApplyResult>,
+  /**
+   * [docs/20 §1.1]：`lane` = 给这次新建的通道写的网络代理。
+   * 省略 = 不写该字段（通道的 lane 留空，由五级继承链末端落到直连）。
+   */
+  applyImport: (previewToken: string, selected: string[], lane?: LaneId | null) =>
+    invokeCommand("model_apply_import", {
+      preview_token: previewToken,
+      selected,
+      ...(lane === undefined ? {} : { lane }),
+    }) as Promise<ApplyResult>,
   bulkUpdate: (ids: ModelId[], patch: ModelPatch) =>
     invokeCommand("model_bulk_update", { ids, patch }) as Promise<ApplyResult>,
 };

@@ -650,7 +650,12 @@ export function registerBaselineMocks(): void {
 
   mockCommand("config_get", () => baselineConfigDoc());
   mockCommand("config_validate", () => ({ ok: true, errors: [], warnings: [] }));
-  mockCommand("config_apply", () => ({ applied: true, restart_required: false, kernel_reload: false }));
+  mockCommand("config_apply", () => ({
+    applied: true,
+    restart_required: false,
+    kernel_reload: false,
+    channels_created: 0,
+  }));
   mockCommand("config_history_list", () => []);
 
   mockCommand("tray_state", (): TrayState => ({

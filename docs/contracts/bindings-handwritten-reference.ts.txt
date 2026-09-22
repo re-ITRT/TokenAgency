@@ -547,6 +547,8 @@ export type ApplyResult = {
   applied: boolean;
   restart_required: boolean;
   kernel_reload: boolean;
+  /** 本次真新建的通道数（只有 model_apply_import 会 > 0，见 docs/20 §1.1）。 */
+  channels_created: number;
 };
 
 export type Snapshot = {
@@ -684,7 +686,7 @@ export type ImportPreview = {
 };
 
 export type ModelPatch = Partial<Pick<Model, "expose" | "aliases" | "display">> & {
-  /** 只改该模型（及其现有 channel）的网络线路；`null` = 直连（[docs/19 §1.5]）。 */
+  /** 三态：缺省 = 不动；`null` = 清空（回到继承链，末端直连）；值 = 写该线路（docs/20 §1.3）。 */
   lane?: LaneId | null;
 };
 
@@ -1129,7 +1131,10 @@ export type CommandMap = {
     args: { provider_id: ProviderId; prefix_filter?: string };
     result: ImportPreview;
   };
-  model_apply_import: { args: { preview_token: string; selected: string[] }; result: ApplyResult };
+  model_apply_import: {
+    args: { preview_token: string; selected: string[]; lane?: LaneId | null };
+    result: ApplyResult;
+  };
   model_bulk_update: { args: { ids: ModelId[]; patch: ModelPatch }; result: ApplyResult };
 
   // ---- channel / group
