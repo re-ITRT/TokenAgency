@@ -507,6 +507,9 @@ pub struct IngressState {
     /// （默认配置就是），所以鉴权前必须解析。与通道凭据共用同一个解析器 ——
     /// 同一套引用语法有两份实现，迟早会漂移。
     pub secrets: Arc<dyn SecretResolver>,
+    /// API key 验票接缝（[docs/19 §3.3]）。默认件是 [`NoApiKeys`]：一把 key 都没有 =
+    /// 不做多 key 鉴权。装配点见 `RuntimeParts::with_api_keys`。
+    pub api_keys: Arc<dyn ApiKeyVerifier>,
     pub pipeline: Arc<dyn RequestPipeline>,
     pub kernel: Arc<dyn KernelProbe>,
     /// 暂停/恢复闸门（`app_pause_gateway` / `app_resume_gateway` 的接缝）。
@@ -530,12 +533,19 @@ impl IngressState {
             clock,
             passthrough,
             secrets,
+            api_keys: Arc::new(NoApiKeys),
             pipeline,
             kernel,
             gate: Arc::new(GatewayGate::new()),
             rpm: RpmLimiter::new(),
             options,
         }
+    }
+
+    /// 装上 API key 验票器（`build_runtime` 把 `RuntimeParts::api_keys` 传进来）。
+    pub fn with_api_keys(mut self, api_keys: Arc<dyn ApiKeyVerifier>) -> Self {
+        self.api_keys = api_keys;
+        self
     }
 
     /// 用调用方持有的闸门装配（`build_runtime` 用它把同一个 `Arc` 交给运行时与 `app_*` 命令）。
@@ -712,9 +722,21 @@ async fn handle_request(
             return finish(error_response(&TaError::BodyTooLarge { size, limit }, &request_id));
         }
     }
-    if let Err(err) = check_local_key(&cfg, &parts.headers, state.secrets.as_ref()).await {
-        return finish(error_response(&err, &request_id));
-    }
+    // 鉴权：本地 key / 库里的 API key（[docs/19 §3.3]）。
+    // 身份目前没有下游消费者（命中即记账在 `ApiKeyVerifier` 实现内部完成），返回它是为了让
+    // "这条请求是哪把 key 打进来的"有一个**唯一**的落点 —— 只有这一层看得到客户端 token。
+    // 要把它写进请求日志/快照得先登记字段名（[docs/14 §5]，那不属于本轮）。
+    let _identity = match check_local_key(
+        &cfg,
+        &parts.headers,
+        state.secrets.as_ref(),
+        state.api_keys.as_ref(),
+    )
+    .await
+    {
+        Ok(identity) => identity,
+        Err(err) => return finish(error_response(&err, &request_id)),
+    };
     if let Some(limit) = state.options.rpm_limit {
         if let Err(retry_after_s) = state.rpm.check(now_ms, limit, state.options.rpm_window_ms) {
             let mut response = error_response(&TaError::RateLimited, &request_id);
@@ -798,7 +820,87 @@ fn declared_length(headers: &HeaderMap) -> Option<usize> {
 
 // ================================================================ 鉴权 / 错误信封
 
-/// 本地密钥校验（`gateway.local_key` 为空则跳过）。
+/// 这次请求以谁的身份通过鉴权。
+///
+/// 客户端送来的 token **只有这一层看得到**（`src-tauri` 的 `SecretResolver`、`GatewayDeps`
+/// 都拿不到它），所以"这条请求是哪把 API key 打进来的"必须在鉴权那一刻定下来 ——
+/// 它是 `api_key_usage` 归属的唯一依据。
+///
+/// 名字与 `src-tauri/src/apikey_auth.rs` 里计划的那个类型**同名同形**（[docs/19 §3.3]）：
+/// 应用层那个本地类型应当删掉改用这一个，否则就是第二份契约（一致时看不出来、漂移时静默）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyIdentity {
+    /// 本地密钥（`gateway.local_key`）通过，或压根没配置鉴权
+    Local,
+    /// 命中库里某把**启用中**的 API key
+    ApiKey(String),
+}
+
+/// 账本里 `gateway.local_key` 的固定 `key_id`（与 `src-tauri/src/apikey_auth.rs` 的
+/// `LOCAL_KEY_ID` 同值：这是同一个口径，不是两套）。
+pub const LOCAL_KEY_ID: &str = "local";
+
+impl KeyIdentity {
+    /// **直接写进 `api_key_usage.key_id` 的那个值**：本地身份是 `"local"`，其余是 key 的 id。
+    pub fn key_id(&self) -> &str {
+        match self {
+            KeyIdentity::Local => LOCAL_KEY_ID,
+            KeyIdentity::ApiKey(id) => id,
+        }
+    }
+}
+
+/// API key 校验接缝（[docs/19 §3.3] 的多 key 鉴权）。
+///
+/// ## 为什么是接缝，而不是网关自己去查库
+///
+/// key 的存储、启用状态与"命中即记账"都在应用层（`src-tauri/src/apikey_auth.rs` 的
+/// `ApiKeyAuthenticator`，它才拿得到 store 与用量表）。网关只负责**在唯一的鉴权点上**问它一句。
+/// 这样"多 key"不会长成第二条鉴权路径 —— 一旦网关自己也去查库，两条路径的启用/删除语义
+/// 迟早会不一致（"停用了还能用"这种洞就是这么来的）。
+#[async_trait]
+pub trait ApiKeyVerifier: Send + Sync {
+    /// 库里是否**至少有一把启用中的 key**。
+    ///
+    /// 这是"`local_key` 没配时还要不要强制鉴权"的判据：一把都没有 → **保持既有行为**
+    /// （不鉴权），否则每个既有用户升级后都会突然全部 401。
+    async fn any_enabled(&self) -> Result<bool>;
+
+    /// 命中启用中的访问密钥 → `Ok(Some(key_id))`；未命中 → `Ok(None)`。
+    ///
+    /// `Err` 只用于"查不动"（库故障/解密失败）—— 调用方**必须 fail closed**：
+    /// 返回 `Err` 让请求失败，绝不退回"放行"。
+    async fn verify(&self, token: &str) -> Result<Option<String>>;
+}
+
+/// 一把 API key 都没有时的实现（`IngressState::new` 的默认件）。
+///
+/// **默认件必须是"谁也不放行"**，而不是"都放行"：默认放行会让任何忘了装配的调用点
+/// 静默变成不鉴权 ——— 那正是最不该有的失败方向。
+pub struct NoApiKeys;
+
+#[async_trait]
+impl ApiKeyVerifier for NoApiKeys {
+    async fn any_enabled(&self) -> Result<bool> {
+        Ok(false)
+    }
+
+    async fn verify(&self, _token: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+/// 鉴权：`gateway.local_key`（可为空）与库里的 API key（[docs/19 §3.3]）。
+///
+/// ## 判定规则（主管定稿）
+///
+/// | 现状 | 行为 |
+/// | --- | --- |
+/// | `local_key` 为空 **且** 一把启用中的 key 都没有 | **不鉴权**（保持既有行为） |
+/// | `local_key` 非空 **或** 有启用中的 key | 必须命中 ①本地 key 或 ②某把启用中的 api key，否则 **401 `TA-1001`** |
+///
+/// 注意是 **TA-1001 `unauthorized`（401，不可重试）**，不是 TA-1002：后者是 429 限流，
+/// 客户端看到会**猛重试**一把根本没被接受的 key（[docs/11 §5]）。
 ///
 /// ## 为什么必须先解析引用（[06 §10.2 D4]）
 ///
@@ -814,13 +916,33 @@ fn declared_length(headers: &HeaderMap) -> Option<usize> {
 /// 2. 引用**写坏了**（`"${secret:}"` 这类，`is_reference` 为假但形似引用）→ 配置错误（TA-5001），
 ///    也不当明文密码。这正是 [06 §1.6 K4(d)] 的通用原则：能提前判定就自己判定，选响亮的一侧。
 /// 3. 解析出来是空串 → 配置错误。否则"钥匙串里存了个空值"会变成"空 key 即可通过"的放行洞。
+///
+/// 另一条：`any_enabled()` 只在 `local_key` 为空时才问 —— 本地密钥已经能定身份时，
+/// 不必为每个请求多打一次库（库故障也不该连带打死本地 key，见
+/// `the_local_key_path_does_not_touch_the_key_store`）。
 pub async fn check_local_key(
     cfg: &ConfigDoc,
     headers: &HeaderMap,
     secrets: &dyn SecretResolver,
-) -> Result<()> {
+    keys: &dyn ApiKeyVerifier,
+) -> Result<KeyIdentity> {
     let spec = cfg.gateway.local_key.as_deref().map(str::trim).filter(|key| !key.is_empty());
-    let Some(spec) = spec else { return Ok(()) };
+    let presented = bearer_token(headers).or_else(|| header_str(headers, "x-api-key"));
+
+    let Some(spec) = spec else {
+        // 没配本地密钥：只有库里确实有启用中的 key 时才强制鉴权；一把都没有 = 保持既有行为。
+        // `any_enabled()` 出错 → `?` 直接失败（fail closed），不退回"放行"。
+        if !keys.any_enabled().await? {
+            return Ok(KeyIdentity::Local);
+        }
+        let Some(token) = presented.map(str::trim).filter(|token| !token.is_empty()) else {
+            return Err(TaError::Unauthorized);
+        };
+        return match keys.verify(token).await? {
+            Some(key_id) => Ok(KeyIdentity::ApiKey(key_id)),
+            None => Err(TaError::Unauthorized),
+        };
+    };
 
     let expected = if is_reference(spec) {
         match secrets.resolve(spec).await {
@@ -870,10 +992,15 @@ pub async fn check_local_key(
         });
     }
 
-    let presented = bearer_token(headers).or_else(|| header_str(headers, "x-api-key"));
     match presented {
-        Some(key) if ct_eq(key.trim().as_bytes(), expected.as_bytes()) => Ok(()),
-        _ => Err(TaError::Unauthorized),
+        Some(key) if ct_eq(key.trim().as_bytes(), expected.as_bytes()) => Ok(KeyIdentity::Local),
+        // 本地密钥没命中 → 再看库里的访问密钥；两条腿都命中不了才 401。
+        // `verify()` 出错 → `?` 直接失败（fail closed）。
+        Some(key) => match keys.verify(key.trim()).await? {
+            Some(key_id) => Ok(KeyIdentity::ApiKey(key_id)),
+            None => Err(TaError::Unauthorized),
+        },
+        None => Err(TaError::Unauthorized),
     }
 }
 
@@ -1020,6 +1147,16 @@ mod tests {
         kernel: KernelState,
         secrets: Arc<dyn SecretResolver>,
     ) -> Arc<IngressState> {
+        Arc::new(ingress_state_with_secrets(cfg, options, kernel, secrets))
+    }
+
+    /// 未包 `Arc` 的装配（要调 `with_api_keys` 这种消费 `self` 的构造器时用）。
+    fn ingress_state_with_secrets(
+        cfg: ConfigDoc,
+        options: IngressOptions,
+        kernel: KernelState,
+        secrets: Arc<dyn SecretResolver>,
+    ) -> IngressState {
         struct FixedKernel(KernelState);
         impl KernelProbe for FixedKernel {
             fn state(&self) -> KernelState {
@@ -1027,7 +1164,7 @@ mod tests {
             }
         }
         let clock = Arc::new(ManualClock::new(1_700_000_000_000));
-        Arc::new(IngressState::new(
+        IngressState::new(
             Arc::new(arc_swap::ArcSwap::from_pointee(cfg.clone())),
             clock,
             FullPassthrough::shared(),
@@ -1035,7 +1172,7 @@ mod tests {
             Arc::new(EchoPipeline { cfg, policy: FullPassthrough::shared() }),
             Arc::new(FixedKernel(kernel)),
             options,
-        ))
+        )
     }
 
     fn state() -> Arc<IngressState> {
@@ -1385,6 +1522,235 @@ mod tests {
         assert!(!ct_eq(b"secret", b"secreT"));
         assert!(!ct_eq(b"secret", b"secret-longer"));
         assert!(ct_eq(b"", b""));
+    }
+
+    // ---------------------------------------------------------- API key 鉴权接缝
+
+    /// 测试用验票器：**想让它怎么答就怎么答**（命中表 / 库故障 / 有没有启用中的 key）。
+    struct FakeApiKeys {
+        /// `any_enabled()` 的答案
+        enabled: bool,
+        /// (token, key_id) 命中表
+        hits: Vec<(&'static str, &'static str)>,
+        /// 模拟"库查不动"
+        broken: bool,
+        /// 记录 `any_enabled()` 被问了几次（证明本地 key 那条腿不该打库）
+        asked: Mutex<u32>,
+    }
+
+    impl FakeApiKeys {
+        fn new(enabled: bool, hits: Vec<(&'static str, &'static str)>) -> Arc<Self> {
+            Arc::new(Self { enabled, hits, broken: false, asked: Mutex::new(0) })
+        }
+
+        fn broken() -> Arc<Self> {
+            Arc::new(Self { enabled: false, hits: Vec::new(), broken: true, asked: Mutex::new(0) })
+        }
+
+        fn any_enabled_calls(&self) -> u32 {
+            *self.asked.lock().expect("计数锁")
+        }
+    }
+
+    #[async_trait]
+    impl ApiKeyVerifier for FakeApiKeys {
+        async fn any_enabled(&self) -> Result<bool> {
+            *self.asked.lock().expect("计数锁") += 1;
+            if self.broken {
+                return Err(TaError::Store("库挂了".into()));
+            }
+            Ok(self.enabled)
+        }
+
+        async fn verify(&self, token: &str) -> Result<Option<String>> {
+            if self.broken {
+                return Err(TaError::Store("库挂了".into()));
+            }
+            Ok(self.hits.iter().find(|(t, _)| *t == token).map(|(_, id)| id.to_string()))
+        }
+    }
+
+    fn state_with_keys(cfg: ConfigDoc, keys: Arc<dyn ApiKeyVerifier>) -> Arc<IngressState> {
+        Arc::new(
+            ingress_state_with_secrets(
+                cfg,
+                IngressOptions::default(),
+                KernelState::Ready,
+                Arc::new(crate::pipeline::StaticSecrets::default()),
+            )
+            .with_api_keys(keys),
+        )
+    }
+
+    fn bearer(token: &str) -> Request {
+        Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from(b"{\"model\":\"m\"}".to_vec()))
+            .unwrap()
+    }
+
+    fn no_auth() -> Request {
+        json_request("POST", "/v1/chat/completions", b"{\"model\":\"m\"}")
+    }
+
+    /// 回归：**一把 key 都没有、local_key 也没配** → 保持既有行为（不鉴权）。
+    /// 这条要是红了，每个既有用户升级后都会突然全部 401。
+    #[tokio::test]
+    async fn no_local_key_and_no_enabled_api_keys_still_means_no_auth() {
+        let mut cfg = test_cfg();
+        cfg.gateway.local_key = None;
+        let keys = FakeApiKeys::new(false, vec![]);
+        let state = state_with_keys(cfg.clone(), keys.clone());
+
+        let (status, _, value) = send(state, no_auth()).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        assert_eq!(keys.any_enabled_calls(), 1, "这个判据必须真的问过库，不能靠默认值");
+
+        // 身份也得说清是"本地/未鉴权"
+        let identity = check_local_key(
+            &cfg,
+            &HeaderMap::new(),
+            Arc::new(crate::pipeline::StaticSecrets::default()).as_ref(),
+            keys.as_ref(),
+        )
+        .await
+        .expect("没有 key 就没有必须命中的凭据");
+        assert_eq!(identity, KeyIdentity::Local);
+        assert_eq!(identity.key_id(), "local", "账本里的 key_id 就是 \"local\"");
+    }
+
+    /// 库里一旦有启用中的 key，**凭据就是必须的** —— 哪怕 local_key 没配。
+    #[tokio::test]
+    async fn an_enabled_api_key_makes_a_credential_mandatory() {
+        let mut cfg = test_cfg();
+        cfg.gateway.local_key = None;
+        let keys = FakeApiKeys::new(true, vec![("sk-good", "key-1")]);
+        let state = state_with_keys(cfg.clone(), keys.clone());
+
+        let (status, _, value) = send(state.clone(), no_auth()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+        assert_eq!(
+            value["error"]["code"], "TA-1001",
+            "鉴权失败是 TA-1001；TA-1002 是 429 限流：{value}"
+        );
+        assert_eq!(
+            value["error"]["retryable"],
+            Value::Bool(false),
+            "重试一把没被接受的 key 毫无意义"
+        );
+
+        // 没命中的 token 同样 401（不泄漏"哪把 key 不存在"）
+        let (status, _, value) = send(state, bearer("sk-nope")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{value}");
+        assert_eq!(value["error"]["code"], "TA-1001");
+    }
+
+    /// 命中启用中的 api key → 通过，且身份带着**该 key 的 id**（`api_key_usage` 归属）。
+    #[tokio::test]
+    async fn a_hit_api_key_passes_and_the_identity_carries_its_key_id() {
+        let mut cfg = test_cfg();
+        cfg.gateway.local_key = None;
+        let keys = FakeApiKeys::new(true, vec![("sk-good", "key-1")]);
+        let state = state_with_keys(cfg.clone(), keys.clone());
+
+        let (status, _, value) = send(state.clone(), bearer("sk-good")).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+
+        // `x-api-key` 那条腿也一样（同一个 token 的另一种送达方式）
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("x-api-key", "sk-good")
+            .body(Body::from(b"{\"model\":\"m\"}".to_vec()))
+            .unwrap();
+        let (status, _, value) = send(state, request).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+
+        let identity = check_local_key(
+            &cfg,
+            &bearer("sk-good").into_parts().0.headers,
+            Arc::new(crate::pipeline::StaticSecrets::default()).as_ref(),
+            keys.as_ref(),
+        )
+        .await
+        .expect("命中了就该通过");
+        assert_eq!(identity, KeyIdentity::ApiKey("key-1".into()));
+        assert_eq!(identity.key_id(), "key-1");
+    }
+
+    /// 本地 key 命中 → `Local`；本地 key 配了但没命中时，**仍然可以**用一把 api key 进来
+    /// （两条腿是"或"的关系，不是"配了 local_key 就只能用它"）。
+    #[tokio::test]
+    async fn the_local_key_wins_and_api_keys_still_work_alongside_it() {
+        let mut cfg = test_cfg();
+        cfg.gateway.local_key = Some("local-secret".into());
+        let keys = FakeApiKeys::new(true, vec![("sk-good", "key-1")]);
+        let state = state_with_keys(cfg.clone(), keys.clone());
+
+        let (status, _, value) = send(state.clone(), bearer("local-secret")).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        let (status, _, value) = send(state, bearer("sk-good")).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+
+        let identity = check_local_key(
+            &cfg,
+            &bearer("local-secret").into_parts().0.headers,
+            Arc::new(crate::pipeline::StaticSecrets::default()).as_ref(),
+            keys.as_ref(),
+        )
+        .await
+        .expect("本地密钥命中");
+        assert_eq!(identity, KeyIdentity::Local);
+
+        let identity = check_local_key(
+            &cfg,
+            &bearer("sk-good").into_parts().0.headers,
+            Arc::new(crate::pipeline::StaticSecrets::default()).as_ref(),
+            keys.as_ref(),
+        )
+        .await
+        .expect("api key 是第二条腿");
+        assert_eq!(identity, KeyIdentity::ApiKey("key-1".into()));
+    }
+
+    /// 本地密钥已经能定身份时**不该去打库**：库故障不该连带把本地 key 一起打死，
+    /// 也不该给每个请求多一次查询。
+    #[tokio::test]
+    async fn the_local_key_path_does_not_touch_the_key_store() {
+        let mut cfg = test_cfg();
+        cfg.gateway.local_key = Some("local-secret".into());
+        let keys = FakeApiKeys::broken();
+        let state = state_with_keys(cfg, keys.clone());
+
+        let (status, _, value) = send(state, bearer("local-secret")).await;
+        assert_eq!(status, StatusCode::OK, "本地 key 不依赖 key 库：{value}");
+        assert_eq!(keys.any_enabled_calls(), 0, "本地 key 那条腿不该问库");
+    }
+
+    /// **fail closed**：库查不动 → 请求失败，绝不退回"放行"。
+    #[tokio::test]
+    async fn a_broken_key_store_fails_closed() {
+        let mut cfg = test_cfg();
+        cfg.gateway.local_key = None;
+        let keys = FakeApiKeys::broken();
+        let state = state_with_keys(cfg.clone(), keys.clone());
+
+        let (status, _, value) = send(state, bearer("sk-any")).await;
+        assert_ne!(status, StatusCode::OK, "库挂了还放行 = 谁都能进：{value}");
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{value}");
+        assert_ne!(value["error"]["code"], "TA-1001", "这不是'你没带凭据'，是'我们查不动'");
+
+        let err = check_local_key(
+            &cfg,
+            &bearer("sk-any").into_parts().0.headers,
+            Arc::new(crate::pipeline::StaticSecrets::default()).as_ref(),
+            keys.as_ref(),
+        )
+        .await
+        .expect_err("查不动必须报错");
+        assert_eq!(err.code(), "TA-9001");
     }
 
     // ---------------------------------------------------------- body 上限

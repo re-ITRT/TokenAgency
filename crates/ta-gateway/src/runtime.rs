@@ -61,6 +61,11 @@ pub struct RuntimeParts {
     /// 凭据解析器（`"${secret:name}"` / `"${env:VAR}"` → 明文）。入站本地密钥与通道凭据
     /// 共用同一个，避免同一套引用语法两份实现。
     pub secrets: Arc<dyn SecretResolver>,
+    /// API key 验票接缝（[docs/19 §3.3] 的多 key 鉴权）。
+    ///
+    /// 默认是 `NoApiKeys`（一把 key 都没有 = 不做多 key 鉴权），所以既有装配不用改；
+    /// 应用层装它：`RuntimeParts::new(secrets, kernel).with_api_keys(...)`。
+    pub api_keys: Arc<dyn crate::ingress::ApiKeyVerifier>,
     /// 内核状态探针（`/healthz` 与 TA-3001 的判据）。
     pub kernel: Arc<dyn KernelProbe>,
     /// 尝试记录接收器。
@@ -77,11 +82,18 @@ impl RuntimeParts {
         Self {
             passthrough: FullPassthrough::shared(),
             secrets,
+            api_keys: Arc::new(crate::ingress::NoApiKeys),
             kernel,
             sink: Arc::new(LoggingSink::new()),
             meter: None,
             ingress: IngressOptions::default(),
         }
+    }
+
+    /// 装上 API key 验票器（[docs/19 §3.3]）。装配点就是这里，别在别处再包一层。
+    pub fn with_api_keys(mut self, api_keys: Arc<dyn crate::ingress::ApiKeyVerifier>) -> Self {
+        self.api_keys = api_keys;
+        self
     }
 
     pub fn with_sink(mut self, sink: Arc<dyn AttemptSink>) -> Self {
@@ -379,7 +391,8 @@ pub fn build_runtime(deps: &Arc<GatewayDeps>, parts: RuntimeParts) -> GatewayRun
             parts.kernel,
             parts.ingress,
         )
-        .with_gate(gate.clone()),
+        .with_gate(gate.clone())
+        .with_api_keys(parts.api_keys),
     );
 
     GatewayRuntime { deps: deps.clone(), router, pipeline, state, gate }

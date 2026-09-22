@@ -1076,19 +1076,11 @@ fn meter_context(
 }
 
 /// 非流式响应体：读完（内存在这里被一次性占用，但非流式响应本来就要完整交给客户端）。
-async fn collect_body(mut stream: ByteStream) -> Result<Bytes> {
-    let mut buf = Vec::new();
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(chunk) => buf.extend_from_slice(&chunk),
-            Err(err) => {
-                return Err(TaError::AllChannelsFailed {
-                    message: format!("读取上游响应体失败：{err}"),
-                })
-            }
-        }
-    }
-    Ok(Bytes::from(buf))
+///
+/// "有界读"只有一份实现（[`crate::probe::read_body_bounded`]）：不设上限 = `usize::MAX`。
+/// 真实上限只在探测路径上生效（见 `probe::MAX_PROBE_BODY_BYTES`）。
+async fn collect_body(stream: ByteStream) -> Result<Bytes> {
+    crate::probe::read_body_bounded(stream, usize::MAX).await.map(|(body, _)| body)
 }
 
 // ================================================================ 测试
