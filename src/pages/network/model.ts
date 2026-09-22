@@ -37,6 +37,7 @@
 
 import type { I18nKey } from "@/shared/i18n";
 import type { SemStatus } from "@/shared/components";
+import type { GroupType, Lane, LaneKind, Subscription, SubscriptionFormat } from "@/shared/bindings";
 
 // ================================================================ 基础读取件
 
@@ -261,6 +262,84 @@ export function readSubscription(raw: unknown): SubscriptionRow {
   };
 }
 
+// ================================================================ 写载荷（订阅）
+
+/** 契约里 `SubscriptionFormat` 的五个取值（表单的格式下拉用它，顺序即显示顺序）。 */
+export const SUBSCRIPTION_FORMATS: readonly SubscriptionFormat[] = [
+  "auto",
+  "clash",
+  "base64_links",
+  "plain_links",
+  "convert_links",
+];
+
+/**
+ * 订阅表单的原始输入。数字字段**保持字符串**：`""`（用户没填）与 `0` 不是一回事 ——
+ * 前者不发这个字段（让后端默认值生效），后者是"我确实要 0"。
+ */
+export type SubscriptionDraft = {
+  id: string;
+  name: string;
+  url: string;
+  format: SubscriptionFormat;
+  intervalS: string;
+  keepVersions: string;
+  include: string;
+  exclude: string;
+  enabled: boolean;
+};
+
+/**
+ * 数字字段的解析，三态：
+ * - `undefined` = 没填 → **不发这个字段**（后端默认值说了算）；
+ * - `null` = 填了但不是非负整数 → 调用方报错，**不静默丢掉**（静默丢 = 用户以为改了）；
+ * - `number` = 合法值。
+ */
+export function parseOptionalCount(text: string): number | undefined | null {
+  const trimmed = text.trim();
+  if (trimmed === "") return undefined;
+  const value = Number(trimmed);
+  if (!Number.isInteger(value) || value < 0) return null;
+  return value;
+}
+
+/** 三个没有 serde 默认值的字段（`id` / `name` / `url`）是否都填了。空值不发给后端。 */
+export function subscriptionDraftComplete(draft: SubscriptionDraft): boolean {
+  return draft.id.trim() !== "" && draft.name.trim() !== "" && draft.url.trim() !== "";
+}
+
+/**
+ * 表单草稿 → `subscription_upsert` 的载荷。
+ *
+ * **只放用户真的填了的字段**：契约的 `Subscription` 把 `user_agent` / `health_check` 也标成必填，
+ * 但 Rust 侧对它们有 `#[serde(default)]`（`crates/ta-core/src/domain/mod.rs`）—— **权威在 Rust**。
+ * 前端补一份默认值就是把后端默认值复刻成第二个真相源：后端改了默认值，前端还在发旧值，
+ * 而且不会报错。缺的字段交给后端填 —— 下面这一处 `as` 就是那个决定的唯一落点。
+ */
+export function subscriptionPayload(draft: SubscriptionDraft): Subscription {
+  const payload: Record<string, unknown> = {
+    id: draft.id.trim(),
+    name: draft.name.trim(),
+    url: draft.url.trim(),
+    format: draft.format,
+    enabled: draft.enabled,
+  };
+  const intervalS = parseOptionalCount(draft.intervalS);
+  if (intervalS !== undefined && intervalS !== null) payload.interval_s = intervalS;
+  const keepVersions = parseOptionalCount(draft.keepVersions);
+  if (keepVersions !== undefined && keepVersions !== null) payload.keep_versions = keepVersions;
+
+  const include = draft.include.trim();
+  const exclude = draft.exclude.trim();
+  if (include !== "" || exclude !== "") {
+    const filter: Record<string, string> = {};
+    if (include !== "") filter.include = include;
+    if (exclude !== "") filter.exclude = exclude;
+    payload.filter = filter;
+  }
+  return payload as unknown as Subscription;
+}
+
 // ================================================================ 线路
 
 /**
@@ -339,6 +418,83 @@ export function readLane(raw: unknown): LaneRow {
   };
 }
 
+// ================================================================ 写载荷（线路）
+
+/** 组策略（内核的组类型）。**kebab-case** —— 与其它枚举不同，`bindings.ts` 专门注明了。 */
+export const LANE_GROUP_TYPES: readonly GroupType[] = [
+  "select",
+  "url-test",
+  "fallback",
+  "load-balance",
+];
+
+/** 组策略 → 文案 key。取值表就是内核的那四个（kebab-case）。 */
+export const GROUP_TYPE_LABEL: Record<string, I18nKey> = {
+  select: "network.groupType.select",
+  "url-test": "network.groupType.url-test",
+  fallback: "network.groupType.fallback",
+  "load-balance": "network.groupType.load-balance",
+};
+
+/** 线路表单的原始输入（可选字段保持字符串：`""` = 没填 → **不发这个字段**）。 */
+export type LaneDraft = {
+  id: string;
+  name: string;
+  kind: LaneKind;
+  subscription: string;
+  group: string;
+  groupType: string;
+  node: string;
+  filter: string;
+  excludeFilter: string;
+  enabled: boolean;
+};
+
+/**
+ * 后端 `Lane::missing_kind_field()`（`crates/ta-core/src/domain/behavior.rs`）的**前端镜像**：
+ * 非 `direct` 必须有 `subscription`；`subscription_group` 要 `group`；`subscription_node` 要 `node`；
+ * `filter` 要 `filter`。返回缺的那个**契约字段名**（给用户看的句子由 i18n 拼）。
+ *
+ * 这不是"前端自己发明规则"：是同一条规则提前检查一次，免得把注定被拒的请求发出去 ——
+ * 规则改动时两边会一起露出来（后端那边有 `missing_kind_field` 的单测）。
+ */
+export function laneMissingField(draft: LaneDraft): string | undefined {
+  if (draft.id.trim() === "") return "id";
+  if (draft.name.trim() === "") return "name";
+  if (draft.kind === "direct") return undefined;
+  if (draft.subscription.trim() === "") return "subscription";
+  if (draft.kind === "subscription_group") return draft.group.trim() === "" ? "group" : undefined;
+  if (draft.kind === "subscription_node") return draft.node.trim() === "" ? "node" : undefined;
+  if (draft.kind === "filter") return draft.filter.trim() === "" ? "filter" : undefined;
+  return undefined;
+}
+
+/**
+ * 草稿 → `lane_upsert` 的载荷：**只带用户真的填了的字段**（其余交后端 `#[serde(default)]`）。
+ * 契约的 `Lane` 把可选字段写成 `string | null`，Rust 侧是 `Option<String>` —— 不填就是 `None`，
+ * 与显式发一个空字符串**不是**一回事（后者会覆盖掉订阅里已有的名字）。
+ */
+export function lanePayload(draft: LaneDraft): Lane {
+  const payload: Record<string, unknown> = {
+    id: draft.id.trim(),
+    name: draft.name.trim(),
+    kind: draft.kind,
+    enabled: draft.enabled,
+  };
+  const optionalFields: [string, string][] = [
+    ["subscription", draft.subscription],
+    ["group", draft.group],
+    ["group_type", draft.groupType],
+    ["node", draft.node],
+    ["filter", draft.filter],
+    ["exclude_filter", draft.excludeFilter],
+  ];
+  for (const [key, value] of optionalFields) {
+    if (value.trim() !== "") payload[key] = value.trim();
+  }
+  return payload as unknown as Lane;
+}
+
 // ================================================================ 线路分配（五级继承的**显式值**）
 
 /** 一条线路的引用（id + 可解析出的名字）。`laneName` 缺失 = 配置里没有这条线路。 */
@@ -380,6 +536,21 @@ export type ProviderLaneRow = {
   lane?: LaneRef;
   laneReadable: boolean;
 };
+
+/** 五级继承里某一级的名字（`lane_assignments` 的 `source` → 文案 key）。 */
+const LANE_SOURCE_LABEL: Record<string, I18nKey> = {
+  policy: "network.assignments.source.policy",
+  channel: "network.assignments.source.channel",
+  credential: "network.assignments.source.credential",
+  provider: "network.assignments.source.provider",
+  default: "network.assignments.source.default",
+};
+
+/** **后端**说这条结论来自哪一级。词表外的取值原样显示（是后端说的话，不改写）。 */
+export function laneSourceLabel(source: string | undefined): I18nKey | undefined {
+  if (source === undefined) return undefined;
+  return LANE_SOURCE_LABEL[source];
+}
 
 /** 倒排的一行：谁**显式**引用了这条线。 */
 export type ReverseLaneRow = {

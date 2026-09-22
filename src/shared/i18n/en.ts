@@ -231,6 +231,20 @@ export const en: Record<I18nKey, string> = {
   "logs.clear.cancel": "Cancel",
   "logs.clear.done": "Deleted {{value}} rows.",
   "logs.clear.doneUnknown": "Cleared (the backend returned no count).",
+  "logs.export.title": "Export a diagnostic package",
+  "logs.export.query":
+    "The export uses the currently applied filters (the same ones as the results above): {{summary}}",
+  "logs.export.path": "Export path",
+  "logs.export.path.placeholder": "D:\\\\exports or D:\\\\exports\\\\tokenagency-diagnostic.zip",
+  "logs.export.path.hint":
+    "There is no default path: no backend command reports the log or data directory, so the UI does not guess one (it never hard-codes AppData). Enter a directory (the backend then writes tokenagency-diagnostic-<timestamp>.zip) or a full .zip path; the receipt below is what tells you where it actually landed.",
+  "logs.export.run": "Export",
+  "logs.export.running": "Exporting…",
+  "logs.export.written": "Backend receipt: wrote {{path}} ({{bytes}} bytes).",
+  "logs.export.writtenNoBytes": "Backend receipt: wrote {{path}}.",
+  "logs.export.requested":
+    "Export requested to {{path}}; the backend returned no receipt, so this page cannot confirm it was written — please check that path in your file manager.",
+  "logs.export.error": "Export failed: {{message}}",
 
   // ---------------------------------------------------------------- shared components
   "component.numberCard.hintExact": "Exact {{value}}",
@@ -345,15 +359,22 @@ export const en: Record<I18nKey, string> = {
 
   "settings.tray.showLatency": "Show latency in the tray",
   "settings.tray.fileWatch": "Config file watch mode",
-  "settings.tray.fileWatch.blocked":
-    "No switch: the dedicated command that writes it, config_set_file_watch_mode, is registered, but this page does not call it yet. While it is on, writing the config back from the UI would overwrite edits made in the file — a toggle with side effects, so the generic config apply is not used as a substitute.",
+  "settings.tray.fileWatch.configValue": "Value in the config: {{value}}",
+  "settings.tray.fileWatch.hint":
+    "The switch writes the config: clicking it really calls config_set_file_watch_mode. But the watcher itself is not implemented yet (the backend logs a warning when writing), so this switch is only read on the next start — the result can only be \"restart required\", never \"watching now\". While it is on, writing the config back from the UI would overwrite edits made in the file.",
+  "settings.tray.fileWatch.restart":
+    "Written to the config; it will only be read after a restart (the watcher is not implemented yet).",
+  "settings.tray.fileWatch.appliedNoRestart": "Written to the config; the backend did not ask for a restart.",
+  "settings.tray.fileWatch.notApplied":
+    "The backend did not write this config (applied=false); the value read back from the store is what counts.",
+  "settings.tray.fileWatch.error": "Writing the file watch switch failed: {{message}}",
   "settings.tray.on": "On",
   "settings.tray.off": "Off",
 
   "settings.storage.stats": "Storage usage",
   "settings.storage.toLogs": "Query on the request log page",
   "settings.storage.noExport":
-    "This page offers no log export: the backend command log_export is registered, but this page does not call it yet, so no button is drawn.",
+    "Log export lives on the **request log page** (/logs): that page calls log_export to build the diagnostic package, and the on-disk path comes from the backend receipt. No export button is drawn here.",
   "settings.storage.modeWritten": "Recording mode written as {{mode}} in this session (backend confirmed).",
   "settings.storage.retentionWritten": "Retention written as {{value}} in this session (backend confirmed).",
   "settings.storage.modeEvidence": "Mode recorded on the newest log row: {{mode}} ({{time}})",
@@ -755,6 +776,42 @@ export const en: Record<I18nKey, string> = {
   "network.subscriptions.col.lastUpdate": "Last update",
   "network.subscriptions.col.parser": "Parser",
   "network.subscriptions.col.error": "Error",
+  "network.subscriptions.col.actions": "Actions",
+  "network.subscriptions.row.refresh": "Refresh",
+  "network.subscriptions.row.delete": "Delete",
+  "network.subscriptions.row.refreshHint":
+    "Refresh on a row forces a re-download (force: true) instead of being skipped by interval_s, which would make the button look broken.",
+  "network.subscriptions.write.title": "Create / overwrite a subscription",
+  "network.subscriptions.write.hint":
+    "After saving, the panel shows the object the backend returned, not a hand-written “saved” line. Same id = overwrite: fields not in the form (user_agent, health_check) fall back to the backend defaults — the frontend does not keep a second copy of those defaults, because a drifting copy silently corrupts the config.",
+  "network.subscriptions.write.id": "Subscription id",
+  "network.subscriptions.write.idHint":
+    "The id is the key: same id overwrites an existing subscription (the kernel provider key is derived from it).",
+  "network.subscriptions.write.name": "Name",
+  "network.subscriptions.write.url": "Subscription URL",
+  "network.subscriptions.write.urlHint":
+    "The URL is sent to the backend only on save / preview; the list and the result panel show the masked form.",
+  "network.subscriptions.write.format": "Format",
+  "network.subscriptions.write.interval": "Update interval (seconds)",
+  "network.subscriptions.write.keepVersions": "Versions kept",
+  "network.subscriptions.write.include": "Include regex (optional)",
+  "network.subscriptions.write.exclude": "Exclude regex (optional)",
+  "network.subscriptions.write.enabled": "Enable this subscription",
+  "network.subscriptions.write.submit": "Save subscription",
+  "network.subscriptions.write.preview": "Preview (no save)",
+  "network.subscriptions.write.required":
+    "Subscription id / name / URL are required — empty values are not sent to the backend.",
+  "network.subscriptions.write.badNumber":
+    "Update interval and versions kept must be numbers.",
+  "network.subscriptions.write.saved": "Subscription returned by the backend",
+  "network.subscriptions.write.previewTitle":
+    "Preview (parsed by the backend, nothing written to the config)",
+  "network.subscriptions.write.previewCounts": "{{groups}} groups · {{nodes}} nodes",
+  "network.subscriptions.write.previewSample": "Sample nodes: {{sample}}",
+  "network.subscriptions.write.refreshTitle": "Refresh result returned by the backend",
+  "network.subscriptions.write.refreshOk": "Succeeded",
+  "network.subscriptions.write.refreshFailed": "Failed",
+  "network.subscriptions.write.deleteDone": "Deleted by the backend: {{id}}",
 
   "network.format.auto": "Auto-detect",
   "network.format.clash": "Clash YAML",
@@ -782,6 +839,58 @@ export const en: Record<I18nKey, string> = {
   "network.lanes.col.latency": "Latency",
   "network.lanes.col.nodes": "Nodes",
   "network.lanes.col.channels": "Channels",
+  "network.lanes.col.actions": "Actions",
+  "network.lanes.row.delete": "Delete",
+  "network.lanes.row.setNode": "Node",
+  "network.lanes.row.setNodeSubmit": "Pin",
+  "network.lanes.row.setNodeHint":
+    "Pinning touches only the kernel's runtime state (lane_set_node, not the config): the node name must really exist in the kernel, otherwise the backend refuses.",
+  "network.lanes.row.setNodeEmpty":
+    "The node name to pin cannot be empty — empty values are not sent to the backend.",
+  "network.lanes.row.setNodeResult": "Backend accepted the pin: {{lane}} → {{node}}",
+  "network.lanes.row.directNoGroup": "A direct lane points straight at DIRECT and has no group to switch.",
+  "network.lanes.row.deleteDone": "Deleted by the backend: {{id}}",
+  "network.lanes.write.title": "Create / overwrite a lane",
+  "network.lanes.write.hint":
+    "After saving, the panel shows the lane object the backend returned. Same id = overwrite; fields not in the form fall back to the backend defaults (nothing is guessed, such as group_type).",
+  "network.lanes.write.id": "Lane id",
+  "network.lanes.write.idHint": "The id is the key: same id overwrites an existing lane.",
+  "network.lanes.write.name": "Name",
+  "network.lanes.write.kind": "Kind",
+  "network.lanes.write.kindHint":
+    "The kind decides which fields are required: anything but direct needs a subscription; a group lane needs a group name, a fixed-node lane needs a node name, and a filter lane needs a regex.",
+  "network.lanes.write.subscription": "Subscription",
+  "network.lanes.write.subscriptionHint":
+    "Only subscriptions already in the config can be picked (subscription_list); picking none means the field is absent.",
+  "network.lanes.write.subscriptionNone": "(none selected)",
+  "network.lanes.write.group": "Group name inside the subscription",
+  "network.lanes.write.groupHint":
+    "Must match the subscription's group name character for character (keep emoji unchanged too).",
+  "network.lanes.write.groupType": "Group type (optional)",
+  "network.lanes.write.groupTypeNone": "Use the type the subscription declares for that group",
+  "network.lanes.write.node": "Fixed node name",
+  "network.lanes.write.nodeHint": "Spell it exactly as the kernel does.",
+  "network.lanes.write.filter": "Narrowing regex (optional)",
+  "network.lanes.write.excludeFilter": "Exclude regex (optional)",
+  "network.lanes.write.enabled": "Enable this lane",
+  "network.lanes.write.submit": "Save lane",
+  "network.lanes.write.missing":
+    "Still missing a required field: {{field}} (the same rule as the backend's missing_kind_field).",
+  "network.lanes.write.saved": "Lane returned by the backend",
+  "network.lanes.write.groupValue": "group {{name}}",
+  "network.lanes.write.nodeValue": "node {{name}}",
+  "network.lanes.write.knownGroups":
+    "Groups parsed from this subscription (copy them verbatim): {{list}}",
+  "network.lanes.write.knownGroupsEmpty": "This subscription currently yields no groups.",
+  "network.lanes.write.knownNodes": "Sample nodes of this subscription: {{list}}",
+  "network.lanes.write.knownNodesEmpty": "This subscription currently yields no nodes.",
+  "network.lanes.write.knownUnreadable":
+    "The subscription parse results (subscription_groups / subscription_nodes) are unreadable, so no group or node names are guessed here.",
+
+  "network.groupType.select": "Manual select (select)",
+  "network.groupType.url-test": "URL test (url-test)",
+  "network.groupType.fallback": "Fallback (fallback)",
+  "network.groupType.load-balance": "Load balance (load-balance)",
 
   "network.laneKind.direct": "Direct",
   "network.laneKind.subscription_auto": "Best of the whole subscription",
@@ -836,8 +945,37 @@ export const en: Record<I18nKey, string> = {
     "Precedence: policy use_lane → channel lane → credential lane → provider lane → global default → direct.",
   "network.assignments.noResolve.title": "This page does not compute an “effective lane”",
   "network.assignments.noResolve.body":
-    "Resolving that inheritance chain is the backend's job (lane_assignments is available in the backend but not wired into this page yet). Computing it again in the frontend would create two sources of truth, and drift would not raise any error — so only what each level explicitly says is listed here.",
+    "Resolving that inheritance chain is the backend's job: the section “Effective lanes computed by the backend” below is exactly what lane_assignments returns. Computing it again in the frontend would create two sources of truth, and drift would not raise any error — so this section only lists what each level explicitly says, and the backend's answer is the verdict.",
   "network.assignments.notSet": "Not set (inherits from the level above)",
+  "network.assignments.chain.title": "Effective lanes computed by the backend",
+  "network.assignments.chain.hint":
+    "This section is what lane_assignments returns: which lane each channel ends up on, and which level of the five-level inheritance produced that verdict. The frontend does not compute it.",
+  "network.assignments.chain.empty": "The backend returned no per-channel resolution.",
+  "network.assignments.chain.col.model": "Model",
+  "network.assignments.chain.col.channel": "Channel",
+  "network.assignments.chain.col.lane": "Effective lane",
+  "network.assignments.chain.col.source": "Resolved by",
+  "network.assignments.source.policy": "policy level",
+  "network.assignments.source.channel": "channel level",
+  "network.assignments.source.credential": "credential level",
+  "network.assignments.source.provider": "provider level",
+  "network.assignments.source.default": "global default",
+  "network.assignments.pick.title": "Candidate lanes (the backend's list)",
+  "network.assignments.pick.hint":
+    "lane_pick_options is the candidate list grouped by subscription: pick lanes from it instead of assembling a list in the frontend.",
+  "network.assignments.pick.empty": "The backend returned no candidate lanes.",
+  "network.assignments.pick.nodeCount": "nodes {{n}}",
+  "network.assignments.reverseLookup.title": "Who references this lane (backend reverse lookup)",
+  "network.assignments.reverseLookup.hint":
+    "lane_reverse_lookup takes a lane id and returns channels and models. Look at this before deleting a lane: the backend refuses to delete a lane that is referenced.",
+  "network.assignments.reverseLookup.button": "Look up references",
+  "network.assignments.reverseLookup.col.lane": "Lane",
+  "network.assignments.reverseLookup.noLanes":
+    "The lane list (lane_list) is unreadable, so there is nothing to look up.",
+  "network.assignments.reverseLookup.resultFor": "Backend references ({{lane}})",
+  "network.assignments.reverseLookup.channels": "channels",
+  "network.assignments.reverseLookup.models": "models",
+  "network.assignments.reverseLookup.none": "No channel or model explicitly references it",
   "network.assignments.unread.title": "config_get did not return this data ({{field}})",
   "network.assignments.unread.body":
     "So it shows “Not read” here rather than being treated as “empty in the config”.",
