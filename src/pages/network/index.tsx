@@ -79,13 +79,16 @@ import {
   readKernelPath,
   readLane,
   readSubscription,
+  readTrafficMap,
   subscriptionDraftComplete,
   subscriptionFormatLabel,
   subscriptionPayload,
+  summarizeTraffic,
   type LaneDraft,
   type LaneRow,
   type SubscriptionDraft,
   type SubscriptionRow,
+  type TrafficRow,
 } from "./model";
 
 // ================================================================ 共用展示件（见文件头末节）
@@ -585,15 +588,68 @@ function SubscriptionWriteForm() {
   );
 }
 
+/**
+ * 一行上的**流量**（[18 §1.3]，等价于 Clash 面板那一行）：更新时间 + 已用/总量 + 百分比 + 到期。
+ *
+ * **三条各自独立，缺哪样就不显示那一样**（不显示 0、不显示占位符）：
+ * 数字全部来自后端（`subscription_traffic` 的持久化观测值），前端只做格式化 ——
+ * 不自己算 `total`、不把缺失当 0（`used = upload + download` 要两者都有才算）。
+ *
+ * 三态不混：`traffic === undefined`（还没读到）→「未读取」；`null`（从没成功刷新过）→「尚未获取」。
+ */
+function TrafficCell({ traffic }: { traffic: TrafficRow | null | undefined }) {
+  const { t } = useTranslation();
+  if (traffic === undefined) return <Unreadable />;
+  const summary = summarizeTraffic(traffic);
+  if (summary.kind === "none") {
+    return (
+      <Typography variant="body1" component="span" sx={{ color: "text.secondary" }}>
+        {t("network.sub.traffic.none")}
+      </Typography>
+    );
+  }
+  const parts: string[] = [];
+  if (summary.fetchedAtMs !== undefined) {
+    // 本地时区 `YYYY-MM-DD HH:mm`（Clash 面板同款）
+    parts.push(t("network.sub.traffic.updated", { at: formatLocalTime(summary.fetchedAtMs, "YYYY-MM-DD HH:mm") }));
+  }
+  if (summary.usedBytes !== undefined) {
+    parts.push(
+      summary.totalBytes === undefined
+        ? t("network.sub.traffic.usedOnly", { used: formatBytes(summary.usedBytes) })
+        : t("network.sub.traffic.used", {
+            used: formatBytes(summary.usedBytes),
+            total: formatBytes(summary.totalBytes),
+          }),
+    );
+  }
+  if (summary.usedPct !== undefined) {
+    parts.push(t("network.sub.traffic.percent", { pct: summary.usedPct }));
+  }
+  if (summary.expireAtS !== undefined) {
+    // 契约是 **Unix 秒**
+    parts.push(t("network.sub.traffic.expire", { date: formatLocalTime(summary.expireAtS * 1000, "YYYY-MM-DD") }));
+  }
+  if (parts.length === 0) return <Unreadable />;
+  return (
+    <Typography variant="body1" component="span">
+      {parts.join(" · ")}
+    </Typography>
+  );
+}
+
 function SubscriptionsSection({
   rows,
   isLoading,
   error,
+  trafficError,
   onRetry,
 }: {
   rows: readonly SubscriptionRow[] | undefined;
   isLoading: boolean;
   error: unknown;
+  /** `subscription_traffic` 自己的读取错误（与 `subscription_list` 的错误分开说，不吞错）。 */
+  trafficError: unknown;
   onRetry: () => void;
 }) {
   const { t } = useTranslation();
@@ -729,15 +785,13 @@ function SubscriptionsSection({
                         t("common.disabled")
                       )}
                     </TableCell>
-                    {/* 解析结果：契约的 SubscriptionView 有，Rust 的裸 Subscription 没有 → 未读取 */}
-                    <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
-                      {row.total === undefined ? (
-                        <Unreadable />
-                      ) : (
-                        `${row.download === undefined ? DASH : formatBytes(row.download)} / ${formatBytes(row.total)}${
-                          row.expireMs === undefined ? "" : ` · ${formatLocalTime(row.expireMs, "YYYY-MM-DD")}`
-                        }`
-                      )}
+                    {/* 流量：**上次已知**的观测值（`subscription_traffic`）。缺哪样不显示哪样 */}
+                    <TableCell
+                      align="right"
+                      data-testid="network-subscription-traffic"
+                      sx={{ fontVariantNumeric: "tabular-nums" }}
+                    >
+                      <TrafficCell traffic={row.traffic} />
                     </TableCell>
                     <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
                       {row.nodeCount === undefined ? <Unreadable /> : row.nodeCount}
@@ -811,6 +865,9 @@ function SubscriptionsSection({
           {t("network.subscriptions.write.deleteDone", { id: deletedId })}
         </Typography>
       )}
+
+      {/* 流量（`subscription_traffic`）读失败：**如实说**，不把失败画成"尚未获取" */}
+      <WriteError testId="network-subscriptions-traffic-error" error={trafficError} />
 
       <WriteError testId="network-subscriptions-row-error" error={refreshOne.error ?? removeOne.error} />
 
@@ -1329,6 +1386,8 @@ export type NetworkBodyProps = {
   subscriptions: SubscriptionRow[] | undefined;
   subscriptionsLoading: boolean;
   subscriptionsError: unknown;
+  /** 流量（`subscription_traffic`）的读取错误：与订阅列表的错误**分开**，不吞错也不混为一谈。 */
+  trafficError?: unknown;
   lanes: LaneRow[] | undefined;
   lanesLoading: boolean;
   lanesError: unknown;
@@ -1350,6 +1409,7 @@ export function NetworkBody({
   subscriptions,
   subscriptionsLoading,
   subscriptionsError,
+  trafficError,
   lanes,
   lanesLoading,
   lanesError,
@@ -1381,6 +1441,7 @@ export function NetworkBody({
           rows={subscriptions}
           isLoading={subscriptionsLoading}
           error={subscriptionsError}
+          trafficError={trafficError}
           onRetry={onRetry}
         />
       ) : (
@@ -1410,13 +1471,24 @@ export default function NetworkPage() {
   // 「未配置」判定要用 `net.kernel.path`（[18 §2.1]）：它只在 `config_get` 里，
   // 而 `config_get` 是**原子快照**（与分配页共用同一份缓存，`config:changed` 事件会失效它）。
   const config = useCommandQuery("config_get", undefined, qk.config);
+  // 订阅流量是**运行时观测值**（配置实体里没有它，[18 §1.2]）：单独一条只读命令读"上次已知"。
+  // query key 挂在 `qk.subscriptions` 前缀下 —— 于是 `subscription:updated` 事件、
+  // 以及行上的刷新/删除（都 invalidate `qk.subscriptions`）会连带把流量一起失效重拉。
+  const traffic = useCommandQuery("subscription_traffic", undefined, [
+    ...qk.subscriptions,
+    "traffic",
+  ]);
 
   const refresh = () => {
     void status.refetch();
     void subscriptions.refetch();
     void lanes.refetch();
     void config.refetch();
+    void traffic.refetch();
   };
+
+  // 列表（配置实体）× 流量（观测值）在这里合流：`Map` 里没有这个 id = 还没读到（→ 未读取）
+  const trafficById = traffic.data === undefined ? undefined : readTrafficMap(traffic.data);
 
   return (
     <>
@@ -1444,10 +1516,15 @@ export default function NetworkPage() {
         subscriptions={
           subscriptions.data === undefined
             ? undefined
-            : subscriptions.data.map((item) => readSubscription(item))
+            : subscriptions.data.map((item) => {
+                const row = readSubscription(item);
+                // `undefined` = 流量还没读到（与 `null` = 从没成功刷新过**不是一回事**）
+                return { ...row, traffic: trafficById?.get(row.id) };
+              })
         }
         subscriptionsLoading={subscriptions.isPending}
         subscriptionsError={subscriptions.error ?? undefined}
+        trafficError={traffic.error ?? undefined}
         lanes={lanes.data === undefined ? undefined : lanes.data.map((item) => readLane(item))}
         lanesLoading={lanes.isPending}
         lanesError={lanes.error ?? undefined}

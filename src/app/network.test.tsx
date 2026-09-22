@@ -40,6 +40,8 @@ import {
   readKernelPath,
   readLane,
   readSubscription,
+  readTrafficMap,
+  summarizeTraffic,
   type LaneRow,
   type SubscriptionRow,
 } from "@/pages/network/model";
@@ -49,6 +51,7 @@ import { resolvePage } from "@/app/pageRegistry";
 import { routeByKey } from "@/app/routes";
 import { registerMock, TokenAgencyError } from "@/shared/api/client";
 import { registerBaselineMocks } from "@/shared/api/mock";
+import { formatLocalTime } from "@/shared/format";
 import { i18n } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
 
@@ -389,6 +392,7 @@ const READ_ONLY_ALLOWED = new Set([
   "subscription_preview",
   "subscription_groups",
   "subscription_nodes",
+  "subscription_traffic",
   "lane_assignments",
   "lane_pick_options",
   "lane_reverse_lookup",
@@ -420,6 +424,7 @@ const DIRECTLY_REFERENCED = [
   "subscription_nodes",
   "subscription_preview",
   "subscription_refresh",
+  "subscription_traffic",
   "subscription_upsert",
 ];
 
@@ -564,7 +569,7 @@ describe("[I2] 网络页不碰系统网络（机械守卫，不靠自觉）", ()
 // ================================================================ ③ 读订阅
 
 describe("读订阅：契约 SubscriptionView 与 Rust Subscription 两套形状都认", () => {
-  it("契约形状：节点数/组数/最近更新/解析器/流量都能读到", () => {
+  it("契约形状：节点数/组数/最近更新/解析器都能读到", () => {
     const view = readSubscription(contractSubscription());
     expect(view.id).toBe("sub-jp");
     expect(view.name).toBe("机场A");
@@ -572,9 +577,11 @@ describe("读订阅：契约 SubscriptionView 与 Rust Subscription 两套形状
     expect(view.groupCount).toBe(4);
     expect(view.lastUpdateMs).toBe(1_770_000_000_000);
     expect(view.parser).toBe("clash-yaml@1");
-    expect(view.total).toBe(100_000_000_000);
     expect(view.include).toBe("(?i)(日本|JP)");
     expect(view.healthUrl).toBe("https://api.commandcode.ai/v1/models");
+    // 流量**不从这里读**：契约的 `userinfo` 只是 SubscriptionView 上的旧字段（Rust 的裸实体没有它），
+    // 真源是 `subscription_traffic` 的持久化观测值 → 见 ⑮ 组
+    expect(view.traffic).toBeUndefined();
   });
 
   it("Rust 形状（裸 Subscription）：解析结果读不到 → undefined，**不填 0**", () => {
@@ -1593,5 +1600,276 @@ describe("⑭ /network 是选装：三项都没配置时，页面上只有选装
     for (const testid of FORBIDDEN_WHEN_UNCONFIGURED) {
       expect(screen.queryByTestId(testid), `未配置时不该出现 ${testid}`).toBeNull();
     }
+  });
+});
+
+// ================================================================ ⑮ 订阅流量与更新时间（[18 §1]）
+//
+// 用户原话：「clash 的面板能看到**更新时间** 2026-09-21 21:44、**已使用/总量** 92.9GB/130GB 71%，
+// 我希望我们也能看到」。三条显示规则（[18 §1.3]）：
+//
+// ① **更新时间**：`fetched_at_ms` 按**本地时区**格式化成 `YYYY-MM-DD HH:mm`（Clash 面板同款）；
+// ② **已用/总量**：`used = upload + download`（**两者都有**才算），`total` 有就显示 `92.9 GB / 130 GB`；
+// ③ **百分比**：`used / total` 取整（`71%`）；`total` 缺失或为 0 → 不显示。
+//
+// 三条**各自独立**：缺哪样就**不显示那一样**（不显示 0、不显示占位符）。
+// `traffic === null`（这份订阅从没成功刷新过）→ 只显示一句「尚未获取」，**不显示数字**。
+//
+// 数据全部来自后端（`subscription_traffic` 的持久化观测值）：前端**不自己算 total**、
+// **不把缺失当 0**（`0` 是真实观测值，必须显示）。
+
+/** 后端给的那份字节数（`upload 10 GiB` + `download 约 82.9 GiB` = `92.9 GB`；`total 130 GiB`）。 */
+const TRAFFIC_UPLOAD = 10_737_418_240;
+const TRAFFIC_DOWNLOAD = 89_000_000_000;
+const TRAFFIC_TOTAL = 139_586_437_120;
+const TRAFFIC_EXPIRE_S = 1_893_456_000;
+const TRAFFIC_FETCHED_AT_MS = 1_775_000_000_000;
+
+function trafficFixture(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    upload_bytes: TRAFFIC_UPLOAD,
+    download_bytes: TRAFFIC_DOWNLOAD,
+    total_bytes: TRAFFIC_TOTAL,
+    expire_at_s: TRAFFIC_EXPIRE_S,
+    fetched_at_ms: TRAFFIC_FETCHED_AT_MS,
+    ...over,
+  };
+}
+
+/** 订阅行（第一行）的全部文本 —— 三条规则都在这上面断言。 */
+async function firstSubscriptionRow(): Promise<HTMLElement> {
+  return (await screen.findAllByTestId("network-subscription-row"))[0]!;
+}
+
+describe("⑮ 订阅行显示流量与更新时间（三项各自独立，缺哪样不显示哪样）", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("三样都在：更新时间（本地 YYYY-MM-DD HH:mm）+ 已用/总量 + 百分比 + 到期", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_traffic", () => [{ id: "sub-jp", traffic: trafficFixture() }]);
+
+    renderPage(<NetworkPage />);
+    const rowText = (await firstSubscriptionRow()).textContent ?? "";
+    // ① 本地时区、固定格式（不是 ISO 串、不是相对时间）
+    expect(rowText).toMatch(/更新时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
+    // ② used = upload + download（1024³，一位小数）+ 后端给的 total
+    expect(rowText).toContain("已用 92.9 GB / 130 GB");
+    // ③ used / total 取整
+    expect(rowText).toContain("71%");
+    // 到期：Unix 秒 → 本地日期
+    expect(rowText).toContain(`到期：${formatLocalTime(TRAFFIC_EXPIRE_S * 1000, "YYYY-MM-DD")}`);
+    // 流量单元格有稳定的锚点（下面几条要精确到"这一个单元格"）
+    expect(within(await firstSubscriptionRow()).getByTestId("network-subscription-traffic")).toBeTruthy();
+  });
+
+  it("traffic === null（从没成功刷新过）：只有一句「尚未获取」，一个数字都不显示", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_traffic", () => [{ id: "sub-jp", traffic: null }]);
+
+    renderPage(<NetworkPage />);
+    expect((await firstSubscriptionRow()).textContent).toContain("尚未获取");
+    const cell = screen.getByTestId("network-subscription-traffic");
+    expect(cell.textContent ?? "").not.toMatch(/\d/);
+  });
+
+  it("缺 upload（download 有）：不显示「已用」也不显示百分比 —— 不把缺失当 0", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_traffic", () => [
+      { id: "sub-jp", traffic: trafficFixture({ upload_bytes: null }) },
+    ]);
+
+    renderPage(<NetworkPage />);
+    await firstSubscriptionRow();
+    const cell = screen.getByTestId("network-subscription-traffic");
+    // 更新时间照旧显示（它不依赖 upload）
+    expect(cell.textContent).toMatch(/更新时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
+    expect(cell.textContent).not.toContain("已用");
+    expect(cell.textContent).not.toContain("%");
+    expect(cell.textContent).not.toContain("0 B");
+  });
+
+  it("缺 total：只显示「已用 92.9 GB」，不显示百分比（也不显示 0 或占位符）", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_traffic", () => [
+      { id: "sub-jp", traffic: trafficFixture({ total_bytes: null }) },
+    ]);
+
+    renderPage(<NetworkPage />);
+    await firstSubscriptionRow();
+    const cell = screen.getByTestId("network-subscription-traffic");
+    expect(cell.textContent).toContain("已用 92.9 GB");
+    expect(cell.textContent).not.toContain("%");
+    expect(cell.textContent).not.toContain("/");
+  });
+
+  it("total 为 0：显示 0 B 但**不显示百分比**（不除零、不编一个数）", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_traffic", () => [
+      { id: "sub-jp", traffic: trafficFixture({ total_bytes: 0 }) },
+    ]);
+
+    renderPage(<NetworkPage />);
+    await firstSubscriptionRow();
+    const cell = screen.getByTestId("network-subscription-traffic");
+    expect(cell.textContent).toContain("已用 92.9 GB / 0 B");
+    expect(cell.textContent).not.toContain("%");
+  });
+
+  it("upload/download 都是 0（真实观测值）：显示「已用 0 B」与「0%」，不当成缺失", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_traffic", () => [
+      { id: "sub-jp", traffic: trafficFixture({ upload_bytes: 0, download_bytes: 0 }) },
+    ]);
+
+    renderPage(<NetworkPage />);
+    await firstSubscriptionRow();
+    const cell = screen.getByTestId("network-subscription-traffic");
+    expect(cell.textContent).toContain("已用 0 B / 130 GB");
+    expect(cell.textContent).toContain("0%");
+  });
+
+  it("expire_at_s 为 0（契约：0 = 不适用）：不显示「到期」，其余三样照常", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_traffic", () => [
+      { id: "sub-jp", traffic: trafficFixture({ expire_at_s: 0 }) },
+    ]);
+
+    renderPage(<NetworkPage />);
+    await firstSubscriptionRow();
+    const cell = screen.getByTestId("network-subscription-traffic");
+    expect(cell.textContent).not.toContain("到期");
+    expect(cell.textContent).toContain("已用 92.9 GB / 130 GB");
+  });
+
+  it("流量读失败：TA 码原样显示（不吞错，也不把失败画成「尚未获取」）", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_traffic", () => {
+      throw new TokenAgencyError({ code: "TA-9001", message: "未注册 mock：subscription_traffic" });
+    });
+
+    renderPage(<NetworkPage />);
+    await firstSubscriptionRow();
+    expect(
+      (await screen.findByTestId("network-subscriptions-traffic-error")).textContent,
+    ).toContain("TA-9001");
+  });
+
+  it("流量还没读到（命令还没回来）：行上显示「未读取」，不冒充「尚未获取」", () => {
+    // 展示件的三态：`traffic: null` = 后端说"从没成功刷新过"；**没有这个字段** = 还没读到
+    const first = readSubscription(contractSubscription());
+    const secondFixture = contractSubscription();
+    const second = readSubscription(
+      contractSubscription({
+        subscription: {
+          ...(secondFixture["subscription"] as Record<string, unknown>),
+          id: "sub-jp-2",
+        },
+      }),
+    );
+    renderBody(
+      <NetworkBody
+        {...networkProps({
+          kernelPath: "",
+          subscriptions: [
+            { ...first, traffic: undefined },
+            { ...second, traffic: null },
+          ],
+          lanes: [readLane(contractLane())],
+        })}
+      />,
+    );
+    const cells = screen.getAllByTestId("network-subscription-traffic");
+    expect(cells[0]?.textContent).toContain("未读取");
+    expect(cells[1]?.textContent).toContain("尚未获取");
+  });
+});
+
+// ---------------------------------------------------------------- ⑮b 纯逻辑（读取层 + 三条显示规则）
+
+describe("⑮b 读流量：契约的三态（没这一行 / null / 有值）与三个数字的算法", () => {
+  it("readTrafficMap：没这一行 = 键不存在；traffic:null = 从没成功刷新过；0 原样保留", () => {
+    const map = readTrafficMap([
+      { id: "sub-a", traffic: trafficFixture({ upload_bytes: 0, download_bytes: 0 }) },
+      { id: "sub-b", traffic: null },
+    ]);
+    expect(map.get("sub-a")?.uploadBytes).toBe(0);
+    expect(map.get("sub-a")?.downloadBytes).toBe(0);
+    expect(map.get("sub-a")?.totalBytes).toBe(TRAFFIC_TOTAL);
+    expect(map.get("sub-b")).toBeNull();
+    // 后端没给这一行 → 键不存在（未读取），不是 null（尚未获取）
+    expect(map.has("sub-c")).toBe(false);
+    expect(map.get("sub-c")).toBeUndefined();
+    // `expire_at_s: 0` = 契约里的"不适用" → 与缺失同义
+    expect(map.get("sub-a")?.expireAtS).toBe(TRAFFIC_EXPIRE_S);
+    expect(
+      readTrafficMap([{ id: "sub-d", traffic: trafficFixture({ expire_at_s: 0 }) }]).get("sub-d")
+        ?.expireAtS,
+    ).toBeUndefined();
+  });
+
+  it("readTrafficMap：接口给的东西不是数组 / 行里没有 id 时不抛错（不白屏）", () => {
+    expect(readTrafficMap(undefined).size).toBe(0);
+    expect(readTrafficMap("nope").size).toBe(0);
+    expect(readTrafficMap([{ traffic: null }]).size).toBe(0);
+    // 整份对象不是行形状时字段全是 undefined（缺哪样不显示哪样），而不是 0
+    const row = readTrafficMap([{ id: "sub-a", traffic: {} }]).get("sub-a");
+    expect(row?.uploadBytes).toBeUndefined();
+    expect(row?.totalBytes).toBeUndefined();
+    expect(row?.fetchedAtMs).toBeUndefined();
+  });
+
+  it("summarizeTraffic：used = upload + download（两者都有才算），total 由后端给", () => {
+    const summary = summarizeTraffic(readTrafficMap([{ id: "x", traffic: trafficFixture() }]).get("x"));
+    expect(summary).toEqual({
+      kind: "known",
+      fetchedAtMs: TRAFFIC_FETCHED_AT_MS,
+      usedBytes: TRAFFIC_UPLOAD + TRAFFIC_DOWNLOAD,
+      totalBytes: TRAFFIC_TOTAL,
+      usedPct: 71,
+      expireAtS: TRAFFIC_EXPIRE_S,
+    });
+  });
+
+  it("summarizeTraffic：缺一个（上传/下载）就没有 used、没有百分比 —— 不把缺失当 0", () => {
+    const withUpload = summarizeTraffic({
+      uploadBytes: TRAFFIC_UPLOAD,
+      downloadBytes: undefined,
+      totalBytes: TRAFFIC_TOTAL,
+      fetchedAtMs: TRAFFIC_FETCHED_AT_MS,
+    });
+    expect(withUpload.kind).toBe("known");
+    if (withUpload.kind !== "known") return;
+    expect(withUpload.usedBytes).toBeUndefined();
+    expect(withUpload.usedPct).toBeUndefined();
+    expect(withUpload.totalBytes).toBe(TRAFFIC_TOTAL);
+  });
+
+  it("summarizeTraffic：total 缺失或为 0 → 没有百分比（不除零）", () => {
+    const noTotal = summarizeTraffic({ uploadBytes: 10, downloadBytes: 20 });
+    if (noTotal.kind !== "known") throw new Error("应当是 known");
+    expect(noTotal.usedBytes).toBe(30);
+    expect(noTotal.totalBytes).toBeUndefined();
+    expect(noTotal.usedPct).toBeUndefined();
+
+    const zeroTotal = summarizeTraffic({ uploadBytes: 10, downloadBytes: 20, totalBytes: 0 });
+    if (zeroTotal.kind !== "known") throw new Error("应当是 known");
+    expect(zeroTotal.usedPct).toBeUndefined();
+  });
+
+  it("summarizeTraffic：null / undefined 都是 none（由调用方决定画「尚未获取」还是「未读取」）", () => {
+    expect(summarizeTraffic(null)).toEqual({ kind: "none" });
+    expect(summarizeTraffic(undefined)).toEqual({ kind: "none" });
+  });
+
+  it("百分比取整（不是四舍五入到一位小数，也不是截断成 0）", () => {
+    const s = summarizeTraffic({
+      uploadBytes: 1,
+      downloadBytes: 0,
+      totalBytes: 3,
+    });
+    if (s.kind !== "known") throw new Error("应当是 known");
+    expect(s.usedPct).toBe(33);
   });
 });

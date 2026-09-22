@@ -247,10 +247,16 @@ export type SubscriptionRow = {
   lastUpdateMs?: number;
   parser?: string;
   error?: string;
-  upload?: number;
-  download?: number;
-  total?: number;
-  expireMs?: number;
+  /**
+   * **上次已知的流量**（来自 `subscription_traffic` 的持久化观测值，不是这份配置实体自带的）：
+   * - `undefined` = 还没读到（该命令还没回来 / 没有这一行）→ 界面「未读取」；
+   * - `null` = 后端明确说"从没成功刷新过" → 界面「尚未获取」；
+   * - 对象 = 上次已知（各字段仍可能缺失）。
+   *
+   * 为什么不再读契约里的 `SubscriptionView.userinfo`：Rust 返回的是**裸实体**（没有这个字段），
+   * 那份数据永远读不到；而流量是**运行时观测值**，真源是后端持久化列（[18 §1.2]）。
+   */
+  traffic?: TrafficRow | null;
 };
 
 /** 会写进日志 / 截图就泄露的参数名（按名字判定，保守覆盖）。 */
@@ -313,10 +319,102 @@ export function readSubscription(raw: unknown): SubscriptionRow {
     lastUpdateMs: pickNum(parsed, "last_update_ms"),
     parser: pickStr(parsed, "parser"),
     error: pickStr(parsed, "error"),
-    upload: pickNum(asRow(parsed["userinfo"]), "upload"),
-    download: pickNum(asRow(parsed["userinfo"]), "download"),
-    total: pickNum(asRow(parsed["userinfo"]), "total"),
-    expireMs: pickNum(asRow(parsed["userinfo"]), "expire_ms"),
+    // `traffic` 由页面用 `subscription_traffic`（另一条命令）补上 —— 见 `readTrafficMap`
+  };
+}
+
+// ================================================================ 订阅流量（[18 §1]，等价于 Clash 面板那一行）
+
+/**
+ * 一份订阅**上次已知**的流量观测值（来自 `subscription_traffic` 的持久化列）。
+ *
+ * **契约是「未知 = null」，这里是「未知 = `undefined`」**：读取层把后端的 `null` 收成
+ * `undefined`（界面只需要"有值 / 没值"两种）。但 **`0` 必须原样保留** —— 契约明写
+ * `upload_bytes` / `download_bytes` 的 `0` 是**真实观测值**（真没用过），
+ * 把它当成"未知"与"把缺失当 0"是同一类错误的两面。
+ */
+export type TrafficRow = {
+  /** `fetched_at_ms`（Unix 毫秒）→ 界面上的「更新时间」。 */
+  fetchedAtMs?: number;
+  uploadBytes?: number;
+  downloadBytes?: number;
+  /** **后端给的**总量；前端**不自己算**（再算一遍就是第二个真相源）。 */
+  totalBytes?: number;
+  /** `expire_at_s`（**Unix 秒**）；契约里 `0` = 不适用 → 这里就是 `undefined`。 */
+  expireAtS?: number;
+};
+
+/**
+ * `subscription_traffic` 的返回 → `id → 流量`（三态，**不能混**）：
+ * - 键**不存在** → 没读到（命令还没回来 / 后端没这一行）→ 界面「未读取」；
+ * - 值是 `null` → 后端明确说"**从没成功刷新过**" → 界面「尚未获取」；
+ * - 值是对象 → 上次已知的观测值（字段仍可能缺失 → 缺哪样不显示哪样）。
+ */
+export function readTrafficMap(rows: unknown): Map<string, TrafficRow | null> {
+  const out = new Map<string, TrafficRow | null>();
+  if (!Array.isArray(rows)) return out;
+  for (const item of rows) {
+    const outer = asRow(item);
+    const id = pickStr(outer, "id");
+    if (id === undefined) continue;
+    const raw = outer["traffic"];
+    if (raw === null || raw === undefined) {
+      out.set(id, null);
+      continue;
+    }
+    const t = asRow(raw);
+    const expireAtS = pickNum(t, "expire_at_s");
+    out.set(id, {
+      fetchedAtMs: pickNum(t, "fetched_at_ms"),
+      uploadBytes: pickNum(t, "upload_bytes"),
+      downloadBytes: pickNum(t, "download_bytes"),
+      totalBytes: pickNum(t, "total_bytes"),
+      // 契约里 `expire_at_s: 0` = "不适用"，与缺失同义（不显示「到期」）
+      expireAtS: expireAtS === 0 ? undefined : expireAtS,
+    });
+  }
+  return out;
+}
+
+/**
+ * 一行流量 → 界面上要显示的三样（[18 §1.3]）。**纯函数、不做 i18n**（文案由页面拼）。
+ *
+ * 规则（"缺哪样就不显示那一样"）：
+ * - `used = upload + download` —— **两者都有**才算（缺一个就没有"已用"，**不填 0**）；
+ * - `total` 只用后端给的值；缺失 → 没有总量，也没有百分比；
+ * - `usedPct = round(used / total * 100)`；`total` 缺失或为 0 → 没有百分比（不除零）；
+ * - `fetchedAtMs` / `expireAtS` 各自独立，缺了就不显示那一条。
+ */
+export type TrafficSummary =
+  | { kind: "none" }
+  | {
+      kind: "known";
+      fetchedAtMs?: number;
+      usedBytes?: number;
+      totalBytes?: number;
+      usedPct?: number;
+      expireAtS?: number;
+    };
+
+/** `null`（从没成功刷新过）与 `undefined`（还没读到）都由**调用方**决定怎么画；这里只算"已知"的那份。 */
+export function summarizeTraffic(traffic: TrafficRow | null | undefined): TrafficSummary {
+  if (traffic === null || traffic === undefined) return { kind: "none" };
+  const { uploadBytes, downloadBytes, totalBytes } = traffic;
+  const usedBytes =
+    uploadBytes === undefined || downloadBytes === undefined
+      ? undefined
+      : uploadBytes + downloadBytes;
+  const usedPct =
+    usedBytes === undefined || totalBytes === undefined || totalBytes === 0
+      ? undefined
+      : Math.round((usedBytes / totalBytes) * 100);
+  return {
+    kind: "known",
+    fetchedAtMs: traffic.fetchedAtMs,
+    usedBytes,
+    totalBytes,
+    usedPct,
+    expireAtS: traffic.expireAtS,
   };
 }
 
