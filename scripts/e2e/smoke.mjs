@@ -886,6 +886,17 @@ async function step1(wd) {
     evidence.push("等 25s 未见 [data-testid=\"page-header\"]");
     evidence.push(`页面文本前 400 字: ${(await wd.pageText().catch(() => "")).slice(0, 400)}`);
     await shot(wd, "step1-fail");
+    // ★ 诊断（**不改判定**）：显式再导航一次，区分两种根因 ——
+    //   「页面本身坏」（再导航也出不来） vs 「启动时初始路由没渲染」（再导航立刻出来）。
+    //   只写进证据，不把 FAIL 变成 PASS。
+    await wd.exec('window.location.hash = "#/dashboard"; return true;').catch(() => {});
+    const retryFirstScreen = await wd.waitFor('[data-testid="page-header"]', 10000);
+    evidence.push(
+      retryFirstScreen === null
+        ? "诊断：显式再导航 #/dashboard 后 10s 仍未渲染 → 指向「页面本身有问题」"
+        : "诊断：★ 显式再导航 #/dashboard 后立刻渲染出来 → 指向「启动时初始路由没渲染」，不是页面坏",
+    );
+    await shot(wd, "step1-after-renav");
     record("step1", "FAIL", "窗口起来了但首页没渲染出 page-header", evidence);
     return;
   }
@@ -1392,15 +1403,17 @@ async function step3(wd, fixture) {
   await wd.click(add.el);
   await shot(wd, "step3-form-opened");
   const filled = await fillFormHeuristic(wd, {
-    id: "ta-e2e-sub",
-    name: "TA E2E 订阅",
+    id: "ta-e2e-sub-form",
+    name: "TA E2E 订阅（表单）",
     url: fixture.url,
     base_url: fixture.url,
   });
   evidence.push(`新增入口: ${add.how}`);
   evidence.push(`填写的字段: ${JSON.stringify(filled)}`);
 
-  const submit = await wd.findByText("button", /保存|提交|确定|创建|Save|Submit|Create|OK/i);
+  const submit =
+    (await wd.findElement('[data-testid="network-subscriptions-add-submit"]')) ??
+    (await wd.findByText("button", /保存|提交|确定|创建|Save|Submit|Create|OK/i));
   if (submit === null) {
     evidence.push("填完找不到提交按钮");
     await shot(wd, "step3-no-submit");
@@ -1412,11 +1425,16 @@ async function step3(wd, fixture) {
   await shot(wd, "step3-after-submit");
 
   const dump = dumpScratchDb("step3");
-  const rows = dump.subscription ?? [];
-  evidence.push(`db(subscription 表): ${JSON.stringify(rows)}`);
-  const inList = (await wd.pageText()).includes("ta-e2e-sub") || (await wd.probeTestIds()).includes("network-subscription-row");
-  const inDb = rows.some((r) => (r.url ?? "").includes("127.0.0.1") || (r.name ?? "").includes("ta-e2e-sub"));
-  if (inList && inDb) record("step3", "PASS", "订阅经真界面新增，列表与 db 都出现", evidence);
+  // ★ 断言必须**查对表**：订阅实体写在 `config`（kind='subscription'），而不是 `subscription` 表
+  //   （那张是版本/健康相关的表，空库时是空的）。之前查错表导致"列表=true 落库=false"的假失败。
+  const subRows = (dump.config ?? []).filter((r) => r.kind === "subscription");
+  evidence.push(`db(config, kind=subscription) 共 ${subRows.length} 行: ${JSON.stringify(subRows).slice(0, 600)}`);
+  // ★ 也必须是**本次新建的那一条**：用独立 id，避免与 step2 向导建的同名实体混淆。
+  const inList = (await wd.pageText()).includes("ta-e2e-sub-form");
+  const inDb = subRows.some(
+    (r) => String(r.entity_id) === "ta-e2e-sub-form" || String(r.json).includes("ta-e2e-sub-form"),
+  );
+  if (inList && inDb) record("step3", "PASS", "订阅经真界面（/network 表单）新增，列表与 config 表都出现", evidence);
   else record("step3", "FAIL", `新增后不一致：列表=${inList} 落库=${inDb}`, evidence);
 }
 
@@ -1463,7 +1481,63 @@ async function step4(wd) {
     );
     return;
   }
-  record("step4", "FAIL", `找到了疑似 lane 写入口但本脚本还没实现该分支（${addCh.how}）—— 这是脚本缺口，不是产品缺陷`, evidence);
+  // ---- 真实 lane 写入口：/network 的「③ 线路」区块（命令 lane_upsert / lane_set_node）----
+  const laneId = "ta-e2e-lane";
+  const fillByTid = async (tid, value) => {
+    const inner = await wd.findElement(`[data-testid="${tid}"] input,[data-testid="${tid}"] textarea`);
+    const el = inner ?? (await wd.findElement(`[data-testid="${tid}"]`));
+    if (el === null) {
+      evidence.push(`缺控件 ${tid}`);
+      return false;
+    }
+    try {
+      await wd.fill(el, value);
+      return true;
+    } catch (err) {
+      evidence.push(`${tid} 填不进去：${String(err.message ?? err).slice(0, 140)}`);
+      return false;
+    }
+  };
+
+  const okId = await fillByTid("network-lanes-add-id", laneId);
+  const okName = await fillByTid("network-lanes-add-name", "TA E2E 线路");
+  evidence.push(`线路表单字段: id=${okId} name=${okName}`);
+
+  // kind 是 MUI Select：默认多半已是「直连」；不是的话点开选一个 direct
+  const kindSel = await wd.findElement('[data-testid="network-lanes-add-kind"]');
+  if (kindSel !== null) {
+    const cur = await wd.text(kindSel).catch(() => "");
+    evidence.push(`kind 控件现值: ${JSON.stringify(cur)}`);
+    if (!/直连|direct/i.test(cur)) {
+      await wd.click(kindSel).catch(() => {});
+      await sleep(300);
+      const opt = await wd.findByText('li[role="option"]', /直连|direct/i);
+      if (opt !== null) await wd.click(opt).catch(() => {});
+    }
+  }
+  await shot(wd, "step4-form-filled");
+
+  const laneSubmit = await wd.findElement('[data-testid="network-lanes-add-submit"]');
+  if (laneSubmit === null) {
+    record("step4", "FAIL", "线路区块在但没有提交按钮（network-lanes-add-submit）", evidence);
+    return;
+  }
+  await wd.click(laneSubmit);
+  await sleep(1500);
+  await shot(wd, "step4-after-submit");
+
+  const dur = dumpScratchDb("step4");
+  const laneRows = (dur.config ?? []).filter((r) => r.kind === "lane");
+  evidence.push(`db(config, kind=lane) 共 ${laneRows.length} 行: ${JSON.stringify(laneRows).slice(0, 500)}`);
+  const inList4 = (await wd.pageText()).includes(laneId);
+  const inDb4 = laneRows.some(
+    (r) => String(r.entity_id) === laneId || String(r.json).includes(laneId),
+  );
+  if (inList4 && inDb4) {
+    record("step4", "PASS", "线路经真界面（lane_upsert）新增，列表与 config 表都出现", evidence);
+  } else {
+    record("step4", "FAIL", `新增后不一致：列表=${inList4} 落库=${inDb4}`, evidence);
+  }
 }
 
 // ---------------------------------------------------------------- step5 设置页
