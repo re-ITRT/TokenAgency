@@ -43,6 +43,10 @@
      （例如某服务商：`N 个凭据 · M 条通道 · 被 K 条策略引用`），再给一个**明确的**危险按钮（`<prefix>-delete-cascade`，文案"确认级联删除"）；
    - 只有 `provider` / `credential` / `model` 有级联按钮；`channel` / `group` / `policy` / `pricing` / `subscription` / `lane` / `api_key`
      **没有** force 语义 → 这一类被引用时**只显示后端原文**，不放任何"强行删除"的按钮（那会是假按钮）。
+   - **原文里指的路必须是真路**：只有真的带 `force` 参数的命令才允许在拒绝消息里承诺"要连带删除请传 force=true"；
+     `channel` / `group` 没有这个参数，只能说"先解除这些引用再删"。第 73 轮真机 E2E 抓到
+     `channel_delete` 的原文里带着 `force=true`（用户照做只会再撞一次墙）→ 已改成
+     `referenced(what, refs, force_capable)`（`entity.rs`），夹具同时钉住"没有 force 的实体，原文里不许出现 force"。
 4. 成功：`invalidateQueries` 覆盖受影响的查询（该实体的列表 + `qk.channelMatrix` / `qk.models` / `qk.credentials` 等），
    并在结果区如实写"已删除 <名称>"；失败：原样显示后端原文（**含 TA 码**）。
 5. `pricing_delete` 的入参是 **index**（`entity.rs:1532`），所以：
