@@ -629,14 +629,36 @@ rules:
   - MATCH,ta-e2e-group
 `;
 
+/**
+ * 本地 fixture 服务（**不依赖公网**）。三个用途：
+ * 1. `/clash.yaml`（以及默认路径）→ 一份结构真实的 Clash 订阅，带 `subscription-userinfo` 流量头；
+ * 2. `/v1/models` → OpenAI 兼容的模型清单，供「服务商 → 测试连接」与「一键扫描模型」真调用；
+ * 3. `/notfound/v1/models` → **恒 404**，用来验证"上游没有 /models 端点"这一档
+ *    （`ProbeResult.status=404 && probe="models"`：界面上必须说"上游没有这个端点"，
+ *    **不许**渲染成"连接失败"）。
+ */
 async function startFixture() {
+  const models = ["ta-e2e-scan-a", "ta-e2e-scan-b", "ta-e2e-m-add"];
   const server = createServer((req, res) => {
-    const body =
-      req.url && req.url.startsWith("/clash")
-        ? CLASH_YAML
-        : req.url && req.url.startsWith("/notfound")
-          ? "not found"
-          : CLASH_YAML;
+    const path = (req.url ?? "").split("?")[0];
+    // 情况 3：这个前缀下**什么都 404**（模拟"上游没有 /models 端点"）
+    if (path.startsWith("/notfound")) {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      res.end("not found");
+      return;
+    }
+    // 情况 2：OpenAI 兼容的模型清单
+    if (path.endsWith("/models")) {
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(
+        JSON.stringify({
+          object: "list",
+          data: models.map((id) => ({ id, object: "model", owned_by: "ta-e2e" })),
+        }),
+      );
+      return;
+    }
+    // 情况 1：Clash 订阅（默认路径也给，老步骤依赖这一点）
     res.writeHead(200, {
       "content-type": "text/yaml; charset=utf-8",
       // 流量头：**用用户给的真实量级**（Clash 面板那种 92.9GB / 130GB = 71%），
@@ -644,14 +666,16 @@ async function startFixture() {
       // upload + download = 92.9 GB，total = 130 GB → 71%。
       "subscription-userinfo": `upload=${Math.round(10.0 * 1024 ** 3)}; download=${Math.round(82.9 * 1024 ** 3)}; total=${130 * 1024 ** 3}; expire=1893456000`,
     });
-    res.end(body);
+    res.end(CLASH_YAML);
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   const port = server.address().port;
   const url = `http://127.0.0.1:${port}/clash.yaml`;
   const baseUrl = `http://127.0.0.1:${port}/v1`;
+  // 供"上游没有 /models 端点"那一档用（见 step16）：它必须在 /notfound 前缀下
+  const noModelsBaseUrl = `http://127.0.0.1:${port}/notfound/v1`;
   writeFileSync(join(OUT, "fixture-clash.yaml"), CLASH_YAML);
-  return { server, port, url, baseUrl };
+  return { server, port, url, baseUrl, noModelsBaseUrl, models };
 }
 
 // ================================================================ SQLite 证据

@@ -761,13 +761,22 @@ export type ApiKeyCreated = {
   plaintext: string;
 };
 
-/** 按 key × 日聚合的用量（复用既有 `api_key_usage` 表）。 */
+/**
+ * 按 key × 日 × **token 种类** 聚合的用量。
+ *
+ * **形状刻意与既有的领域类型逐字一致**（`crates/ta-store/src/usage_store.rs:478`
+ * 的 `ApiKeyUsageRow`，被 `record_api_key_usage` / 现有用量查询共用）：
+ * 不在这里另造一份"分组后"的 DTO —— 那就是第二个真相源，字段一改就静默漂移。
+ * 界面要按日汇总就自己在前端求和，**不要**在后端丢掉 `token_kind` / `currency`。
+ */
 export type ApiKeyUsageRow = {
   key_id: string;
   day: string;
-  requests: number;
+  token_kind: string;
   tokens: number;
-  cost?: number | null;
+  requests: number;
+  cost: number;
+  currency: string;
 };
 
 export type MatrixView = {

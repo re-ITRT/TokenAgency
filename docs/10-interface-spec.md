@@ -219,8 +219,8 @@ type AutostartState = {
 | `provider_get` | `id` | `ProviderView` |
 | `provider_upsert` | `provider: Provider` | `Provider` |
 | `provider_delete` | `id, force: bool` | `void`（有引用且未 force → 返回 `referenced` 错误） |
-| `provider_test` | `id, model?: string` | `ProbeResult { ok, status, latency_ms, note }` |
-| `provider_echo` | `id, model, with_image: bool` | `EchoResult { sent_headers, upstream_headers, sent_body_shape, upstream_body?, latency_ms }` ← **"谁吞了字段"的答案页** |
+| `provider_test` | `id, model?: string` | `ProbeResult { ok, status, latency_ms, probe, note? }`；`probe` = `"models" \| "chat" \| "none"`，见 [19 §1.1](19-provider-wizard-network-default-and-api-keys.md)：`status=404 && probe="models"` 的语义是**"上游没有 /models 端点"**，不是"连不通" |
+| `provider_echo` | `id, model, with_image: bool` | `EchoResult { sent_headers, upstream_headers, sent_body_shape, upstream_body?, latency_ms }` ← **"谁吞了字段"的答案页**（本轮仍未注册，见 `entity.rs` 模块文档） |
 
 ### credential / 凭据
 
@@ -241,9 +241,13 @@ type AutostartState = {
 |---|---|---|
 | `model_list` | — | `ModelView[]`（含通道数、上游名映射、价格、暴露开关） |
 | `model_upsert` / `model_delete` | | |
-| `model_import_from_provider` | `provider_id, prefix_filter?` | `ImportPreview { models: [...], skipped: [...] }` |
-| `model_apply_import` | `preview_token, selected: string[]` | `ApplyResult` |
-| `model_bulk_update` | `ids: string[], patch: ModelPatch` | `ApplyResult` |
+| `model_import_from_provider` | `provider_id, prefix_filter?` | `ImportPreview { preview_token, models: [{ upstream_model, suggested_id, exists }], skipped: [{ upstream_model, reason }] }`；`preview_token` 是**进程内存**里的短 TTL 句柄（5 分钟），**不落库** |
+| `model_apply_import` | `preview_token, selected: string[]` | `ApplyResult`；`exists=true` 的即使被选中也**不重复写**；token 过期/未知 → `TA-1004`（"预览已过期，请重新扫描"） |
+| `model_bulk_update` | `ids: string[], patch: ModelPatch` | `ApplyResult`；`patch.lane` 会把该模型**及其现有每个 channel** 的网络线路一起改（[19 §1.5](19-provider-wizard-network-default-and-api-keys.md)） |
+
+> `Model.default_lane`（`#[serde(default)] pub default_lane: Option<LaneId>`）是「添加模型」那一步唯一可改的字段：
+> 它既是"下次为这个模型建 channel 时的默认 lane"，也会被 `model_bulk_update({ patch: { lane } })` 同步到现有 channel。
+> 省略 / `null` = 直连。
 
 ### channel / 通道
 
@@ -457,13 +461,31 @@ type LogExportReceipt = {
 > 传进去的路径，而那个路径上可能并没有文件（传目录时确实没有）—— 用户会以为后端确认了。
 > 导出失败时按 `TaError` 报错，**不返回半成品回执**。
 
-### onboarding / 首启向导
+### api_key / 访问密钥（[19 §3](19-provider-wizard-network-default-and-api-keys.md)：**我们网关对外的**访问密钥）
+
+| 命令 | 入参 | 返回 |
+|---|---|---|
+| `api_key_list` | — | `ApiKeyView[]`（`id/name/key_prefix/enabled/note/created_at_ms/last_used_at_ms`；**不含明文、不含 hash**） |
+| `api_key_create` | `name, note?` | `ApiKeyCreated { key: ApiKeyView, plaintext }` —— **明文只此一次**；库里只存 `sha256(明文)` |
+| `api_key_set_enabled` | `id, enabled: bool` | `ApiKeyView`（**写完回读那一行**再返回） |
+| `api_key_delete` | `id` | `void`（删除后用它发出的请求**立刻**变 401） |
+| `api_key_usage` | `id?, limit` | `ApiKeyUsageRow[]` = `{ key_id, day, token_kind, tokens, requests, cost, currency }`（**形状与 `ta-store::ApiKeyUsageRow` 逐字一致**，不另造聚合 DTO；界面要按日汇总就自己求和） |
+
+**鉴权语义**（网关侧）：① 配置里的 `gateway.local_key` 先匹配（`key_id="local"`）→ ② 否则
+`sha256(token)` 命中 `api_key` 表里 enabled 的行 → 通过并更新 `last_used_at` → ③ 都不中 → **401 `TA-1002`**，
+且**不泄漏"哪个 key 不存在"**。用量记账写既有 `api_key_usage(key_id, day, …)` 表。
+
+### onboarding / 首启向导（**能力保留、UI 已无入口**）
 
 | 命令 | 入参 | 返回 |
 |---|---|---|
 | `onboarding_detect` | — | `{ kernel_found, existing_config, suggested_providers }` |
 | `onboarding_apply` | `OnboardingInput` | `ApplyResult` |
 | `onboarding_test_all` | — | `ConnectivityRow[]`（key × lane 的连通性矩阵） |
+
+> 第 71 轮用户要求「设置界面的向导关掉」→ **`/onboarding` 页面与路由已移除**，上面三条命令
+> **保留注册**（不删后端能力、不删 E2E 里对它们的既有覆盖），但**页面不许再引用它们**。
+> 添加流程改由各页自己的分步向导承担（服务商见 [19 §1]）。
 
 ### tray / 托盘（前端也可调用，保证逻辑只有一份）
 

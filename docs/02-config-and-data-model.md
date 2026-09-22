@@ -142,8 +142,9 @@ policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.defau
 | `aliases` | 客户端可能写的其它名字（含带日期版本号、带 provider 前缀的形式） |
 | `display` | UI 排序、分组、图标 |
 | `expose` | 是否出现在 `/v1/models`（默认原样透传上游的列表） |
+| `default_lane` | **可选**（`#[serde(default)]`，[19 §1.5](19-provider-wizard-network-default-and-api-keys.md)）：这个模型默认走哪条线路。它是「添加模型」那一步唯一可改的字段；既作为"下次为它建 channel 时的默认 lane"，也会被 `model_bulk_update({ patch: { lane } })` 同步写到它**现有**的每个 channel 上。省略 / `null` = 直连 |
 
-> 这里**没有 `capabilities` 字段**。模型能力不参与请求改写，只影响"发给谁"，而那是 Channel 上的一个可选标签（见 §2.6 的 `tags`）。上一版的能力矩阵/探测/学习已删除。
+> 这里**没有 `capabilities` 字段**。模型能力不参与请求改写，只影响"发给谁"：能力声明在 **Channel** 上（[17 §2](17-add-flows-and-capability-routing.md) 的 `Channel.capabilities`）。上一版的能力矩阵/探测/学习已删除。
 
 ### 2.6 Channel（通道）
 
@@ -269,6 +270,28 @@ system_integration:
 ## 3. SQLite 表结构
 
 > 用量与成本相关的表（`usage_request` / `usage_daily` / token 类型归一化）见 [07 §6.5](07-ui-pages-and-cost.md)；请求日志的开关与保留策略见 [07 §2](07-ui-pages-and-cost.md)。
+
+**网关对外的访问密钥**（[19 §3](19-provider-wizard-network-default-and-api-keys.md)，迁移 `0004_api_key.sql`）**不在配置真源里** ——
+它是运行态的凭据，与"服务商凭据"（`secret_meta` + 钥匙串）是两回事：
+
+```sql
+-- 我们网关对外发的访问密钥：客户端拿它调 127.0.0.1:8787
+-- **只存 sha256**：明文只在 api_key_create 的响应里出现一次（与"key 永不进 SQLite"同族）。
+CREATE TABLE api_key (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  key_hash TEXT NOT NULL UNIQUE,   -- sha256(plaintext)
+  key_prefix TEXT NOT NULL,        -- 展示用：前 12 字符 + "…"
+  enabled INTEGER NOT NULL DEFAULT 1,
+  note TEXT,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER             -- 从未用过 = NULL（不是 0）
+);
+```
+
+用量按 key × 日 × token 种类记在既有的 `api_key_usage(key_id, day, token_kind, tokens, requests, cost, currency)`
+（`0001_init.sql` 就有；由网关在鉴权后写）。`api_key_usage` 命令返回的行形状与
+`ta-store::ApiKeyUsageRow` **逐字一致**，不另造"聚合后"的 DTO。
 
 ```sql
 -- 运行态数据（配置不在这里，配置在 YAML）

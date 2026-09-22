@@ -47,6 +47,12 @@ export type SubscriptionTraffic = {
 
 ## 2. 网络代理是**选装**功能：没配置就不显示
 
+> **本节已被 [19 §2.2](19-provider-wizard-network-default-and-api-keys.md) 取代（第 71 轮用户明确改的主意）**：
+> 用户要求「网络代理默认开启，反正默认直连，也不用"启动"了」。所以
+> `network-optional` / `network-optional-enable` 这一套**作废**；`/network` 永远渲染，
+> 未配内核路径时状态是「出口 · 直连」，而不是"未启用"。本节以下内容只作为**历史口径**保留，
+> 新实现一律以 [19 §2.2] 为准。
+
 ### 2.1 「未配置」的判定（唯一口径，Rust 与界面一致）
 ```
 未启用 = net.kernel.path 为空  且  订阅列表为空  且  线路（lane）列表为空
