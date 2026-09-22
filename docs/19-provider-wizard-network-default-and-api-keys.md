@@ -6,7 +6,8 @@
 > 扫描后可单选/全选添加，**页面要能滚动**；已添加模型旁有「设置」图标按钮，hover 提示"查看模型信息"，**只读不能改**，
 > 唯一可改的是网络代理（默认继承上一步所选，上一步没选则**直连**）。
 > ②网络：**两个向导都关掉**（首启 `/onboarding` + 设置页里的网络/内核那块）；网络代理**默认开启（默认直连）**，
-> 不再有"启动"这个动作；订阅刷新后要能看到**完整节点清单**（`subscription_nodes`，可按组筛选）；`lane_test` 要么真用，要么不放按钮。
+> 不再有"启动"这个动作；订阅刷新后要能看到**完整节点清单**（`subscription_nodes`；需求里的"可按组筛选"
+> 后端做不到，见 §2.3 的裁决）；`lane_test` 要么真用，要么不放按钮。
 > ③新增 **API key 管理**：指的是"我们网关对外发的访问密钥"（客户端拿它调本机网关）。
 
 ---
@@ -145,7 +146,7 @@
 
 | 控件 | testid | 语义 |
 | --- | --- | --- |
-| 组筛选 | `nodes-group-filter` | 下拉，选项来自 `subscription_nodes` 返回的 `group` 去重集合（含"全部"） |
+| ~~组筛选~~ | ~~`nodes-group-filter`~~ | **本轮未交付（裁决，不是漏做）**：`subscription_nodes` 的 `group` 参数在后端是**硬错误**（`ta-subscription` 的 `GroupMeta` 只有 `node_count`、不保留组成员关系，见 `net.rs:765-773`）。要真做就得先给 `GroupMeta` 加 `members`（或改走内核 `/proxies` 快照），那是另一个工作包；**宁缺毋滥**，不许放一个换组没反应的下拉 |
 | 订阅选择 | `nodes-subscription` | 多个订阅时选一个（只有一个时也显示，不隐藏） |
 | 清单 | `nodes-list` / `nodes-row` | 真调 `subscription_nodes({ id, group? })` |
 | 空态 | `nodes-empty` | 分两种，文案必须不同：①订阅还没解析过（提示点刷新）②该组下确实没有节点 |
@@ -234,7 +235,10 @@ CREATE TABLE api_key (
 > 要收口需要：① `ta_core::types::UsageRecord` 增加 `key_id: Option<String>`；
 > ② `ta-gateway` 把 `KeyIdentity` 传进 pipeline / meter，并调 `record_api_key_usage`；
 > ③ 请求日志/快照若要带这个身份，先在 `docs/14 §5` 登记字段名（`key_id` 已是白名单字段）。
-> 归口：`ta-gateway` 归 E5、`ta-core` 归决策层。**CRUD 与鉴权本身是完整可用的**（step18 已在真机验证 401/放行）。
+> 归口：`ta-gateway` 归 E5、`ta-core` 归决策层。**CRUD 与鉴权接线本身是完整可用的**：
+> 鉴权逻辑由 `ta-gateway` 的 ingress 单测（`TA-1001` / 多 key / 禁用即挡）与网关装配断言覆盖。
+> 但真机上 `step18` **只验证了本地 CRUD** —— 无内核的环境里网关根本不监听，
+> 「带 key 放行 / 不带 key 401」那一段记为**未验证**（见 §5.3），不许当成通过。
 
 ### 3.4 页面（`/api-keys`）
 
@@ -269,16 +273,24 @@ CREATE TABLE api_key (
 1. **红先绿后**：每个工作包先给出会失败的断言原文（前端 `vitest`、后端 `cargo test`）。
 2. **门禁**：`npm run build` / `cargo fmt --check` / `cargo check --all-targets` / `cargo clippy -- -D warnings` /
    `cargo test --workspace` / `npm test` 全 0。
-3. **真机 E2E**（`scripts/e2e/smoke.mjs` 扩步骤，真实窗口驱动）：
-   - `step16` 服务商分步向导：`pw-name` 填重名 → 本地拦下；改名 → `pw-test` 真调（结果区出现延迟或后端原文）→
-     `pw-next` → 步骤 2 出现已添加模型 → `pw-scan` 真调 → 勾选 → `pw-scan-add` → `config(kind='model')` 出现；
-     并断言 `pw-model-info-panel` 里**没有可写控件**、`pw-step2-scroll` 可滚动到底部后 `pw-scan-add` 仍可点。
-   - `step17` 节点清单：`nodes-list` 出现真实节点（fixture 订阅解析后），`nodes-group-filter` 换组后清单变化；
+3. **真机 E2E**（`scripts/e2e/smoke.mjs`，真实窗口驱动）。**交付后的实际步骤号**与第 71 轮收尾时的真机结论
+   （快照 `283d8d6` + 修复 `60f5bbe`/`eb750cf`：`PASS=21 SKIP=1 FAIL=0`）：
+   - `step2` 服务商分步向导（本文档初稿写的 `step16`，实现沿用了既有编号）：`pw-name` 填重名 → 本地拦下；
+     改名 → `pw-test` 真调（结果区出现延迟或后端原文）→ **`pw-next` 真进第 2 步** → `pw-scan` 真调 →
+     勾选 → `pw-scan-add` → `config(kind='model')` 出现；并断言 `pw-model-info-panel` 里**没有可写控件**、
+     `pw-step2-scroll` 可滚动。真机证据：真实 id `ta-e2e` + `<id>-default` 凭据、扫描 3 条并添加成功。
+   - `step17` 节点清单：`nodes-list` 出现真实节点（fixture 订阅解析后）——
+     真机证据是"2 行，且包含 fixture 里的 `ta-e2e-node-hk`"。**组筛选本轮未交付**（§2.3 的裁决）。
      订阅未解析时 `nodes-empty` 文案是"还没解析"那一档。
-   - `step18` API key：新建 → 明文只出现一次 → 用该 key 打本机 `/healthz` 得 200 → 禁用后得 401 → 删除。
-   - `step19` 反向断言：`/onboarding` 路由不再渲染向导（`onboarding-step-panel` 不存在）、
+   - `step18` API key：**本地 CRUD 已真机验证**（新建 → 明文只出现一次 → 列表只留前缀不含明文 →
+     启停开关真翻转 → 删除后行消失）。**HTTP 鉴权那一段（带 key 非 401 / 不带 key 401 / 禁用即 401）
+     在无内核的环境里记 `SKIP`**，不记 PASS 也不记 FAIL：启动编排在内核未就绪时**故意不启动网关**
+     （`boot.rs:454`；日志里没有 `gateway.rs:335` 那句「网关开始服务」，且不带任何 key 的探测同样
+     `status:0` —— 端口没人监听，与鉴权无关）。这段逻辑由 `ta-gateway` 的 ingress 单测与装配断言覆盖；
+     要在真机上拿到结论，需要在**有内核**的机器上跑同一个脚本（那时该段会自动走完整断言）。
+   - `step12` 反向断言（初稿写的 `step19`）：`/onboarding` 路由不再渲染向导（`onboarding-step-panel` 不存在）、
      设置页无网络向导块、`/network` 在**空配置**下**没有** `network-optional`（作废）且各区块给出诚实空态。
-   - 既有 19 步必须继续全绿（不许为了新步骤放宽旧断言）。
+   - 既有步骤必须继续全绿（不许为了新步骤放宽旧断言）。
 4. **安装包**重出 + A3/A4 不变量在同一发布二进制上复跑。
 
 ---
