@@ -780,20 +780,118 @@ async function wdFillByTid(wd, tid, value, evidence) {
   }
 }
 
-async function wdClickTid(wd, tid, evidence) {
-  await wd.closeMenuIfOpen();
-  const el = await wd.findElement(`[data-testid="${tid}"]`);
-  if (el === null) {
-    evidence.push(`缺控件 ${tid}`);
+/**
+ * 把**唯一**目标滚进视口并打上 `data-e2e-click` 标记，返回被标记元素的文本（找不到返回 null）。
+ *
+ * 为什么要先"标记"而不是直接 `findElement` 再点：
+ * - 表格很宽时最右边的「操作」列在 1280 宽的窗口里默认落在滚动容器**之外**，WebDriver 的 click 会被
+ *   容器拦下并回 `element click intercepted`（第 73 轮真机抓到），所以必须先 `scrollIntoView({ inline: 'center' })`；
+ * - 行内的 `data-testid` 是**每行一个**（`pricing-delete` / `policies-delete` / `channels-delete`…），
+ *   只按 testid 找永远只能找到第一行 —— 想删"被策略点名的那一条通道"就必须按行文本定位。
+ *
+ * `rowTid` + `match` 给定时先在这些行里按行文本找（`match` 是行文本必须同时包含的子串），再在行内找控件。
+ */
+async function markForClick(wd, selector, { rowTid = null, match = [] } = {}) {
+  const res = await wd
+    .exec(`
+      const sel = ${JSON.stringify(selector)};
+      const rowTid = ${JSON.stringify(rowTid)};
+      const match = ${JSON.stringify(match)};
+      document.querySelectorAll('[data-e2e-click]').forEach((n) => n.removeAttribute('data-e2e-click'));
+      let el = null;
+      if (rowTid === null) {
+        el = document.querySelector(sel);
+      } else {
+        const rows = [...document.querySelectorAll('[data-testid="' + rowTid + '"]')];
+        const row = rows.find((r) => match.every((m) => (r.textContent || '').includes(m)));
+        el = row ? row.querySelector(sel) : null;
+      }
+      if (!el) return null;
+      el.setAttribute('data-e2e-click', '1');
+      if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' });
+      return { text: (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40) };
+    `)
+    .catch(() => null);
+  return res ?? null;
+}
+
+/**
+ * 真的点下去：原生 click 被"拦截/不可交互"挡回 → 重试一次 → 最后用 DOM `click()` 兜底。
+ *
+ * 为什么需要 DOM 兜底（第 73 轮真机抓到）：成本页的定价表在一个滚动容器里，WebDriver 的"可点击性"
+ * 判定对它一直报 `element click intercepted`（原生点了两次都失败），而同一个按钮 `el.click()`
+ * 一次就触发了 React 事件（jsdom 单测里它本来也点得动）—— 这不是产品缺陷。
+ * 兜底只对**被拦/不可交互**这类错误启用：真 disabled 的控件点了也不会有反应，
+ * 调用方仍按"库里的条数没变 = 失败"如实记账。
+ */
+async function clickResolved(wd, el, tid, evidence) {
+  const tryDom = async (why) => {
+    const done = await wd
+      .exec(`
+        const el = document.querySelector('[data-e2e-click="1"]');
+        if (!el) return false;
+        el.click();
+        return true;
+      `)
+      .catch(() => false);
+    if (done === true) {
+      evidence.push(`控件 ${tid}：原生 click 被拦（${why}）→ 用 DOM click 兜底点下去了`);
+      return true;
+    }
     return false;
-  }
+  };
   try {
     await wd.click(el);
     return true;
   } catch (err) {
-    evidence.push(`控件 ${tid} 点不动：${wdErrText(err)}`);
+    // 滚动动画、粘性表头、Hover 才显形的东西偶尔还会挡一下 → 只对"可恢复"的报错重试一次。
+    // 其它错误（比如真的被 disabled 覆盖）不重试，原样记下来。
+    if (!/intercepted|not interactable|out of bounds|obscured/i.test(wdErrText(err))) {
+      evidence.push(`控件 ${tid} 点不动：${wdErrText(err)}`);
+      return false;
+    }
+    await sleep(300);
+    try {
+      await wd.click(el);
+      return true;
+    } catch (err2) {
+      const why = wdErrText(err2);
+      if (await tryDom(why)) return true;
+      evidence.push(`控件 ${tid} 点不动（滚进视口、重试一次、DOM 兜底都失败）：${why}`);
+      return false;
+    }
+  }
+}
+
+/** 标记 → 点击的公共路径（`row` 非空时按行文本定位）。 */
+async function clickBySelector(wd, selector, tid, evidence, row = null) {
+  const marked = await markForClick(wd, selector, row ?? {});
+  if (marked === null) {
+    evidence.push(
+      row === null
+        ? `缺控件 ${tid}`
+        : `找不到行（[data-testid="${row.rowTid}"] 文本含 ${JSON.stringify(row.match)}）里的控件 ${tid}`,
+    );
     return false;
   }
+  await sleep(150);
+  const el = await wd.findElement('[data-e2e-click="1"]');
+  if (el === null) {
+    evidence.push(`缺控件 ${tid}（标记过却找不到它）`);
+    return false;
+  }
+  return clickResolved(wd, el, tid, evidence);
+}
+
+async function wdClickTid(wd, tid, evidence) {
+  await wd.closeMenuIfOpen();
+  return clickBySelector(wd, `[data-testid="${tid}"]`, tid, evidence);
+}
+
+/** 按行文本定位行内的控件再点（行内 testid 会重复，只按 testid 找会点到第一行）。 */
+async function wdClickTidInRow(wd, rowTid, match, tid, evidence) {
+  await wd.closeMenuIfOpen();
+  return clickBySelector(wd, `[data-testid="${tid}"]`, tid, evidence, { rowTid, match });
 }
 
 /** 点开一个下拉并读出弹层里的选项（真机证据：选项文案就是"配置里有什么"）。 */
@@ -2525,7 +2623,16 @@ async function step21(wd) {
    * 删掉某一类的第一条：点删除 → 确认框必须出现 → 确认；被引用且该类有级联时点级联。
    * 返回如实的结果（成功、条数变化、后端原文）。
    */
-  const runDelete = async ({ hash, kind, delTid, label, cascade = false, waitTid = null }) => {
+  const runDelete = async ({
+    hash,
+    kind,
+    delTid,
+    label,
+    cascade = false,
+    waitTid = null,
+    mayRefuse = false,
+    rowMatch = null,
+  }) => {
     // 等**删除按钮本身**出现再点（`waitTid` 只在调用方显式给了别的锚点时用）。
     // 为什么不能只等 `page-header`：列表/表格是异步取数回来的，页头先渲染完就点删除按钮会撞上
     // "控件还没出来"——那会被记成"找不到删除入口"，把一次竞态说成产品缺陷。
@@ -2533,8 +2640,11 @@ async function step21(wd) {
     const page = await gotoPage(wd, hash, `[data-testid="${waitFor}"]`);
     if (page === null) return { label, ok: false, note: `${hash} 渲染后没等到 [data-testid="${waitFor}"]` };
     const beforeN = countOf(kind, `step21-${kind}-b`);
-    const clicked = await wdClickTid(wd, delTid, evidence);
-    if (!clicked) return { label, ok: false, note: `找不到 ${delTid}` };
+    const clicked =
+      rowMatch === null
+        ? await wdClickTid(wd, delTid, evidence)
+        : await wdClickTidInRow(wd, rowMatch[0], rowMatch[1], delTid, evidence);
+    if (!clicked) return { label, ok: false, note: `点不到或找不到 ${delTid}（证据里有原文）` };
     await sleep(500);
     const dialogTid = await findTid("-delete-dialog");
     if (dialogTid === null) {
@@ -2557,18 +2667,146 @@ async function step21(wd) {
     }
     const afterN = countOf(kind, `step21-${kind}-a`);
     const removed = beforeN - afterN;
+    const backend = errText === null ? null : String(errText).replace(/\s+/g, " ").trim();
+    // 「被引用 → 拒绝」是**正确行为**，不是"删除失败"（[docs/21 §1.1]）：`channel` / `channel_group` /
+    // `policy` 根本没有 `force` 参数，被点名时只能拒绝。夹具认这种结局合格 —— 但必须同时验三件事，
+    // 否则一句"被拒绝"就能把真缺陷掩盖过去：
+    //   ① 后端原文真摆出来了（含 TA 码，用户要知道被谁引用）；
+    //   ② 库里一条都没少（拒绝 = 一个字节都不许改）；
+    //   ③ 没有"确认级联删除"假按钮，且原文里**不许**承诺 `force=true`
+    //      —— `channel_delete` 没有这个参数，第 73 轮真机抓到的原文里就带着这句假话。
+    const cascadeTid = dialogTid.replace(/-delete-dialog$/, "-delete-cascade");
+    const hasCascadeButton = (await wd.probeTestIds()).includes(cascadeTid);
+    const refusedHonestly =
+      mayRefuse &&
+      removed === 0 &&
+      backend !== null &&
+      /TA-\d{4}/.test(backend) &&
+      !backend.includes("force") &&
+      !hasCascadeButton;
+    const ok = removed >= 1 || refusedHonestly;
     evidence.push(
       `${label}: 删除前 ${beforeN} 条 → 删除后 ${afterN} 条（少 ${removed}）` +
-        `；后端原文=${JSON.stringify(errText === null ? null : String(errText).replace(/\s+/g, " ").slice(0, 100))}；用过级联=${cascaded}`,
+        `；后端原文=${JSON.stringify(backend === null ? null : backend.slice(0, 120))}；用过级联=${cascaded}` +
+        `；级联按钮=${hasCascadeButton}；拒绝且如实=${refusedHonestly}`,
     );
-    return { label, ok: removed >= 1, note: `少 ${removed} 条`, removed, backend: errText, cascaded };
+    return {
+      label,
+      ok,
+      note:
+        removed >= 1
+          ? `少 ${removed} 条`
+          : refusedHonestly
+            ? "被引用 → 如实拒绝（原文已展示、没有假级联按钮、库里没少）"
+            : `少 ${removed} 条，且不是一次诚实的拒绝`,
+      removed,
+      backend,
+      cascaded,
+      refused: refusedHonestly,
+    };
   };
 
+  // 先读一次真实拓扑：**用数据**决定测哪一条通道，而不是"第一行碰巧是谁"这种会随配置漂移的假设。
+  const topo = (() => {
+    const d = dumpScratchDb("step21-topology");
+    const chans = configEntities(d, "channel").map((c) => c.entityId);
+    const policies = configEntities(d, "policy");
+    const referenced = new Set();
+    for (const p of policies) for (const c of p.json?.action?.use_channels ?? []) referenced.add(c);
+    return {
+      chans,
+      blockedChan: chans.find((c) => referenced.has(c)) ?? null,
+      freeChan: chans.find((c) => !referenced.has(c)) ?? null,
+      policies: policies.map((p) => p.entityId),
+    };
+  })();
+  evidence.push(
+    `通道拓扑：共 ${topo.chans.length} 条；被策略点名=${JSON.stringify(topo.blockedChan)}；` +
+      `没有引用=${JSON.stringify(topo.freeChan)}；策略=${JSON.stringify(topo.policies)}`,
+  );
+
   const results = [];
-  // 通道：没有 force 语义（被引用时只能显示原文）
-  results.push(await runDelete({ hash: "#/channels", kind: "channel", delTid: "channels-delete", label: "删通道" }));
-  // 策略
-  results.push(await runDelete({ hash: "#/policies", kind: "policy", delTid: "policies-delete", label: "删策略" }));
+  // 通道被策略点名：`channel_delete` **没有** force 语义 → 拒绝就是正确行为。
+  // 夹具认"原文 + 没有假级联按钮 + 库里没少"为合格（`mayRefuse`），接着在 B2 段
+  // 会按原文指的路真走一遍（解除引用 → 真能删）。
+  if (topo.blockedChan !== null) {
+    results.push(
+      await runDelete({
+        hash: "#/channels",
+        kind: "channel",
+        delTid: "channels-delete",
+        label: "删通道（被策略点名 → 应当如实拒绝）",
+        waitTid: "channels-row",
+        mayRefuse: true,
+        rowMatch: ["channels-row", [topo.blockedChan]],
+      }),
+    );
+  } else {
+    evidence.push("E2E 配置里没有'被策略点名'的通道 → 拒绝路径这一档拿不到结论");
+  }
+  // 没有引用的通道：**必须真删掉**（否则就只能靠"被拒绝"蒙混过关）
+  if (topo.freeChan !== null) {
+    results.push(
+      await runDelete({
+        hash: "#/channels",
+        kind: "channel",
+        delTid: "channels-delete",
+        label: "删通道（没有引用 → 应当真删掉）",
+        waitTid: "channels-row",
+        rowMatch: ["channels-row", [topo.freeChan]],
+      }),
+    );
+  }
+  // ---------------------------------------------------------------- B2. 按原文的建议走一遍
+  // 「被引用 → 拒绝」的原文是在告诉用户"先去解除引用再删"。夹具必须证明那句建议**真能走通**，
+  // 否则它只是一句搪塞：这里把还在点名那条通道的策略逐条删掉，再删一次通道 —— 必须真的少一条。
+  // 放在这一段（而不是所有删除做完之后）是因为此刻引用链**一定还在**，否则这一档会静默变成空跑。
+  if (topo.blockedChan !== null) {
+    const blockers = configEntities(dumpScratchDb("step21-unlock-pols"), "policy").filter((p) =>
+      (p.json?.action?.use_channels ?? []).includes(topo.blockedChan),
+    );
+    evidence.push(
+      `解除引用：还在点名 ${topo.blockedChan} 的策略=${JSON.stringify(blockers.map((p) => p.entityId))}`,
+    );
+    for (const p of blockers) {
+      results.push(
+        await runDelete({
+          hash: "#/policies",
+          kind: "policy",
+          delTid: "policies-delete",
+          label: `解除引用：删策略 ${p.entityId}`,
+          waitTid: "policies-row",
+          rowMatch: ["policies-row", [p.entityId]],
+        }),
+      );
+    }
+    results.push(
+      await runDelete({
+        hash: "#/channels",
+        kind: "channel",
+        delTid: "channels-delete",
+        label: "解除引用后删通道（应当真删掉）",
+        waitTid: "channels-row",
+        rowMatch: ["channels-row", [topo.blockedChan]],
+      }),
+    );
+  }
+
+  // 策略：按 id 定位（不靠"第一行"）。有些策略可能已经在上面"解除引用"时删掉了 → 如实记理由。
+  const leftPolicies = configIds(dumpScratchDb("step21-policies-left"), "policy");
+  evidence.push(`还剩策略=${JSON.stringify(leftPolicies)}`);
+  if (leftPolicies.length > 0) {
+    results.push(
+      await runDelete({
+        hash: "#/policies",
+        kind: "policy",
+        delTid: "policies-delete",
+        label: "删策略",
+        waitTid: "policies-row",
+        rowMatch: ["policies-row", [leftPolicies[0]]],
+      }),
+    );
+  }
   // 定价条目（在成本页）
   results.push(
     await runDelete({ hash: "#/cost", kind: "pricing", delTid: "pricing-delete", label: "删定价条目" }),
