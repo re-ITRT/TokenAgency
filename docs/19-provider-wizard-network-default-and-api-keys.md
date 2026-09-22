@@ -167,11 +167,26 @@ CREATE TABLE api_key (
 
 ### 3.3 网关鉴权（多 key）
 
-`ta-gateway/src/ingress.rs` 的 `check_local_key` 改为：
+**判定顺序（`ta-gateway/src/ingress.rs::check_local_key`）**：
 1. 配置里的 `gateway.local_key`（兼容旧配置）匹配 → 通过（`key_id = "local"`）；
 2. 否则 `sha256(token)` 在 `api_key` 表里且 `enabled=1` → 通过（`key_id = <id>`，并更新 `last_used_at`）；
-3. 都不匹配 → 401 `TA-1002`（**原样**，不泄漏"哪个 key 不存在"）。
-用量记账写 `api_key_usage(key_id, day, …)`（表已在）。
+3. 都不匹配 → 401 —— **错误码是 `TA-1001`（`tokenagency_unauthorized`，401）**，不是 `TA-1002`
+   （`TA-1002` 是 `tokenagency_rate_limited` 429，见 [11 §5](11-internal-contracts.md)：「本机 RPM 超限」）。
+   三种失败（不存在 / 已停用 / 格式不对）必须给出**同一个** 401，**不泄漏"哪个 key 不存在"**。
+
+**★ 关键语义：鉴权在什么条件下才启用**（不写死这一条，API key 就会"建了也不生效"）：
+
+| 现状 | 行为 |
+| --- | --- |
+| `gateway.local_key` 为空 **且** `api_key` 表里没有任何 enabled 的行 | **不鉴权**（保持既有行为，`empty_local_key_means_no_auth` 那条测试继续通过；用户没配任何东西时不该被自己的网关挡在门外） |
+| `gateway.local_key` 非空 **或** 表里存在 enabled 的 key | **必须匹配**（本地 key **或** 任一 enabled 的 api key）；否则 401 |
+
+推论（这是可验收的行为，`scripts/e2e` 的 `step18` 会断言）：
+- 新建一个 key 之前，无凭据请求**不会** 401；
+- 新建之后，**不带** key 的请求 → 401；带上这个 key → 非 401；在界面上**禁用**它 → 立刻恢复 401；
+- 删除后同样 401。
+
+用量记账写 `api_key_usage(key_id, day, …)`（表已在，`key_id="local"` 也可记）。
 
 ### 3.4 页面（`/api-keys`）
 
