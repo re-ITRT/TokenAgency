@@ -19,6 +19,8 @@ import type { ReactNode } from "react";
 import { useTranslation } from "@/shared/i18n";
 import { typography } from "@/theme";
 
+import { HelpTip } from "./HelpTip";
+
 export type PageHeaderProps = {
   /** 页面标题（已翻译）。 */
   title: string;
@@ -56,13 +58,16 @@ export function PageHeader({ title, description, badge, actions, docRef }: PageH
             {title}
           </Typography>
           {badge}
+          {/*
+            页头说明**不再铺在版面上**（[docs/22]）：用户嫌"简介好长、好多字"，
+            所以它变成标题右边的一个问号圆圈，悬停/聚焦才展开。
+            正文一个字都没丢：`aria-label` 就是全文，测试与读屏都拿得到。
+          */}
+          {description !== undefined && description !== "" ? (
+            <HelpTip text={description} testId="page-header-help" />
+          ) : null}
         </Box>
 
-        {description !== undefined ? (
-          <Typography variant="body1" sx={{ color: "text.secondary" }}>
-            {description}
-          </Typography>
-        ) : null}
 
         {docRef !== undefined ? (
           <Typography

@@ -30,6 +30,8 @@ export {
   type DisabledReasonProps,
 } from "./DisabledReason";
 export { LimitGapNotice, type LimitGapNoticeProps } from "./LimitGapNotice";
+export { HelpTip, type HelpTipProps } from "./HelpTip";
+export { ConfirmDelete, type ConfirmDeleteProps } from "./confirmDelete";
 export { outcomeDisplay, type OutcomeDisplay, type OutcomeDisplayArgs } from "./honestDisplay";
 
 export { NumberCard, type NumberCardProps, type ValueFormat } from "./NumberCard";
