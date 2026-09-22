@@ -81,7 +81,7 @@ use ta_store::{
 use ta_subscription::fetch::HttpSubscriptionFetcher;
 use ta_subscription::sync::SubscriptionSync;
 use ta_subscription::validate::DefaultSubscriptionValidator;
-use ta_subscription::version::{FileVersionStore, VersionKeeper};
+use ta_subscription::version::{FileVersionStore, VersionKeeper, VersionMeta};
 use ta_subscription::{DetectedFormat, FetchOutcome, SubscriptionFetcher, DEFAULT_USER_AGENT};
 
 use crate::commands::app::KernelStatusView;
@@ -783,6 +783,90 @@ pub async fn subscription_nodes(
     group: Option<String>,
 ) -> IpcResult<Vec<NodeView>> {
     nodes_of_subscription(&state, &id, group).await
+}
+
+/// `subscription_list` 的一行：**配置实体 + 当前生效版本的解析状态**。
+///
+/// 这就是冻结契约里的 `SubscriptionView`（`src/shared/bindings.ts`）。为什么必须有这个包装：
+/// `subscription_list` 过去返回的是裸 `Subscription`（纯配置实体），里面**没有任何解析结果**。
+/// 而节点页在发 `subscription_nodes` 之前必须先知道"这份订阅到底有没有已采纳的版本"，
+/// 否则只剩两个坏选择：对没刷过的订阅无条件发命令（必然报错），或者不敢发（真实发生过：
+/// 订阅加好了、刷新也成功了，页面还是那句"还没有解析结果"，一个节点都不显示）。
+///
+/// 数据来源是 `VersionKeeper::history`（**只读元数据，不解压原文**）。刻意不用
+/// `latest_accepted`：它每次都要解压整份订阅，只为拿两个计数太贵。
+///
+/// 三态口径与 [docs/18 §1.2] 一致：**没有已采纳的版本 = 字段缺失，不用 `0` / 空串冒充**。
+/// 前端 `readSubscription` 把"缺失"读成 `undefined`（未读取）、把"明确 null"读成 `null`
+/// （后端说没有）—— 两者不是一回事。
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+pub struct SubscriptionView {
+    pub subscription: Subscription,
+    /// 内核 `proxy-providers` 的 key，走 `ta_kernel::config_gen::provider_key`：
+    /// 配置里没写就按 id 派生、只留安全字符（**不在这里另立一套派生法**）。
+    pub provider_key: String,
+    /// 生效版本的节点数。没有已采纳版本时**缺失**（不是 0）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_count: Option<u32>,
+    /// 生效版本的分组数。没有已采纳版本时**缺失**（不是 0）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_count: Option<u32>,
+    /// 生效版本的抓取时刻（Unix 毫秒）。节点页的硬前置就判它（[docs/19 §2.3]）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_update_ms: Option<i64>,
+    /// 嗅探到的格式（`clash_yaml` / `base64_links` / `plain_links` / `html` / `unknown`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parser: Option<String>,
+    /// **最新一次尝试被坏更新拦截**时的话。有值 = 后端确实处理过这份订阅、但这次没好结果；
+    /// 页面据此仍然发 `subscription_nodes`（它回的是上一版**已采纳**的内容），
+    /// 而不是替后端下"没解析过"的结论。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// 组装一份订阅的视图。`metas` 是该订阅的版本历史，**新的在前**（`VersionStore::list` 的序）。
+///
+/// 纯函数：不碰 IO、不碰状态，坏更新与"从没刷过"两种情况的措辞都在这里定死。
+pub fn subscription_view(sub: &Subscription, metas: &[VersionMeta]) -> SubscriptionView {
+    let accepted = metas.iter().find(|m| m.accepted);
+    let error = metas.first().filter(|m| !m.accepted).map(|bad| match accepted {
+        Some(ok) => format!(
+            "最近一次刷新（v{}）被拦下：内容判定为坏更新，当前仍用 v{}。",
+            bad.version, ok.version
+        ),
+        None => format!(
+            "最近一次刷新（v{}）被拦下：内容判定为坏更新，目前还没有可用版本。",
+            bad.version
+        ),
+    });
+
+    SubscriptionView {
+        subscription: sub.clone(),
+        provider_key: provider_key(sub),
+        node_count: accepted.map(|m| m.node_count as u32),
+        group_count: accepted.map(|m| m.group_count as u32),
+        last_update_ms: accepted.map(|m| m.fetched_at_ms),
+        parser: accepted.map(|m| m.format.as_str().to_string()),
+        error,
+    }
+}
+
+/// 全部订阅的视图，顺序与配置里的顺序一致（`subscription_list` 的实现体）。
+///
+/// 与 `subscription_list` 分成两个函数，是为了让守卫能离线断言这条命令**真的**带解析状态
+/// （不需要起 Tauri）。
+pub fn views_of_subscriptions(state: &AppState) -> IpcResult<Vec<SubscriptionView>> {
+    let doc = state.doc();
+    let subs = doc.proxy_subscriptions.clone();
+    drop(doc);
+
+    let keeper = version_keeper(state);
+    let mut out = Vec::with_capacity(subs.len());
+    for sub in &subs {
+        let metas = keeper.history(&sub.id).map_err(IpcError::from)?;
+        out.push(subscription_view(sub, &metas));
+    }
+    Ok(out)
 }
 
 /// `subscription_rules_raw`：只读展示订阅原本的 `rules` 段（**我们不执行它**）。
@@ -2180,6 +2264,69 @@ mod tests {
             .await
             .expect_err("没有版本");
         assert!(err.message.contains("还没有已采纳的版本"), "{}", err.message);
+    }
+
+    // ------------------------------------------------------------ subscription_list 的解析状态
+
+    /// `subscription_list` 必须带上**当前生效版本**的解析状态（[docs/19 §2.3] 那条硬前置）。
+    ///
+    /// 这是"订阅加好了、刷新也成功了、页面却说没有解析结果、一个节点都不显示"那个真机缺陷的
+    /// 回归测试：判据字段缺失时节点页**不敢发** `subscription_nodes`，节点清单永远是空的。
+    #[tokio::test]
+    async fn subscription_list_carries_the_effective_parse_status() {
+        let airport = FakeAirport::start(vec![yaml_with(3, 2, false)]);
+        let state = seeded("sub-view-status", &airport.url("/sub")).await;
+        let id = SubscriptionId::new("sub-a");
+
+        // (1) 从没刷新过：字段**缺失**（不是 0 / 空串 / 空对象），页面据此判"没解析过"
+        let before = views_of_subscriptions(&state).expect("清单");
+        assert_eq!(before.len(), 1);
+        let raw = serde_json::to_value(&before[0]).expect("序列化");
+        assert!(raw.get("subscription").is_some(), "实体要包在 subscription 里：{raw}");
+        assert!(raw.get("id").is_none(), "不许把实体摊平（前端按外层有无 subscription 判形状）");
+        assert_eq!(raw["provider_key"], "sub-a", "配置没给 provider_key 时按 id 派生");
+        assert!(raw.get("node_count").is_none(), "没刷过就不许给 0：{raw}");
+        assert!(raw.get("group_count").is_none(), "没刷过就不许给 0：{raw}");
+        assert!(raw.get("last_update_ms").is_none(), "没刷过就不许给时间戳：{raw}");
+        assert!(raw.get("parser").is_none(), "没刷过就没有格式：{raw}");
+        assert!(raw.get("error").is_none(), "没刷过不等于出错过：{raw}");
+
+        // (2) 刷新一版好内容：三个字段全部来自**生效版本**
+        refresh_subscriptions(&state, Some(id.clone()), true).await.expect("刷新");
+        let after = views_of_subscriptions(&state).expect("清单");
+        let view = &after[0];
+        assert_eq!(view.node_count, Some(3));
+        assert_eq!(view.group_count, Some(2));
+        assert_eq!(view.parser.as_deref(), Some("clash_yaml"));
+        assert_eq!(view.error, None, "这一版是好的，不该有拦截说明");
+        assert_eq!(view.provider_key, "sub-a");
+        let meta = history(&state, "sub-a").into_iter().find(|m| m.accepted).expect("已采纳版本");
+        assert_eq!(view.last_update_ms, Some(meta.fetched_at_ms), "要用生效版本的抓取时刻");
+    }
+
+    /// 最新一次被坏更新拦下：`error` 必须有值，**计数仍来自上一版已采纳的内容**。
+    ///
+    /// 前端据此仍然发 `subscription_nodes`（[19 §2.3]：有 `error` = 后端确实处理过这份订阅），
+    /// 而不是替后端下"没解析过"的结论。
+    #[tokio::test]
+    async fn subscription_list_reports_a_rejected_latest_attempt_and_keeps_the_old_counts() {
+        let airport = FakeAirport::start(vec![
+            yaml_with(4, 1, false),
+            "<!DOCTYPE html><html>err</html>".to_string(),
+        ]);
+        let state = seeded("sub-view-rejected", &airport.url("/sub")).await;
+        let id = SubscriptionId::new("sub-a");
+        refresh_subscriptions(&state, Some(id.clone()), true).await.expect("v1 是好内容");
+        refresh_subscriptions(&state, Some(id.clone()), true).await.expect("v2 是坏内容，会被拦下");
+
+        let views = views_of_subscriptions(&state).expect("清单");
+        let view = &views[0];
+        assert_eq!(view.node_count, Some(4), "计数仍来自上一版已采纳的内容");
+        assert!(view.last_update_ms.is_some(), "仍然有生效版本");
+        let err = view.error.as_deref().expect("必须说明这次被拦下了");
+        assert!(err.contains("坏更新"), "{err}");
+        assert!(err.contains("v2"), "要说清是哪一版被拦下：{err}");
+        assert!(err.contains("v1"), "要说清当前用的是哪一版：{err}");
     }
 
     #[tokio::test]

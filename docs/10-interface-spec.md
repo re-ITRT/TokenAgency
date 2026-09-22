@@ -359,7 +359,7 @@ type SimulateResult = {
 
 | 命令 | 入参 | 返回 |
 |---|---|---|
-| `subscription_list` | — | `SubscriptionView[]`（节点数/组数/流量/到期/最后更新/解析器） |
+| `subscription_list` | — | `SubscriptionView[]`（节点数/组数/最后更新/解析器；**流量与到期走 `subscription_traffic`**，[docs/18 §1.2]） |
 | `subscription_upsert` / `subscription_delete` | | |
 | `subscription_refresh` | `id?, force?: bool` | `RefreshResult { ok, node_count, group_count, error?, traffic? }` |
 | `subscription_preview` | `url, user_agent?, format?` | `PreviewResult { groups: string[], nodes: string[], sample: Node[] }` |

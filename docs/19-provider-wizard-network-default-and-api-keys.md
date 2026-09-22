@@ -134,6 +134,16 @@
 
 **不许**自己解析订阅内容、不许伪造节点。`NodeView` 形状见 `src/shared/bindings.ts:832`。
 
+**硬前置的数据来源（第 71 轮补齐）**：`last_update_ms == null && error == null` = 这份订阅还没被
+解析采纳过，此时**不发** `subscription_nodes`（对没有已采纳版本的订阅发它只会拿到一个错误）。
+这两个字段来自 `subscription_list` 的 `SubscriptionView`，而它在第 71 轮之前返回的是**裸
+`Subscription`** —— 里面根本没有解析状态，于是真机上的表现是"订阅加好了、刷新也成功了，
+页面还是「还没有解析结果」，一个节点都不显示"。
+现在解析状态由版本存储的元数据回填（`src-tauri/src/commands/net.rs::views_of_subscriptions`）：
+`node_count` / `group_count` / `last_update_ms` / `parser` 取自**最新一版已采纳的版本**，
+最新一次尝试被坏更新拦下时给 `error`（此时仍发 `subscription_nodes`，它回的是上一版已采纳的内容）。
+**没刷过 = 字段缺失**，不用 `0` / 空串冒充（[docs/18 §1.2] 同一条口径）。
+
 ### 2.4 `lane_test`：要么真用，要么不放
 
 线路表每行加 `network-lanes-test`（真调 `lane_test({ id })`），结果显示在 `network-lanes-test-result`：

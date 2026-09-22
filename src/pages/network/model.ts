@@ -5,12 +5,13 @@
  * ## 一、契约与实现的形状偏差（这是事实，来源已逐条标注）
  *
  * `src/shared/bindings.ts` 是**手写契约**（105 条命令的签名），而真正注册的命令返回的是
- * Rust 侧结构体。两者在"线路 / 订阅 / 凭据 / 服务商"这四处**对不上**：
+ * Rust 侧结构体。两者在"线路 / 凭据 / 服务商"这三处**对不上**（订阅那一处曾经也对不上，
+ * 第 71 轮已由后端补齐 `SubscriptionView`，见下表）：
  *
  * | 命令 | 冻结契约 | Rust 实际返回（权威） |
  * |---|---|---|
  * | `lane_list` | `LaneView { lane, type, node_count, current_node, latency_ms, health }` | `LaneView { lane, latest: HealthSample?, channel_count }`（`src-tauri/src/commands/catalog.rs`） |
- * | `subscription_list` | `SubscriptionView[]`（带 `node_count` / `group_count` / `last_update_ms` / `parser`） | `Vec<Subscription>` —— **裸配置实体**，没有任何解析结果（同上） |
+ * | `subscription_list` | `SubscriptionView[]`（带 `node_count` / `group_count` / `last_update_ms` / `parser`） | **已对齐**：`net.rs::views_of_subscriptions` 返回 `SubscriptionView`，解析状态取自版本存储元数据（**没刷过 = 字段缺失**，不给 0）。第 71 轮之前这里返回裸 `Subscription`，于是节点页的硬前置（[19 §2.3]）恒判"没解析过"、节点清单恒空 |
  * | `credential_list` | `CredentialView { credential, provider_name, quota, channel_count }` | `CredentialView { credential, quota_state, used_pct }` |
  * | `provider_list` | `ProviderView`（**没有 `lane` 字段**） | `Vec<Provider>`（有 `lane`） |
  *

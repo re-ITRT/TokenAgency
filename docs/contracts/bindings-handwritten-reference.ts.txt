@@ -787,11 +787,16 @@ export type LanePickOption = {
   }[];
 };
 
+/**
+ * `subscription_list` 的一行：配置实体 + 当前生效版本的解析状态。
+ * 解析状态来自版本存储；**从来没有已采纳的版本时这几个字段一并缺失**（不给 0 / 空串）。
+ */
 export type SubscriptionView = {
   subscription: Subscription;
   provider_key: string;
-  node_count: number;
-  group_count: number;
+  node_count?: number;
+  group_count?: number;
+  /** 不再回填：流量与更新时间统一走 `subscription_traffic`（docs/18 §1.2）。 */
   userinfo?: { upload?: number; download?: number; total?: number; expire_ms?: number } | null;
   last_update_ms?: number | null;
   parser?: string | null;

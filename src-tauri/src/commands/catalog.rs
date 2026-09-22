@@ -10,10 +10,11 @@ use tauri::State;
 
 use ta_core::domain::capabilities::channel_capability_mismatches;
 use ta_core::domain::{
-    ChannelConfig, ChannelGroup, ConfigDoc, Credential, Lane, Model, Policy, Provider, Subscription,
+    ChannelConfig, ChannelGroup, ConfigDoc, Credential, Lane, Model, Policy, Provider,
 };
 use ta_core::types::{LaneId, ProviderId};
 
+use crate::commands::net::SubscriptionView;
 use crate::commands::{IpcError, IpcResult};
 use crate::state::AppState;
 use ta_core::config::ConfigValidator;
@@ -155,10 +156,17 @@ pub async fn lane_list(state: State<'_, AppState>) -> IpcResult<Vec<LaneView>> {
     Ok(out)
 }
 
+/// 订阅清单：**配置实体 + 当前生效版本的解析状态**（冻结契约的 `SubscriptionView`）。
+///
+/// 为什么不在这里返回裸 `Subscription`：解析状态（`node_count` / `last_update_ms` / `parser`）
+/// 的真相在**版本存储**里，只有 `net.rs` 那侧的 `VersionKeeper` 够得着；而节点页的硬前置
+/// （[docs/19 §2.3]）就判 `last_update_ms`/`error` —— 少给这两个字段，真机上页面的表现是
+/// "刷新成功了却说没有解析结果、一个节点都不显示"。实现放在 `net` 侧（订阅域的读路径），
+/// 这里只做命令登记。
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
-pub async fn subscription_list(state: State<'_, AppState>) -> IpcResult<Vec<Subscription>> {
-    Ok(doc(&state).proxy_subscriptions.clone())
+pub async fn subscription_list(state: State<'_, AppState>) -> IpcResult<Vec<SubscriptionView>> {
+    crate::commands::net::views_of_subscriptions(&state)
 }
 
 // ================================================================ 写路径（task-16 批次 A 第 1 组）

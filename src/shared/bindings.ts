@@ -837,14 +837,27 @@ export type LanePickOption = {
   }[];
 };
 
+/**
+ * `subscription_list` 的一行：**配置实体 + 当前生效版本的解析状态**。
+ *
+ * 解析状态来自版本存储（`VersionKeeper` 的元数据）：**从来没有已采纳的版本时这几个字段
+ * 一并缺失**，而不是给 `0` / 空串（[docs/18 §1.2] 的"未知不给数字"）。前端把"缺失"读成
+ * `undefined`（未读取）、把"明确 null"读成 `null`（后端说没有）—— 两者不是一回事。
+ */
 export type SubscriptionView = {
   subscription: Subscription;
   provider_key: string;
-  node_count: number;
-  group_count: number;
+  /** 生效版本的节点数；没有已采纳版本时**缺失**（不是 0）。 */
+  node_count?: number;
+  /** 生效版本的分组数；没有已采纳版本时**缺失**（不是 0）。 */
+  group_count?: number;
+  /** 不再回填：流量与更新时间统一走 `subscription_traffic`（[docs/18 §1.2] 的口径）。 */
   userinfo?: { upload?: number; download?: number; total?: number; expire_ms?: number } | null;
+  /** 生效版本的抓取时刻（Unix 毫秒）；没有已采纳版本时缺失。 */
   last_update_ms?: number | null;
+  /** 生效版本嗅探到的格式（`clash_yaml` / `base64_links` / `plain_links` / `html` / `unknown`）。 */
   parser?: string | null;
+  /** 最新一次尝试被坏更新拦下时的说明；有值 = 后端处理过、这次没好结果。 */
   error?: string | null;
 };
 
