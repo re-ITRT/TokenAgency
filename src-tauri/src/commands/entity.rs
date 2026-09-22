@@ -627,22 +627,35 @@ pub async fn channel_set_tags(
     set_channel_tags(&state, &channel_ids, &add, &remove).await
 }
 
-/// `channel_bulk_assign_lane`：把一批通道**钉到同一条线路**上。
+/// `channel_bulk_assign_lane`：把一批通道的**线路设置**改成同一种取值（[docs/21 §4.1]）。
 ///
-/// `lane_id` 必须是 `doc.lanes` 里真实存在的线路：写一个不存在的 id 会让校验器
-/// 以 `channels[i].lane not_found` 拒绝整份文档 —— 那是个"看起来成功、其实哪条都没改"
-/// 的坑，所以这里先给出**指名道姓**的报错。
+/// 两种取值的语义**完全不同**，各自写清：
+///
+/// * `Some("<id>")` —— 把这批通道**钉到**这条线路上。该 id 必须存在于 `doc.lanes`：
+///   写一个不存在的 id 会让校验器以 `channels[i].lane not_found` 拒绝整份文档 ——
+///   那是个"看起来成功、其实哪条都没改"的坑，所以这里先给出**指名道姓**的报错（TA-1004）。
+/// * `None` —— 把这批通道的 `lane` **清空**，也就是通道页那条下拉里的"直连（继承）"。
+///   清空后该通道回到五级继承链（`channel -> credential -> provider -> net.default_lane`，
+///   见 `domain::behavior::resolve_lane`），末端就是直连。这里**不**替它写死 `lane-direct`、
+///   也不替用户挑一条线路 —— 写死一条就成了"假装继承"。
+///
+/// 两种取值都只走 [`save_validated`]（校验 -> 事务写库 -> 留快照 -> 换内存快照），
+/// 不另开写路径；而且判错一律发生在**动 `doc` 之前**，所以被拒绝时一个字节都不会落库。
 pub async fn bulk_assign_lane(
     state: &AppState,
     channel_ids: &[String],
-    lane_id: &str,
+    lane_id: Option<&str>,
 ) -> IpcResult<ApplyResult> {
     if channel_ids.is_empty() {
         return Err(empty_list("channel_ids"));
     }
     let mut doc = (*state.doc()).clone();
-    if !doc.lanes.iter().any(|l| l.id.as_str() == lane_id) {
-        return Err(not_found("线路", lane_id));
+    // 只有"指名道姓给了 id"才需要查这条线路在不在。`None` 的表达是**清空**、
+    // 不是一个"空 id"，所以不能把它降级成空字符串丢进同一张查表（那会报"线路不存在："）。
+    if let Some(id) = lane_id {
+        if !doc.lanes.iter().any(|l| l.id.as_str() == id) {
+            return Err(not_found("线路", id));
+        }
     }
     let missing: Vec<String> = channel_ids
         .iter()
@@ -655,7 +668,9 @@ pub async fn bulk_assign_lane(
 
     for id in channel_ids {
         if let Some(c) = doc.channels.iter_mut().find(|c| c.id.as_str() == id.as_str()) {
-            c.lane = Some(ta_core::types::LaneId::new(lane_id));
+            // Some(id) -> 钉到该线路；None -> 清空（回到继承链）。一支表达式覆盖两种取值，
+            // 免得再写一遍 `if let`（那正是"两条分支口径不一致"的温床）。
+            c.lane = lane_id.map(ta_core::types::LaneId::new);
         }
     }
     save_validated(state, doc, "channel_bulk_assign_lane").await?;
@@ -667,9 +682,9 @@ pub async fn bulk_assign_lane(
 pub async fn channel_bulk_assign_lane(
     state: State<'_, AppState>,
     channel_ids: Vec<String>,
-    lane_id: String,
+    lane_id: Option<String>,
 ) -> IpcResult<ApplyResult> {
-    bulk_assign_lane(&state, &channel_ids, &lane_id).await
+    bulk_assign_lane(&state, &channel_ids, lane_id.as_deref()).await
 }
 
 // ---------------------------------------------------------------- channel_matrix
@@ -1941,7 +1956,8 @@ mod tests {
         let back = state.config.load().await.expect("load");
         assert_eq!(back.channels[0].tags, vec!["cheap".to_string()], "写进去的必须读得回来");
 
-        let r = bulk_assign_lane(&state, &["ch-a".into()], "lane-direct").await.expect("钉线路");
+        let r =
+            bulk_assign_lane(&state, &["ch-a".into()], Some("lane-direct")).await.expect("钉线路");
         assert!(r.applied);
         assert_eq!(
             state.config.load().await.expect("load").channels[0].lane.as_ref().map(|l| l.as_str()),
@@ -1949,17 +1965,96 @@ mod tests {
         );
 
         // 不存在的线路 / 不存在的通道 / 空清单，都要如实报错且不写库
-        let err =
-            bulk_assign_lane(&state, &["ch-a".into()], "lane-nope").await.expect_err("线路不存在");
+        let err = bulk_assign_lane(&state, &["ch-a".into()], Some("lane-nope"))
+            .await
+            .expect_err("线路不存在");
         assert_eq!(err.code, "TA-1004");
-        assert!(bulk_assign_lane(&state, &["ch-nope".into()], "lane-direct").await.is_err());
-        assert!(bulk_assign_lane(&state, &[], "lane-direct").await.is_err());
+        assert!(bulk_assign_lane(&state, &["ch-nope".into()], Some("lane-direct")).await.is_err());
+        assert!(bulk_assign_lane(&state, &[], Some("lane-direct")).await.is_err());
         assert!(set_channel_tags(&state, &["ch-nope".into()], &["x".into()], &[]).await.is_err());
         assert!(set_channel_tags(&state, &[], &["x".into()], &[]).await.is_err());
         assert!(
             set_channel_tags(&state, &["ch-a".into()], &[], &[]).await.is_err(),
             "两类清单都空 = 什么都没改"
         );
+    }
+
+    /// 测试用：**从库里**读一条通道当前钉的 lane（`None` = 没钉，走继承链）。
+    async fn db_lane(state: &AppState, channel_id: &str) -> Option<String> {
+        state
+            .config
+            .load()
+            .await
+            .expect("load")
+            .channels
+            .iter()
+            .find(|c| c.id.as_str() == channel_id)
+            .and_then(|c| c.lane.as_ref().map(|l| l.as_str().to_string()))
+    }
+
+    /// `channel_bulk_assign_lane` 的两种取值（[docs/21 §4.1]）：
+    /// `Some("<存在的 id>")` = 把这批通道**钉到**该线路；`None` = **清空**它们的 lane
+    /// （回到五级继承链，末端就是直连）。
+    ///
+    /// 每一步都**读库**断言 —— 这条命令唯一值得测的就是"库里那条通道的 lane 到底成了什么"。
+    #[tokio::test]
+    async fn channel_bulk_assign_lane_some_pins_and_none_clears() {
+        let state = seeded("ch-lane-null").await;
+        // 种两条真实线路：`channel.lane` 指向不存在的线路会被校验器整份拒绝，
+        // 所以"钉"和"清空"两步都得先让这两个 id 真的存在。
+        let mut doc = (*state.doc()).clone();
+        doc.lanes.push(ta_core::domain::Lane::direct("lane-direct", "直连（本机网络）"));
+        doc.lanes.push(ta_core::domain::Lane::direct("lane-jp", "日本"));
+        state.config.save(&doc).await.expect("种线路");
+        state.set_doc(doc);
+
+        // 前置：先钉一条，后面才谈得上"由 Some(..) 变成 None"。
+        bulk_assign_lane(&state, &["ch-a".into()], Some("lane-direct")).await.expect("前置钉线路");
+        assert_eq!(
+            db_lane(&state, "ch-a").await.as_deref(),
+            Some("lane-direct"),
+            "前置：库里必须真的钉上了"
+        );
+
+        // (1) Some("<存在的 id>") → 正常写入，读得回来
+        let r = bulk_assign_lane(&state, &["ch-a".into()], Some("lane-jp"))
+            .await
+            .expect("改钉 lane-jp");
+        assert!(r.applied);
+        assert_eq!(
+            db_lane(&state, "ch-a").await.as_deref(),
+            Some("lane-jp"),
+            "Some(id) 必须写进库并读得回来"
+        );
+
+        // (2) Some("<不存在的 id>") → TA-1004 且**指名道姓**，库一个字节都不许变
+        let err = bulk_assign_lane(&state, &["ch-a".into()], Some("lane-nope"))
+            .await
+            .expect_err("不存在的线路必须报错");
+        assert_eq!(err.code, "TA-1004");
+        assert!(err.message.contains("lane-nope"), "报错要指名道姓：{}", err.message);
+        assert_eq!(db_lane(&state, "ch-a").await.as_deref(), Some("lane-jp"), "被拒绝时不许改库");
+
+        // (3) None → 清空（Some(..) → None），回到继承链
+        let r = bulk_assign_lane(&state, &["ch-a".into()], None).await.expect("清空 lane");
+        assert!(r.applied);
+        assert_eq!(
+            state.config.load().await.expect("load").channels[0].lane,
+            None,
+            "None 必须把**库里**的 lane 清空（不再指向 lane-jp）"
+        );
+        assert_eq!(state.doc().channels[0].lane, None, "内存快照也要跟着清空");
+
+        // (4) 空 channel_ids 仍然报错（空清单什么也改不了），两种取值都一样，且不写库
+        let err = bulk_assign_lane(&state, &[], None).await.expect_err("空清单必须报错");
+        assert_eq!(err.code, "TA-1004");
+        let err = bulk_assign_lane(&state, &[], Some("lane-jp")).await.expect_err("空清单必须报错");
+        assert_eq!(err.code, "TA-1004");
+        assert_eq!(db_lane(&state, "ch-a").await, None, "报错之后 lane 仍是清空态");
+
+        // 清空是幂等的：本来就 None 再清一次也成功，且不写出别的东西
+        bulk_assign_lane(&state, &["ch-a".into()], None).await.expect("重复清空也要成功");
+        assert_eq!(db_lane(&state, "ch-a").await, None, "重复清空不该写出别的东西");
     }
 
     #[tokio::test]
