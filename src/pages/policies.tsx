@@ -3,11 +3,12 @@
  *
  * 三条纪律（这一页最容易违反，所以写在最上面）：
  *
- * 1. **只用已注册的命令**：整页只发 `policy_list`。
- *    `policy_reorder`（拖拽排序）、`policy_set_enabled`（启停开关）、`policy_simulate`（模拟器）
- *    都**没有**在 `src-tauri/src/commands/mod.rs` 的 `collect_commands!` 里注册 ——
- *    所以这里**不放按钮，也不放点了没反应的禁用占位**，只在页头下方一句话说清楚原因。
- *    `src/app/commandSurface.guard.test.ts` 会机械检查"页面引用的命令必须已注册"。
+ * 1. **只用已注册的命令**：整页取数只发 `policy_list`。
+ *    写命令（`policy_upsert` / `policy_delete` / `policy_reorder` / `policy_set_enabled` /
+ *    `policy_simulate`）**已在后端登记**（以 `src-tauri/src/commands/mod.rs` 的 `collect_commands!`
+ *    为准，`src/app/commandSurface.guard.test.ts` 机械检查），**但本页的写入入口尚未接入** ——
+ *    后续一批接上增删改与模拟器；在那之前**不放按钮，也不放点了没反应的禁用占位**，
+ *    只在页头下方一句话说清现状。
  * 2. **顺序是后端的，不是我们排的**：`policy_list` 自己按 `priority` 升序排
  *    （`src-tauri/src/commands/catalog.rs:128-135`，注释明写"UI 的拖拽顺序就是求值顺序"）。
  *    页面照它返回的顺序画，**另外单列原始 `priority` 数值** —— 不让"第几行"冒充优先级。
@@ -366,7 +367,7 @@ export function PoliciesBody({ policies, isLoading, error, onRetry }: PoliciesBo
         <Stack spacing={2}>
           <Typography variant="h4">{t("policies.section.list")}</Typography>
           <Caption>{t("policies.orderNote")}</Caption>
-          {/* 说明为什么没有排序 / 启停 / 模拟入口：这不是"懒得做"，是后端还没注册这些命令 */}
+          {/* 说明为什么本页没有排序 / 启停 / 模拟入口：写命令已在后端登记，但界面接入在后续一批 */}
           <Box data-testid="policies-readonly">
             <Caption>{t("policies.readonly")}</Caption>
           </Box>

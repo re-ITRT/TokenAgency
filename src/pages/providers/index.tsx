@@ -3,10 +3,10 @@
  *
  * 三条硬纪律（写在最上面，这一页最容易违反）：
  *
- * 1. **只调用已注册的命令**：`provider_list` / `credential_list`。
- *    `provider_test` / `provider_upsert` / `provider_delete` **尚未注册**（见
- *    `src-tauri/src/commands/mod.rs` 的 `collect_commands!` 与 `commandSurface.guard.test.ts`），
- *    所以这里**没有测试/编辑/删除按钮，也没有禁用占位**。
+ * 1. **只调用已注册的命令**：本页取数只用 `provider_list` / `credential_list`。
+ *    写命令（新增/删除/连通性测试）的注册状态以 `src-tauri/src/commands/mod.rs` 的
+ *    `collect_commands!` 为准 —— `src/app/commandSurface.guard.test.ts` 会机械检查这一条。
+ *    **本页当前是只读列表**：新增/编辑入口在后续一批接入，期间不放假控件、也不放禁用占位。
  * 2. **没有读取接口的就不猜**：状态灯、成功率、延迟、通道数都**只**取后端返回的那一列；
  *    后端没给（Rust 的 `provider_list` 返回的是完整 `Provider`，没有这几列）就显示「未知/—」。
  *    内核在跑**不等于**服务商可用（[06 §2.1] B2），所以绝不点一个假绿灯。

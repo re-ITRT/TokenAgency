@@ -3,12 +3,13 @@
  * `pages: ["models", "models/index"]` —— 本文件是**文件夹形式**（与 `logs/index.tsx`、
  * `providers/index.tsx` 一致）。纯逻辑与整形在 `./model.ts`，那一层是单测的主要对象。
  *
- * 这一页只做**读**：
- * - 命令面只用已注册的五条：`model_list` / `pricing_unpriced_models` / `channel_list` /
- *   `provider_list` / `credential_list`（`src-tauri/src/commands/mod.rs` 的 `collect_commands!`）。
- * - `model_upsert` / `model_delete` / `model_import_from_provider` / `model_apply_import` /
- *   `model_bulk_update` **都还没注册** -> **不放按钮、也不放禁用占位**：空状态里直接说明
- *   "导入入口还没有接线"，而不是给一个点了没反应的按钮。
+ * 这一页**目前只做读**，取数只用 `model_list` / `pricing_unpriced_models` / `channel_list` /
+ * `provider_list` / `credential_list`。
+ * 写命令（`model_upsert` / `model_delete` / `model_import_from_provider` / `model_apply_import` /
+ * `model_bulk_update`）**已在后端登记**（以 `src-tauri/src/commands/mod.rs` 的 `collect_commands!`
+ * 为准，`src/app/commandSurface.guard.test.ts` 机械检查），**但本页的写入入口尚未接入**：
+ * 后续一批接上编辑/导入按钮；在那之前空状态里说明"导入/编辑入口还没接线"，
+ * **不放假按钮、也不放点了没反应的禁用占位**。
  *
  * 三条诚实纪律：
  * 1. **"被哪些通道引用"缺数据时不许说成"没有被引用"**：`channel_list` 读失败时，
