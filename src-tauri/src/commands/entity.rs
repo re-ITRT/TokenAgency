@@ -47,6 +47,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use ta_core::domain::capabilities::{policy_capability_mismatches, CapabilityMismatchDetail};
 use ta_core::domain::{ChannelConfig, ChannelGroup, ConfigDoc, Credential, Model, Policy};
 use ta_core::error::TaError;
 use ta_core::pricing::PricingEngine;
@@ -1059,15 +1060,42 @@ pub async fn model_bulk_update(
 
 // ================================================================ policy
 
+/// 能力不一致 → **带结构化差异的 IPC 错误**（[docs/17 §2]、TA-2007）。
+///
+/// `details` 的形状由 `ta-core` 的 [`CapabilityMismatchDetail`] 定义（模型 / 线路 id /
+/// 每个字段各自的值），策略页与路由向导把这份 JSON **原样显示** —— 所以这里只负责搬运，
+/// 不在 src-tauri 里另造一套差异计算（那是第二个真相源）。
+pub(crate) fn capability_mismatch_ipc(detail: CapabilityMismatchDetail) -> IpcError {
+    let err = TaError::CapabilityMismatch { detail };
+    let details = err.details_json();
+    let base = IpcError::from(err);
+    match details {
+        Some(json) => base.with_details(json),
+        None => base,
+    }
+}
+
+/// 取第一条不一致并转成 IPC 错误；全都一致 → `None`。
+fn first_capability_mismatch(mismatches: Vec<CapabilityMismatchDetail>) -> Option<IpcError> {
+    mismatches.into_iter().next().map(capability_mismatch_ipc)
+}
+
 /// `policy_upsert`：同 id 覆盖、不存在则新增（幂等）。
 ///
 /// `priority` 数字小的先求值、首个命中即生效（[02 §2.8]）——那一列由
 /// [`reorder_policies`] 负责，这里不动它（用户手填的优先级要原样保留）。
+///
+/// **能力校验**（[docs/17 §2]）：这条策略**实际会用到的**线路（`use_channels` ∪
+/// `use_group` 展开后的成员）里，同一个 `model` 的线路能力必须逐一相等，否则拒绝并
+/// 指出差在哪一项。组展开用的是配置里的 `ChannelGroup.members`（真实存在，不是"拿不到"）。
 pub async fn upsert_policy(state: &AppState, policy: Policy) -> IpcResult<Policy> {
     let mut doc = (*state.doc()).clone();
     match doc.policies.iter_mut().find(|x| x.id == policy.id) {
         Some(slot) => *slot = policy.clone(),
         None => doc.policies.push(policy.clone()),
+    }
+    if let Some(err) = first_capability_mismatch(policy_capability_mismatches(&doc, &policy)) {
+        return Err(err);
     }
     save_validated(state, doc, "policy_upsert").await?;
     Ok(policy)
@@ -2358,5 +2386,149 @@ mod tests {
 
         let err = clear_credential_quota(&state, "c-nope").await.expect_err("未知 id");
         assert_eq!(err.code, "TA-1004");
+    }
+
+    // ================================================================ 能力一致才可路由（[17 §2]）
+
+    /// 造出"同一个 `model` 的两条线路"，两条能力分别指定 —— 能力校验的前置。
+    ///
+    /// 走 `rewrite_doc`（同一条写路径）：它证明前置配置**本身是合法的**，
+    /// 所以后面被拒一定是因为能力校验，而不是因为引用完整性。
+    async fn seeded_two_channels(
+        tag: &str,
+        a: ta_core::domain::ChannelCapabilities,
+        b: ta_core::domain::ChannelCapabilities,
+    ) -> AppState {
+        let state = seeded(tag).await;
+        rewrite_doc(&state, |doc| {
+            if let Some(ch_a) = doc.channels.iter_mut().find(|c| c.id.as_str() == "ch-a") {
+                ch_a.capabilities = a;
+            }
+            let mut ch_b = ChannelConfig::new("ch-b", "m-a", "p-a", "c-a", "upstream-b");
+            ch_b.capabilities = b;
+            doc.channels.push(ch_b);
+        })
+        .await;
+        state
+    }
+
+    /// 两条能力不同的线路：ch-a 没 vision，ch-b 有 vision（其余相同）。
+    fn caps(vision: bool) -> ta_core::domain::ChannelCapabilities {
+        ta_core::domain::ChannelCapabilities {
+            context_tokens: 1_050_000,
+            modalities: vec!["text".to_string(), "image".to_string()],
+            vision,
+            ..ta_core::domain::ChannelCapabilities::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn policy_upsert_rejects_one_model_with_two_different_capabilities() {
+        let state = seeded_two_channels("cap-policy-red", caps(false), caps(true)).await;
+
+        let mut policy = Policy::new("pol-cap", "能力不一致的路由");
+        policy.action.use_channels = vec![ChannelId::new("ch-a"), ChannelId::new("ch-b")];
+
+        let err = upsert_policy(&state, policy)
+            .await
+            .expect_err("同一个 model 的两条线路能力不同 → 必须拒绝");
+
+        assert_eq!(err.code, "TA-2007");
+        assert_eq!(err.kind, "tokenagency_capability_mismatch");
+
+        // details 必须指出**差在哪一项**（模型 + 线路 + 各自的值）
+        let details = err.details.as_ref().expect("details 必须带结构化差异");
+        let text = details.to_string();
+        assert!(text.contains("m-a"), "要点名模型：{text}");
+        assert!(text.contains("ch-a") && text.contains("ch-b"), "要点名线路：{text}");
+        assert!(text.contains("vision"), "要点名差在哪个字段：{text}");
+
+        // 被拒时**一个字节都不许写进去**
+        assert!(
+            !state.doc().policies.iter().any(|p| p.id.as_str() == "pol-cap"),
+            "被拒绝的策略不许落库"
+        );
+    }
+
+    #[tokio::test]
+    async fn policy_upsert_accepts_two_channels_whose_capabilities_are_equal() {
+        let state = seeded_two_channels("cap-policy-green", caps(true), caps(true)).await;
+
+        let mut policy = Policy::new("pol-cap", "能力一致的路由");
+        policy.action.use_channels = vec![ChannelId::new("ch-a"), ChannelId::new("ch-b")];
+
+        upsert_policy(&state, policy).await.expect("能力一致必须放行");
+        let back = state.config.load().await.expect("load");
+        let saved =
+            back.policies.iter().find(|p| p.id.as_str() == "pol-cap").expect("真的写进去了");
+        assert_eq!(saved.action.use_channels.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn policy_upsert_accepts_same_model_channels_when_only_modalities_order_differs() {
+        // `modalities` 排序去重后相等 → 不是差异（[17 §2] 的比较规则）
+        let mut a = caps(true);
+        a.modalities = vec!["text".to_string(), "image".to_string()];
+        let mut b = caps(true);
+        b.modalities = vec!["image".to_string(), "text".to_string(), "image".to_string()];
+
+        let state = seeded_two_channels("cap-policy-modalities", a, b).await;
+        let mut policy = Policy::new("pol-cap", "模态顺序不同");
+        policy.action.use_channels = vec![ChannelId::new("ch-a"), ChannelId::new("ch-b")];
+
+        upsert_policy(&state, policy).await.expect("排序去重后相等 → 放行");
+    }
+
+    #[tokio::test]
+    async fn channel_upsert_rejects_a_channel_that_an_existing_policy_would_group_with_a_different_one(
+    ) {
+        // 先造"两条一致 + 已有策略同时点名它们"的合法现状
+        let state = seeded_two_channels("cap-channel-red", caps(false), caps(false)).await;
+        rewrite_doc(&state, |doc| {
+            doc.policies[0].action.use_channels =
+                vec![ChannelId::new("ch-a"), ChannelId::new("ch-b")];
+        })
+        .await;
+
+        // 再把 ch-b 的能力改坏（vison true，与 ch-a 不同）→ channel_upsert 必须拒
+        let mut ch_b =
+            state.doc().channels.iter().find(|c| c.id.as_str() == "ch-b").expect("有 ch-b").clone();
+        ch_b.capabilities = caps(true);
+
+        let err = crate::commands::catalog::upsert_channel(&state, ch_b)
+            .await
+            .expect_err("会与已有策略下的 ch-a 归到一起且能力不同 → 必须拒绝");
+        assert_eq!(err.code, "TA-2007");
+        let details = err.details.as_ref().expect("details");
+        assert!(details.to_string().contains("vision"), "{}", details);
+
+        // 库里还是旧值（没被写坏）
+        let after = state.config.load().await.expect("load");
+        let saved = after.channels.iter().find(|c| c.id.as_str() == "ch-b").expect("有 ch-b");
+        assert!(!saved.capabilities.vision, "被拒绝时不许改配置");
+    }
+
+    #[tokio::test]
+    async fn channel_upsert_accepts_a_channel_no_policy_would_group() {
+        // 没有任何策略点名它 → 与谁都不"归到一起"，即便能力与众不同也放行
+        let state = seeded_two_channels("cap-channel-green", caps(false), caps(false)).await;
+
+        let mut ch_b =
+            state.doc().channels.iter().find(|c| c.id.as_str() == "ch-b").expect("有 ch-b").clone();
+        ch_b.capabilities = caps(true);
+
+        crate::commands::catalog::upsert_channel(&state, ch_b)
+            .await
+            .expect("没有策略会把它们归到一起 → 放行");
+        let after = state.config.load().await.expect("load");
+        assert!(
+            after
+                .channels
+                .iter()
+                .find(|c| c.id.as_str() == "ch-b")
+                .expect("有 ch-b")
+                .capabilities
+                .vision
+        );
     }
 }

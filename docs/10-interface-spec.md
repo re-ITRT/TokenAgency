@@ -285,6 +285,25 @@ type ChannelCapabilities = {
 - 比较规则与强制校验见 [17 §2]：逐字段相等、`modalities` 排序去重后比、
   `max_output_tokens` 的 `null` 只等于 `null`；不一致时后端返回 `TA-2007`
   （`tokenagency_capability_mismatch`，400，不可重试，`details` 带逐字段差异）。
+- **两个校验点的语义（界面提示必须与后端一致）**：
+  - `policy_upsert`：**这一条策略自己**会用到的线路（`use_channels` ∪ `use_group`
+    展开后的成员）里，同一个 `model` 的线路能力必须逐一相等 → 否则拒绝。
+    组展开用的是配置里的 `ChannelGroup.members`（**真的能展开**，不是"拿不到"）。
+  - `channel_upsert`：**只有当这条线路会被"已存在的策略"与同 `model` 的其它线路归到一起**
+    时才拦。刻意**不是**"同 model 的所有线路必须一致" —— 那会让用户没法先建第一条、
+    再加第二条。
+- `details` 的形状（界面**原样显示**，不要再造一套差异计算）：
+  ```json
+  { "model": "deepseek-v4.1flash",
+    "channels": ["ch-a", "ch-b"],
+    "fields": [
+      { "field": "vision",
+        "values": [ { "channel": "ch-a", "value": "true" },
+                    { "channel": "ch-b", "value": "false" } ] } ] }
+  ```
+  值的文本形态：`true`/`false`、数字、`未声明`（`max_output_tokens` 为 null）、
+  排序去重后的模态（逗号分隔，空为 `(空)`）。`message` 里也会带上模型名与差异字段名，
+  只显示一句话的地方也不至于看不懂。
 
 ### group / 通道组
 
@@ -338,12 +357,38 @@ type SimulateResult = {
 |---|---|---|
 | `subscription_list` | — | `SubscriptionView[]`（节点数/组数/流量/到期/最后更新/解析器） |
 | `subscription_upsert` / `subscription_delete` | | |
-| `subscription_refresh` | `id?, force?: bool` | `RefreshResult { ok, node_count, group_count, error? }` |
+| `subscription_refresh` | `id?, force?: bool` | `RefreshResult { ok, node_count, group_count, error?, traffic? }` |
 | `subscription_preview` | `url, user_agent?, format?` | `PreviewResult { groups: string[], nodes: string[], sample: Node[] }` |
 | `subscription_groups` | `id` | `{ name, type, node_count }[]` |
 | `subscription_nodes` | `id, group?` | `NodeView[]` |
 | `subscription_rollback` | `id, version_index` | `void` |
 | `subscription_rules_raw` | `id` | `string?`（只读展示订阅原本的 rules） |
+| `subscription_traffic` | — | `{ id, traffic: SubscriptionTraffic \| null }[]`（只读；**从未成功刷新过 → `traffic: null`**） |
+
+#### 订阅流量与更新时间（`docs/18` §1）
+
+数据来自订阅响应头 `subscription-userinfo`（单位**字节**，`expire` 是 **Unix 秒**）。
+**读取路径取 `docs/18` §1.2 的方案 (a)：只读命令 `subscription_traffic`** ——
+`Subscription` 是配置实体，流量是运行期观测值；塞进 `SubscriptionView` 会让"改配置"
+的写路径顺手改写观测值。
+
+```ts
+/** **未知一律 null，绝不用 0 冒充**（docs/18 §1.2）。 */
+type SubscriptionTraffic = {
+  upload_bytes: number | null;
+  download_bytes: number | null;
+  total_bytes: number | null;   // 缺失 / 非数字 / 0（不限量·未声明）→ null
+  expire_at_s: number | null;   // Unix 秒；0（不适用）→ null
+  fetched_at_ms: number;        // 这一次拿到的时刻（界面的「更新时间」）
+};
+```
+
+- `subscription_traffic` 的行**以配置里的订阅清单为准**（表里可能有已删订阅的残留行）；
+- 每次**成功刷新**把"上次已知"写进 `subscription` 表的可空列
+  （`upload_bytes / download_bytes / total_bytes / expire_at_s / traffic_at_ms`）；
+  头缺失时**保留旧值** —— 不拿 NULL 覆盖已知数字；
+- `RefreshResult.traffic` 只在刷新**单份**订阅时有值（多份订阅的字节数不能相加，
+  那种情况下字段不出现，按 `null` 处理）；没到期而跳过刷新时回的是**上次已知**。
 
 ### kernel / 内核
 

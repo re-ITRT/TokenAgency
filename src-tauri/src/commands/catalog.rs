@@ -8,6 +8,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use ta_core::domain::capabilities::channel_capability_mismatches;
 use ta_core::domain::{
     ChannelConfig, ChannelGroup, ConfigDoc, Credential, Lane, Model, Policy, Provider, Subscription,
 };
@@ -215,11 +216,22 @@ pub async fn provider_upsert(
 }
 
 /// `channel_upsert`：同 id 覆盖、不存在则新增。
+///
+/// **能力校验**（[docs/17 §2]）：这条线路若会被**已有策略**与同 `model` 的其它线路
+/// 归到一起，而它们的能力声明不一致 → 拒绝（TA-2007，带逐字段差异）。
+///
+/// 语义刻意**不是**"同 model 的所有线路必须一致"：那样用户就没法先建第一条、再加第二条。
+/// 只有"已经有一条策略会把它们放在同一条路由后面"时才算矛盾。
 pub async fn upsert_channel(state: &AppState, channel: ChannelConfig) -> IpcResult<ChannelConfig> {
     let mut doc = (*state.doc()).clone();
     match doc.channels.iter_mut().find(|x| x.id == channel.id) {
         Some(slot) => *slot = channel.clone(),
         None => doc.channels.push(channel.clone()),
+    }
+    if let Some(detail) =
+        channel_capability_mismatches(&doc, channel.id.as_str()).into_iter().next()
+    {
+        return Err(crate::commands::entity::capability_mismatch_ipc(detail));
     }
     save_validated(state, doc, "channel_upsert").await?;
     Ok(channel)
