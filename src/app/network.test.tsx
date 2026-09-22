@@ -403,9 +403,14 @@ const ALLOWED = new Set([...READ_ONLY_ALLOWED, ...CONFIG_WRITES_ALLOWED]);
  */
 const DIRECTLY_REFERENCED = [
   "config_get",
+  "lane_delete",
   "lane_list",
+  "lane_set_node",
+  "lane_upsert",
   "subscription_delete",
+  "subscription_groups",
   "subscription_list",
+  "subscription_nodes",
   "subscription_preview",
   "subscription_refresh",
   "subscription_upsert",
@@ -1174,5 +1179,156 @@ describe("⑪ /network 订阅写界面：点了真的调命令，并且显示后
       "必填",
     );
     expect(upsert.calls).toHaveLength(0);
+  });
+});
+
+// ================================================================ ⑫ 线路写界面（真调用 + 后端真值）
+//
+// 与 ⑪ 同一套打法，但多一条**后端的规则**要钉住：`Lane::missing_kind_field()`
+// （`crates/ta-core/src/domain/behavior.rs`）规定"非 direct 必须有 subscription；
+// subscription_group 要 group；subscription_node 要 node；filter 要 filter"。
+// 前端要么照这套规则先挡一次（这里测的就是这个），要么把注定被拒的请求发出去。
+
+/** MUI 的 Select 在 jsdom 里是个 div：先 `mouseDown` 打开菜单，再点角色为 option 的项。 */
+async function chooseOption(testId: string, optionName: RegExp | string): Promise<void> {
+  const box = screen.getByTestId(testId);
+  fireEvent.mouseDown(within(box).getByRole("combobox"));
+  fireEvent.click(await screen.findByRole("option", { name: optionName }));
+}
+
+describe("⑫ /network 线路写界面：lane_upsert / lane_delete / lane_set_node 挂在真控件上", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("新建直连线路 → lane_upsert：kind=direct 时不发 subscription 这类用不上的字段", async () => {
+    let listCalls = 0;
+    registerMock("lane_list", () => {
+      listCalls += 1;
+      return [contractLane()];
+    });
+    const upsert = recordingMock(
+      rustLane({
+        lane: { id: "lane-backend", name: "后端线路", kind: "direct", enabled: false },
+      }),
+    );
+    registerMock("lane_upsert", upsert.handler);
+
+    renderPage(<NetworkPage />);
+    await screen.findByTestId("network-lanes-add-id");
+    typeInto("network-lanes-add-id", "lane-x");
+    typeInto("network-lanes-add-name", "我的线路");
+    fireEvent.click(screen.getByTestId("network-lanes-add-submit"));
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    const lane = upsert.calls[0]?.lane as Record<string, unknown>;
+    expect(lane.id).toBe("lane-x");
+    expect(lane.name).toBe("我的线路");
+    expect(lane.kind).toBe("direct");
+    expect(lane.enabled).toBe(true);
+    // 直连不需要订阅：表单里没显示的字段就不发
+    expect("subscription" in lane).toBe(false);
+    expect("group" in lane).toBe(false);
+    for (const key of Object.keys(lane)) expect(key).toMatch(/^[a-z][a-z0-9_]*$/);
+
+    const result = await screen.findByTestId("network-lanes-write-result");
+    expect(result.textContent).toContain("后端线路");
+    expect(result.textContent).toContain("lane-backend");
+    expect(result.textContent).toContain("已禁用");
+    await waitFor(() => expect(listCalls).toBeGreaterThan(1));
+  });
+
+  it("kind=订阅里的组：先按后端规则点明缺 group，补齐后入参带 subscription / group / group_type", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_groups", () => [
+      { name: "日本", type: "url-test" as const, node_count: 3 },
+    ]);
+    const upsert = recordingMock(
+      rustLane({
+        lane: {
+          id: "lane-g",
+          name: "组线路",
+          kind: "subscription_group",
+          subscription: "sub-jp",
+          group: "日本",
+          enabled: true,
+        },
+      }),
+    );
+    registerMock("lane_upsert", upsert.handler);
+
+    renderPage(<NetworkPage />);
+    await screen.findByTestId("network-lanes-add-id");
+    typeInto("network-lanes-add-id", "lane-g");
+    typeInto("network-lanes-add-name", "组线路");
+    await chooseOption("network-lanes-add-kind", "订阅里的组");
+    await chooseOption("network-lanes-add-subscription", "机场A");
+
+    // 订阅解析结果（subscription_groups）读出来供**照抄**：不猜组名，也不替用户改字
+    await waitFor(() =>
+      expect(screen.getByTestId("network-lanes-known-groups").textContent).toContain("日本"),
+    );
+
+    fireEvent.click(screen.getByTestId("network-lanes-add-submit"));
+    const error = await screen.findByTestId("network-lanes-write-error");
+    expect(error.textContent).toContain("还缺必填项");
+    expect(error.textContent).toContain("group");
+    expect(upsert.calls).toHaveLength(0);
+
+    typeInto("network-lanes-add-group", "日本");
+    await chooseOption("network-lanes-add-group-type", /url-test/);
+    fireEvent.click(screen.getByTestId("network-lanes-add-submit"));
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    const lane = upsert.calls[0]?.lane as Record<string, unknown>;
+    expect(lane.subscription).toBe("sub-jp");
+    expect(lane.group).toBe("日本");
+    expect(lane.group_type).toBe("url-test");
+  });
+
+  it("每一行：删除调 lane_delete({id})，指定节点调 lane_set_node({id, node}) 并显示被接受的钉住", async () => {
+    let listCalls = 0;
+    registerMock("lane_list", () => {
+      listCalls += 1;
+      return [rustLane()];
+    });
+    const remove = recordingMock(undefined);
+    const setNode = recordingMock(undefined);
+    registerMock("lane_delete", remove.handler);
+    registerMock("lane_set_node", setNode.handler);
+
+    renderPage(<NetworkPage />);
+    const nodeField = (await screen.findAllByTestId("network-lanes-set-node"))[0]!;
+    fireEvent.change(within(nodeField).getByRole("textbox"), { target: { value: "东京-03" } });
+    fireEvent.click(screen.getAllByTestId("network-lanes-set-node-submit")[0]!);
+
+    await waitFor(() => expect(setNode.calls).toHaveLength(1));
+    // `lane_set_node` 只收 id + node（钉住是内核运行态，不改配置）
+    expect(setNode.calls[0]).toEqual({ id: "lane-jp", node: "东京-03" });
+    expect((await screen.findByTestId("network-lanes-set-node-result")).textContent).toContain(
+      "东京-03",
+    );
+
+    fireEvent.click(screen.getAllByTestId("network-lanes-delete")[0]!);
+    await waitFor(() => expect(remove.calls).toHaveLength(1));
+    expect(remove.calls[0]).toEqual({ id: "lane-jp" });
+    await waitFor(() => expect(listCalls).toBeGreaterThan(1));
+  });
+
+  it("写失败：lane_upsert 的 TA 码原样显示（引用完整性拒绝也走这条路）", async () => {
+    registerMock("lane_list", () => [contractLane()]);
+    registerMock("lane_upsert", () => {
+      throw new TokenAgencyError({ code: "TA-5001", message: "线路被 net.default_lane 引用" });
+    });
+
+    renderPage(<NetworkPage />);
+    await screen.findByTestId("network-lanes-add-id");
+    typeInto("network-lanes-add-id", "lane-x");
+    typeInto("network-lanes-add-name", "我的线路");
+    fireEvent.click(screen.getByTestId("network-lanes-add-submit"));
+
+    const error = await screen.findByTestId("network-lanes-write-error");
+    expect(error.textContent).toContain("TA-5001");
+    expect(error.textContent).toContain("net.default_lane");
   });
 });

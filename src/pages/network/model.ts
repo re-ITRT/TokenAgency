@@ -37,7 +37,7 @@
 
 import type { I18nKey } from "@/shared/i18n";
 import type { SemStatus } from "@/shared/components";
-import type { Subscription, SubscriptionFormat } from "@/shared/bindings";
+import type { GroupType, Lane, LaneKind, Subscription, SubscriptionFormat } from "@/shared/bindings";
 
 // ================================================================ 基础读取件
 
@@ -416,6 +416,83 @@ export function readLane(raw: unknown): LaneRow {
     sampledAtMs: pickNum(latest, "ts_ms"),
     sampleStatus: pickNum(latest, "status"),
   };
+}
+
+// ================================================================ 写载荷（线路）
+
+/** 组策略（内核的组类型）。**kebab-case** —— 与其它枚举不同，`bindings.ts` 专门注明了。 */
+export const LANE_GROUP_TYPES: readonly GroupType[] = [
+  "select",
+  "url-test",
+  "fallback",
+  "load-balance",
+];
+
+/** 组策略 → 文案 key。取值表就是内核的那四个（kebab-case）。 */
+export const GROUP_TYPE_LABEL: Record<string, I18nKey> = {
+  select: "network.groupType.select",
+  "url-test": "network.groupType.url-test",
+  fallback: "network.groupType.fallback",
+  "load-balance": "network.groupType.load-balance",
+};
+
+/** 线路表单的原始输入（可选字段保持字符串：`""` = 没填 → **不发这个字段**）。 */
+export type LaneDraft = {
+  id: string;
+  name: string;
+  kind: LaneKind;
+  subscription: string;
+  group: string;
+  groupType: string;
+  node: string;
+  filter: string;
+  excludeFilter: string;
+  enabled: boolean;
+};
+
+/**
+ * 后端 `Lane::missing_kind_field()`（`crates/ta-core/src/domain/behavior.rs`）的**前端镜像**：
+ * 非 `direct` 必须有 `subscription`；`subscription_group` 要 `group`；`subscription_node` 要 `node`；
+ * `filter` 要 `filter`。返回缺的那个**契约字段名**（给用户看的句子由 i18n 拼）。
+ *
+ * 这不是"前端自己发明规则"：是同一条规则提前检查一次，免得把注定被拒的请求发出去 ——
+ * 规则改动时两边会一起露出来（后端那边有 `missing_kind_field` 的单测）。
+ */
+export function laneMissingField(draft: LaneDraft): string | undefined {
+  if (draft.id.trim() === "") return "id";
+  if (draft.name.trim() === "") return "name";
+  if (draft.kind === "direct") return undefined;
+  if (draft.subscription.trim() === "") return "subscription";
+  if (draft.kind === "subscription_group") return draft.group.trim() === "" ? "group" : undefined;
+  if (draft.kind === "subscription_node") return draft.node.trim() === "" ? "node" : undefined;
+  if (draft.kind === "filter") return draft.filter.trim() === "" ? "filter" : undefined;
+  return undefined;
+}
+
+/**
+ * 草稿 → `lane_upsert` 的载荷：**只带用户真的填了的字段**（其余交后端 `#[serde(default)]`）。
+ * 契约的 `Lane` 把可选字段写成 `string | null`，Rust 侧是 `Option<String>` —— 不填就是 `None`，
+ * 与显式发一个空字符串**不是**一回事（后者会覆盖掉订阅里已有的名字）。
+ */
+export function lanePayload(draft: LaneDraft): Lane {
+  const payload: Record<string, unknown> = {
+    id: draft.id.trim(),
+    name: draft.name.trim(),
+    kind: draft.kind,
+    enabled: draft.enabled,
+  };
+  const optionalFields: [string, string][] = [
+    ["subscription", draft.subscription],
+    ["group", draft.group],
+    ["group_type", draft.groupType],
+    ["node", draft.node],
+    ["filter", draft.filter],
+    ["exclude_filter", draft.excludeFilter],
+  ];
+  for (const [key, value] of optionalFields) {
+    if (value.trim() !== "") payload[key] = value.trim();
+  }
+  return payload as unknown as Lane;
 }
 
 // ================================================================ 线路分配（五级继承的**显式值**）

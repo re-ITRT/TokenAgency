@@ -62,19 +62,25 @@ import { radius, typography } from "@/theme";
 
 import {
   DASH,
+  GROUP_TYPE_LABEL,
   HEALTH_LABEL,
   HEALTH_STATUS,
+  LANE_GROUP_TYPES,
+  LANE_KINDS,
   SUBSCRIPTION_FORMATS,
   filterSummary,
   isKnownHealth,
   laneKindLabel,
+  laneMissingField,
   laneNameOf,
+  lanePayload,
   parseOptionalCount,
   readLane,
   readSubscription,
   subscriptionDraftComplete,
   subscriptionFormatLabel,
   subscriptionPayload,
+  type LaneDraft,
   type LaneRow,
   type SubscriptionDraft,
   type SubscriptionRow,
@@ -770,7 +776,289 @@ function SubscriptionsSection({
   );
 }
 
-// ================================================================ ③ 线路
+// ================================================================ ③ 线路（读 + 写）
+
+const EMPTY_LANE_DRAFT: LaneDraft = {
+  id: "",
+  name: "",
+  kind: "direct",
+  subscription: "",
+  group: "",
+  groupType: "",
+  node: "",
+  filter: "",
+  excludeFilter: "",
+  enabled: true,
+};
+
+/** 一个下拉项：`""` 表示"没选"（值本身就是契约里的语义，不是占位符）。 */
+function SelectField({
+  testId,
+  label,
+  value,
+  onChange,
+  children,
+  hint,
+}: {
+  testId: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  children: ReactNode;
+  hint?: string;
+}) {
+  return (
+    <Stack spacing={1} data-testid={testId} sx={{ minWidth: 200 }}>
+      <TextField select size="small" label={label} value={value} onChange={(event) => onChange(event.target.value)}>
+        {children}
+      </TextField>
+      {hint === undefined ? null : <Caption>{hint}</Caption>}
+    </Stack>
+  );
+}
+
+/**
+ * 新建 / 覆盖线路的表单。
+ *
+ * 两条与后端对齐的规则（都不是前端发明的）：
+ * 1. 必填项按 `Lane::missing_kind_field()`（`crates/ta-core/src/domain/behavior.rs`）提前挡一次；
+ * 2. 组名 / 节点名必须**逐字**一致，所以把 `subscription_groups` / `subscription_nodes` 的解析结果
+ *    读出来给人照抄 —— 读不到就如实说读不到，不猜、不替用户改字（[15 §2.2]）。
+ */
+function LaneWriteForm() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<LaneDraft>(EMPTY_LANE_DRAFT);
+  const [formError, setFormError] = useState<string | undefined>(undefined);
+  const upsert = useCommandMutation("lane_upsert");
+
+  // 订阅 id + 名字：只能从配置里已有的订阅里选（`subscription_list` 是同一份缓存，页面里共用）
+  const subscriptions = useCommandQuery("subscription_list", undefined, qk.subscriptions);
+  const subscriptionOptions =
+    subscriptions.data?.map((item) => {
+      const row = readSubscription(item);
+      return { id: row.id, name: row.name ?? row.id };
+    }) ?? [];
+
+  const needsGroup = draft.kind === "subscription_group";
+  const needsNode = draft.kind === "subscription_node";
+  const hasSubscription = draft.subscription.trim() !== "";
+  // 只在真的需要且真的选了订阅时才去读解析结果（否则会拿到一条必然失败的请求）
+  const groups = useCommandQuery(
+    "subscription_groups",
+    { id: draft.subscription },
+    [...qk.subscriptions, "groups", draft.subscription],
+    { enabled: needsGroup && hasSubscription },
+  );
+  const nodes = useCommandQuery(
+    "subscription_nodes",
+    { id: draft.subscription },
+    [...qk.subscriptions, "nodes", draft.subscription],
+    { enabled: needsNode && hasSubscription },
+  );
+
+  const set = <K extends keyof LaneDraft>(key: K, value: LaneDraft[K]) =>
+    setDraft((previous) => ({ ...previous, [key]: value }));
+
+  const saved = upsert.data === undefined ? undefined : readLane(upsert.data);
+  const savedKind = saved === undefined ? undefined : laneKindLabel(saved.kind);
+
+  const onSubmit = () => {
+    setFormError(undefined);
+    upsert.reset();
+    const missing = laneMissingField(draft);
+    if (missing !== undefined) {
+      setFormError(t("network.lanes.write.missing", { field: missing }));
+      return;
+    }
+    upsert.mutate(
+      { lane: lanePayload(draft) },
+      {
+        onSuccess: () => {
+          void queryClient.invalidateQueries({ queryKey: qk.lanes });
+        },
+      },
+    );
+  };
+
+  return (
+    <Stack spacing={3} data-testid="network-lanes-write">
+      <Box>
+        <Typography variant="h5">{t("network.lanes.write.title")}</Typography>
+        <Caption>{t("network.lanes.write.hint")}</Caption>
+      </Box>
+
+      <Stack spacing={2} sx={FIELD_ROW_SX} direction="row">
+        <Field
+          testId="network-lanes-add-id"
+          label={t("network.lanes.write.id")}
+          value={draft.id}
+          onChange={(value) => set("id", value)}
+          hint={t("network.lanes.write.idHint")}
+        />
+        <Field
+          testId="network-lanes-add-name"
+          label={t("network.lanes.write.name")}
+          value={draft.name}
+          onChange={(value) => set("name", value)}
+        />
+        <SelectField
+          testId="network-lanes-add-kind"
+          label={t("network.lanes.write.kind")}
+          value={draft.kind}
+          onChange={(value) => set("kind", value as LaneDraft["kind"])}
+          hint={t("network.lanes.write.kindHint")}
+        >
+          {LANE_KINDS.map((kind) => (
+            <MenuItem key={kind} value={kind}>
+              {t(laneKindLabel(kind) ?? "network.lanes.col.kind")}
+            </MenuItem>
+          ))}
+        </SelectField>
+      </Stack>
+
+      {draft.kind === "direct" ? null : (
+        <Stack spacing={2} sx={FIELD_ROW_SX} direction="row">
+          <SelectField
+            testId="network-lanes-add-subscription"
+            label={t("network.lanes.write.subscription")}
+            value={draft.subscription}
+            onChange={(value) => set("subscription", value)}
+            hint={t("network.lanes.write.subscriptionHint")}
+          >
+            <MenuItem value="">{t("network.lanes.write.subscriptionNone")}</MenuItem>
+            {subscriptionOptions.map((option) => (
+              <MenuItem key={option.id} value={option.id}>
+                {option.name}
+              </MenuItem>
+            ))}
+          </SelectField>
+          {needsGroup ? (
+            <Field
+              testId="network-lanes-add-group"
+              label={t("network.lanes.write.group")}
+              value={draft.group}
+              onChange={(value) => set("group", value)}
+              hint={t("network.lanes.write.groupHint")}
+            />
+          ) : null}
+          {needsNode ? (
+            <Field
+              testId="network-lanes-add-node"
+              label={t("network.lanes.write.node")}
+              value={draft.node}
+              onChange={(value) => set("node", value)}
+              hint={t("network.lanes.write.nodeHint")}
+            />
+          ) : null}
+          {needsGroup ? (
+            <SelectField
+              testId="network-lanes-add-group-type"
+              label={t("network.lanes.write.groupType")}
+              value={draft.groupType}
+              onChange={(value) => set("groupType", value)}
+            >
+              <MenuItem value="">{t("network.lanes.write.groupTypeNone")}</MenuItem>
+              {LANE_GROUP_TYPES.map((groupType) => {
+                const labelKey = GROUP_TYPE_LABEL[groupType];
+                return (
+                  <MenuItem key={groupType} value={groupType}>
+                    {labelKey === undefined ? groupType : t(labelKey)}
+                  </MenuItem>
+                );
+              })}
+            </SelectField>
+          ) : null}
+        </Stack>
+      )}
+
+      {draft.kind === "direct" ? null : (
+        <Stack spacing={2} sx={FIELD_ROW_SX} direction="row">
+          <Field
+            testId="network-lanes-add-filter"
+            label={t("network.lanes.write.filter")}
+            value={draft.filter}
+            onChange={(value) => set("filter", value)}
+          />
+          <Field
+            testId="network-lanes-add-exclude-filter"
+            label={t("network.lanes.write.excludeFilter")}
+            value={draft.excludeFilter}
+            onChange={(value) => set("excludeFilter", value)}
+          />
+        </Stack>
+      )}
+
+      {/* 订阅解析出来的组 / 节点：给人照抄的证据，不是可选项（不替用户改字、不猜） */}
+      {needsGroup && hasSubscription ? (
+        <Typography
+          variant="caption"
+          data-testid="network-lanes-known-groups"
+          sx={{ color: "text.secondary", overflowWrap: "anywhere" }}
+        >
+          {groups.isError
+            ? errorMessage(groups.error)
+            : groups.data === undefined
+              ? t("common.loading")
+              : groups.data.length === 0
+                ? t("network.lanes.write.knownGroupsEmpty")
+                : t("network.lanes.write.knownGroups", {
+                    list: groups.data.map((group) => group.name).join(" · "),
+                  })}
+        </Typography>
+      ) : null}
+
+      {needsNode && hasSubscription ? (
+        <Typography
+          variant="caption"
+          data-testid="network-lanes-known-nodes"
+          sx={{ color: "text.secondary", overflowWrap: "anywhere" }}
+        >
+          {nodes.isError
+            ? errorMessage(nodes.error)
+            : nodes.data === undefined
+              ? t("common.loading")
+              : nodes.data.length === 0
+                ? t("network.lanes.write.knownNodesEmpty")
+                : t("network.lanes.write.knownNodes", {
+                    list: nodes.data.map((node) => node.name).join(" · "),
+                  })}
+        </Typography>
+      ) : null}
+
+      <FormControlLabel
+        data-testid="network-lanes-add-enabled"
+        control={
+          <Checkbox
+            size="small"
+            checked={draft.enabled}
+            onChange={(event) => set("enabled", event.target.checked)}
+          />
+        }
+        label={t("network.lanes.write.enabled")}
+      />
+
+      <Stack direction="row" spacing={2} sx={{ flexWrap: "wrap" }}>
+        <Button variant="contained" data-testid="network-lanes-add-submit" onClick={onSubmit}>
+          {t("network.lanes.write.submit")}
+        </Button>
+      </Stack>
+
+      <FormNotice testId="network-lanes-write-error" message={formError} />
+      <WriteError testId="network-lanes-write-error" error={upsert.error} />
+
+      {saved === undefined ? null : (
+        <Typography variant="body1" data-testid="network-lanes-write-result" sx={{ overflowWrap: "anywhere" }}>
+          {`${t("network.lanes.write.saved")}：${saved.name ?? saved.id} · ${saved.id}`}
+          {savedKind === undefined ? "" : ` · ${saved.kind === undefined ? "" : t(savedKind)}`}
+          {` · ${saved.enabled ? t("common.enabled") : t("common.disabled")}`}
+          {saved.group === undefined ? "" : ` · ${t("network.lanes.write.groupValue", { name: saved.group })}`}
+          {saved.node === undefined ? "" : ` · ${t("network.lanes.write.nodeValue", { name: saved.node })}`}
+        </Typography>
+      )}
+    </Stack>
+  );
+}
 
 function LanesSection({
   rows,
@@ -784,6 +1072,48 @@ function LanesSection({
   onRetry: () => void;
 }) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  // 行级写操作：删除（配置实体）与钉住节点（**只改内核运行态**，不改配置）。
+  const removeOne = useCommandMutation("lane_delete");
+  const setNode = useCommandMutation("lane_set_node");
+  const [nodeDrafts, setNodeDrafts] = useState<Record<string, string>>({});
+  const [rowError, setRowError] = useState<string | undefined>(undefined);
+  const busy = removeOne.isPending || setNode.isPending;
+
+  const onDelete = (id: string) => {
+    setRowError(undefined);
+    removeOne.reset();
+    removeOne.mutate(
+      { id },
+      {
+        onSuccess: () => {
+          void queryClient.invalidateQueries({ queryKey: qk.lanes });
+        },
+      },
+    );
+  };
+
+  const onSetNode = (id: string) => {
+    setRowError(undefined);
+    setNode.reset();
+    const node = (nodeDrafts[id] ?? "").trim();
+    if (node === "") {
+      setRowError(t("network.lanes.row.setNodeEmpty"));
+      return;
+    }
+    setNode.mutate(
+      { id, node },
+      {
+        onSuccess: () => {
+          // 钉住是运行态：列表里的健康样本要重新拉才是新的
+          void queryClient.invalidateQueries({ queryKey: qk.lanes });
+        },
+      },
+    );
+  };
+
+  const deletedId = removeOne.isSuccess ? removeOne.variables?.id : undefined;
+  const pinned = setNode.isSuccess ? setNode.variables : undefined;
 
   return (
     <SectionPaper
@@ -795,6 +1125,7 @@ function LanesSection({
           <Caption>{t("network.lanes.kindHint")}</Caption>
           <Caption>{t("network.lanes.channelCountHint")}</Caption>
           <Caption>{t("network.lanes.sampleHint")}</Caption>
+          <Caption>{t("network.lanes.row.setNodeHint")}</Caption>
           <MissingCommandNote messageKey="network.missingCommands.lanes" />
         </Stack>
       }
@@ -832,6 +1163,7 @@ function LanesSection({
                 <TableCell align="right">{t("network.lanes.col.latency")}</TableCell>
                 <TableCell align="right">{t("network.lanes.col.nodes")}</TableCell>
                 <TableCell align="right">{t("network.lanes.col.channels")}</TableCell>
+                <TableCell align="right">{t("network.lanes.col.actions")}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -868,6 +1200,47 @@ function LanesSection({
                     <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
                       {row.channelCount === undefined ? <Unreadable /> : row.channelCount}
                     </TableCell>
+                    <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                      <Stack spacing={2} alignItems="flex-end">
+                        {row.kind === "direct" ? (
+                          <Caption>{t("network.lanes.row.directNoGroup")}</Caption>
+                        ) : (
+                          <Stack direction="row" spacing={2} alignItems="center">
+                            <Box data-testid="network-lanes-set-node" sx={{ width: 160 }}>
+                              <TextField
+                                size="small"
+                                label={t("network.lanes.row.setNode")}
+                                value={nodeDrafts[row.id] ?? ""}
+                                onChange={(event) =>
+                                  setNodeDrafts((previous) => ({
+                                    ...previous,
+                                    [row.id]: event.target.value,
+                                  }))
+                                }
+                              />
+                            </Box>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              data-testid="network-lanes-set-node-submit"
+                              disabled={busy}
+                              onClick={() => onSetNode(row.id)}
+                            >
+                              {t("network.lanes.row.setNodeSubmit")}
+                            </Button>
+                          </Stack>
+                        )}
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          data-testid="network-lanes-delete"
+                          disabled={busy}
+                          onClick={() => onDelete(row.id)}
+                        >
+                          {t("network.lanes.row.delete")}
+                        </Button>
+                      </Stack>
+                    </TableCell>
                   </TableRow>
                 );
               })}
@@ -875,6 +1248,26 @@ function LanesSection({
           </Table>
         </Box>
       )}
+
+      {/* 行级写操作的结果：钉住成功 = 后端接受了这个名字（失败会带 TA 码原样显示） */}
+      {pinned === undefined ? null : (
+        <Typography variant="body1" data-testid="network-lanes-set-node-result" sx={{ overflowWrap: "anywhere" }}>
+          {t("network.lanes.row.setNodeResult", { lane: pinned.id, node: pinned.node })}
+        </Typography>
+      )}
+
+      {deletedId === undefined ? null : (
+        <Typography variant="body1" data-testid="network-lanes-delete-result">
+          {t("network.lanes.row.deleteDone", { id: deletedId })}
+        </Typography>
+      )}
+
+      <FormNotice testId="network-lanes-row-error" message={rowError} />
+      <WriteError testId="network-lanes-row-error" error={setNode.error ?? removeOne.error} />
+
+      <Divider />
+
+      <LaneWriteForm />
     </SectionPaper>
   );
 }

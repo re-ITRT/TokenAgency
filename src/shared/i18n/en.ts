@@ -839,6 +839,58 @@ export const en: Record<I18nKey, string> = {
   "network.lanes.col.latency": "Latency",
   "network.lanes.col.nodes": "Nodes",
   "network.lanes.col.channels": "Channels",
+  "network.lanes.col.actions": "Actions",
+  "network.lanes.row.delete": "Delete",
+  "network.lanes.row.setNode": "Node",
+  "network.lanes.row.setNodeSubmit": "Pin",
+  "network.lanes.row.setNodeHint":
+    "Pinning touches only the kernel's runtime state (lane_set_node, not the config): the node name must really exist in the kernel, otherwise the backend refuses.",
+  "network.lanes.row.setNodeEmpty":
+    "The node name to pin cannot be empty — empty values are not sent to the backend.",
+  "network.lanes.row.setNodeResult": "Backend accepted the pin: {{lane}} → {{node}}",
+  "network.lanes.row.directNoGroup": "A direct lane points straight at DIRECT and has no group to switch.",
+  "network.lanes.row.deleteDone": "Deleted by the backend: {{id}}",
+  "network.lanes.write.title": "Create / overwrite a lane",
+  "network.lanes.write.hint":
+    "After saving, the panel shows the lane object the backend returned. Same id = overwrite; fields not in the form fall back to the backend defaults (nothing is guessed, such as group_type).",
+  "network.lanes.write.id": "Lane id",
+  "network.lanes.write.idHint": "The id is the key: same id overwrites an existing lane.",
+  "network.lanes.write.name": "Name",
+  "network.lanes.write.kind": "Kind",
+  "network.lanes.write.kindHint":
+    "The kind decides which fields are required: anything but direct needs a subscription; a group lane needs a group name, a fixed-node lane needs a node name, and a filter lane needs a regex.",
+  "network.lanes.write.subscription": "Subscription",
+  "network.lanes.write.subscriptionHint":
+    "Only subscriptions already in the config can be picked (subscription_list); picking none means the field is absent.",
+  "network.lanes.write.subscriptionNone": "(none selected)",
+  "network.lanes.write.group": "Group name inside the subscription",
+  "network.lanes.write.groupHint":
+    "Must match the subscription's group name character for character (keep emoji unchanged too).",
+  "network.lanes.write.groupType": "Group type (optional)",
+  "network.lanes.write.groupTypeNone": "Use the type the subscription declares for that group",
+  "network.lanes.write.node": "Fixed node name",
+  "network.lanes.write.nodeHint": "Spell it exactly as the kernel does.",
+  "network.lanes.write.filter": "Narrowing regex (optional)",
+  "network.lanes.write.excludeFilter": "Exclude regex (optional)",
+  "network.lanes.write.enabled": "Enable this lane",
+  "network.lanes.write.submit": "Save lane",
+  "network.lanes.write.missing":
+    "Still missing a required field: {{field}} (the same rule as the backend's missing_kind_field).",
+  "network.lanes.write.saved": "Lane returned by the backend",
+  "network.lanes.write.groupValue": "group {{name}}",
+  "network.lanes.write.nodeValue": "node {{name}}",
+  "network.lanes.write.knownGroups":
+    "Groups parsed from this subscription (copy them verbatim): {{list}}",
+  "network.lanes.write.knownGroupsEmpty": "This subscription currently yields no groups.",
+  "network.lanes.write.knownNodes": "Sample nodes of this subscription: {{list}}",
+  "network.lanes.write.knownNodesEmpty": "This subscription currently yields no nodes.",
+  "network.lanes.write.knownUnreadable":
+    "The subscription parse results (subscription_groups / subscription_nodes) are unreadable, so no group or node names are guessed here.",
+
+  "network.groupType.select": "Manual select (select)",
+  "network.groupType.url-test": "URL test (url-test)",
+  "network.groupType.fallback": "Fallback (fallback)",
+  "network.groupType.load-balance": "Load balance (load-balance)",
 
   "network.laneKind.direct": "Direct",
   "network.laneKind.subscription_auto": "Best of the whole subscription",
