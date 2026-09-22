@@ -13,12 +13,19 @@
  * 3. **测试结果每条都来自 `onboarding_test_all`**：通过/失败、延迟、后端说明（含 `ok` 口径）
  *    原样显示；"没有结果"与"全部失败"是两件事。
  * 4. **跳过就是跳过**：跳过只留下一句"没有写入任何配置"，不许出现"已配置"。
- * 5. 模型层仍是纯函数，单独测。
+ * 5. **可编辑字段不许当列表 key**：真机 E2E 抓到"服务商 id 只能输入一个字符"——
+ *    根因是 `key={`${row.id}-${index}`}` 挂在可编辑字段上，每敲一个字符整块重挂。
+ *    所以这一页的用例里有**逐字符打字**（抓住同一个 input 节点往后追加）与
+ *    **源码级检测**（两个行编辑器都守，见「真机缺陷」一节）。
+ * 6. 模型层仍是纯函数，单独测。
  */
 
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import OnboardingPage from "@/pages/onboarding";
@@ -115,7 +122,7 @@ describe("第 1 步：探测展示的是 onboarding_detect 的真值", () => {
     const suggested = await screen.findByTestId("onboarding-detect-suggested");
     expect(suggested.textContent).toContain("字节方舟");
     expect(suggested.textContent).toContain("command code");
-    // 有探测命令就有按钮（不是"未注册所以没有"）
+    // 命令是真的在调（不是画一个"点了没反应"的按钮）
     expect(screen.getByTestId("onboarding-detect-run")).toBeTruthy();
   });
 
@@ -378,6 +385,156 @@ describe("[05 §2.4] 四步骨架：每步都有输入 / 校验 / 结果区", ()
     fireEvent.click(screen.getByTestId("onboarding-prev"));
     expect(screen.getByTestId("onboarding-step-panel").getAttribute("data-step")).toBe("1");
     expect(textbox("onboarding-provider-field-0-name").getAttribute("value")).toBe("字节方舟");
+  });
+});
+
+// ================================================================ ⑤ 行编辑器的 key（真机缺陷）
+
+/**
+ * 真机 E2E 抓到的缺陷：首启向导的"服务商 id"输入框**只能输入一个字符**。
+ *
+ * 证据（tauri-driver 送键 `ta-e2e-provider`）：value 从 `p1` 变成 `p1t`；
+ * 再 `click + clear + sendKeys` 变成 `p1tt` —— **每次只落一个字符，clear 也被覆盖回去**。
+ *
+ * 根因：`key={`${row.id}-${index}`}` 里的 `id` 是**可编辑字段**。每敲一个字符 key 就变，
+ * `ProviderEditor` 整块卸载重挂：输入框失焦、后续按键丢进已经脱离文档的旧元素，
+ * 受控值又把 clear 覆盖回去。`SubEditor` 是同一个写法（它的 id 界面上不可编辑，
+ * 所以现在观察不到 —— 但隐患完全一样，哪天 id 变成可变/可编辑就会同样发作）。
+ *
+ * 为什么以前的测试没看见：它们都是 `type(id, 整串)` 一次给全值。
+ * 重挂之后新节点也会渲染出那个整串，所以**看不出**"每敲一个字符丢一次"。
+ * 这里的测试故意按**真人打字**来：抓住当前 DOM 里那个输入框，逐个字符追加。
+ */
+describe("[真机缺陷] 逐字符输入服务商 id：整串都要落进去，编辑器不许重挂", () => {
+  /**
+   * 这个文件里"被输入控件绑定的行字段" —— `value={row.x}` 就是"x 可以被用户改"的定义。
+   * **文件级判定**（不是逐行判定）：同一个文件里的同类行结构共享字段语义，
+   * 所以 ProviderEditor 让 `id` 可编辑，就等于 SubEditor 的 `row.id` 也不再是稳定值。
+   * 只当 key 的那两个列表（测试矩阵 / 测试结果）没有输入控件，字段不在这里面，天然不误伤。
+   */
+  function editableRowFields(source: string): string[] {
+    const fields = new Set(
+      Array.from(source.matchAll(/value=\{(?:row|item)\.([A-Za-z_]+)\}/g), (match) => match[1] ?? ""),
+    );
+    return Array.from(fields).sort();
+  }
+
+  /** 找出"拿可编辑字段当列表 key"的地方。 */
+  function editableKeySites(source: string): string[] {
+    const editable = new Set(editableRowFields(source));
+    const sites: string[] = [];
+    for (const site of source.matchAll(/key=\{`([^`]*)`\}/g)) {
+      const refs = Array.from(site[1]?.matchAll(/\$\{(?:row|item)\.([A-Za-z_]+)/g) ?? []);
+      if (refs.some((ref) => editable.has(ref[1] ?? ""))) sites.push(site[0]);
+    }
+    return sites;
+  }
+
+  const PAGE_SRC = readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../pages/onboarding/index.tsx"),
+    "utf8",
+  );
+
+  it("自证：检测器在坏样本上必须报红，在「字段不可编辑」的样本上不误伤", () => {
+    const bad = [
+      "<Field value={row.id} onChange={(id) => onChange({ ...row, id })} />",
+      "<ProviderEditor key={`${row.id}-${index}`} />",
+    ].join("\n");
+    expect(editableKeySites(bad)).toEqual(["key={`${row.id}-${index}`}"]);
+
+    const fine = [
+      "<Field value={row.id} />",
+      "<Row key={`${row.credential_id}-${index}`} />",
+    ].join("\n");
+    expect(editableKeySites(fine)).toEqual([]);
+  });
+
+  it("自证：字段清单真的是从这个页面里读出来的（否则上面那条空列表是假绿）", () => {
+    expect(editableRowFields(PAGE_SRC)).toEqual([
+      "base_url",
+      "id",
+      "name",
+      "protocol",
+      "secret",
+      "url",
+    ]);
+  });
+
+  it("页源码：两个行编辑器都不许拿 row.id 当 key（SubEditor 的隐患一并堵住）", () => {
+    expect(editableKeySites(PAGE_SRC)).toEqual([]);
+  });
+
+  it("逐字符输入：整串都落进去，而且输入框还是同一个节点（没被换掉、焦点没丢）", () => {
+    renderPage();
+    fireEvent.click(screen.getByTestId("onboarding-provider-add"));
+
+    const box = () => screen.getByTestId("onboarding-provider-field-0-id");
+    const input = within(box()).getByRole("textbox") as HTMLInputElement;
+    expect(input.value).toBe("p1");
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    // 真人打字：焦点与目标都是**同一个** input 节点，逐个字符往后追加
+    let typed = input.value;
+    for (const ch of "ta-e2e-provider") {
+      typed += ch;
+      fireEvent.change(input, { target: { value: typed } });
+    }
+
+    // ① 一个字符都不许丢（真机上这里只会落到 p1t）
+    expect((within(box()).getByRole("textbox") as HTMLInputElement).value).toBe("p1ta-e2e-provider");
+    // ② 输入框必须还是刚才那个节点：重挂会把它整块换掉，焦点也就没了
+    expect(box().contains(input)).toBe(true);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("逐字符敲出来的 id 真的进了提交 payload（不是只在输入框里好看）", async () => {
+    renderPage();
+    fireEvent.click(screen.getByTestId("onboarding-provider-add"));
+
+    const input = within(screen.getByTestId("onboarding-provider-field-0-id")).getByRole(
+      "textbox",
+    ) as HTMLInputElement;
+    let typed = input.value;
+    for (const ch of "-custom") {
+      typed += ch;
+      fireEvent.change(input, { target: { value: typed } });
+    }
+
+    type("onboarding-provider-field-0-name", "服务商");
+    type("onboarding-provider-field-0-baseUrl", "https://a.example.com/v1");
+    type("onboarding-provider-field-0-secret", "sk-1");
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    fireEvent.click(within(screen.getByTestId("onboarding-no-vpn")).getByRole("checkbox"));
+    while (Number(screen.getByTestId("onboarding-step-panel").getAttribute("data-step")) < 4) {
+      fireEvent.click(screen.getByTestId("onboarding-next"));
+    }
+
+    const payload = JSON.parse(
+      (await screen.findByTestId("onboarding-apply-payload")).textContent ?? "{}",
+    ) as { providers: { id: string }[] };
+    expect(payload.providers[0]?.id).toBe("p1-custom");
+  });
+
+  it("订阅行改名：输入框同样是同一个节点（第二个编辑器也守着）", () => {
+    renderPage();
+    fillValidProvider();
+    fireEvent.click(screen.getByTestId("onboarding-next"));
+    fireEvent.click(screen.getByTestId("onboarding-sub-add"));
+
+    const box = () => screen.getByTestId("onboarding-sub-field-0-name");
+    const input = within(box()).getByRole("textbox") as HTMLInputElement;
+    input.focus();
+
+    let typed = input.value;
+    for (const ch of "订阅 A") {
+      typed += ch;
+      fireEvent.change(input, { target: { value: typed } });
+    }
+
+    expect((within(box()).getByRole("textbox") as HTMLInputElement).value).toBe("订阅 A");
+    expect(box().contains(input)).toBe(true);
+    expect(document.activeElement).toBe(input);
   });
 });
 

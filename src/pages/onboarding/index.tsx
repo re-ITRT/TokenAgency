@@ -345,7 +345,7 @@ export default function OnboardingPage() {
   // 每一步"能不能继续"：没有输入不算填错（可以先去下一步，回头再配）
   const step1Ok = providers.length === 0 || providerIssues.length === 0;
   const step2Ok = noVpn || (subs.length > 0 && subIssues.length === 0);
-  /** 第 3 步没有可点的测试（命令未注册），所以它不拦路。 */
+  /** 第 3 步的连通性测试是**可选**的（不点就跳过测试直接应用），所以它不拦路。 */
   const canContinue = step === 1 ? step1Ok : step === 2 ? step2Ok : true;
 
   const updateProvider = (index: number, next: ProviderRow) =>
@@ -486,7 +486,12 @@ export default function OnboardingPage() {
                 {providers.length === 0 ? <Caption>{t("onboarding.provider.empty")}</Caption> : null}
                 {providers.map((row, index) => (
                   <ProviderEditor
-                    key={`${row.id}-${index}`}
+                    // key **只能**用 index：`row.id` 是这一行的**可编辑字段**，
+                    // 拿它当 key 会让"每敲一个字符就换一次 key"→ 整块卸载重挂：
+                    // 输入框失焦、后续按键丢进已脱离文档的旧元素（真机 E2E 抓到
+                    // 送键 ta-e2e-provider 只落成 "p1t"）。守卫见
+                    // src/app/onboarding.test.tsx 的「真机缺陷」一节。
+                    key={index}
                     index={index}
                     row={row}
                     onChange={(next) => updateProvider(index, next)}
@@ -525,7 +530,9 @@ export default function OnboardingPage() {
                 {subs.length === 0 ? <Caption>{t("onboarding.sub.empty")}</Caption> : null}
                 {subs.map((row, index) => (
                   <SubEditor
-                    key={`${row.id}-${index}`}
+                    // 同 ProviderEditor：key 不许挂在行字段上（`row.id` 现在界面上虽然不可编辑，
+                    // 但同一个文件里"行字段可变"的语义是一样的，隐患不该留着等人踩）。
+                    key={index}
                     index={index}
                     row={row}
                     onChange={(next) => updateSub(index, next)}
