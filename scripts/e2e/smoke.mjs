@@ -520,7 +520,10 @@ async function startFixture() {
           : CLASH_YAML;
     res.writeHead(200, {
       "content-type": "text/yaml; charset=utf-8",
-      "subscription-userinfo": "upload=1; download=2; total=1024; expire=1893456000",
+      // 流量头：**用用户给的真实量级**（Clash 面板那种 92.9GB / 130GB = 71%），
+      // 这样 E2E 能断言界面算出来的数字与这里对得上（而不是拿 1/2/1024 这种看不出错的数）。
+      // upload + download = 92.9 GB，total = 130 GB → 71%。
+      "subscription-userinfo": `upload=${Math.round(10.0 * 1024 ** 3)}; download=${Math.round(82.9 * 1024 ** 3)}; total=${130 * 1024 ** 3}; expire=1893456000`,
     });
     res.end(body);
   });
@@ -790,6 +793,74 @@ async function step11(wd) {
   else record("step11", "FAIL", "点了保存但 config 表里没有 policy", evidence);
 }
 
+async function step12(wd) {
+  const evidence = [];
+  // 用例前提：这一步必须在**还没配置任何网络**时跑（干净 scratch），否则语义不成立。
+  // 放在 step2/step3（会通过向导写入订阅）之前跑，见主流程里的顺序注释。
+  const page = await gotoPage(wd, "#/network");
+  if (page === null) {
+    record("step12", "FAIL", "/network 页面没渲染出来", evidence);
+    return;
+  }
+  const ids = await wd.probeTestIds();
+  evidence.push(`/network 命中 data-testid: ${ids.slice(0, 30).join(", ")}`);
+  const dump = dumpScratchDb("step12");
+  const kinds = configEntityKinds(dump);
+  evidence.push(`config kind 计数: ${JSON.stringify(kinds)}`);
+  const forBidden = [
+    "network-subscriptions",
+    "network-subscriptions-table",
+    "network-lanes",
+    "network-lanes-write",
+    "network-assignments-resolved",
+  ].filter((t) => ids.includes(t));
+  const hasEntry = ids.includes("network-optional");
+  evidence.push(`未配置时不该出现的 testid（实际出现）: ${forBidden.join(", ") || "（无）"}`);
+  evidence.push(`是否出现「网络代理（可选，未启用）」入口 network-optional: ${hasEntry}`);
+  if (forBidden.length === 0 && hasEntry) {
+    record("step12", "PASS", "网络未配置时：不渲染任何网络区块，只给一个选装入口（用户硬要求）", evidence);
+  } else if (forBidden.length > 0) {
+    record("step12", "FAIL", `未配置却渲染了网络区块：${forBidden.join(", ")}`, evidence);
+  } else {
+    record("step12", "FAIL", "未配置时既没有网络区块、也没有 network-optional 入口（用户会找不到启用方式）", evidence);
+  }
+}
+
+async function step13(wd) {
+  const evidence = [];
+  const page = await gotoPage(wd, "#/network");
+  if (page === null) {
+    record("step13", "FAIL", "/network 页面没渲染出来", evidence);
+    return;
+  }
+  // 流量信息是**刷新时**从响应头拿到的，所以先点一次行上的「刷新」。
+  const refreshed = await wdClickTid(wd, "network-subscriptions-refresh", evidence);
+  if (refreshed) {
+    await sleep(2500);
+    evidence.push("已点过 network-subscriptions-refresh（流量信息来自刷新时的 subscription-userinfo）");
+  } else {
+    evidence.push("没有 network-subscriptions-refresh 可点（那就不可能有流量信息）");
+  }
+  const text = await wd.pageText();
+  const lines = text.split("\n").filter((l) => /已用|GB|%|更新时间/.test(l)).slice(0, 8);
+  evidence.push(`与流量相关的文案: ${JSON.stringify(lines)}`);
+  if (!/已用|Used/.test(text)) {
+    record("step13", "SKIP", "订阅行里没有流量信息（后端还没解析 subscription-userinfo，或还没接上界面）", evidence);
+    return;
+  }
+  // fixture 给的是 upload 10GB + download 82.9GB = 92.9GB，total 130GB → 71%
+  const hasUsed = /92\.9/.test(text);
+  const hasTotal = /130/.test(text);
+  const hasPercent = /71%/.test(text);
+  const hasUpdated = /更新时间|Updated/.test(text);
+  evidence.push(`92.9GB=${hasUsed} 130GB=${hasTotal} 71%=${hasPercent} 更新时间=${hasUpdated}`);
+  if (hasUsed && hasTotal && hasPercent && hasUpdated) {
+    record("step13", "PASS", "订阅行显示更新时间 + 已用/总量 + 百分比，且与 fixture 的字节数对得上", evidence);
+  } else {
+    record("step13", "FAIL", "流量显示不完整或数字对不上（见证据）", evidence);
+  }
+}
+
 // ================================================================ 主流程
 
 function parseArgs(argv) {
@@ -985,6 +1056,9 @@ async function main() {
     // ============================================================ step1 窗口 + 首帧
     if (want("step1")) await step1(wd);
 
+    // ============================================================ step12 网络未配置 → 不显示（必须在建订阅之前跑）
+    if (want("step12")) await step12(wd);
+
     // ============================================================ step2 供应商
     if (want("step2")) await step2(wd, fixture);
 
@@ -1005,6 +1079,9 @@ async function main() {
     if (want("step9")) await step9(wd);
     if (want("step10")) await step10(wd);
     if (want("step11")) await step11(wd);
+
+    // ============================================================ step13 订阅流量与更新时间可见（需要先有订阅）
+    if (want("step13")) await step13(wd);
 
     // ============================================================ 收尾：再查一次隔离
     await stepIsolationAfter(wd);
