@@ -31,6 +31,7 @@ import type {
   ChannelGroup,
   Credential,
   CredentialView,
+  LaneKind,
   LaneView,
   ProviderView,
   QuotaConfig,
@@ -406,4 +407,156 @@ export function summarizeChannels(rows: readonly ChannelRowView[]): ChannelsSumm
 /** 未配额度提醒里那条凭据的显示名：优先通道行里查到的凭据名，其次给 id（原样，不改写）。 */
 export function credentialLabelFor(credentialId: string, rows: readonly ChannelRowView[]): string {
   return rows.find((r) => r.credentialId === credentialId)?.credentialLabel ?? credentialId;
+}
+
+// ================================================================ 添加线路向导（task-33）
+//
+// 「线路」= `Channel`（model x provider x credential x lane x upstream_model x 优先级/权重），
+// 写命令 `channel_upsert({ channel })`。这一层只做**纯逻辑**：草稿 → 载荷、派生 id、选项过滤。
+// 三条纪律：
+// 1. **只发用户真的填了的字段**：`channel_upsert` 收的 `ChannelConfig` 里 `lane` / `transform` /
+//    `priority` / `weight` / `tags` / `enabled` 都有 `#[serde(default)]`
+//    （`crates/ta-core/src/domain/mod.rs:1058`），所以没填的字段**一个都不发**，
+//    由 Rust 的 `Default` 决定 —— 前端不复制一份默认值（那是两份真相源）。
+// 2. **id 是派生的**：本轮的向导没有 id 输入框（固定 testid 里没有），所以 id 由
+//    「模型 x 服务商 x 凭据」派生。这三样才是**一条线的身份**；换上游名 / 网络 / 优先级 / 权重
+//    都还是同一条线（`channel_upsert` 按 id 覆盖，正是幂等编辑的语义）。
+//    凭据进 id 是必须的：同一个服务商的两份套餐（两份 key）是两条独立的线。
+// 3. **本地预检只挡后端也会挡的必填项**（服务商 / 凭据 / 模型 / 上游模型名），
+//    其余（模型是否存在、lane 是否存在、weight 是否为 0）一律交给后端，错误原样显示。
+
+/** 线路表单的原始输入。可空的字段保持字符串：`""` = 没填 → **不发这个字段**。 */
+export type ChannelDraft = {
+  provider: string;
+  credential: string;
+  model: string;
+  upstreamModel: string;
+  /** 空字符串 = 不指定 lane（按「凭据 -> 服务商 -> 默认 -> 直连」继承）。 */
+  lane: string;
+  priority: string;
+  weight: string;
+};
+
+export const EMPTY_CHANNEL_DRAFT: ChannelDraft = {
+  provider: "",
+  credential: "",
+  model: "",
+  upstreamModel: "",
+  lane: "",
+  priority: "",
+  weight: "",
+};
+
+/** id 里只允许小写字母、数字与短横线（与 `channels-add-id` 那类向导的 `wizard.invalidId` 同一口径）。 */
+function idSlug(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+/**
+ * 派生通道 id：`ch-<service provider>-<credential>-<model>`。
+ *
+ * **为什么不是 `Date.now()` 之类**：id 必须是"同一条线"的稳定指纹，否则每次保存都会新增一条
+ * 而不是覆盖（`channel_upsert` 是同 id 覆盖语义），用户会得到一堆重复线路。
+ * 为什么不含上游模型名：上游模型名是这条线的**属性**，改名不该变成另一条线。
+ */
+export function channelIdFor(
+  draft: Pick<ChannelDraft, "provider" | "credential" | "model">,
+): string {
+  return ["ch", idSlug(draft.provider), idSlug(draft.credential), idSlug(draft.model)]
+    .filter((part) => part !== "")
+    .join("-");
+}
+
+/** 非整数字符串一律当作**没填**（输入框本身只放数字字符进去，这里只是最后一道闸）。 */
+export function parseOptionalInt(raw: string): number | undefined {
+  const text = raw.trim();
+  if (!/^-?\d+$/.test(text)) return undefined;
+  const value = Number(text);
+  return Number.isInteger(value) ? value : undefined;
+}
+
+/**
+ * 草稿 → `channel_upsert` 的载荷：**只带用户真的填了的字段**（其余交后端 `#[serde(default)]`）。
+ *
+ * 返回类型写的是契约的 `Channel`，但 TS 侧的 `Channel` 把 `transform` / `tags` / `enabled`
+ * 写成了必填（读取形状），而 Rust 侧它们都有默认值 —— 所以这里和 `network/model.ts` 的
+ * `lanePayload` 同一手法：先拼 `Record<string, unknown>`，最后断言成 `Channel`。
+ * 单测（`channels.test.tsx` ⑨）钉住"这些字段一个都不在载荷里"。
+ */
+export function channelPayload(draft: ChannelDraft): Channel {
+  const payload: Record<string, unknown> = {
+    id: channelIdFor(draft),
+    model: draft.model.trim(),
+    provider: draft.provider.trim(),
+    credential: draft.credential.trim(),
+    upstream_model: draft.upstreamModel.trim(),
+  };
+
+  const lane = draft.lane.trim();
+  if (lane !== "") payload["lane"] = lane;
+
+  const priority = parseOptionalInt(draft.priority);
+  if (priority !== undefined) payload["priority"] = priority;
+
+  const weight = parseOptionalInt(draft.weight);
+  if (weight !== undefined) payload["weight"] = weight;
+
+  return payload as unknown as Channel;
+}
+
+/** 本地预检能点名的字段（文案在页面层映射到既有 i18n 键）。 */
+export type ChannelDraftField = "provider" | "credential" | "model" | "upstreamModel";
+
+/** 缺哪些必填项（顺序 = 用户填写的顺序）。空数组 = 可以发。 */
+export function channelDraftIssues(draft: ChannelDraft): ChannelDraftField[] {
+  const missing: ChannelDraftField[] = [];
+  if (draft.provider.trim() === "") missing.push("provider");
+  if (draft.credential.trim() === "") missing.push("credential");
+  if (draft.model.trim() === "") missing.push("model");
+  if (draft.upstreamModel.trim() === "") missing.push("upstreamModel");
+  return missing;
+}
+
+/** 一个凭据选项（值 = 契约里的 `CredentialId`）。 */
+export type CredentialOption = { id: string; label: string; providerId: string };
+
+/**
+ * 凭据下拉的选项：**按 provider 过滤**（`CredentialView.credential.provider`）。
+ *
+ * `providerId` 为空（还没选服务商）→ 返回空数组：**不列别的服务商的凭据** ——
+ * 那会让用户以为可以给 A 服务商配 B 服务商的 key，真机上必被引用完整性拒绝。
+ */
+export function credentialOptionsFor(
+  views: readonly CredentialView[],
+  providerId: string,
+): CredentialOption[] {
+  if (providerId === "") return [];
+  return views
+    .filter((v) => v.credential.provider === providerId)
+    .map((v) => ({ id: v.credential.id, label: v.credential.label, providerId: v.credential.provider }));
+}
+
+/** 一个线路选项（值 = 契约里的 `LaneId`）。 */
+export type LaneOption = { id: string; name: string; kind: LaneKind };
+
+/** 网络下拉的选项 = `lane_list` 里配置好的线路（直连也是其中一条 `kind: direct` 的线路）。 */
+export function laneOptionsOf(lanes: readonly LaneView[]): LaneOption[] {
+  return lanes.map((l) => ({ id: l.lane.id, name: l.lane.name, kind: l.lane.kind }));
+}
+
+/**
+ * 默认网络 = **配置里那条启用的直连线路**（用户原话里的「网络 直连」）。
+ *
+ * 找不到直连线路时返回 `""`（= 不指定 lane）：此时按继承链走，最终仍然是直连 ——
+ * 但这是**后端的语义**，不是本页替用户挑的，所以页面会把这条继承说明显示出来。
+ * **绝不**退而选第一条订阅线路：那会让流量悄悄绕道代理。
+ */
+export function defaultLaneId(lanes: readonly LaneView[]): string {
+  const direct = lanes.find((l) => l.lane.enabled && l.lane.kind === "direct");
+  return direct?.lane.id ?? "";
 }
