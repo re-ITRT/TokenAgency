@@ -1355,6 +1355,15 @@ export const zhCN = {
   "policies.add.stickyNone": "不指定",
   "policies.add.stickyNote": "粘性把会话固定在同一条线路上，避免中途换上游",
   "policies.add.submit": "保存路由",
+  "network.optional.title": "网络代理（可选，未启用）",
+  "network.optional.hint": "这块功能是选装：用来让请求走代理或机场线路。在你配置之前，这里不会显示任何网络区块。",
+  "network.optional.enable": "去配置（内核路径 / 第一条订阅）",
+  "network.sub.traffic.updated": "更新时间：{{at}}",
+  "network.sub.traffic.used": "已用 {{used}} / {{total}}",
+  "network.sub.traffic.usedOnly": "已用 {{used}}",
+  "network.sub.traffic.percent": "{{pct}}%",
+  "network.sub.traffic.none": "尚未获取流量信息（订阅服务商没有返回 subscription-userinfo）",
+  "network.sub.traffic.expire": "到期：{{date}}",
 } as const;
 
 /** 全部 i18n key。新增 key 必须同时补 `en.ts`。 */

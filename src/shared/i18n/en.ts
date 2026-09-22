@@ -1431,4 +1431,13 @@ export const en: Record<I18nKey, string> = {
   "policies.add.stickyNone": "None",
   "policies.add.stickyNote": "Stickiness pins a session to one line so it does not switch upstream mid-session",
   "policies.add.submit": "Save route",
+  "network.optional.title": "Network proxy (optional, not enabled)",
+  "network.optional.hint": "This part is optional: it routes requests through a proxy or an airport subscription. Nothing network-related is shown until you configure it.",
+  "network.optional.enable": "Configure (kernel path / first subscription)",
+  "network.sub.traffic.updated": "Updated: {{at}}",
+  "network.sub.traffic.used": "Used {{used}} / {{total}}",
+  "network.sub.traffic.usedOnly": "Used {{used}}",
+  "network.sub.traffic.percent": "{{pct}}%",
+  "network.sub.traffic.none": "No traffic info yet (the provider did not return subscription-userinfo)",
+  "network.sub.traffic.expire": "Expires: {{date}}",
 };
