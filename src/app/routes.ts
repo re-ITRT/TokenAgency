@@ -99,7 +99,7 @@ export const ROUTES: readonly AppRoute[] = [
     icon: CategoryOutlinedIcon,
     owner: "F3",
     nav: true,
-    pages: ["models"],
+    pages: ["models", "models/index"],
     docRef: "07 §4 模型目录",
   },
   {
@@ -112,7 +112,7 @@ export const ROUTES: readonly AppRoute[] = [
     icon: AltRouteOutlinedIcon,
     owner: "F3",
     nav: true,
-    pages: ["channels"],
+    pages: ["channels", "channels/index"],
     docRef: "07 §5 / 05 §2.1 套餐链（默认视图）+ 矩阵（批量配置视图）",
   },
   {
@@ -122,7 +122,7 @@ export const ROUTES: readonly AppRoute[] = [
     icon: RuleOutlinedIcon,
     owner: "F3",
     nav: true,
-    pages: ["policies"],
+    pages: ["policies", "policies/index"],
     docRef: "07 §5 路由策略（规则表 + 条件构造器 + 模拟器）",
   },
   {
@@ -132,7 +132,7 @@ export const ROUTES: readonly AppRoute[] = [
     icon: LanOutlinedIcon,
     owner: "F4",
     nav: true,
-    pages: ["network"],
+    pages: ["network", "network/index"],
     docRef: "12 §6 F4 订阅管理 / 节点列表 / 分配 Tab",
   },
   {
@@ -162,7 +162,7 @@ export const ROUTES: readonly AppRoute[] = [
     icon: PaidOutlinedIcon,
     owner: "F4",
     nav: true,
-    pages: ["cost"],
+    pages: ["cost", "cost/index"],
     docRef: "07 §6 成本中心",
   },
   {
@@ -184,7 +184,7 @@ export const ROUTES: readonly AppRoute[] = [
     icon: SettingsOutlinedIcon,
     owner: "F4",
     nav: true,
-    pages: ["settings"],
+    pages: ["settings", "settings/index"],
     docRef: "07 §7 设置（含开机自启动，09 §1.2 E1–E5）",
   },
   {
@@ -194,7 +194,7 @@ export const ROUTES: readonly AppRoute[] = [
     icon: RocketLaunchOutlinedIcon,
     owner: "F4",
     nav: false,
-    pages: ["onboarding"],
+    pages: ["onboarding", "onboarding/index"],
     docRef: "12 §6 F4 首启向导",
   },
 ];

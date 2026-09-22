@@ -14,7 +14,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { api, isTauri } from "@/shared/api";
 import { registerBaselineMocks, registerDevMocks } from "@/shared/api/mock";
@@ -25,12 +25,23 @@ import { AppShell } from "./AppShell";
 import { primaryCandidate, resolvePage } from "./pageRegistry";
 import { HOME_PATH, NAV_ROUTES, ROUTES, routeByKey } from "./routes";
 
+// 这条文件里"每个路由都能渲染"要**逐个真实挂载 13 条路由**（含懒加载分包）。
+// 页面全落地之前它 1.3s 就跑完；13 个页面都在之后，光"非 network 的 11 条"实测就要 ~4.2s，
+// 再加每条路由的 waitFor 等待，默认 5s 已经**结构性不够**（不是页面缺陷）。
+// 注意：必须在**模块作用域**设置 —— 放进 beforeAll 太晚，收集测试时就已经定好超时了。
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 beforeAll(async () => {
   // 语言固定成中文并**等它生效**：CI 机器的 navigator.language 不可控，
   // 断言不能依赖运行环境。（也顺带验证了 setLocale → changeLanguage 这条链路。）
   await i18n.changeLanguage("zh-CN");
   // 浏览器开发用的基准场景 mock：让状态条有真实数据可渲染（[03 §0]）
   registerBaselineMocks();
+  // **再加上开发用的完整 mock 集**：`registerBaselineMocks` 只覆盖基准场景那几条命令，
+  // 而 13 条路由各自的页面（成本中心要 usage_*、设置页要 config_*、网络页要 subscription_list …）
+  // 需要更多命令。少了它们，页面会抛错被 ErrorBoundary 接管，于是"每个路由都能渲染"这条
+  // 会在**页面明明已经实现**的情况下超时失败 —— 这是测试自身的环境缺口，不是页面缺陷。
+  registerDevMocks();
 });
 
 afterEach(() => {
@@ -83,7 +94,10 @@ describe("路由外壳", () => {
       }
       view.unmount();
     }
-  });
+    // 这条要**逐个真实挂载 13 条路由**（含懒加载分包）：页面全落地后整轮 5–7s，
+    // 默认 5s 是**结构性不够**（不是页面缺陷；页面未落地时它 1.3s 就跑完）。
+    // 断言一条没动，只是给它足够的预算。
+  }, 60_000);
 
   it("`/` 重定向到看板（看板已有页面，不再是占位壳）", async () => {
     renderAt("/");

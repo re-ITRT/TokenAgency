@@ -59,7 +59,10 @@ export function QuotaBar({
   const { t } = useTranslation();
   const level = quotaLevel(usedPct);
   const unlimited = usedPct === null;
-  const pctText = formatPercent(usedPct ?? 0);
+  // [docs/15 §4.3]：**百分比固定一位小数**。这里必须显式传 1：
+  // `formatPercent` 的默认值对 ≥10% 取 0 位小数，于是同一个页面会出现
+  // 「成功率 99.8%」与「额度占用 82%」两种精度（真实缺陷，由 providers 页的评审发现）。
+  const pctText = formatPercent(usedPct ?? 0, 1);
   const stateText = t(`component.quotaBar.state.${state ?? (unlimited ? "unknown" : "ok")}`);
 
   const tooltip = unlimited ? t("component.quotaBar.unlimitedHint") : `${stateText} · ${pctText}`;

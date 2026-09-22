@@ -159,6 +159,10 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             catalog::policy_list,
             catalog::lane_list,
             catalog::subscription_list,
+            // ---- task-16 批次 A 第 1 组：实体写命令（E3 的实现，由主管注册）
+            catalog::provider_upsert,
+            catalog::channel_upsert,
+            catalog::channel_set_enabled,
             usage::usage_dashboard,
             usage::usage_query,
             usage::usage_token_kinds,

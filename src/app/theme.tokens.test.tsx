@@ -191,8 +191,10 @@ describe("[15] 设计令牌：值与文档一致，且能被 MUI 正确消费", 
     );
 
     expect(screen.getByText("TokenAgency")).toBeTruthy();
-    // /providers 还没实现 → 占位壳（不白屏）
-    expect(screen.getByTestId("page-placeholder")).toBeTruthy();
+    // 这里**刻意不再断言某条路由是占位壳**：原先写的是 `/providers 还没实现 → 占位壳`，
+    // 结果 /providers 一落地这条测试就红 —— 它把"某个页面还没做"编码进了测试里。
+    // 页面会陆续落地，任何"必须是占位壳"的断言都会随之下一次变红。
+    // 本用例要守的是"外壳 + 状态条在我们自己的主题下真的渲染出来了"，与哪条路由落地无关。
     // 状态条在自定义主题下把 mock 的"运行中"画出来了
     expect(screen.getAllByText("运行中").length).toBeGreaterThan(0);
   });
