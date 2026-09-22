@@ -519,7 +519,13 @@ export function registerBaselineMocks(): void {
     updated_at_ms: now(),
   }));
   mockCommand("provider_list", () => providers);
-  mockCommand("provider_test", () => ({ ok: true, status: 200, latency_ms: 82, note: "mock" }));
+  mockCommand("provider_test", () => ({
+    ok: true,
+    status: 200,
+    latency_ms: 82,
+    probe: "models" as const,
+    note: "mock",
+  }));
   mockCommand("model_list", () => models);
   mockCommand("group_list", () => groups);
   mockCommand("policy_list", () => policies);

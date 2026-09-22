@@ -364,6 +364,15 @@ export type Model = {
   aliases: string[];
   display: DisplayConfig;
   expose: boolean;
+  /**
+   * 这个模型**默认走哪条线路**（[docs/19 §1.5]）。
+   *
+   * 为什么落在 `Model` 上而不是只落 `Channel.lane`：用户在「添加模型」那一步能改的**只有网络代理**
+   * （其余字段只读），而那时该模型可能还没有 channel。所以这个值既是"下一次为它建 channel 时的默认 lane"，
+   * 也会被 `model_bulk_update({ patch: { lane } })` 同步写到它**现有**的每个 channel 上。
+   * 省略 / null = 直连（与 `net.default_lane` 链一致）。
+   */
+  default_lane?: LaneId | null;
 };
 
 export type Transform = {
@@ -630,6 +639,16 @@ export type ProbeResult = {
   ok: boolean;
   status: number;
   latency_ms: number;
+  /**
+   * 这一次探测**实际发的是什么**（[docs/19 §1.1]）：
+   * - `"models"`：`GET {base_url}/models`（OpenAI 兼容的模型清单端点）；
+   * - `"chat"`：`POST {base_url}/chat/completions` 的最小探测（有些中转没有 `/models`）；
+   * - `"none"`：一次请求都没发出去（例如线路不可用/鉴权缺失）。
+   *
+   * **`ok=false` 不等于"服务商坏了"**：`status=404 && probe="models"` 的语义是
+   * "上游没有这个端点"，UI 必须按 `probe` 分档说人话，不许把它渲染成"连接失败"。
+   */
+  probe: "models" | "chat" | "none";
   note?: string | null;
 };
 
@@ -664,7 +683,42 @@ export type ImportPreview = {
   skipped: { upstream_model: string; reason: string }[];
 };
 
-export type ModelPatch = Partial<Pick<Model, "expose" | "aliases" | "display">>;
+export type ModelPatch = Partial<Pick<Model, "expose" | "aliases" | "display">> & {
+  /** 只改该模型（及其现有 channel）的网络线路；`null` = 直连（[docs/19 §1.5]）。 */
+  lane?: LaneId | null;
+};
+
+/**
+ * 我们网关对外的**访问密钥**（[docs/19 §3]）。客户端拿它调到 `127.0.0.1:8787`。
+ *
+ * **明文不在这个类型里**（表里只存 sha256）：明文只在 `api_key_create` 的返回里出现**一次**。
+ */
+export type ApiKeyView = {
+  id: string;
+  name: string;
+  /** 展示用前缀（前 12 字符 + `…`）；列表里**不放复制按钮** —— 只存哈希，复制不出来。 */
+  key_prefix: string;
+  enabled: boolean;
+  note?: string | null;
+  created_at_ms: number;
+  /** 网关最近一次用它鉴权成功的时间；从未用过 = null（**不是 0**）。 */
+  last_used_at_ms?: number | null;
+};
+
+export type ApiKeyCreated = {
+  key: ApiKeyView;
+  /** **只此一次**。页面必须提示用户立刻保存，关掉后无法再取回。 */
+  plaintext: string;
+};
+
+/** 按 key × 日聚合的用量（复用既有 `api_key_usage` 表）。 */
+export type ApiKeyUsageRow = {
+  key_id: string;
+  day: string;
+  requests: number;
+  tokens: number;
+  cost?: number | null;
+};
 
 export type MatrixView = {
   models: ModelRow[];
@@ -1159,6 +1213,13 @@ export type CommandMap = {
     };
   };
   log_export: { args: { query: LogQuery; path: string }; result: void };
+
+  // ---- api key（[docs/19 §3]：我们网关对外的访问密钥）
+  api_key_list: { args: undefined; result: ApiKeyView[] };
+  api_key_create: { args: { name: string; note?: string | null }; result: ApiKeyCreated };
+  api_key_set_enabled: { args: { id: string; enabled: boolean }; result: ApiKeyView };
+  api_key_delete: { args: { id: string }; result: void };
+  api_key_usage: { args: { id?: string | null; limit: number }; result: ApiKeyUsageRow[] };
 
   // ---- onboarding / tray
   onboarding_detect: {

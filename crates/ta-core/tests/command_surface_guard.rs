@@ -62,9 +62,11 @@ const ARCHIVE: &str = "docs/contracts/bindings-handwritten-reference.ts.txt";
 ///
 /// 校准史：105 → **108**（主管裁决补进 `channel_list`，以及 E3 已实现的
 /// `log_query_capabilities` / `quota_limit_gaps`；归档件已由主管同步）
-/// → **109**（task-36 新增 `subscription_traffic`：订阅流量与更新时间，docs/18 §1.2）。
-/// 校准依据是守卫自己的输出、不是目测：`归档件里解析出 108 条命令，期望 105 条` → 改这里。
-const ARCHIVE_TOTAL: usize = 109;
+/// → **109**（task-36 新增 `subscription_traffic`：订阅流量与更新时间，docs/18 §1.2）
+/// → **114**（docs/19 §3：我们网关对外的访问密钥，新增 `api_key_list` / `api_key_create` /
+/// `api_key_set_enabled` / `api_key_delete` / `api_key_usage` 五条）。
+/// 校准依据是守卫自己的输出、不是目测：`归档件里解析出 N 条命令，期望 M 条` → 改这里。
+const ARCHIVE_TOTAL: usize = 114;
 
 // ---------------------------------------------------------------- 解析（纯字符串 → 集合）
 

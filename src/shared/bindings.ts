@@ -371,6 +371,15 @@ export type Model = {
   aliases: string[];
   display: DisplayConfig;
   expose: boolean;
+  /**
+   * 这个模型**默认走哪条线路**（[docs/19 §1.5]）。
+   *
+   * 为什么落在 `Model` 上而不是只落 `Channel.lane`：用户在「添加模型」那一步能改的**只有网络代理**
+   * （其余字段只读），而那时该模型可能还没有 channel。所以这个值既是"下一次为它建 channel 时的默认 lane"，
+   * 也会被 `model_bulk_update({ patch: { lane } })` 同步写到它**现有**的每个 channel 上。
+   * 省略 / null = 直连（与 `net.default_lane` 链一致）。
+   */
+  default_lane?: LaneId | null;
 };
 
 export type Transform = {
@@ -680,6 +689,16 @@ export type ProbeResult = {
   ok: boolean;
   status: number;
   latency_ms: number;
+  /**
+   * 这一次探测**实际发的是什么**（[docs/19 §1.1]）：
+   * - `"models"`：`GET {base_url}/models`（OpenAI 兼容的模型清单端点）；
+   * - `"chat"`：`POST {base_url}/chat/completions` 的最小探测（有些中转没有 `/models`）；
+   * - `"none"`：一次请求都没发出去（例如线路不可用/鉴权缺失）。
+   *
+   * **`ok=false` 不等于"服务商坏了"**：`status=404 && probe="models"` 的语义是
+   * "上游没有这个端点"，UI 必须按 `probe` 分档说人话，不许把它渲染成"连接失败"。
+   */
+  probe: "models" | "chat" | "none";
   note?: string | null;
 };
 
@@ -714,7 +733,42 @@ export type ImportPreview = {
   skipped: { upstream_model: string; reason: string }[];
 };
 
-export type ModelPatch = Partial<Pick<Model, "expose" | "aliases" | "display">>;
+export type ModelPatch = Partial<Pick<Model, "expose" | "aliases" | "display">> & {
+  /** 只改该模型（及其现有 channel）的网络线路；`null` = 直连（[docs/19 §1.5]）。 */
+  lane?: LaneId | null;
+};
+
+/**
+ * 我们网关对外的**访问密钥**（[docs/19 §3]）。客户端拿它调到 `127.0.0.1:8787`。
+ *
+ * **明文不在这个类型里**（表里只存 sha256）：明文只在 `api_key_create` 的返回里出现**一次**。
+ */
+export type ApiKeyView = {
+  id: string;
+  name: string;
+  /** 展示用前缀（前 12 字符 + `…`）；列表里**不放复制按钮** —— 只存哈希，复制不出来。 */
+  key_prefix: string;
+  enabled: boolean;
+  note?: string | null;
+  created_at_ms: number;
+  /** 网关最近一次用它鉴权成功的时间；从未用过 = null（**不是 0**）。 */
+  last_used_at_ms?: number | null;
+};
+
+export type ApiKeyCreated = {
+  key: ApiKeyView;
+  /** **只此一次**。页面必须提示用户立刻保存，关掉后无法再取回。 */
+  plaintext: string;
+};
+
+/** 按 key × 日聚合的用量（复用既有 `api_key_usage` 表）。 */
+export type ApiKeyUsageRow = {
+  key_id: string;
+  day: string;
+  requests: number;
+  tokens: number;
+  cost?: number | null;
+};
 
 export type MatrixView = {
   models: ModelRow[];
@@ -1109,11 +1163,16 @@ export type EventPayload = {
  * 命令 → (入参, 返回值)。`api/commands.ts` 与 `api/mock.ts` 都按这张表对齐，
  * 所以**命令名或入参写错会被 tsc 拦下**。
  *
- * 注意：这是一张**手写契约**（105 条），**不等于 Rust 已经实现的命令面**。
- * 截至本轮（`src-tauri/src/commands/mod.rs` 的 `collect_commands!`），**实际注册 104 条**：
- * 契约里 108 条中，只有下面 4 条**有意推迟**（理由与解锁条件见 `src-tauri/src/commands/entity.rs`
- * 的模块文档）：`provider_test`、`provider_echo`、`model_import_from_provider`、`model_apply_import`。
- * 这 4 条属于后续里程碑，**不是**可用能力；其余 104 条都是真实现，调用不会失败。
+ * 注意：这是一张**手写契约**，**不等于 Rust 已经实现的命令面**。
+ * 条数的唯一权威锚点是 `crates/ta-core/tests/command_surface_guard.rs` 的 `ARCHIVE_TOTAL`
+ * （以及同目录的归档件 `docs/contracts/bindings-handwritten-reference.ts.txt`）——
+ * **这个注释里不写具体数字**：数字会过期，而它以前就过期过三次。
+ *
+ * 已知的"有意推迟"命令（理由与解锁条件见 `src-tauri/src/commands/entity.rs` 的模块文档）：
+ * `provider_echo`，以及本轮新进的 `provider_test` / `model_import_from_provider` /
+ * `model_apply_import`（[docs/19] 要求它们真的可用；在 Rust 注册之前，**页面不许引用**，
+ * 否则 `commandSurface.guard.test.ts` 与 `command_surface_guard.rs` 规则 1 会红）。
+ * 新增的 `api_key_*` 五条同理：先落契约，等 `src-tauri` 注册后页面才可引用。
  *
  * 机械保证：
  * - `src/app/commandSurface.guard.test.ts`：页面/外壳引用的每条命令都必须在 Rust 注册表里；
@@ -1297,6 +1356,13 @@ export type CommandMap = {
   log_storage_stats: { args: undefined; result: StorageStats };
   log_clear: { args: { mode: ClearMode }; result: void };
   log_export: { args: { query: LogQuery; path: string }; result: LogExportReceipt };
+
+  // ---- api key（[docs/19 §3]：我们网关对外的访问密钥）
+  api_key_list: { args: undefined; result: ApiKeyView[] };
+  api_key_create: { args: { name: string; note?: string | null }; result: ApiKeyCreated };
+  api_key_set_enabled: { args: { id: string; enabled: boolean }; result: ApiKeyView };
+  api_key_delete: { args: { id: string }; result: void };
+  api_key_usage: { args: { id?: string | null; limit: number }; result: ApiKeyUsageRow[] };
 
   // ---- onboarding / tray
   onboarding_detect: {
