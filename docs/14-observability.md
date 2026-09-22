@@ -238,6 +238,7 @@ tracing::warn!(error = %e, "订阅下载失败")
 | `removed` / `failures` / `attempts` / `argc` / `quitting` / `which` | 计数或状态 |
 | `phase` | 启动编排阶段（`app:boot` 的收敛过程，值见 `BootPhase::as_str`） |
 | `controller` | 内核 REST 控制器地址（mihomo 的 `external-controller`；**只记地址，密钥另有字段**） |
+| `traffic_known` | 这次刷新是否拿到了订阅流量信息（`subscription-userinfo`，布尔） |
 | `lane_count` | lane 端口数量。**计数一律带 `_count` 后缀** —— `lanes` 会被读成"列表"，而它其实是数字 |
 | `hint` | 脱敏后的提示串（例如密钥条目的掩码预览；**绝不放明文**） |
 | `group_id` | 策略组的 id（§5.2 未列组这一类；有 ID 就用 ID，别写组名） |

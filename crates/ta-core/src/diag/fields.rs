@@ -168,6 +168,7 @@ pub const LOCAL_CONTEXT: &[&str] = &[
     "rows",
     "migrated",
     "skipped",
+    "traffic_known",
 ];
 
 /// 是不是 §5 约定的字段名。
