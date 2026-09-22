@@ -26,13 +26,19 @@
 //! # 网络类命令（本文件**不**实现，见汇报）
 //!
 //! `provider_test` / `provider_echo` / `model_import_from_provider` / `model_apply_import`
-//! 需要真的发 HTTP 到上游，而 `src-tauri` 里没有可用的出站通道：
+//! 需要真的发 HTTP 到上游。**唯一合规的出站通道**是 `ta_gateway` 的 `OutboundDialer`
+//! （走 lane 端口 = 走线路策略）——它现在**够得到**了（`lib.rs` 的 `activate_gateway`
+//! 已把 `GatewayDeps` 交给 `AppState::set_gateway`），但本文件仍不实现这 4 条：
 //!
-//! * `src-tauri` 不依赖 `reqwest`（`Cargo.toml` 冻结，本工作包不能改）；
-//! * 唯一合规的出站通道是 `ta_gateway` 的 `OutboundDialer`（走 lane 端口 = 走线路策略），
-//!   但它挂在 `GatewayDeps` 上，而 `GatewayBoot::assemble`（`gateway.rs:258`）把
-//!   `GatewayDeps` 建成局部变量后**从未** `state.set_gateway(deps)`，所以
-//!   `AppState::gateway` 恒为 `None`。
+//! * `provider_echo` / `model_import_from_provider` 要**读上游响应体**
+//!   （回显对比 / 解析 `/v1/models` 列表），而 `ta-gateway` 的 `collect_body`
+//!   （`pipeline.rs:1079`）是私有的，`src-tauri` 也不依赖 `futures-util`
+//!   （`Cargo.toml` 不在本工作包范围内）→ **读不了 body 就做不出诚实的回显与导入**；
+//! * `model_apply_import` 依赖前一条产出的 `preview_token`（没有它就没有可应用的预览）；
+//! * `provider_test` 本身可以只发一个状态探测（`dialer.execute` + 公共的
+//!   `FullPassthrough::build_headers_with_body`），但"探测发什么请求、什么算 ok"
+//!   需要主管裁决（`GET {base}/models` 在部分中转上是 404，会变成**假警报**；
+//!   而真正的连通性验证要用 chat completion，那又回到"读响应体"的阻塞）。
 //!
 //! **不另开第二条出站路径**（那会绕过线路策略），这 4 条**不注册**。
 
