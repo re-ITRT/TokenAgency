@@ -18,6 +18,8 @@ pub mod log;
 pub mod net;
 // ---- task-16 批次 B：系统集成 / 诊断导出 / 向导 / 托盘控制（settings_ext.rs，独立文件）
 pub mod settings_ext;
+// ---- docs/19 §1.1–§1.3：上游探测与模型导入（upstream.rs，独立文件，见该文件模块文档）
+pub mod upstream;
 pub mod usage;
 
 use serde::{Deserialize, Serialize};
@@ -199,6 +201,10 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             entity::pricing_delete,
             entity::pricing_resolve,
             entity::pricing_import_builtin,
+            // ---- docs/19 §1.1–§1.3：上游探测与模型导入（upstream.rs，本组命令只由本文件的作者登记）
+            upstream::provider_test,
+            upstream::model_import_from_provider,
+            upstream::model_apply_import,
             usage::usage_dashboard,
             usage::usage_query,
             usage::usage_token_kinds,

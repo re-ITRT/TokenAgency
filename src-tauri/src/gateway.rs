@@ -423,6 +423,47 @@ pub fn reason_of(e: &TaError) -> String {
     e.to_string()
 }
 
+// ================================================================ 测试夹具
+
+/// **一个最小可用的 `GatewayDeps`**（每个部件只做"能被构造"这一件事）。
+///
+/// 为什么放在生产文件里（而不是某个 `mod tests` 里）：命令层的出站测试
+/// （`commands/upstream.rs`）要真的把 deps 装进 `AppState.gateway`、再**经过真 dialer**
+/// 对一个本机假上游发请求。夹具只有一份，才不会出现"接线测试用的 deps 与命令测试用的
+/// deps 悄悄不一样"。
+///
+/// `dialer` 是**真的** `KernelDialer`（空的 lane→端口表）：`direct` lane 不走代理，
+/// 所以它能打到 `127.0.0.1:<假上游端口>`；其余 lane 会如实报 `TA-3002`。
+#[cfg(test)]
+pub(crate) fn test_gateway_deps(state: &AppState) -> Arc<GatewayDeps> {
+    /// 空的 `EventBus`：本夹具只证明"依赖能被构造"，不证明事件真的流起来。
+    struct NoEvents;
+
+    impl EventBus for NoEvents {
+        fn publish(&self, _e: TaEvent) {}
+
+        fn subscribe(&self) -> tokio::sync::broadcast::Receiver<TaEvent> {
+            let (tx, rx) = tokio::sync::broadcast::channel(1);
+            drop(tx);
+            rx
+        }
+    }
+
+    let doc = ta_core::domain::ConfigDoc::default();
+    Arc::new(GatewayDeps {
+        config: state.doc.clone(),
+        store: Arc::new(UsageStoreGateway::new(state.usage.clone())),
+        dialer: ta_gateway::kernel_dialer(
+            Arc::new(ta_kernel::PortMap::default()),
+            DialerOptions::default(),
+        ),
+        events: Arc::new(NoEvents),
+        clock: state.clock.clone(),
+        pricing: Arc::new(PricingEngineImpl::new(&doc.pricing)),
+        quota: Arc::new(QuotaLedgerImpl::with_clock(state.quota.clone(), state.clock.clone())),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

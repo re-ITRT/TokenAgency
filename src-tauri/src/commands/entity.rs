@@ -23,24 +23,17 @@
 //! 哪个 id"。**不自己发明错误码**（新增码要同步 `docs/11 §5` 的总表）。
 //! "被引用、禁止删除"有专门的 `TaError::Referenced`（TA-5002），所以 [`referenced`] 用它。
 //!
-//! # 网络类命令（本文件**不**实现，见汇报）
+//! # 网络类命令（本文件**不**实现，见 `commands/upstream.rs`）
 //!
-//! `provider_test` / `provider_echo` / `model_import_from_provider` / `model_apply_import`
-//! 需要真的发 HTTP 到上游。**唯一合规的出站通道**是 `ta_gateway` 的 `OutboundDialer`
-//! （走 lane 端口 = 走线路策略）——它现在**够得到**了（`lib.rs` 的 `activate_gateway`
-//! 已把 `GatewayDeps` 交给 `AppState::set_gateway`），但本文件仍不实现这 4 条：
+//! `provider_test` / `model_import_from_provider` / `model_apply_import` 需要真的发 HTTP 到上游，
+//! 已在 `commands::upstream` 落地并注册（[docs/19 §1.1–§1.3]）：它们走 `ta-gateway` 的
+//! `OutboundProbe`（内部是**唯一**出站通道 `OutboundDialer`，与转发管线同一个拨号器），
+//! 读响应体的上限也由 `probe.rs` 的 `read_body_bounded` 负责 ——
+//! 本文件不再需要"读上游响应体"，也不再自己发请求。
 //!
-//! * `provider_echo` / `model_import_from_provider` 要**读上游响应体**
-//!   （回显对比 / 解析 `/v1/models` 列表），而 `ta-gateway` 的 `collect_body`
-//!   （`pipeline.rs:1079`）是私有的，`src-tauri` 也不依赖 `futures-util`
-//!   （`Cargo.toml` 不在本工作包范围内）→ **读不了 body 就做不出诚实的回显与导入**；
-//! * `model_apply_import` 依赖前一条产出的 `preview_token`（没有它就没有可应用的预览）；
-//! * `provider_test` 本身可以只发一个状态探测（`dialer.execute` + 公共的
-//!   `FullPassthrough::build_headers_with_body`），但"探测发什么请求、什么算 ok"
-//!   需要主管裁决（`GET {base}/models` 在部分中转上是 404，会变成**假警报**；
-//!   而真正的连通性验证要用 chat completion，那又回到"读响应体"的阻塞）。
-//!
-//! **不另开第二条出站路径**（那会绕过线路策略），这 4 条**不注册**。
+//! 仍**未实现、未注册**的只有 **`provider_echo`**：它要回显"发出去的头/体 vs 上游看到的"
+//! 做逐字段对比，是一套独立的诊断视图（[docs/10 §2.2] 的 `EchoResult`），
+//! 不属于本轮 [docs/19] 的范围。**不另开第二条出站路径**（那会绕过线路策略）。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -65,7 +58,10 @@ use crate::state::AppState;
 ///
 /// `kernel_reload` **恒为 false**：网关/内核的重新加载是 G2/T2 的编排，
 /// 命令层不假装已经 reload（`config_apply` 同款语义）。
-fn applied() -> ApplyResult {
+///
+/// `pub(crate)`：`commands::upstream` 的 `model_apply_import` 也返回同一个形状，
+/// 让它自己写一遍 `ApplyResult { … }` 就是第二份"什么算 applied"的口径。
+pub(crate) fn applied() -> ApplyResult {
     ApplyResult { applied: true, restart_required: false, kernel_reload: false }
 }
 

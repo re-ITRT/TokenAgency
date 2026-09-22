@@ -1178,9 +1178,10 @@ export type EventPayload = {
  * **这个注释里不写具体数字**：数字会过期，而它以前就过期过三次。
  *
  * 已知的"有意推迟"命令（理由与解锁条件见 `src-tauri/src/commands/entity.rs` 的模块文档）：
- * `provider_echo`，以及本轮新进的 `provider_test` / `model_import_from_provider` /
- * `model_apply_import`（[docs/19] 要求它们真的可用；在 Rust 注册之前，**页面不许引用**，
- * 否则 `commandSurface.guard.test.ts` 与 `command_surface_guard.rs` 规则 1 会红）。
+ * **只剩 `provider_echo` 一条**（它要读上游响应体做"谁吞了字段"的逐字段回显，本轮没做）。
+ * 曾与它并列推迟的三条已在 [docs/19] 的 GW-71 / DESK-71 里落地并注册：
+ * `provider_test`（测试连接）、`model_import_from_provider`（一键扫描）、`model_apply_import`（添加选中）。
+ * 另：本轮新增的 `api_key_*` 五条也已注册（`docs/19 §3`）。
  * 新增的 `api_key_*` 五条同理：先落契约，等 `src-tauri` 注册后页面才可引用。
  *
  * 机械保证：

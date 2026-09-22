@@ -20,6 +20,8 @@ use sqlx::SqlitePool;
 use ta_core::clock::{Clock, SystemClock};
 use ta_core::domain::ConfigDoc;
 use ta_core::error::{Result, TaError};
+
+use crate::import_preview::ImportPreviewCache;
 use ta_store::{
     ConfigStore, SqliteApiKeyStore, SqliteConfigStore, SqliteHealthStore, SqliteQuotaBackend,
     SqliteSecretMetaStore, SqliteStickyStore, SqliteTraceStore, SqliteUsageStore,
@@ -70,6 +72,14 @@ pub struct AppState {
     /// 额度账本的持久化后端（同步 trait，见 `ta-store::quota_backend`）
     pub quota: Arc<SqliteQuotaBackend>,
 
+    /// `model_import_from_provider` 扫描结果的**进程内存**预览缓存（[docs/19 §1.2]）。
+    ///
+    /// 为什么挂在 `AppState` 上而不是每个命令各造一份：`preview_token` 是在
+    /// `model_import_from_provider` 里发的、在 `model_apply_import` 里取的 ——
+    /// 两份各自持有就永远取不到（`model_apply_import` 会一直报"预览已过期"）。
+    /// **不落库**：预览讲的是"上游现在有什么"，落库就是第二个真相源（见 `import_preview` 的模块文档）。
+    pub import_previews: Arc<ImportPreviewCache>,
+
     /// 网关依赖，由 G2/G4 注入
     pub gateway: RwLock<Option<Arc<ta_gateway::GatewayDeps>>>,
     /// 内核控制器，由 T2 注入
@@ -119,6 +129,7 @@ impl AppState {
             secret_meta: Arc::new(SqliteSecretMetaStore::new(db.clone())),
             api_keys: Arc::new(SqliteApiKeyStore::new(db.clone())),
             quota,
+            import_previews: Arc::new(ImportPreviewCache::new()),
             db,
             db_path,
             started_at_ms,
@@ -178,6 +189,14 @@ impl AppState {
 
     pub fn set_gateway(&self, deps: Arc<ta_gateway::GatewayDeps>) {
         *self.gateway.write().unwrap_or_else(|e| e.into_inner()) = Some(deps);
+    }
+
+    /// 取网关依赖 —— **唯一出站通道**（`GatewayDeps.dialer`）就在这里。
+    ///
+    /// `None` = 启动编排还没装配网关。调用方（`commands::upstream`）必须据此**如实报错**
+    /// （`TA-3002`），绝不退回"自己发一个请求"或者"假装探测成功"。
+    pub fn gateway_deps(&self) -> Option<Arc<ta_gateway::GatewayDeps>> {
+        self.gateway.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn set_kernel(&self, kernel: Arc<dyn ta_kernel::KernelController>) {

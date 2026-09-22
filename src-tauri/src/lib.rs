@@ -35,6 +35,8 @@ pub mod autostart;
 pub mod boot;
 pub mod commands;
 pub mod gateway;
+// ---- docs/19 §1.2：`model_import_from_provider` 的进程内存预览缓存（不落库）
+pub mod import_preview;
 pub mod lifecycle;
 pub mod logging;
 pub mod plugins;
@@ -240,25 +242,6 @@ fn init_tracing() {
 mod tests {
     use super::*;
 
-    use ta_core::domain::ConfigDoc;
-    use ta_core::pricing::PricingEngineImpl;
-    use ta_core::quota::QuotaLedgerImpl;
-    use ta_gateway::events::{EventBus, TaEvent};
-    use ta_gateway::GatewayDeps;
-
-    /// 空的 `EventBus`：本测试只证明"接线发生了"，不证明事件真的流起来。
-    struct NoEvents;
-
-    impl EventBus for NoEvents {
-        fn publish(&self, _e: TaEvent) {}
-
-        fn subscribe(&self) -> tokio::sync::broadcast::Receiver<TaEvent> {
-            let (tx, rx) = tokio::sync::broadcast::channel(1);
-            drop(tx);
-            rx
-        }
-    }
-
     /// 一个**真的库**（临时目录里的 SQLite）—— 接线测试要在真 `AppState` 上做，
     /// 因为被测的就是 `AppState` 的槽位。
     async fn temp_state(tag: &str) -> state::AppState {
@@ -268,22 +251,10 @@ mod tests {
         state::AppState::bootstrap(dir.join("db.sqlite")).await.expect("开库")
     }
 
-    /// 最小 `GatewayDeps`：每个部件都只做"能被构造"这一件事 ——
-    /// 这条测试断言的是**接线**，不是网关行为（那是 `crates/ta-gateway` 的测试）。
-    fn test_deps(state: &state::AppState) -> Arc<GatewayDeps> {
-        let doc = ConfigDoc::default();
-        Arc::new(GatewayDeps {
-            config: state.doc.clone(),
-            store: Arc::new(gateway::UsageStoreGateway::new(state.usage.clone())),
-            dialer: ta_gateway::kernel_dialer(
-                Arc::new(ta_kernel::PortMap::default()),
-                ta_gateway::dispatch::DialerOptions::default(),
-            ),
-            events: Arc::new(NoEvents),
-            clock: state.clock.clone(),
-            pricing: Arc::new(PricingEngineImpl::new(&doc.pricing)),
-            quota: Arc::new(QuotaLedgerImpl::with_clock(state.quota.clone(), state.clock.clone())),
-        })
+    /// 最小 `GatewayDeps`：夹具只有一份（`gateway::test_gateway_deps`），
+    /// 命令层的出站测试用的是**同一份** —— 否则两处会悄悄漂移。
+    fn test_deps(state: &state::AppState) -> Arc<ta_gateway::GatewayDeps> {
+        gateway::test_gateway_deps(state)
     }
 
     /// **两个方向都钉住**：没接线时必须是假（反向断言），接线后必须为真，
