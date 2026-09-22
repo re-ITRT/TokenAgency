@@ -8,16 +8,22 @@
  *    `system_integration.enable_tun|enable_system_proxy|autostart` 连"写"都写不进去
  *    （白名单 + `setPath()` 抛错，见 `model.ts`）。要改请到网络页。
  * 2. **没有的命令不画按钮，也不画"点了没反应"的禁用占位。**
- *    - 开机自启动（app_get_autostart / app_set_autostart / app_repair_autostart 未注册）
- *      → 这一节**没有开关**，只有点名缺哪条命令的说明 + 配置里的期望值（并说明它不是系统事实）。
- *    - 日志导出（log_export 未注册）→ 没有导出按钮，只有一行说明。
- *    - 检查更新（app_check_update 未注册）→ 同上。
- *    - 文件监听模式（config_set_file_watch_mode 未注册）→ 同上。
+ *    （以下命令**都已注册**在 `src-tauri/src/commands/mod.rs` 的 `collect_commands!` 里，
+ *    见 `crates/ta-core/tests/command_surface_guard.rs`；"没画"是这一页还没接，不是命令不存在。）
+ *    - 开机自启动（app_get_autostart / app_set_autostart / app_repair_autostart）→ **已接**：
+ *      开关写的是**系统事实**（`actual`），配置里的期望值只作对照；`drifted` 时才给"重新对齐"。
+ *    - 检查更新（app_check_update）→ **已接**：点了才发请求，失败如实报错，
+ *      只有在后端明确返回"没有新版本"（`null`）时才说没有新版本。
+ *    - 日志导出（log_export）→ 还没接：没有导出按钮，只有一行说明。
+ *    - 文件监听模式（config_set_file_watch_mode）→ 还没接：同上。
  * 3. **不许假成功**：`config_validate` 只有显式 `ok: true` 才允许继续；
  *    `config_apply` 只有显式 `applied: true` 才提示"已写入"。读不出来的返回按"未通过"处理。
  *
  * 数据流（哪个门面 → 哪个命令）：
  * - `useCommandQuery("config_get")`             → 服务/启动/托盘/记录/高级 各节的**真值来源**
+ * - `useCommandQuery("app_get_autostart")`      → 自启动的**系统事实**（`actual`）与漂移判断
+ * - `useCommandMutation("app_set_autostart" | "app_repair_autostart")` → 改系统 / 重新对齐
+ * - `useCommandMutation("app_check_update")`    → 检查更新（点了才发）
  * - `useCommandMutation("config_validate")`     → 权威校验（本地预检只先挡明显非法的输入）
  * - `useCommandMutation("config_apply")`        → 写配置
  * - `useCommandMutation("config_export_yaml" | "config_import_yaml" | "config_rollback")`
@@ -50,7 +56,9 @@ import {
   TableRow,
   TextField,
   Typography,
+  Switch,
 } from "@mui/material";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import {
@@ -293,6 +301,7 @@ export default function SettingsPage() {
   const pushToast = useAppStore((s) => s.pushToast);
 
   const status = useAppStatus();
+  const queryClient = useQueryClient();
   const config = useCommandQuery("config_get", undefined, qk.config);
   const history = useCommandQuery("config_history_list", { limit: 20 }, qk.configHistory);
   const stats = useCommandQuery("log_storage_stats", undefined, qk.logStats);
@@ -311,6 +320,16 @@ export default function SettingsPage() {
   const pauseGateway = useCommandMutation("app_pause_gateway");
   const resumeGateway = useCommandMutation("app_resume_gateway");
   const accessInfo = useCommandMutation("app_clipboard_access_info");
+  /** 系统自启动状态（`actual` 才是系统事实；`desired` 只是配置期望）。 */
+  const autostart = useCommandQuery("app_get_autostart", undefined, qk.autostart);
+  const setAutostart = useCommandMutation("app_set_autostart", {
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: qk.autostart }),
+  });
+  const repairAutostart = useCommandMutation("app_repair_autostart", {
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: qk.autostart }),
+  });
+  /** 检查更新：点了真的调后端；失败就显示失败原因。 */
+  const checkUpdate = useCommandMutation("app_check_update");
 
   const [draft, setDraft] = useState<ConfigDoc | undefined>(undefined);
   const [pristine, setPristine] = useState<ConfigDoc | undefined>(undefined);
@@ -698,7 +717,6 @@ export default function SettingsPage() {
   const storage = readStorageStats(stats.data);
   const newest = readNewestRow(recent.data);
   const snapshots = readSnapshots(history.data);
-  const autostartDesired = draft?.system_integration.autostart === true;
 
   return (
     <>
@@ -870,23 +888,112 @@ export default function SettingsPage() {
           ) : null}
         </SectionPaper>
 
-        {/* ② 启动与常驻：开机自启动**没有开关**（读/写命令未注册） */}
+        {/* ② 启动与常驻：开机自启动是**唯一会写系统状态**的开关，所以显示的是系统事实 */}
         <SectionPaper titleKey="settings.section.startup" testId="settings-section-startup">
-          <Stack spacing={2} data-testid="settings-autostart-blocked">
+          <Stack spacing={2}>
             <Typography variant="h4">{t("settings.startup.autostart")}</Typography>
-            <Typography variant="body1" sx={{ color: "warning.main" }}>
-              {`${t("settings.startup.blocked.title")}：${t("settings.startup.blocked.body")}`}
-            </Typography>
-            <Typography
-              variant="body1"
-              data-testid="settings-autostart-configured"
-              data-value={String(autostartDesired)}
-            >
-              {t("settings.startup.configValue", {
-                value: autostartDesired ? "true" : "false",
-              })}
-            </Typography>
-            <Caption>{t("settings.startup.configValue.hint")}</Caption>
+
+            {autostart.error !== null && autostart.error !== undefined ? (
+              <Typography variant="body1" data-testid="settings-autostart-error" sx={{ color: "error.main" }}>
+                {t("settings.startup.error", { message: errorMessage(autostart.error) })}
+              </Typography>
+            ) : autostart.data === undefined ? (
+              <Typography variant="body1" sx={{ color: "text.secondary" }}>
+                {t("settings.startup.loading")}
+              </Typography>
+            ) : (
+              <Stack spacing={2}>
+                {/* 开关绑 `actual`（系统事实）；按下去真的注册/移除系统启动项 */}
+                <Box data-testid="settings-autostart-switch">
+                  <Stack spacing={1}>
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          checked={autostart.data.actual}
+                          disabled={
+                            setAutostart.isPending ||
+                            autostart.data.mechanism === "unsupported"
+                          }
+                          onChange={(event) =>
+                            setAutostart.mutate({
+                              enabled: event.target.checked,
+                              mode: autostart.data.mode,
+                              delay_s: autostart.data.delay_s,
+                            })
+                          }
+                        />
+                      }
+                      label={t("settings.startup.actual", {
+                        value: autostart.data.actual ? t("settings.startup.yes") : t("settings.startup.no"),
+                      })}
+                    />
+                    <Caption>{t("settings.startup.switch.hint")}</Caption>
+                  </Stack>
+                </Box>
+
+                <Typography
+                  variant="body1"
+                  data-testid="settings-autostart-actual"
+                  data-value={String(autostart.data.actual)}
+                >
+                  {t("settings.startup.actual", {
+                    value: autostart.data.actual ? t("settings.startup.yes") : t("settings.startup.no"),
+                  })}
+                </Typography>
+                <Typography
+                  variant="body1"
+                  data-testid="settings-autostart-desired"
+                  data-value={String(autostart.data.desired)}
+                >
+                  {t("settings.startup.desired", {
+                    value: autostart.data.desired ? t("settings.startup.yes") : t("settings.startup.no"),
+                  })}
+                </Typography>
+                <Typography
+                  variant="body1"
+                  data-testid="settings-autostart-mechanism"
+                  data-value={autostart.data.mechanism}
+                  sx={{ color: "text.secondary" }}
+                >
+                  {t("settings.startup.mechanism", { value: autostart.data.mechanism })}
+                </Typography>
+
+                {autostart.data.mechanism === "unsupported" ? (
+                  <Typography variant="body1" data-testid="settings-autostart-unsupported" sx={{ color: "warning.main" }}>
+                    {t("settings.startup.unsupported", {
+                      reason: autostart.data.unsupported_reason ?? "",
+                    })}
+                  </Typography>
+                ) : null}
+
+                {autostart.data.drifted ? (
+                  <Stack spacing={1} data-testid="settings-autostart-drifted">
+                    <Typography variant="body1" sx={{ color: "warning.main" }}>
+                      {t("settings.startup.drifted", {
+                        desired: autostart.data.desired
+                          ? t("settings.startup.yes")
+                          : t("settings.startup.no"),
+                        actual: autostart.data.actual
+                          ? t("settings.startup.yes")
+                          : t("settings.startup.no"),
+                      })}
+                    </Typography>
+                    <Box>
+                      <Button
+                        data-testid="settings-autostart-repair"
+                        variant="outlined"
+                        disabled={repairAutostart.isPending}
+                        onClick={() => repairAutostart.mutate(undefined)}
+                      >
+                        {t("settings.startup.repair")}
+                      </Button>
+                    </Box>
+                  </Stack>
+                ) : null}
+              </Stack>
+            )}
+
+            <Caption>{t("settings.startup.desired.hint")}</Caption>
           </Stack>
 
           <Box
@@ -1523,13 +1630,52 @@ export default function SettingsPage() {
               label={t("settings.about.license")}
               value={t("settings.about.license.unknown")}
             />
-            <Typography
-              variant="body1"
-              data-testid="settings-no-check-update"
-              sx={{ color: "text.secondary" }}
-            >
-              {t("settings.about.checkUpdate.blocked")}
-            </Typography>
+            <Box sx={{ display: "flex", gap: 3, alignItems: "center", flexWrap: "wrap" }}>
+              <Button
+                data-testid="settings-update-run"
+                variant="outlined"
+                disabled={checkUpdate.isPending}
+                onClick={() => checkUpdate.mutate(undefined)}
+              >
+                {checkUpdate.isPending
+                  ? t("settings.about.checkUpdate.running")
+                  : t("settings.about.checkUpdate.run")}
+              </Button>
+              <Caption>{t("settings.about.checkUpdate.hint")}</Caption>
+            </Box>
+            {checkUpdate.error !== null && checkUpdate.error !== undefined ? (
+              <Typography
+                variant="body1"
+                data-testid="settings-update-error"
+                sx={{ color: "error.main" }}
+              >
+                {t("settings.about.checkUpdate.error", { message: errorMessage(checkUpdate.error) })}
+              </Typography>
+            ) : checkUpdate.data === undefined ? null : checkUpdate.data === null ? (
+              <Typography
+                variant="body1"
+                data-testid="settings-update-none"
+                sx={{ color: "text.secondary" }}
+              >
+                {t("settings.about.checkUpdate.none")}
+              </Typography>
+            ) : (
+              <Stack spacing={1} data-testid="settings-update-result">
+                <Typography variant="body1">
+                  {t("settings.about.checkUpdate.found", { version: checkUpdate.data.version })}
+                </Typography>
+                {checkUpdate.data.notes === null || checkUpdate.data.notes === undefined ? null : (
+                  <Caption>
+                    {t("settings.about.checkUpdate.notes", { notes: checkUpdate.data.notes })}
+                  </Caption>
+                )}
+                {checkUpdate.data.url === null || checkUpdate.data.url === undefined ? null : (
+                  <Caption>
+                    {t("settings.about.checkUpdate.url", { url: checkUpdate.data.url })}
+                  </Caption>
+                )}
+              </Stack>
+            )}
           </Stack>
 
           <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>

@@ -303,29 +303,39 @@ export const zhCN = {
   "settings.service.resume.done": "网关已恢复接单。",
 
   "settings.startup.autostart": "开机自启动",
-  "settings.startup.blocked.title": "这里没有开关",
-  "settings.startup.blocked.body":
-    "开机自启动是本项目唯一会写操作系统状态的功能，必须能读到系统的实际状态才敢显示开关。读取与写入它的后端命令尚未在桌面端注册：app_get_autostart、app_set_autostart（用于修复漂移的 app_repair_autostart 同样未注册）。命令落地前这里不放开关，也不放点了没反应的禁用占位控件。",
-  "settings.startup.configValue": "配置里的期望值（读取自配置）：{{value}}",
-  "settings.startup.configValue.hint":
-    "这是配置期望，不是系统事实。系统事实要读自启动状态里的实际状态字段，而那条命令未注册 —— 所以这里不推断，也不显示「当前系统状态」。",
+  "settings.startup.actual": "系统实际状态：{{value}}",
+  "settings.startup.desired": "配置里的期望值：{{value}}",
+  "settings.startup.desired.hint":
+    "配置期望不是系统事实。开关显示的是上面那行「系统实际状态」（读自 app_get_autostart 的 actual 字段）。",
+  "settings.startup.drifted":
+    "配置期望与系统实际不一致（漂移）：配置 {{desired}} / 系统 {{actual}}。点「修复自启动」按配置把它注册/移除。",
+  "settings.startup.repair": "修复自启动",
+  "settings.startup.switch.hint":
+    "开关写的是**系统事实**：拨动会真的调 app_set_autostart（注册或移除系统启动项），不是只改配置。",
+  "settings.startup.mechanism": "注册机制：{{value}}",
+  "settings.startup.unsupported": "当前平台不支持开机自启动：{{reason}}",
+  "settings.startup.loading": "正在读取系统自启动状态…",
+  "settings.startup.error": "读取自启动状态失败：{{message}}",
+  "settings.startup.yes": "是",
+  "settings.startup.no": "否",
   "settings.startup.mode": "启动方式",
   "settings.startup.mode.tray": "静默进托盘",
   "settings.startup.mode.window": "显示窗口",
   "settings.startup.delay": "启动延迟（秒）",
   "settings.startup.delay.hint": "取值范围 0–300。开机时磁盘与网络繁忙，设 20–60 秒可减少内核首次就绪失败。",
-  "settings.startup.writeHint": "改这两项只会写进配置；系统里的启动项要等上述命令落地才能注册或移除。",
+  "settings.startup.writeHint":
+    "改这两项只会写进配置；系统里的启动项由上面的开关负责（它会真的注册或移除）。",
 
   "settings.tray.showLatency": "托盘显示延迟数字",
   "settings.tray.fileWatch": "配置文件监听模式",
   "settings.tray.fileWatch.blocked":
-    "没有提供开关：写它的专用命令尚未注册（config_set_file_watch_mode）。它开着时用界面写回配置会覆盖文件里的改动，属于有副作用的开关，不用通用配置应用来替代它。",
+    "没有提供开关：写它的专用命令 config_set_file_watch_mode 已经注册，但这一页还没接。它开着时用界面写回配置会覆盖文件里的改动，属于有副作用的开关，不用通用配置应用来替代它。",
   "settings.tray.on": "开",
   "settings.tray.off": "关",
 
   "settings.storage.stats": "占用",
   "settings.storage.toLogs": "到请求日志页查询",
-  "settings.storage.noExport": "本页不提供日志导出：需要后端命令 log_export（尚未注册），所以不做按钮。",
+  "settings.storage.noExport": "本页不提供日志导出：后端命令 log_export 已经注册，但这一页还没接，所以不做按钮。",
   "settings.storage.modeWritten": "本次会话已把记录模式写为 {{mode}}（后端确认接收）。",
   "settings.storage.retentionWritten": "本次会话已把保留期写为 {{value}}（后端确认接收）。",
   "settings.storage.modeEvidence": "最近一条日志行记录时的模式：{{mode}}（{{time}}）",
@@ -417,8 +427,14 @@ export const zhCN = {
   "settings.about.uptime": "已运行",
   "settings.about.lastError": "内核最近一次错误",
   "settings.about.checkUpdate": "检查更新",
-  "settings.about.checkUpdate.blocked":
-    "没有提供检查更新按钮：需要后端命令 app_check_update（尚未注册），点了不会有任何结果。",
+  "settings.about.checkUpdate.run": "检查更新",
+  "settings.about.checkUpdate.hint": "点它会调后端 app_check_update；拿不到结果就显示失败原因，不说「已是最新」。",
+  "settings.about.checkUpdate.none": "后端没有返回可用的更新信息（本版没有更新通道）。",
+  "settings.about.checkUpdate.found": "后端报告的新版本：{{version}}",
+  "settings.about.checkUpdate.notes": "发行说明：{{notes}}",
+  "settings.about.checkUpdate.url": "下载地址：{{url}}",
+  "settings.about.checkUpdate.running": "正在检查…",
+  "settings.about.checkUpdate.error": "检查更新失败：{{message}}",
   "settings.about.license": "许可证",
   "settings.about.license.unknown": "没有可读来源（命令面里没有读取许可证的命令），所以不编造。",
 

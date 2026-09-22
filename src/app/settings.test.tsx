@@ -6,13 +6,14 @@
  *    这一条在这里是**机械检查**（不是靠自觉）：`EDITABLE_PATHS` 与 `FORBIDDEN_PATHS` 不许有交集，
  *    `setPath()` 对禁止字段**抛错**，并且高级那一节的只读块里**一个控件都没有**
  *    （checkbox / switch / button 全为空）。
- * 2. **未注册的命令不许变成"点了没反应的开关"。** 开机自启动的读/写命令（app_get_autostart /
- *    app_set_autostart）尚未注册 → 这一节里**不许有 checkbox 或 switch**，只许有诚实说明，
- *    而且说明里必须点名缺的是哪两条命令。
- * 3. **没有的命令不许画按钮。** 日志导出需要 log_export（未注册）→ 页面里不许有导出按钮，
+ * 2. **系统事实与配置期望不许混为一谈。** 开机自启动的开关绑的是 `app_get_autostart` 的
+ *    `actual`（系统事实），不是配置里的 `desired`；两者不一致时要说"漂移"并给"修复"入口。
+ * 3. **点不动就如实说。** 后端命令都已注册（`command_surface_guard` 守着），但日志导出
+ *    （log_export）与文件监听（config_set_file_watch_mode）这一页**还没接** → 不许有按钮，
  *    但必须留一行说明，否则下一个人会以为"忘了做"。
  * 4. **不许假成功。** 后端校验说 not ok 时，`config_apply` **一次都不许被调用**；
- *    校验结果读不出来也按"未通过"处理，不当作成功。
+ *    校验结果读不出来也按"未通过"处理，不当作成功。检查更新只在点了之后才发请求，
+ *    后端报错就显示错误（`TA-xxxx`），绝不改口说"已是最新"。
  *
  * 另外钉住错误显示：配置读取失败必须带 `TA-xxxx`（唯一格式化出口 `errorMessage()`）。
  */
@@ -40,7 +41,7 @@ import {
 } from "@/pages/settings/model";
 import { TokenAgencyError, invokeCommand, registerMock } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
-import type { ConfigDoc } from "@/shared/bindings";
+import type { AutostartState, ConfigDoc, UpdateInfo } from "@/shared/bindings";
 import { i18n } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
 
@@ -58,12 +59,31 @@ let validateResult: unknown = { ok: true, errors: [], warnings: [] };
 /** `config_rollback` 收到过的快照 id。 */
 let rollbackIds: string[] = [];
 
+/** 基线自启动状态（从 mock 后端读一次真值；mock 故意给"配置开、系统里没有"的漂移样例）。 */
+let baseAutostart: AutostartState;
+
+/** `app_get_autostart` 当前返回的系统事实（自启动用例里会被改写并重新读）。 */
+let autostartNow: AutostartState;
+/** `app_get_autostart` 是否失败（测"读不到就如实报错，不画开关"）。 */
+let autostartFails = false;
+/** `app_set_autostart` 收到的参数（证据：开关真的写系统事实，而不是只改配置）。 */
+let autostartWrites: Array<Record<string, unknown>> = [];
+/** `app_repair_autostart` 被调用了几次。 */
+let repairCalls = 0;
+
+/** `app_check_update` 被调用了几次（证据："点了才发"）。 */
+let checkUpdateCalls = 0;
+/** `app_check_update` 的返回值或要抛的错误。 */
+let updateResult: UpdateInfo | null = null;
+let updateError: Error | null = null;
+
 const EXPORTED_YAML = "version: 1\ngateway:\n  listen: 127.0.0.1:8787\n";
 
 beforeAll(async () => {
   await i18n.changeLanguage("zh-CN");
   registerBaselineMocks();
   baseDoc = await invokeCommand("config_get", undefined);
+  baseAutostart = await invokeCommand("app_get_autostart", undefined);
 });
 
 beforeEach(() => {
@@ -71,6 +91,13 @@ beforeEach(() => {
   applyCalls = [];
   rollbackIds = [];
   validateResult = { ok: true, errors: [], warnings: [] };
+  autostartNow = baseAutostart;
+  autostartFails = false;
+  autostartWrites = [];
+  repairCalls = 0;
+  checkUpdateCalls = 0;
+  updateResult = null;
+  updateError = null;
 
   registerMock("config_get", () => {
     if (configFails) {
@@ -90,6 +117,30 @@ beforeEach(() => {
   registerMock("config_rollback", (args) => {
     rollbackIds.push((args as { snapshot_id: string }).snapshot_id);
     return { applied: true, restart_required: true, kernel_reload: true };
+  });
+  // 开机自启动：读的是**系统事实**；写/修复都会真的改这份事实，所以重新读能看见变化
+  registerMock("app_get_autostart", () => {
+    if (autostartFails) {
+      throw new TokenAgencyError({ code: "TA-5002", message: "自启动状态读取失败（测试夹具）" });
+    }
+    return autostartNow;
+  });
+  registerMock("app_set_autostart", (args) => {
+    const write = args as { enabled: boolean; mode: AutostartState["mode"]; delay_s: number };
+    autostartWrites.push({ ...write });
+    autostartNow = { ...autostartNow, desired: write.enabled, actual: write.enabled, drifted: false };
+    return autostartNow;
+  });
+  registerMock("app_repair_autostart", () => {
+    repairCalls += 1;
+    autostartNow = { ...autostartNow, actual: autostartNow.desired, drifted: false };
+    return autostartNow;
+  });
+  // 检查更新：默认"没有可用更新信息"（null）；要点过才发
+  registerMock("app_check_update", () => {
+    checkUpdateCalls += 1;
+    if (updateError !== null) throw updateError;
+    return updateResult;
   });
   // 最近一条日志行（"记录时的模式"是可读的证据；当前模式没有读取接口）
   registerMock("log_query", () => ({
@@ -182,53 +233,121 @@ describe("[I2] 设置页只展示系统网络信息，不提供任何改系统�
   });
 });
 
-// ================================================================ ② 开机自启动：不放假开关
+// ================================================================ ② 开机自启动：开关 = 系统事实
 
-describe("[09 §1.2 E1–E5] 开机自启动：命令未注册前不放任何开关", () => {
-  it("启动节里没有 checkbox / switch，只有点名了缺失命令的诚实说明", async () => {
-    renderPage();
-    await waitForConfig();
-
-    const startup = screen.getByTestId("settings-section-startup");
-    expect(within(startup).queryAllByRole("switch")).toEqual([]);
-    expect(within(startup).queryAllByRole("checkbox")).toEqual([]);
-
-    const blocked = within(startup).getByTestId("settings-autostart-blocked");
-    expect(blocked.textContent).toMatch(/app_get_autostart/);
-    expect(blocked.textContent).toMatch(/app_set_autostart/);
-    // 配置里的值只能被说成"配置期望"，不许被说成"当前系统状态"
-    expect(blocked.textContent).toMatch(/配置期望/);
+describe("[09 §1.2 E1–E5] 开机自启动：开关绑系统事实，漂移可修复", () => {
+  /** 夹具自证：mock 给的样例必须真的漂移，否则下面"开关绑 actual 而不是 desired"分不出来。 */
+  it("自证：夹具是漂移样例（配置开、系统里没有）", () => {
+    expect(baseAutostart.desired).toBe(true);
+    expect(baseAutostart.actual).toBe(false);
+    expect(baseAutostart.drifted).toBe(true);
   });
 
-  it("配置里的自启动期望值仍然如实显示（那是 config_get 读到的真值）", async () => {
+  it("开关绑的是系统事实 actual，不是配置里的期望值 desired", async () => {
     renderPage();
     await waitForConfig();
-    const startup = screen.getByTestId("settings-section-startup");
-    expect(startup.textContent).toMatch(/开机自启动/);
-    // 配置里的期望值照样显示，但**带 data-value**，断言的是那个真值本身而不是文案
-    const configured = within(startup).getByTestId("settings-autostart-configured");
-    expect(configured.getAttribute("data-value")).toBe(
-      String(baseDoc.system_integration.autostart),
+
+    const actual = await screen.findByTestId("settings-autostart-actual");
+    expect(actual.getAttribute("data-value")).toBe(String(baseAutostart.actual));
+
+    const desired = screen.getByTestId("settings-autostart-desired");
+    expect(desired.getAttribute("data-value")).toBe(String(baseAutostart.desired));
+    // 两个值确实不同（自证这条断言有意义）
+    expect(baseAutostart.actual).not.toBe(baseAutostart.desired);
+
+    // 开关 = 系统事实（false → 未选中）
+    const box = screen.getByTestId("settings-autostart-switch");
+    const toggle = within(box).getByRole("switch") as HTMLInputElement;
+    expect(toggle.checked).toBe(baseAutostart.actual);
+    expect(toggle.disabled).toBe(false);
+
+    // 漂移必须被说出来，并给出修复入口
+    expect(screen.getByTestId("settings-autostart-drifted")).toBeTruthy();
+    expect(screen.getByTestId("settings-autostart-repair")).toBeTruthy();
+  });
+
+  it("拨开关真的调 app_set_autostart，参数是 snake_case 的 enabled / mode / delay_s", async () => {
+    renderPage();
+    await waitForConfig();
+
+    const box = await screen.findByTestId("settings-autostart-switch");
+    fireEvent.click(within(box).getByRole("switch"));
+
+    await waitFor(() => expect(autostartWrites.length).toBe(1));
+    // 契约形状（00 §3 的 args）：字段名必须是 snake_case，一个不许少、不许改名
+    expect(Object.keys(autostartWrites[0]!).sort()).toEqual(["delay_s", "enabled", "mode"]);
+    expect(autostartWrites[0]).toEqual({
+      enabled: true,
+      mode: baseAutostart.mode,
+      delay_s: baseAutostart.delay_s,
+    });
+
+    // 写的是系统事实：重新读之后开关变开、漂移消失
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-autostart-actual").getAttribute("data-value")).toBe(
+        "true",
+      ),
     );
-    expect(configured.textContent).toMatch(/配置里的期望值/);
+    await waitFor(() => expect(screen.queryByTestId("settings-autostart-drifted")).toBeNull());
+  });
+
+  it("点「修复自启动」调 app_repair_autostart；修好后漂移提示消失、不再有修复按钮", async () => {
+    renderPage();
+    await waitForConfig();
+
+    fireEvent.click(await screen.findByTestId("settings-autostart-repair"));
+
+    await waitFor(() => expect(repairCalls).toBe(1));
+    await waitFor(() => expect(screen.queryByTestId("settings-autostart-drifted")).toBeNull());
+    expect(screen.queryByTestId("settings-autostart-repair")).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-autostart-actual").getAttribute("data-value")).toBe(
+        "true",
+      ),
+    );
+  });
+
+  it("系统状态读不到：如实报错（带 TA 码），并且一个开关都不画", async () => {
+    autostartFails = true;
+    renderPage();
+    await waitForConfig();
+
+    const err = await screen.findByTestId("settings-autostart-error");
+    expect(err.textContent).toMatch(/\[TA-5002\]/);
+    expect(screen.queryByTestId("settings-autostart-switch")).toBeNull();
+    expect(screen.queryByTestId("settings-autostart-drifted")).toBeNull();
+  });
+
+  it("平台不支持：开关被禁用（按不动，也不会偷偷写系统），并说明原因", async () => {
+    autostartNow = {
+      ...baseAutostart,
+      mechanism: "unsupported",
+      unsupported_reason: "本平台没有自启动注册机制（测试夹具）",
+    };
+    renderPage();
+    await waitForConfig();
+
+    const box = await screen.findByTestId("settings-autostart-switch");
+    const toggle = within(box).getByRole("switch") as HTMLInputElement;
+    expect(toggle.disabled).toBe(true);
+
+    fireEvent.click(toggle);
+    expect(autostartWrites).toEqual([]);
+
+    expect(screen.getByTestId("settings-autostart-unsupported").textContent).toMatch(
+      /本平台没有自启动注册机制/,
+    );
   });
 });
 
-// ================================================================ ③ 没有的命令不画按钮
+// ================================================================ ③ 还没接的命令不画按钮
 
-describe("未注册的命令一律不画按钮，但留一行说明", () => {
+describe("还没接的命令一律不画按钮，但留一行说明", () => {
   it("日志导出：没有导出按钮，只有点名 log_export 的说明", async () => {
     renderPage();
     await waitForConfig();
     expect(screen.queryByTestId("settings-log-export")).toBeNull();
     expect(screen.getByTestId("settings-no-log-export").textContent).toMatch(/log_export/);
-  });
-
-  it("检查更新：没有按钮，只有点名 app_check_update 的说明", async () => {
-    renderPage();
-    await waitForConfig();
-    expect(screen.queryByTestId("settings-check-update")).toBeNull();
-    expect(screen.getByTestId("settings-no-check-update").textContent).toMatch(/app_check_update/);
   });
 
   it("文件监听模式：没有开关，只有点名 config_set_file_watch_mode 的说明", async () => {
@@ -239,6 +358,64 @@ describe("未注册的命令一律不画按钮，但留一行说明", () => {
     expect(within(tray).getByTestId("settings-file-watch-blocked").textContent).toMatch(
       /config_set_file_watch_mode/,
     );
+  });
+});
+
+// ================================================================ ③′ 检查更新：点了才发，失败不装最新
+
+describe("[10 §2.2] 检查更新：只在点了之后发请求，结果如实说", () => {
+  it("没点之前一个请求都不发，也不显示任何结果", async () => {
+    renderPage();
+    await waitForConfig();
+
+    expect(checkUpdateCalls).toBe(0);
+    expect(screen.queryByTestId("settings-update-none")).toBeNull();
+    expect(screen.queryByTestId("settings-update-result")).toBeNull();
+    expect(screen.queryByTestId("settings-update-error")).toBeNull();
+    expect(screen.getByTestId("settings-update-run")).toBeTruthy();
+  });
+
+  it("后端返回 null：说「没有可用的更新信息」，不说「已是最新」", async () => {
+    updateResult = null;
+    renderPage();
+    await waitForConfig();
+
+    fireEvent.click(screen.getByTestId("settings-update-run"));
+
+    const none = await screen.findByTestId("settings-update-none");
+    expect(checkUpdateCalls).toBe(1);
+    expect(none.textContent).not.toMatch(/已是最新/);
+    expect(screen.queryByTestId("settings-update-result")).toBeNull();
+    expect(screen.queryByTestId("settings-update-error")).toBeNull();
+  });
+
+  it("后端报错：原样显示错误码，绝不改口说「没有新版本」", async () => {
+    updateError = new TokenAgencyError({ code: "TA-6001", message: "更新通道未接入（测试夹具）" });
+    renderPage();
+    await waitForConfig();
+
+    fireEvent.click(screen.getByTestId("settings-update-run"));
+
+    const err = await screen.findByTestId("settings-update-error");
+    expect(err.textContent).toMatch(/\[TA-6001\]/);
+    expect(err.textContent).toMatch(/更新通道未接入/);
+    expect(screen.queryByTestId("settings-update-none")).toBeNull();
+    expect(screen.queryByTestId("settings-update-result")).toBeNull();
+  });
+
+  it("后端给了新版本：版本号 / 发行说明 / 下载地址都要显示出来", async () => {
+    updateResult = { version: "1.4.2", notes: "修了自启动漂移", url: "https://example.invalid/dl" };
+    renderPage();
+    await waitForConfig();
+
+    fireEvent.click(screen.getByTestId("settings-update-run"));
+
+    const result = await screen.findByTestId("settings-update-result");
+    expect(result.textContent).toMatch(/1\.4\.2/);
+    expect(result.textContent).toMatch(/修了自启动漂移/);
+    expect(result.textContent).toMatch(/https:\/\/example\.invalid\/dl/);
+    expect(screen.queryByTestId("settings-update-none")).toBeNull();
+    expect(screen.queryByTestId("settings-update-error")).toBeNull();
   });
 });
 
