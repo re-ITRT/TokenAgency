@@ -14,11 +14,12 @@
 
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ModelsPage, { ModelsBody, type ModelsBodyProps } from "@/pages/models";
 import {
+  EMPTY_MODEL_DRAFT,
   filterModels,
   hasDiscrepancy,
   pricingDiscrepancy,
@@ -27,18 +28,21 @@ import {
   sortModels,
   summarizeModels,
   upstreamSummary,
+  validateModelDraft,
   type ChannelsLookup,
+  type ModelDraft,
   type ModelRowView,
 } from "@/pages/models/model";
 import type {
   Channel,
   Credential,
   CredentialView,
+  Model,
   ModelView,
   ProviderView,
   QuotaConfig,
 } from "@/shared/bindings";
-import { registerBaselineMocks, registerMock } from "@/shared/api";
+import { registerBaselineMocks, registerMock, qk, TokenAgencyError } from "@/shared/api";
 import { i18n } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
 
@@ -565,5 +569,251 @@ describe("文案里不留未替换的占位符", () => {
       unpricedIds: [MODEL_ID],
     });
     expect(document.body.textContent ?? "").not.toMatch(/\{\{\w+\}\}/);
+  });
+});
+
+// ================================================================ ⑦ 添加模型向导（task-35）
+//
+// 契约是 [docs/17 §3.2]：
+//   `models-add-open` → `models-add-id` / `-aliases`（逗号分隔）/ `-group` / `-order` / `-expose`
+//   → `models-add-submit` → `model_upsert({ model })`，**成功后回显后端返回值**。
+// 真机 E2E（`scripts/e2e/smoke.mjs` 的 step9）就是按这串 testid 驱动的，所以这一组钉四件事：
+//
+// 1. **入口与六个控件真的在页面上** —— 只渲染 `ModelsBody`（纯展示件）的单测看不见写入口，
+//    写入口在 `ModelsPage` 的页头里；
+// 2. 真输入后提交**真的调用了 `model_upsert`**，入参形状 = `{ model: { id, aliases,
+//    display: { group, order }, expose } }`，键全在契约的 casing 里；
+// 3. 成功区显示的是**后端返回的那个 Model**（mock 故意返回与提交完全不同的 id / expose，
+//    所以「前端自己拼一句保存成功」过不了），并且 `qk.models` 真的失效（清单真的重取）；
+// 4. 本地预检不过（id 重复 / id 形状非法 / order 负数）时**一次请求都不发**，并按字段给文案。
+//
+// 「真的调了命令」为什么不用 `vi.spyOn`：这条任务原本给的写法是
+// `import * as client from "@/shared/api/client"` + `vi.spyOn(client, "invokeCommand")`，
+// 但 `client.ts` 里**根本没有** `invokeCommand`（唯一入口是 `commands.ts` 的
+// `invokeCommand` → `client.call`），而 ESM 的命名导出绑定是只读的，`vi.spyOn` 打不进去
+// （`queries.ts` 内部也是直接引用模块内的那个绑定，不经命名空间对象）。
+// 所以这里用**与 `channels.test.tsx` ⑨ 同一套、而且更硬**的办法：
+// `registerMock("model_upsert", 记录入参的 handler)` —— 这个 handler **只有命令名真的对得上
+// 才会被调用**（`client.ts` 的 `call` 只会去 `mocks` 里按命令名取），
+// 于是「命令名拼错」和「根本没发请求」这两种情况都会立刻红。
+
+/** 本轮向导该有的控件（顺序 = [docs/17 §3.2] 的行文顺序）。**不许改名**：真机 E2E 按它们驱动。 */
+const WIZARD_CONTROLS = [
+  "models-add-id",
+  "models-add-aliases",
+  "models-add-group",
+  "models-add-order",
+  "models-add-expose",
+  "models-add-submit",
+] as const;
+
+/**
+ * `data-testid` 挂在 MUI `TextField` 的**外层容器**上（MUI v7 把 `...other` 摊给 root，
+ * 不是 input）。真机 E2E 的 `wdFillByTid` 就是按「先找里面的 input/textarea，取不到再用容器」
+ * 这个口径写的，单测照抄同一口径 —— 这样单测驱动得到的东西 = 真机点得到的东西。
+ */
+function inputByTestId(testId: string): HTMLElement {
+  const host = screen.getByTestId(testId);
+  if (host.tagName === "INPUT" || host.tagName === "TEXTAREA") return host;
+  return within(host).getByRole("textbox");
+}
+
+/** `-expose` 是 MUI `Checkbox`：`data-testid` 会落在 SwitchBase 的根 `span` 上，找里面真正的 checkbox。 */
+function checkboxByTestId(testId: string): HTMLElement {
+  const host = screen.getByTestId(testId);
+  return host.getAttribute("type") === "checkbox" ? host : within(host).getByRole("checkbox");
+}
+
+/** 按 testid 填字段（= 真机 `wdFillByTid` 的单测版）。 */
+function fillByTestId(testId: string, value: string): void {
+  fireEvent.change(inputByTestId(testId), { target: { value } });
+}
+
+/** 记录入参的 mock：返回 `result`，同时把每次调用的入参留下来（与 `channels.test.tsx` 同一套）。 */
+function recordingMock(result: unknown): {
+  calls: Record<string, unknown>[];
+  handler: (args: Record<string, unknown> | undefined) => unknown;
+} {
+  const calls: Record<string, unknown>[] = [];
+  return {
+    calls,
+    handler: (args) => {
+      calls.push(args ?? {});
+      return result;
+    },
+  };
+}
+
+/** 后端返回的 `Model`（**故意与提交的完全不同**：只有显示的是后端真值，回显断言才会过）。 */
+function savedModel(overrides: Partial<Model> = {}): Model {
+  return {
+    id: "backend-saved-id",
+    aliases: ["backend-alias"],
+    display: { group: "后端分组", order: 99 },
+    expose: true,
+    ...overrides,
+  };
+}
+
+describe("⑦ /models 添加模型向导：真控件 → 真的调 model_upsert → 显示后端返回值", () => {
+  beforeEach(() => {
+    // 每个用例都从基准 mock 重来：用例里注册的录制 mock 不许漏给下一个用例
+    registerBaselineMocks();
+    // `channel_list` 在共享 mock 里没有（见本文件 `beforeAll` 的说明），基准注册会把它留在原位，
+    // 这里再补一次是为了让「重来」这件事在这一个 describe 里自洽。
+    registerMock("channel_list", () => channelsFixture());
+  });
+
+  it("页头有「添加模型」入口；点开后 [docs/17 §3.2] 的六个控件一个不少（testid 不许改名）", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("models-add-open"));
+    for (const id of WIZARD_CONTROLS) {
+      expect(screen.getByTestId(id), `缺控件 ${id}`).toBeTruthy();
+    }
+    // 四个字段背后都得是**真 input**（否则真机 E2E 的 fill 填不进去）、开关是真 checkbox、提交是真按钮
+    for (const id of ["models-add-id", "models-add-aliases", "models-add-group", "models-add-order"]) {
+      expect(inputByTestId(id).tagName, `${id} 背后不是 input`).toBe("INPUT");
+    }
+    expect(checkboxByTestId("models-add-expose").getAttribute("type")).toBe("checkbox");
+    expect(screen.getByTestId("models-add-submit").tagName).toBe("BUTTON");
+  });
+
+  it("真输入后提交 → 真的调用了 model_upsert，入参形状正确；成功后回显后端返回值并失效 qk.models", async () => {
+    const list = recordingMock([modelView()]);
+    registerMock("model_list", list.handler);
+    const upsert = recordingMock(savedModel());
+    registerMock("model_upsert", upsert.handler);
+    // `qk.models` 失效这件事直接钉在 QueryClient 上（页面该做的就只有这一件）
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+
+    renderPage();
+    fireEvent.click(await screen.findByTestId("models-add-open"));
+
+    fillByTestId("models-add-id", "ta-e2e-m-add");
+    // 逗号分隔 → 去空、去重、保序（空项与重复项都不许进 payload）
+    fillByTestId("models-add-aliases", " 新模型 ,flash-alias,新模型, ");
+    fillByTestId("models-add-group", "网络接入");
+    fillByTestId("models-add-order", "42");
+    // expose 默认是开的，点一下关掉 —— 开关真的连在草稿上（不是画着好看的）
+    fireEvent.click(checkboxByTestId("models-add-expose"));
+    fireEvent.click(screen.getByTestId("models-add-submit"));
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    const args = upsert.calls[0]!;
+    // 入参只有一个 `model`（契约 `model_upsert: { args: { model: Model }; result: Model }`）
+    expect(Object.keys(args)).toEqual(["model"]);
+    const draft = args["model"] as Record<string, unknown>;
+
+    expect(Object.keys(draft).sort()).toEqual(["aliases", "display", "expose", "id"]);
+    expect(draft["id"]).toBe("ta-e2e-m-add");
+    expect(draft["aliases"]).toEqual(["新模型", "flash-alias"]);
+    expect(draft["expose"]).toBe(false);
+
+    const display = draft["display"] as Record<string, unknown>;
+    expect(Object.keys(display).sort()).toEqual(["group", "order"]);
+    expect(display["group"]).toBe("网络接入");
+    expect(display["order"]).toBe(42);
+
+    // 每一层的键都在契约的 casing 里（真机 `channel_arg_case_guard` 的口径）
+    for (const key of [...Object.keys(args), ...Object.keys(draft), ...Object.keys(display)]) {
+      expect(key).toMatch(/^[a-z][a-z0-9_]*$/);
+    }
+
+    // 回显的是**后端返回的那个 Model**，不是我们提交的草稿
+    const saved = await screen.findByTestId("models-add-result");
+    expect(saved.textContent).toContain("backend-saved-id");
+    expect(saved.textContent).toContain("已对外暴露");
+    expect(saved.textContent).not.toContain("ta-e2e-m-add");
+
+    // 成功后 `qk.models` 失效：QueryClient 上真的收到了 `["models"]`，清单也真的重取了
+    await waitFor(() => expect(list.calls.length).toBeGreaterThan(1));
+    const modelInvalidations = invalidate.mock.calls.filter(
+      ([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(qk.models),
+    );
+    expect(modelInvalidations.length, "没有对 qk.models 失效").toBeGreaterThan(0);
+    invalidate.mockRestore();
+  });
+
+  it("本地预检不过：id 重复 / id 形状非法 / order 负数 —— 一次请求都不发，并按字段给对应文案", async () => {
+    // 目录里已经有 `deepseek-v4.1flash`（模型夹具的 id）—— 重复判定要有真数据才成立
+    registerMock("model_list", () => [modelView()]);
+    const upsert = recordingMock(savedModel());
+    registerMock("model_upsert", upsert.handler);
+
+    renderPage();
+    fireEvent.click(await screen.findByTestId("models-add-open"));
+
+    // ① id 与现有目录重复 —— 文案取 `models.add.issue.id.duplicate`
+    //    （「已存在同 id 的条目」在各向导里另有通用键 `wizard.duplicateId`，模型向导用自己的这两条）
+    fillByTestId("models-add-id", MODEL_ID);
+    fireEvent.click(screen.getByTestId("models-add-submit"));
+    expect((await screen.findByTestId("models-add-issue-id")).textContent).toContain("已经存在");
+    expect(upsert.calls).toHaveLength(0);
+
+    // ② id 形状非法（[docs/17 §3.2]：字母/数字开头，只含字母数字 . _ -）—— `models.add.issue.id.shape`
+    fillByTestId("models-add-id", "-bad-id");
+    fireEvent.click(screen.getByTestId("models-add-submit"));
+    expect(screen.getByTestId("models-add-issue-id").textContent).toContain("只能由字母/数字开头");
+    expect(upsert.calls).toHaveLength(0);
+
+    // ③ order 负数 —— `models.add.issue.order.negative`
+    fillByTestId("models-add-id", "brand-new-model");
+    fillByTestId("models-add-order", "-1");
+    fireEvent.click(screen.getByTestId("models-add-submit"));
+    expect(screen.getByTestId("models-add-issue-order").textContent).toContain("不能是负数");
+    // 上一条的 id 错必须消失（不是把历次文案堆在一起）
+    expect(screen.queryByTestId("models-add-issue-id")).toBeNull();
+    expect(upsert.calls).toHaveLength(0);
+
+    // ④ order 不是整数（空串也走这条：契约里 `display.order` 是 number，没有「留空」的语义）
+    fillByTestId("models-add-order", "");
+    fireEvent.click(screen.getByTestId("models-add-submit"));
+    expect(screen.getByTestId("models-add-issue-order").textContent).toContain("非负整数");
+    expect(upsert.calls).toHaveLength(0);
+    // 全程一条都没发出去 —— 结果区自然也没有「后端已保存」
+    expect(screen.queryByTestId("models-add-result")).toBeNull();
+  });
+
+  it("四个分支的机器可读原因码就是 UI 取文案用的那一串（UI 不解析文案本身）", () => {
+    const draft = (overrides: Partial<ModelDraft>): ModelDraft => ({
+      ...EMPTY_MODEL_DRAFT,
+      ...overrides,
+    });
+
+    expect(validateModelDraft(draft({ id: MODEL_ID }), [MODEL_ID])).toEqual([
+      { field: "id", reason: "duplicate" },
+    ]);
+    expect(validateModelDraft(draft({ id: "-bad-id" }), [])).toEqual([
+      { field: "id", reason: "shape" },
+    ]);
+    expect(validateModelDraft(draft({ id: "ok-model", order: "-1" }), [])).toEqual([
+      { field: "order", reason: "negative" },
+    ]);
+    expect(validateModelDraft(draft({ id: "ok-model", order: "" }), [])).toEqual([
+      { field: "order", reason: "notInteger" },
+    ]);
+    // 都合法时一条 issue 都没有 —— 「有 issue 就一次都不发」那段逻辑才敢这么写
+    expect(validateModelDraft(draft({ id: "ok-model" }), [])).toEqual([]);
+  });
+
+  it("后端拒绝：原样显示 TA 码与后端文案（本地预检不替代后端的权威判定）", async () => {
+    registerMock("model_list", () => [modelView()]);
+    registerMock("model_upsert", () => {
+      throw new TokenAgencyError({
+        code: "TA-5002",
+        message: "models[1].id 与既有模型冲突",
+      });
+    });
+
+    renderPage();
+    fireEvent.click(await screen.findByTestId("models-add-open"));
+    fillByTestId("models-add-id", "ta-e2e-m-add");
+    fireEvent.click(screen.getByTestId("models-add-submit"));
+
+    const error = await screen.findByTestId("models-add-error");
+    expect(error.textContent).toContain("TA-5002");
+    expect(error.textContent).toContain("models[1].id");
+    expect(screen.queryByTestId("models-add-result")).toBeNull();
   });
 });
