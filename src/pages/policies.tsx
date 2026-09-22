@@ -27,6 +27,7 @@ import {
   DialogTitle,
   Divider,
   FormControlLabel,
+  MenuItem,
   Paper,
   Stack,
   Table,
@@ -39,12 +40,13 @@ import {
   Typography,
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react";
 
 import { errorMessage, qk, useCommandMutation, useCommandQuery, TokenAgencyError } from "@/shared/api";
 import type {
   Backoff,
   Channel,
+  ChannelCapabilities,
   ChannelId,
   FailoverTrigger,
   Policy,
@@ -560,20 +562,21 @@ export function PoliciesBody({ policies, isLoading, error, onRetry }: PoliciesBo
 // ================================================================ 能力一致性（[docs/17 §2]）
 
 /**
- * 上游模型的能力声明（[docs/17 §2]）。
+ * 上游模型的能力声明 —— **用真契约类型**（`src/shared/bindings.ts` 的 `ChannelCapabilities`，
+ * 对应 Rust `ta_core::domain::ChannelCapabilities`）。本文件不再自己写一份形状。
  *
- * **为什么这里自己写一份**：真正的契约字段（`Channel.capabilities`）由 task-31 落地。
- * 在它出现之前，比对逻辑按 [docs/17 §2] 的形状写成**纯函数**并配测试；契约到了只换类型来源，
- * 判断与文案不动。读取口 [`readCapabilities`] 对"没有 / 形状不对"一律返回 `null`
- * —— **绝不编默认值**（"没声明"与"声明为 false"是两件事）。
+ * 契约（[docs/17 §2] / `Channel.capabilities?`）：
+ * - 读出来的对象**永远带全 6 个字段**；
+ * - **整个键可省略 = 默认能力**（全 `false` / `context_tokens: 0` / `max_output_tokens: null` /
+ *   `modalities: ["text"]`）—— 所以"没写"不是"不知道"，按契约默认值参与比对（见 [`readCapabilities`]）。
  */
-export type ChannelCapabilities = {
-  vision: boolean;
-  tools: boolean;
-  reasoning: boolean;
-  context_tokens: number;
-  max_output_tokens: number | null;
-  modalities: string[];
+const DEFAULT_CAPABILITIES: ChannelCapabilities = {
+  vision: false,
+  tools: false,
+  reasoning: false,
+  context_tokens: 0,
+  max_output_tokens: null,
+  modalities: ["text"],
 };
 
 const CAPABILITY_FIELDS: (keyof ChannelCapabilities)[] = [
@@ -610,8 +613,15 @@ function readIntStrict(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) ? value : null;
 }
 
-/** 严格读取能力声明：任一必需字段缺失或类型不对 → `null`。 */
+/**
+ * 读一条线路的能力声明：
+ * - **键不在**（`undefined` / `null`）→ 契约默认能力（[`DEFAULT_CAPABILITIES`]）。
+ *   契约明写"省略 = 默认能力"，所以这不是"编默认值"，而是**按契约读**；这也让
+ *   "省略"与"显式写默认值"被视为**一致**（它们本来就是同一组能力）。
+ * - **形状不对**（字段类型错）→ `null`：那是"读不出来"，不能冒充默认，也不能当成"一致"。
+ */
 export function readCapabilities(raw: unknown): ChannelCapabilities | null {
+  if (raw === undefined || raw === null) return { ...DEFAULT_CAPABILITIES, modalities: ["text"] };
   if (!isRecord(raw)) return null;
   const vision = readBoolStrict(raw["vision"]);
   const tools = readBoolStrict(raw["tools"]);
@@ -709,10 +719,126 @@ function errorDetailsText(err: unknown): string | null {
   return typeof details === "string" ? details : JSON.stringify(details, null, 2);
 }
 
+/** `deepseek-v4.1flash` → `deepseek-v4-1flash`：只留 `[a-z0-9-]`，用于派生的路由 id。 */
+function slug(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 export type PoliciesAddDialogProps = {
   open: boolean;
   onClose: () => void;
 };
+
+/**
+ * 下拉字段：`data-testid` 挂在**容器**上（与线路页 `SelectField` 同形状 —— 真机 E2E 先找容器内的
+ * `[role=combobox]`，所以容器里必须真的有控件）。
+ *
+ * **必须用 MUI 的 `select`（不是原生 `<select>`）**：`wdPickOption` 的路径是
+ * "点控件 → 等 `li[role="option"]` → 点选项"；原生 select 弹的是 OS 级下拉，
+ * `li[role=option]` 永远不会出现 → 真机 E2E 选不上、后续全崩（这是实测踩到的）。
+ *
+ * 值为空时用 `renderValue` 显示 `emptyLabel`（**空就是真的空**，不放"请选择…"的假选项）。
+ */
+function WizardSelect({
+  testId,
+  label,
+  value,
+  onChange,
+  options,
+  emptyLabel,
+  hint,
+}: {
+  testId: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: readonly { value: string; label: string }[];
+  emptyLabel: string;
+  hint?: string;
+}) {
+  const labelOf = (id: string): string => options.find((o) => o.value === id)?.label ?? id;
+  return (
+    <Stack spacing={1} data-testid={testId}>
+      <TextField
+        select
+        size="small"
+        fullWidth
+        label={label}
+        value={value}
+        onChange={(event) => onChange(String(event.target.value))}
+        slotProps={{
+          select: {
+            displayEmpty: true,
+            renderValue: (selected: unknown) =>
+              String(selected) === "" ? emptyLabel : labelOf(String(selected)),
+          },
+        }}
+      >
+        {options.map((option) => (
+          <MenuItem key={option.value} value={option.value}>
+            {option.label}
+          </MenuItem>
+        ))}
+      </TextField>
+      {hint === undefined ? null : <Caption>{hint}</Caption>}
+    </Stack>
+  );
+}
+
+/** 多选下拉（线路多选）：同样是 MUI `select`，点开也是 `li[role="option"]` 弹层。 */
+function WizardMultiSelect({
+  testId,
+  label,
+  values,
+  onChange,
+  options,
+  emptyLabel,
+  hint,
+}: {
+  testId: string;
+  label: string;
+  values: string[];
+  onChange: (values: string[]) => void;
+  options: readonly { value: string; label: string }[];
+  emptyLabel: string;
+  hint?: string;
+}) {
+  return (
+    <Stack spacing={1} data-testid={testId}>
+      <TextField
+        select
+        size="small"
+        fullWidth
+        label={label}
+        value={values}
+        onChange={(event) => {
+          const next = event.target.value;
+          onChange(Array.isArray(next) ? (next as string[]) : [String(next)]);
+        }}
+        slotProps={{
+          select: {
+            multiple: true,
+            displayEmpty: true,
+            renderValue: (selected: unknown) => {
+              const picked = selected as string[];
+              return picked.length === 0 ? emptyLabel : picked.join(", ");
+            },
+          },
+        }}
+      >
+        {options.map((option) => (
+          <MenuItem key={option.value} value={option.value}>
+            {option.label}
+          </MenuItem>
+        ))}
+      </TextField>
+      {hint === undefined ? null : <Caption>{hint}</Caption>}
+    </Stack>
+  );
+}
 
 /**
  * 「添加路由」向导：暴露哪个模型 → 选哪些线路 → 粘性 → 失败切换 → 优先级 → 保存。
@@ -737,8 +863,13 @@ export function PoliciesAddDialog({ open, onClose }: PoliciesAddDialogProps): Re
 
   const [id, setId] = useState("");
   const [name, setName] = useState("");
+  /** 用户是否手改过 id / 名称：改过就不再被"选模型"覆盖（不然会悄悄吃掉用户的输入）。 */
+  const [idTouched, setIdTouched] = useState(false);
+  const [nameTouched, setNameTouched] = useState(false);
   const [model, setModel] = useState("");
   const [selected, setSelected] = useState<ChannelId[]>([]);
+  /** 用户是否手改过线路多选：改过就不再被"默认全选该模型的线路"覆盖。 */
+  const [selectedTouched, setSelectedTouched] = useState(false);
   const [pinSticky, setPinSticky] = useState("");
   const [selector, setSelector] = useState("");
   const [failoverOn, setFailoverOn] = useState<FailoverTrigger[]>([]);
@@ -759,14 +890,25 @@ export function PoliciesAddDialog({ open, onClose }: PoliciesAddDialogProps): Re
     [allChannels, model],
   );
 
+  /**
+   * 选定模型后**默认指向它的全部线路**（用户原话就是"暴露 deepseek → 指向 1、2"），
+   * 于是能力一致性在选完模型那一刻就可见；用户手动改过选择就不再覆盖。
+   *
+   * 用 effect 而不是写在 onChange 里：`channel_list` 可能比选模型晚到，写在 onChange 里
+   * 会在"数据还没到"时全选成空集（表现为"选完模型一条线路都没选上"）。
+   */
+  useEffect(() => {
+    if (selectedTouched) return;
+    setSelected(candidates.map((channel) => channel.id));
+  }, [candidates, selectedTouched]);
+
   const comparison = useMemo(
     () =>
       compareCapabilities(
         selected.map((channelId) => {
           const channel = allChannels.find((c) => c.id === channelId);
-          // `Channel.capabilities` 由 task-31 落契约；在它出现前从原始对象上读，读不到就是 null
-          const raw = channel as unknown as Record<string, unknown> | undefined;
-          return { channelId, capabilities: readCapabilities(raw?.["capabilities"]) };
+          // 真契约字段：`Channel.capabilities?`（省略 = 契约默认能力，见 `readCapabilities`）
+          return { channelId, capabilities: readCapabilities(channel?.capabilities) };
         }),
       ),
     [selected, allChannels],
@@ -788,10 +930,19 @@ export function PoliciesAddDialog({ open, onClose }: PoliciesAddDialogProps): Re
     !hasMismatch &&
     !upsert.isPending;
 
-  function toggleChannel(channelId: ChannelId, checked: boolean) {
-    setSelected((prev) =>
-      checked ? [...prev.filter((c) => c !== channelId), channelId] : prev.filter((c) => c !== channelId),
-    );
+  /**
+   * 选定对外模型。三件事一起做，缺一个都会留下"看起来对、其实错"的状态：
+   * 1. 默认指向该模型的全部线路（由上面的 effect 落地，用户可再取消）；
+   * 2. id / 名称按模型**派生**（[docs/17 §3.4] 没给这两个字段，而 `Policy.id`/`name` 必填）——
+   *    派生值**显示在界面上、可改**，所以不是"编一段用户看不见的数据"；用户改过就不再覆盖；
+   * 3. 清掉"钉住线路"：换模型后原来那条可能不在候选里了。
+   */
+  function chooseModel(next: string) {
+    setModel(next);
+    setSelectedTouched(false);
+    setPinSticky("");
+    if (!idTouched) setId(next === "" ? "" : `pol-${slug(next)}`);
+    if (!nameTouched) setName(next);
   }
 
   function toggleTrigger(trigger: FailoverTrigger, checked: boolean) {
@@ -867,61 +1018,57 @@ export function PoliciesAddDialog({ open, onClose }: PoliciesAddDialogProps): Re
             size="small"
             label={t("policies.add.id")}
             value={id}
-            onChange={(e) => setId(e.target.value)}
+            onChange={(e) => {
+              setIdTouched(true);
+              setId(e.target.value);
+            }}
             inputProps={{ "data-testid": "policies-add-id" }}
           />
           <TextField
             size="small"
             label={t("policies.add.name")}
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              setNameTouched(true);
+              setName(e.target.value);
+            }}
             inputProps={{ "data-testid": "policies-add-name" }}
           />
 
-          <TextField
-            select
-            size="small"
-            SelectProps={{ native: true }}
+          <WizardSelect
+            testId="policies-add-model"
             label={t("policies.add.model")}
             value={model}
-            onChange={(e) => {
-              setModel(e.target.value);
-              // 换模型 → 之前选的线路不属于这个模型了，必须清掉（否则会提交错的路由）
-              setSelected([]);
-            }}
-            inputProps={{ "data-testid": "policies-add-model" }}
-          >
-            <option value="">{t("policies.add.modelPlaceholder")}</option>
-            {modelOptions.map((modelId) => (
-              <option key={modelId} value={modelId}>
-                {modelId}
-              </option>
-            ))}
-          </TextField>
+            onChange={chooseModel}
+            emptyLabel={t("policies.add.modelPlaceholder")}
+            options={modelOptions.map((modelId) => ({ value: modelId, label: modelId }))}
+          />
 
-          <Box data-testid="policies-add-channels">
-            <Typography variant="subtitle2">{t("policies.add.channels")}</Typography>
-            {model === "" ? (
-              <Caption>{t("policies.add.channelsNeedModel")}</Caption>
-            ) : candidates.length === 0 ? (
-              <Caption>{t("policies.add.channelsEmpty")}</Caption>
-            ) : (
-              candidates.map((channel) => (
-                <Box key={channel.id} data-testid={`policies-add-channel-${channel.id}`}>
-                  <FormControlLabel
-                    control={
-                      <Checkbox
-                        size="small"
-                        checked={selected.includes(channel.id)}
-                        onChange={(e) => toggleChannel(channel.id, e.target.checked)}
-                      />
-                    }
-                    label={`${channel.id} · ${channel.upstream_model}`}
-                  />
-                </Box>
-              ))
-            )}
-          </Box>
+          {/* 多选线路：MUI 多选下拉（点开是 `li[role="option"]`，真机 E2E 的 `wdPickOption` 按它驱动）。
+              没选模型 / 该模型没有线路时如实说明，不放空下拉、也不放禁用占位。 */}
+          {model === "" || candidates.length === 0 ? (
+            <Stack spacing={1} data-testid="policies-add-channels">
+              <Typography variant="subtitle2">{t("policies.add.channels")}</Typography>
+              <Caption>
+                {model === "" ? t("policies.add.channelsNeedModel") : t("policies.add.channelsEmpty")}
+              </Caption>
+            </Stack>
+          ) : (
+            <WizardMultiSelect
+              testId="policies-add-channels"
+              label={t("policies.add.channels")}
+              values={selected}
+              onChange={(next) => {
+                setSelectedTouched(true);
+                setSelected(next);
+              }}
+              emptyLabel={t("policies.add.channelsNeedModel")}
+              options={candidates.map((channel) => ({
+                value: channel.id,
+                label: `${channel.id} · ${channel.upstream_model}`,
+              }))}
+            />
+          )}
 
           {/* 能力一致性：即时比对（[docs/17 §2] 规则 5） */}
           <Box data-testid="policies-add-capabilities">
@@ -955,38 +1102,25 @@ export function PoliciesAddDialog({ open, onClose }: PoliciesAddDialogProps): Re
           </Box>
 
           <Divider />
-          <TextField
-            select
-            size="small"
-            SelectProps={{ native: true }}
+          <WizardSelect
+            testId="policies-add-sticky"
             label={t("policies.add.sticky")}
             value={pinSticky}
-            onChange={(e) => setPinSticky(e.target.value)}
-            inputProps={{ "data-testid": "policies-add-sticky" }}
-          >
-            <option value="">{t("policies.add.stickyNone")}</option>
-            {selected.map((channelId) => (
-              <option key={channelId} value={channelId}>
-                {channelId}
-              </option>
-            ))}
-          </TextField>
-          <TextField
-            select
-            size="small"
-            SelectProps={{ native: true }}
+            onChange={setPinSticky}
+            emptyLabel={t("policies.add.stickyNone")}
+            options={selected.map((channelId) => ({ value: channelId, label: channelId }))}
+          />
+          <WizardSelect
+            testId="policies-add-selector"
             label={t("policies.add.selector")}
             value={selector}
-            onChange={(e) => setSelector(e.target.value)}
-            inputProps={{ "data-testid": "policies-add-selector" }}
-          >
-            <option value="">{t("policies.add.selectorInherit")}</option>
-            {SELECTOR_VALUES.map((value) => (
-              <option key={value} value={value}>
-                {t(SELECTOR_KEY[value] as I18nKey)}
-              </option>
-            ))}
-          </TextField>
+            onChange={setSelector}
+            emptyLabel={t("policies.add.selectorInherit")}
+            options={SELECTOR_VALUES.map((value) => ({
+              value,
+              label: t(SELECTOR_KEY[value] as I18nKey),
+            }))}
+          />
           <Caption>{t("policies.add.stickyNote")}</Caption>
 
           <Divider />
@@ -1026,21 +1160,17 @@ export function PoliciesAddDialog({ open, onClose }: PoliciesAddDialogProps): Re
                 onChange={(e) => setCooldownS(e.target.value)}
                 inputProps={{ "data-testid": "policies-add-failover-cooldown" }}
               />
-              <TextField
-                select
-                size="small"
-                SelectProps={{ native: true }}
+              <WizardSelect
+                testId="policies-add-failover-backoff"
                 label={t("policies.add.failoverBackoff")}
                 value={backoff}
-                onChange={(e) => setBackoff(e.target.value as Backoff)}
-                inputProps={{ "data-testid": "policies-add-failover-backoff" }}
-              >
-                {BACKOFF_VALUES.map((value) => (
-                  <option key={value} value={value}>
-                    {t(BACKOFF_KEY[value] as I18nKey)}
-                  </option>
-                ))}
-              </TextField>
+                onChange={(next) => setBackoff(next as Backoff)}
+                emptyLabel={backoff}
+                options={BACKOFF_VALUES.map((value) => ({
+                  value,
+                  label: t(BACKOFF_KEY[value] as I18nKey),
+                }))}
+              />
             </Stack>
           </Box>
 
