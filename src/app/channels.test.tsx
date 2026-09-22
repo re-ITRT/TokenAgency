@@ -13,8 +13,8 @@
 
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ChannelsPage, { ChannelsBody, type ChannelsBodyProps } from "@/pages/channels";
 import {
@@ -25,6 +25,9 @@ import {
   summarizeChannels,
   type ChannelRowContext,
 } from "@/pages/channels/model";
+// 纯逻辑单独取一份命名空间导入：写的当下 `channelIdFor` / `channelPayload` 还不存在，
+// 这样红的时候是**一条条断言失败**（`xxx is not a function`），而不是整个文件加载不了。
+import * as channelsModel from "@/pages/channels/model";
 import type {
   Channel,
   ChannelGroup,
@@ -34,7 +37,7 @@ import type {
   ProviderView,
   QuotaConfig,
 } from "@/shared/bindings";
-import { registerBaselineMocks, registerMock } from "@/shared/api";
+import { registerBaselineMocks, registerMock, TokenAgencyError } from "@/shared/api";
 import { i18n } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
 
@@ -430,14 +433,16 @@ describe("读通道行与分组", () => {
 // ================================================================ ④ 渲染：空 / 错误 / 加载
 
 describe("空 / 错误 / 加载：都不许拿假数据填坑，也不放点了没反应的按钮", () => {
-  it("没有通道：诚实空状态 + 说明新增入口为什么不在 + 不动任何写后端的东西", () => {
+  it("没有通道：诚实空状态，且**不再说「新增入口还没有接线」**（写入口已在页头接上）", () => {
     renderBody();
 
     expect(screen.getByTestId("channels-empty")).toBeTruthy();
     expect(screen.getByText("配置里还没有通道")).toBeTruthy();
     expect(screen.getByText(/一条通道 = 一个逻辑模型/)).toBeTruthy();
-    expect(screen.getByText(/「新建」按钮/)).toBeTruthy();
+    // 这句话在写下的那一刻是诚实的边界说明；写入口接上之后它就成了假话 —— 必须消失。
+    expect(screen.queryByText(/还没有接线/)).toBeNull();
     expect(screen.queryByTestId("channels-row")).toBeNull();
+    // 展示件（纯 props）里不放任何写按钮：写入口在页头的添加向导里
     expect(
       screen.queryByRole("button", { name: /新建|批量|启停|删除|编辑|保存|应用|导入/ }),
     ).toBeNull();
@@ -728,5 +733,268 @@ describe("文案里不留未替换的占位符", () => {
       limitGaps: [{ credential_id: "c-commandcode", message: "未设上限" }],
     });
     expect(document.body.textContent ?? "").not.toMatch(/\{\{\w+\}\}/);
+  });
+});
+
+// ================================================================ ⑨ 线路添加向导（task-33）
+//
+// 用户的原话就是这条需求：
+//   线路1: 服务商 Ollama        模型 deepseek-v4.1flash  网络 直连  计费信息
+//   线路2: 服务商 CommandCode   模型 deepseek-v4.1flash  网络 直连  计费信息
+// 本项目的「线路」= `Channel`（model x provider x credential x lane x upstream_model x 优先级/权重），
+// 写命令是 `channel_upsert({ channel })`。
+//
+// 这一组钉住三件**只有机械检查才抓得住**的事（与 `network.test.tsx` ⑪/⑫ 同一套打法）：
+//   1. 控件真的在页面上，而且 `data-testid` 就是真机 E2E 要用的那一串（用户点不到 = 坏在这里，
+//      而只渲染展示件的单测完全看不出来）；
+//   2. 真输入 / 真选择之后**真的调用了 `channel_upsert`**，入参 snake_case、且只带用户填了的字段
+//      （用户没填的字段不替后端编默认值：那些字段 Rust 侧都有 `#[serde(default)]`）；
+//   3. 成功区显示的是**后端返回的那个 Channel**，不是前端拼的一句「添加成功」——
+//      所以下面的 mock 故意返回与输入完全不同的值，只有显示的是后端真值，这些断言才会过。
+//
+// 本轮**不做**能力块（`channels-add-vision|tools|reasoning|contextTokens|modalities`）与计费块
+// （`channels-add-price-*`）：能力等 `ChannelCapabilities` 进 `bindings.ts`（task-31），计费下轮一起。
+// 所以这里也断言**没有**自己造一个 `capabilities` 字段发出去。
+
+/** MUI 的 Select 在 jsdom 里是个 div：先 `mouseDown` 打开菜单，再点角色为 option 的项。 */
+async function chooseOption(testId: string, optionName: RegExp | string): Promise<void> {
+  const box = screen.getByTestId(testId);
+  fireEvent.mouseDown(within(box).getByRole("combobox"));
+  fireEvent.click(await screen.findByRole("option", { name: optionName }));
+}
+
+/** 往 testid 直接挂在输入框上的字段里打字。 */
+function typeIntoField(testId: string, value: string): void {
+  fireEvent.change(screen.getByTestId(testId), { target: { value } });
+}
+
+/** 记录入参的 mock：返回 `result`，同时把每次调用的入参留下来。 */
+function recordingMock(result: unknown): {
+  calls: Record<string, unknown>[];
+  handler: (args: Record<string, unknown> | undefined) => unknown;
+} {
+  const calls: Record<string, unknown>[] = [];
+  return {
+    calls,
+    handler: (args) => {
+      calls.push(args ?? {});
+      return result;
+    },
+  };
+}
+
+/** 本轮向导该有的控件（顺序 = 用户描述的顺序）。**不许改名**：真机 E2E 按它们驱动。 */
+const WIZARD_CONTROLS = [
+  "channels-add-provider",
+  "channels-add-credential",
+  "channels-add-model",
+  "channels-add-upstreamModel",
+  "channels-add-lane",
+  "channels-add-priority",
+  "channels-add-weight",
+  "channels-add-submit",
+] as const;
+
+describe("⑨ /channels 线路添加向导：真控件 → 真的调 channel_upsert → 显示后端真值", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  /** 把必填的四项填好（服务商 / 凭据 / 模型 / 上游模型名）。 */
+  async function fillRequired(): Promise<void> {
+    await chooseOption("channels-add-provider", "command code");
+    await chooseOption("channels-add-credential", /command code · 按量/);
+    typeIntoField("channels-add-model", MODEL_ID);
+    typeIntoField("channels-add-upstreamModel", `${MODEL_ID}-2026`);
+  }
+
+  it("页头有「添加」入口；打开后本轮该有的控件一个不少（testid 不许改名）", async () => {
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("channels-add-open"));
+    for (const id of WIZARD_CONTROLS) {
+      expect(screen.getByTestId(id), `缺控件 ${id}`).toBeTruthy();
+    }
+    // 服务商 / 凭据 / 网络是下拉，模型是「下拉 + 可直接输入」—— 都要能交互
+    expect(within(screen.getByTestId("channels-add-provider")).getByRole("combobox")).toBeTruthy();
+    expect(within(screen.getByTestId("channels-add-credential")).getByRole("combobox")).toBeTruthy();
+    expect(within(screen.getByTestId("channels-add-lane")).getByRole("combobox")).toBeTruthy();
+    expect(screen.getByTestId("channels-add-model").tagName).toBe("INPUT");
+  });
+
+  it("服务商下拉来自 provider_list；凭据下拉**按 provider 过滤**（别的服务商的凭据不出现）", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByTestId("channels-add-open"));
+
+    // 服务商选项就是 provider_list 里的两个
+    const providerBox = screen.getByTestId("channels-add-provider");
+    fireEvent.mouseDown(within(providerBox).getByRole("combobox"));
+    expect(await screen.findByRole("option", { name: "字节方舟" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "command code" })).toBeTruthy();
+    // 关掉菜单再选一个（选完菜单自己会关）
+    fireEvent.click(screen.getByRole("option", { name: "字节方舟" }));
+
+    const credentialBox = screen.getByTestId("channels-add-credential");
+    fireEvent.mouseDown(within(credentialBox).getByRole("combobox"));
+    expect(await screen.findByRole("option", { name: /字节 · 500万 token\/月/ })).toBeTruthy();
+    // commandcode 的凭据属于另一个服务商 —— 不许出现在这里
+    expect(screen.queryByRole("option", { name: /command code · 按量/ })).toBeNull();
+  });
+
+  it("网络下拉来自 lane_list，且**默认就是直连**（不是空、也不是第一条订阅线路）", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByTestId("channels-add-open"));
+
+    const box = screen.getByTestId("channels-add-lane");
+    expect(within(box).getByRole("combobox").textContent).toContain("直连");
+
+    fireEvent.mouseDown(within(box).getByRole("combobox"));
+    expect(await screen.findByRole("option", { name: "直连（本机网络）" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "日本线" })).toBeTruthy();
+  });
+
+  it("填完真提交 → channel_upsert({channel})：入参 snake_case、只带填了的字段，成功后显示后端返回值", async () => {
+    let listCalls = 0;
+    registerMock("channel_list", () => {
+      listCalls += 1;
+      return channelsFixture();
+    });
+    // 后端返回的**与提交的完全不同**：只有显示的是后端真值，下面的断言才会过
+    const upsert = recordingMock(
+      channel({
+        id: "ch-backend",
+        model: "m-backend",
+        provider: "p-backend",
+        credential: "c-backend",
+        lane: "lane-jp",
+        upstream_model: "up-backend",
+        priority: 3,
+        weight: 7,
+      }),
+    );
+    registerMock("channel_upsert", upsert.handler);
+
+    renderPage();
+    fireEvent.click(await screen.findByTestId("channels-add-open"));
+    await fillRequired();
+    typeIntoField("channels-add-priority", "7");
+    typeIntoField("channels-add-weight", "3");
+    fireEvent.click(screen.getByTestId("channels-add-submit"));
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    const args = upsert.calls[0]!;
+    // 命令入参只有一个 `channel`（契约：`channel_upsert: { args: { channel: Channel } }`）
+    expect(Object.keys(args)).toEqual(["channel"]);
+    const ch = args["channel"] as Record<string, unknown>;
+
+    expect(ch["model"]).toBe(MODEL_ID);
+    expect(ch["provider"]).toBe("p-commandcode");
+    expect(ch["credential"]).toBe("c-commandcode");
+    expect(ch["upstream_model"]).toBe(`${MODEL_ID}-2026`);
+    // 网络没动过 -> 就是默认的直连那条 lane（来自 lane_list 的 id，不是前端编的字符串）
+    expect(ch["lane"]).toBe("lane-direct");
+    expect(ch["priority"]).toBe(7);
+    expect(ch["weight"]).toBe(3);
+    // 通道 id 是派生的（本轮没有 id 输入框）：由「模型 x 服务商 x 凭据」决定
+    expect(typeof ch["id"]).toBe("string");
+    expect(ch["id"]).toBe(channelsModel.channelIdFor({ ...channelsModel.EMPTY_CHANNEL_DRAFT, provider: "p-commandcode", credential: "c-commandcode", model: MODEL_ID }));
+
+    // 全部键都是 snake_case（真机 `channel_arg_case_guard` 的口径）
+    for (const key of Object.keys(ch)) expect(key).toMatch(/^[a-z][a-z0-9_]*$/);
+    // 用户没填的字段**不替后端编**：这些在 Rust 侧都有 #[serde(default)]
+    for (const absent of ["transform", "tags", "enabled"]) {
+      expect(absent in ch, `${absent} 不该由前端硬编（Rust 有 serde(default)）`).toBe(false);
+    }
+    // 本轮不做能力块 -> 更不许自己造一个 capabilities 字段
+    expect("capabilities" in ch).toBe(false);
+
+    // 回显的是**后端返回的那个 Channel**
+    const saved = await screen.findByTestId("channels-add-result");
+    expect(saved.textContent).toContain("ch-backend");
+    expect(saved.textContent).toContain("m-backend");
+    expect(saved.textContent).toContain("up-backend");
+    expect(saved.textContent).toContain("lane-jp");
+    expect(saved.textContent).toContain("3");
+    expect(saved.textContent).toContain("7");
+
+    // 成功后失效重取（列表真的刷新了，不是本地塞一行）
+    await waitFor(() => expect(listCalls).toBeGreaterThan(1));
+  });
+
+  it("必填缺一个都不发命令，并在结果区逐个点名缺哪个", async () => {
+    const upsert = recordingMock(channel());
+    registerMock("channel_upsert", upsert.handler);
+
+    renderPage();
+    fireEvent.click(await screen.findByTestId("channels-add-open"));
+    fireEvent.click(screen.getByTestId("channels-add-submit"));
+
+    const issues = await screen.findByTestId("channels-add-issues");
+    expect(issues.textContent).toContain("必填");
+    expect(upsert.calls).toHaveLength(0);
+  });
+
+  it("后端拒绝时原样显示 TA 码与字段路径（不吞错、不改写成一句「保存失败」）", async () => {
+    registerMock("channel_upsert", () => {
+      throw new TokenAgencyError({
+        code: "TA-5003",
+        message: "channels[0].model 引用的模型不存在",
+      });
+    });
+
+    renderPage();
+    fireEvent.click(await screen.findByTestId("channels-add-open"));
+    await fillRequired();
+    fireEvent.click(screen.getByTestId("channels-add-submit"));
+
+    const error = await screen.findByTestId("channels-add-error");
+    expect(error.textContent).toContain("TA-5003");
+    expect(error.textContent).toContain("channels[0].model");
+    expect(screen.queryByTestId("channels-add-result")).toBeNull();
+  });
+});
+
+// ================================================================ ⑩ 派生 id（本轮没有 id 输入框）
+
+describe("线路 id 由「模型 x 服务商 x 凭据」派生：换上游名/网络/权重仍是同一条线（upsert 幂等）", () => {
+  const identity = { provider: "p-ollama", credential: "c-ollama-personal", model: MODEL_ID };
+  const draft: channelsModel.ChannelDraft = {
+    ...channelsModel.EMPTY_CHANNEL_DRAFT,
+    ...identity,
+    upstreamModel: MODEL_ID,
+  };
+
+  it("同一条身份的线，换上游名 / 网络 / 优先级 / 权重 -> id 不变（覆盖而不是新增一条）", () => {
+    const id = channelsModel.channelIdFor(identity);
+    expect(id).toBe(channelsModel.channelIdFor({ ...identity }));
+    // 这三样是**属性**：改了还是同一条线（`channel_upsert` 同 id 覆盖 = 幂等编辑）
+    expect(channelsModel.channelPayload({ ...draft, upstreamModel: "别的上游名" }).upstream_model).toBe(
+      "别的上游名",
+    );
+    expect(channelsModel.channelPayload({ ...draft, lane: "lane-jp" }).id).toBe(id);
+    expect(channelsModel.channelPayload({ ...draft, priority: "1", weight: "99" }).id).toBe(id);
+    // 换服务商 / 凭据 / 模型 -> 是另一条线
+    expect(id).not.toBe(channelsModel.channelIdFor({ ...identity, provider: "p-commandcode" }));
+    expect(id).not.toBe(channelsModel.channelIdFor({ ...identity, credential: "c-other" }));
+    expect(id).not.toBe(channelsModel.channelIdFor({ ...identity, model: "别的模型" }));
+  });
+
+  it("id 只含小写字母/数字/短横线，且以 `ch-` 开头（模型名里的 `.` 也不会漏进去）", () => {
+    const id = channelsModel.channelIdFor(identity);
+    expect(id.startsWith("ch-")).toBe(true);
+    expect(id).toMatch(/^[a-z0-9-]+$/);
+    expect(id).toBe("ch-p-ollama-c-ollama-personal-deepseek-v4-1flash");
+  });
+
+  it("载荷只在真的填了的时候带 lane / priority / weight（空字符串 = 不发这个字段）", () => {
+    const empty = channelsModel.channelPayload(draft);
+    expect("lane" in empty).toBe(false);
+    expect("priority" in empty).toBe(false);
+    expect("weight" in empty).toBe(false);
+
+    const filled = channelsModel.channelPayload({ ...draft, lane: "lane-direct", priority: "5", weight: "20" });
+    expect(filled.lane).toBe("lane-direct");
+    expect(filled.priority).toBe(5);
+    expect(filled.weight).toBe(20);
   });
 });

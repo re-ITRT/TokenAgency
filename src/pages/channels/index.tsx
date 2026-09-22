@@ -3,13 +3,19 @@
  * `pages: ["channels", "channels/index"]` —— 本文件是**文件夹形式**（与 `logs/index.tsx`、
  * `providers/index.tsx` 一致）。纯逻辑与整形在 `./model.ts`，那一层是单测的主要对象。
  *
- * 这一页本轮**只做读**（列表 + 按服务商分组），取数只用 `channel_list` / `provider_list` /
- * `credential_list` / `lane_list` / `group_list` / `quota_limit_gaps`。
- * 写命令（`channel_upsert` / `channel_set_enabled` / `channel_bulk_assign_lane` / `channel_set_tags`
- * / `channel_delete`）**已在后端登记**（以 `src-tauri/src/commands/mod.rs` 的 `collect_commands!`
- * 为准，`src/app/commandSurface.guard.test.ts` 机械检查），**但本页的新建/启停入口尚未接入**：
- * 后续一批接上；在那之前空状态里说明"新建入口还没有接线"，**不放禁用占位**。
- * （矩阵视图依赖 `channel_matrix`，同样以后续批次为准。）
+ * 两条线：
+ * - **读**：列表 + 按服务商分组，取数用 `channel_list` / `provider_list` / `credential_list` /
+ *   `lane_list` / `group_list` / `quota_limit_gaps`；
+ * - **写**（本轮 task-33）：页头的「添加」打开线路向导 ——
+ *   服务商 / 凭据（按 provider 过滤）/ 模型（下拉 + 可直接输入）/ 上游模型名 / 网络 / 优先级 /
+ *   权重 → `channel_upsert({ channel })`，成功后用**后端返回值**回显并失效重取。
+ *   固定 testid 见 [docs/17 §3.3]（`channels-add-*`），真机 E2E 按它们驱动，**不许改名**。
+ *
+ * **本轮不做**：能力块（`channels-add-vision|tools|reasoning|contextTokens|modalities`）与
+ * 计费块（`channels-add-price-*`）—— 能力要等 `ChannelCapabilities` 进契约（task-31），计费下轮一起。
+ * 所以这里既不放禁用占位，也不自己造一个 `capabilities` 字段发出去（契约先行）。
+ * 其余写命令（`channel_set_enabled` / `channel_bulk_assign_lane` / `channel_set_tags` /
+ * `channel_delete`）仍**没有**入口，空状态里也不再声称"入口还没接线"（那已经变成假话）。
  *
  * 三条诚实纪律（与 `./model.ts` 的文件头一致）：
  * 1. **线路继承只认读得到的层级**：通道级 > 凭据级，再往上显示「继承」并说明原因；
@@ -17,11 +23,38 @@
  * 3. **读不到的维度画破折号**，不画 0、也不编一句"一切正常"。
  */
 
-import { Box, Button, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
-import { useMemo, type ReactNode } from "react";
+import {
+  Autocomplete,
+  Box,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  MenuItem,
+  Paper,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
-import { errorMessage, qk, useCommandQuery } from "@/shared/api";
-import type { QuotaMetric, QuotaStateValue, QuotaWindow } from "@/shared/bindings";
+import { errorMessage, qk, useCommandMutation, useCommandQuery } from "@/shared/api";
+import type {
+  CredentialView,
+  LaneView,
+  ModelView,
+  ProviderView,
+  QuotaMetric,
+  QuotaStateValue,
+  QuotaWindow,
+} from "@/shared/bindings";
 import { LimitGapNotice, PageHeader, QuotaBar, StatusDot, type SemStatus } from "@/shared/components";
 import { formatInt, formatLatency, formatMoney, formatTokens } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
@@ -29,10 +62,18 @@ import { radius, typography } from "@/theme";
 
 import {
   DASH,
+  EMPTY_CHANNEL_DRAFT,
+  channelDraftIssues,
+  channelPayload,
   credentialLabelFor,
+  credentialOptionsFor,
+  defaultLaneId,
   groupByProvider,
+  laneOptionsOf,
   readChannelRows,
   summarizeChannels,
+  type ChannelDraft,
+  type ChannelDraftField,
   type ChannelRowContext,
   type ChannelRowView,
   type LaneResolution,
@@ -341,11 +382,11 @@ export function ChannelsBody({
               {t("channels.loading")}
             </Typography>
           ) : rows.length === 0 ? (
-            /* 空状态：说明通道是什么、新增入口为什么不在，不给假表格 */
+            /* 空状态：说明通道是什么。**不再**写"新建入口还没有接线" —— 那一句已经变成假话
+               （页头的「添加」就是入口），i18n 里的旧键留给主管改写/删除，本页不再引用。 */
             <Stack spacing={1} data-testid="channels-empty">
               <Typography variant="body1">{t("channels.empty.title")}</Typography>
               <Caption>{t("channels.empty.what")}</Caption>
-              <Caption>{t("channels.empty.create")}</Caption>
             </Stack>
           ) : (
             <Stack spacing={6}>
@@ -502,10 +543,311 @@ export function ChannelsBody({
   );
 }
 
+// ================================================================ 添加线路向导（task-33）
+
+/** 本地预检点名的字段 → 既有 i18n 键（**不新造键**：缺键由主管统一补，见 [docs/17 §3.0]）。 */
+const DRAFT_FIELD_LABEL: Record<ChannelDraftField, I18nKey> = {
+  provider: "channels.add.provider",
+  credential: "channels.add.credential",
+  model: "channels.add.model",
+  upstreamModel: "channels.add.upstreamModel",
+};
+
+/**
+ * 一个下拉字段。
+ *
+ * `data-testid` 挂在**容器**上（与 `network/index.tsx` 的 `SelectField` 同一形状）：真机 E2E
+ * 先找容器内的 `input` / `[role=combobox]`，找不到才退回容器本身 —— 所以容器里必须真的有控件。
+ *
+ * 值为空时用 `renderValue` 显示 `emptyLabel`：**空就是真的空**（显示「必填」），
+ * 不放一个"请选择…"的假选项，也不禁用控件。
+ */
+function SelectField({
+  testId,
+  label,
+  value,
+  onChange,
+  options,
+  emptyLabel,
+  hint,
+}: {
+  testId: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: readonly { value: string; label: string }[];
+  emptyLabel: string;
+  hint?: string;
+}) {
+  const labelOf = (id: string): string => options.find((o) => o.value === id)?.label ?? id;
+  return (
+    <Stack spacing={1} data-testid={testId}>
+      <TextField
+        select
+        size="small"
+        fullWidth
+        label={label}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        slotProps={{
+          select: {
+            displayEmpty: true,
+            renderValue: (selected: unknown) =>
+              (selected as string) === "" ? emptyLabel : labelOf(selected as string),
+          },
+        }}
+      >
+        {options.map((option) => (
+          <MenuItem key={option.value} value={option.value}>
+            {option.label}
+          </MenuItem>
+        ))}
+      </TextField>
+      {hint === undefined ? null : <Caption>{hint}</Caption>}
+    </Stack>
+  );
+}
+
+/** 只放数字（优先级另许负号）进输入框：非整数字符串进不来，本地就不需要"必须是整数"的新文案。 */
+function intInputFilter(raw: string, allowNegative: boolean): string {
+  return raw.replace(allowNegative ? /[^0-9-]/g : /[^0-9]/g, "");
+}
+
+export type ChannelAddDialogProps = {
+  open: boolean;
+  onClose: () => void;
+  providers: readonly ProviderView[];
+  credentials: readonly CredentialView[];
+  models: readonly ModelView[];
+  lanes: readonly LaneView[];
+};
+
+/**
+ * 「添加线路」向导（[docs/17 §3.3]）。
+ *
+ * 顺序就是用户描述的顺序：服务商 → 凭据（按 provider 过滤）→ 模型（下拉 + 可直接输入新名字）
+ * → 上游模型名 → 网络（默认直连）→ 优先级 / 权重 → 保存。
+ *
+ * 保存只做一件事：`channel_upsert({ channel })`；成功区显示的是**后端返回的那个 Channel**
+ * （不是草稿），然后失效 `qk.channels` / `qk.models` 重取。
+ * 能力块与计费块本轮不做（见文件头），所以这里**没有**它们的控件，也没有禁用占位。
+ */
+export function ChannelAddDialog({
+  open,
+  onClose,
+  providers,
+  credentials,
+  models,
+  lanes,
+}: ChannelAddDialogProps) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const upsert = useCommandMutation("channel_upsert");
+
+  const [draft, setDraft] = useState<ChannelDraft>(EMPTY_CHANNEL_DRAFT);
+  const [issues, setIssues] = useState<readonly ChannelDraftField[]>([]);
+
+  const set = <K extends keyof ChannelDraft>(key: K, value: ChannelDraft[K]): void =>
+    setDraft((previous) => ({ ...previous, [key]: value }));
+
+  const credentialOptions = useMemo(
+    () => credentialOptionsFor(credentials, draft.provider),
+    [credentials, draft.provider],
+  );
+  const laneOptions = useMemo(() => laneOptionsOf(lanes), [lanes]);
+  const modelIds = useMemo(() => models.map((m) => m.model.id), [models]);
+  const directLane = useMemo(() => defaultLaneId(lanes), [lanes]);
+
+  /**
+   * 默认网络 = 配置里那条启用的直连线路（用户原话里的「网络 直连」）。
+   * 只在**用户还没选**的时候补上（`prev.lane === ""`）：lane_list 是异步读来的，
+   * 无条件覆盖会把用户刚选的线路冲掉。配置里没有直连线路时保持空 → 按继承链走。
+   */
+  useEffect(() => {
+    if (!open || directLane === "") return;
+    setDraft((previous) => (previous.lane === "" ? { ...previous, lane: directLane } : previous));
+  }, [open, directLane]);
+
+  /** 关掉对话框 = 回到干净草稿（下次打开不会带着上一次的残留，也不会带着旧的回显）。 */
+  const close = (): void => {
+    setDraft(EMPTY_CHANNEL_DRAFT);
+    setIssues([]);
+    upsert.reset();
+    onClose();
+  };
+
+  /** 换服务商 → 凭据清空：凭据下拉是按 provider 过滤的，留着上一个服务商的 id 会变成无效引用。 */
+  const changeProvider = (provider: string): void => {
+    setDraft((previous) => ({ ...previous, provider, credential: "" }));
+  };
+
+  const submit = (): void => {
+    const found = channelDraftIssues(draft);
+    setIssues(found);
+    // 本地预检不过 → **一次都不发**（与设置页 config_validate 的纪律一致）
+    if (found.length > 0) return;
+    upsert.reset();
+    upsert.mutate(
+      { channel: channelPayload(draft) },
+      {
+        onSuccess: () => {
+          void queryClient.invalidateQueries({ queryKey: qk.channels });
+          // 通道数会变（`model_list` 的 channel_count），模型页也一起刷新
+          void queryClient.invalidateQueries({ queryKey: qk.models });
+        },
+      },
+    );
+  };
+
+  const saved = upsert.data;
+
+  return (
+    <Dialog open={open} onClose={close} fullWidth maxWidth="sm">
+      <DialogTitle>{t("channels.add.title")}</DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ pt: 1 }}>
+          <SelectField
+            testId="channels-add-provider"
+            label={t("channels.add.provider")}
+            value={draft.provider}
+            onChange={changeProvider}
+            emptyLabel={t("wizard.required")}
+            options={providers.map((p) => ({ value: p.id, label: p.name ?? p.id }))}
+          />
+
+          <SelectField
+            testId="channels-add-credential"
+            label={t("channels.add.credential")}
+            value={draft.credential}
+            onChange={(value) => set("credential", value)}
+            emptyLabel={t("wizard.required")}
+            options={credentialOptions.map((c) => ({ value: c.id, label: c.label }))}
+            /* 选中的服务商一份凭据都没有：如实说"暂无数据"，不列别人的凭据、也不禁用控件 */
+            hint={
+              draft.provider !== "" && credentialOptions.length === 0
+                ? t("common.empty")
+                : undefined
+            }
+          />
+
+          {/* 模型：已有 model_list 的下拉 + **允许直接输入新名字**（freeSolo） */}
+          <Autocomplete
+            freeSolo
+            options={modelIds}
+            inputValue={draft.model}
+            onInputChange={(_event, value) => set("model", value)}
+            onChange={(_event, value) => set("model", typeof value === "string" ? value : (value ?? ""))}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label={t("channels.add.model")}
+                size="small"
+                fullWidth
+                slotProps={{
+                  htmlInput: { ...params.inputProps, "data-testid": "channels-add-model" },
+                }}
+              />
+            )}
+          />
+
+          <TextField
+            label={t("channels.add.upstreamModel")}
+            value={draft.upstreamModel}
+            onChange={(event) => set("upstreamModel", event.target.value)}
+            size="small"
+            fullWidth
+            slotProps={{ htmlInput: { "data-testid": "channels-add-upstreamModel" } }}
+          />
+
+          <SelectField
+            testId="channels-add-lane"
+            label={t("channels.add.lane")}
+            value={draft.lane}
+            onChange={(value) => set("lane", value)}
+            /* 配置里没有直连线路时才是空的：那时显示继承（后端语义：最终仍是直连） */
+            emptyLabel={t("channels.lane.inherited")}
+            options={laneOptions.map((l) => ({ value: l.id, label: l.name }))}
+          />
+
+          <Box sx={{ display: "flex", gap: 2 }}>
+            <TextField
+              label={t("channels.add.priority")}
+              value={draft.priority}
+              onChange={(event) => set("priority", intInputFilter(event.target.value, true))}
+              size="small"
+              fullWidth
+              slotProps={{ htmlInput: { "data-testid": "channels-add-priority", inputMode: "numeric" } }}
+            />
+            <TextField
+              label={t("channels.add.weight")}
+              value={draft.weight}
+              onChange={(event) => set("weight", intInputFilter(event.target.value, false))}
+              size="small"
+              fullWidth
+              slotProps={{ htmlInput: { "data-testid": "channels-add-weight", inputMode: "numeric" } }}
+            />
+          </Box>
+
+          {/* 本地预检的错：逐个点名缺哪个（文案用既有键，不新造） */}
+          {issues.length > 0 ? (
+            <Stack spacing={1} data-testid="channels-add-issues">
+              {issues.map((field) => (
+                <Typography key={field} variant="body1" sx={{ color: "error.main" }}>
+                  {`${t(DRAFT_FIELD_LABEL[field])}：${t("wizard.required")}`}
+                </Typography>
+              ))}
+            </Stack>
+          ) : null}
+
+          {/* 后端的错原样显示（TA 码 + 字段路径），本地预检不替代它 */}
+          {upsert.error !== null ? (
+            <Typography variant="body1" data-testid="channels-add-error" sx={{ color: "error.main" }}>
+              {errorMessage(upsert.error)}
+            </Typography>
+          ) : null}
+
+          {/* 成功：显示**后端返回的那个 Channel**（不是我们提交的草稿） */}
+          {saved !== undefined ? (
+            <Stack spacing={1} data-testid="channels-add-result">
+              <Typography variant="body1">{t("wizard.saved", { id: saved.id })}</Typography>
+              <Typography
+                variant="body1"
+                sx={{ fontFamily: typography.fontMono, overflowWrap: "anywhere" }}
+              >
+                {[
+                  saved.model,
+                  saved.provider,
+                  saved.credential,
+                  saved.upstream_model,
+                  saved.lane ?? DASH,
+                  formatInt(saved.priority),
+                  formatInt(saved.weight),
+                ].join(" · ")}
+              </Typography>
+            </Stack>
+          ) : null}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={close}>{t("common.cancel")}</Button>
+        <Button
+          variant="contained"
+          data-testid="channels-add-submit"
+          disabled={upsert.isPending}
+          onClick={submit}
+        >
+          {t("common.save")}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
 // ================================================================ 数据层
 
 export default function ChannelsPage() {
   const { t } = useTranslation();
+  const [addOpen, setAddOpen] = useState(false);
 
   const channels = useCommandQuery("channel_list", undefined, qk.channels);
   const providers = useCommandQuery("provider_list", undefined, qk.providers);
@@ -513,6 +855,8 @@ export default function ChannelsPage() {
   const lanes = useCommandQuery("lane_list", undefined, qk.lanes);
   const groups = useCommandQuery("group_list", undefined, qk.groups);
   const limitGaps = useCommandQuery("quota_limit_gaps", undefined, LIMIT_GAPS_KEY);
+  // 只有「添加线路」用得到（模型下拉），列表视图不需要 —— 但它是同一个 key，别处已经在读，不会多打一次
+  const models = useCommandQuery("model_list", undefined, qk.models);
 
   const context = useMemo<ChannelRowContext>(
     () => ({
@@ -537,6 +881,7 @@ export default function ChannelsPage() {
     void lanes.refetch();
     void groups.refetch();
     void limitGaps.refetch();
+    void models.refetch();
   };
 
   return (
@@ -546,9 +891,18 @@ export default function ChannelsPage() {
         description={t("channels.description")}
         docRef="07 §5 / 05 §2.1 套餐链（列表视图；矩阵视图后端未实现）"
         actions={
-          <Button variant="outlined" onClick={refresh}>
-            {t("common.refresh")}
-          </Button>
+          <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+            <Button variant="outlined" onClick={refresh}>
+              {t("common.refresh")}
+            </Button>
+            <Button
+              variant="contained"
+              data-testid="channels-add-open"
+              onClick={() => setAddOpen(true)}
+            >
+              {t("channels.add.open")}
+            </Button>
+          </Box>
         }
       />
       <ChannelsBody
@@ -558,6 +912,14 @@ export default function ChannelsPage() {
         isLoading={channels.isPending}
         error={channels.error ?? undefined}
         onRetry={refresh}
+      />
+      <ChannelAddDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        providers={providers.data ?? []}
+        credentials={credentials.data ?? []}
+        models={models.data ?? []}
+        lanes={lanes.data ?? []}
       />
     </>
   );
