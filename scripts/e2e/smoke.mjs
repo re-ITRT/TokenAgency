@@ -105,7 +105,7 @@ const STEP_TITLES = {
   step14: "数据安全回归：设置页「校验并应用」之后，之前建的线路必须还在",
   step15: "能力一致的两条线路可路由；把已归组的线路改成不一致 → 后端必须拒绝并点出字段",
   step17: "节点清单真出数据（/network/nodes ← subscription_nodes，含 fixture 节点）",
-  step18: "访问密钥真能管也真能挡人（创建/明文一次/带 key 放行、不带 key 401/禁用即 401）",
+  step18: "访问密钥能管（创建/明文一次/列表无明文/启停/删除）；HTTP 鉴权段需网关在监听，否则如实记未验证",
 };
 
 // ================================================================ 小工具
@@ -964,6 +964,29 @@ async function probeSelect(wd, tid, evidence) {
 /** `config` 表里某个 kind 的实体 id 列表。 */
 function configIds(dump, kind) {
   return (dump.config ?? []).filter((r) => r.kind === kind).map((r) => String(r.entity_id));
+}
+
+/**
+ * `config` 表里某个 kind 的全部实体：`json` 解析结果 + 行的 `entity_id`。
+ *
+ * 为什么需要它：**界面派生的 id 不能由挂具假设**。两步向导的 `provider.id` 是
+ * `deriveProviderId(显示名称)` 算出来的（`src/pages/providers/providerWizardModel.ts`），
+ * 挂具手写一个 id 常量只是在断言自己的想象。实机证据（96fae9a 那次 run 的
+ * `credentials-add-result`）：显示名称 "TA E2E 供应商" 真正派生出来的 id 是 `ta-e2e`，
+ * 而挂具原先断言的是 `ta-e2e-provider` —— 永远不可能相等。
+ * 所以：按**名称**去库里找实体，把真实 id 读出来，再拿这个真实 id 往后用。
+ */
+function configEntities(dump, kind) {
+  const out = [];
+  for (const row of dump.config ?? []) {
+    if (row.kind !== kind) continue;
+    try {
+      out.push({ entityId: String(row.entity_id), json: JSON.parse(String(row.json)) });
+    } catch {
+      // json 坏掉的行不进候选；调用方可以从"行数 vs 候选数"看出差异，不静默假装它不存在
+    }
+  }
+  return out;
 }
 
 /**
@@ -1989,16 +2012,29 @@ async function step17(wd) {
 // ---------------------------------------------------------------- step18 API key 管理
 
 /**
- * **step18：访问密钥真的能管、也真的能挡人**（用户第 71 轮：「API key 的管理也需要」）。
+ * **step18：访问密钥真的能管**（用户第 71 轮：「API key 的管理也需要」）。
  *
  * 关键语义（[docs/19 §3.3] 已定死）：`gateway.local_key` 为空**且**表里没有 enabled 的 key → **不鉴权**；
- * 一旦存在任一凭据来源 → **必须匹配**。所以本步骤按顺序证明：
- * 建 key 之前无凭据不 401 → 建 key 之后无凭据 401、带 key 非 401 → 界面上禁用后立刻回到 401 → 删除。
+ * 一旦存在任一凭据来源 → **必须匹配**。所以本步骤分成两段，**分别给结论**：
+ *
+ * 1. **本地 CRUD（本环境可验证，必须真过）**：创建 → 明文只显示一次 → 列表只留前缀不含明文
+ *    → 启停开关真的翻转 → 删除后那行真的消失。这些全程不碰网络，是实现的问题就得红。
+ * 2. **HTTP 鉴权路径（需要网关真的在监听）**：带 key 非 401、不带 key 401、界面禁用后立刻 401。
+ *    E2E 环境里**没有内核**，而启动编排在内核未就绪时**故意不启动网关**
+ *    （`src-tauri/src/boot.rs:454` 的 `start_gateway`，同文件单测那句「内核没就绪就不该往下走」；
+ *    实机日志里只有「网关已装配（尚未开始服务）」，从来没有 `src-tauri/src/gateway.rs:335`
+ *    的「网关开始服务（只绑回环）」）。此时端口没人监听，探测必然 `status:0 / fetch failed`
+ *    —— 这既不是"放行"也不是"被挡"。所以这一小段**如实记 SKIP 并写明原因**，
+ *    绝不当成 PASS（假绿），也绝不报成 FAIL（那会让人误以为是产品缺陷）。
+ *    换一台真的有内核的机器跑同一个脚本，这一小段会自动走回完整断言。
+ *
  * 明文只在创建时出现一次，点「我已保存」后必须从界面上消失。
  */
 async function step18(wd) {
   const evidence = [];
   const GW = "http://127.0.0.1:8787";
+  /** 本步新建的那把 key 的**名称**：列表里按它定位"我们自己那一行"。 */
+  const KEY_NAME = "ta-e2e-key";
   const probe = async (token) => {
     const headers = token === null ? {} : { authorization: `Bearer ${token}` };
     try {
@@ -2021,14 +2057,19 @@ async function step18(wd) {
     return;
   }
 
-  // ① 建之前：没有凭据来源 → 不该被挡（默认不鉴权，这是既有行为）
+  // ① 建之前：没有凭据来源 → 不该被挡（默认不鉴权，这是既有行为）。
+  //    这一次探测同时回答一个**环境问题**：网关到底有没有在监听 —— 后面的判定全靠它分流。
   const before = await probe(null);
   evidence.push(`建 key 之前：无凭据 GET /v1/models → ${JSON.stringify(before)}`);
+  const gatewayUp = before.status !== 0;
+  evidence.push(
+    `网关可达性=${gatewayUp}（status:0 = 端口没人监听；它既不是"放行"也不是"被挡"，判定时必须分开看）`,
+  );
 
   // ② 真界面新建
   await wdClickTid(wd, "api-keys-create", evidence);
   await sleep(400);
-  await wdFillByTid(wd, "api-keys-create-name", "ta-e2e-key", evidence);
+  await wdFillByTid(wd, "api-keys-create-name", KEY_NAME, evidence);
   await wdClickTid(wd, "api-keys-create-submit", evidence);
   await sleep(1500);
   await shot(wd, "step18-created");
@@ -2052,36 +2093,178 @@ async function step18(wd) {
   }
   evidence.push(`点「我已保存」之后明文从界面消失 = ${hiddenAfterDone}`);
 
-  // ④ 真鉴权：带 key 非 401、不带 key 401
-  const withKey = await probe(plaintext);
-  const noKey = await probe(null);
-  evidence.push(`带这个 key：${JSON.stringify(withKey)}；不带 key：${JSON.stringify(noKey)}`);
+  // ④ 列表里**只有前缀、没有明文**（本地 CRUD，与网关在不在无关）
+  const listText = await wd.textOf('[data-testid="api-keys-list-panel"]');
+  const listFlat = (listText ?? "").replace(/\s+/g, "");
+  const hashOnly = await wd.textOf('[data-testid="api-keys-hash-only"]');
+  const listHasPlain = plaintext.length > 0 && listFlat.includes(plaintext);
+  evidence.push(
+    `列表面板文本: ${JSON.stringify((listText ?? "").replace(/\s+/g, " ").slice(0, 200))}` +
+      ` · 列表里含明文=${listHasPlain} · hash-only 说明=${JSON.stringify((hashOnly ?? "").replace(/\s+/g, " ").slice(0, 90))}`,
+  );
+  const okListNoPlain = listText !== null && !listHasPlain;
 
-  // ⑤ 界面上禁用 → 立刻 401
-  let disabledProbe = null;
-  if ((await wd.probeTestIds()).includes("api-key-toggle")) {
-    await wdClickTid(wd, "api-key-toggle", evidence);
-    await sleep(1200);
-    disabledProbe = await probe(plaintext);
-    evidence.push(`界面上禁用后带同一个 key：${JSON.stringify(disabledProbe)}`);
+  /**
+   * 按**名称**定位我们自己那一行，并把它的 `data-key-id` 读出来 —— 后面点开关 / 删除都落在
+   * 这一行上（`--keep-data` 跑法下列表里可能有上一轮的残留行，不能拿"页面上第一个开关"凑数）。
+   */
+  const rowProbe = async () =>
+    wd.exec(`
+      const name = ${JSON.stringify(KEY_NAME)};
+      const rows = [...document.querySelectorAll('[data-testid="api-key-row"]')];
+      const mine = rows.filter((r) => (r.textContent || '').includes(name));
+      const input = mine.length === 1 ? mine[0].querySelector('[data-testid="api-key-toggle"] input') : null;
+      return {
+        rows: rows.length,
+        mine: mine.length,
+        keyId: mine.length === 1 ? mine[0].getAttribute('data-key-id') : null,
+        checked: input ? input.checked : null,
+      };
+    `);
+  const rowBeforeToggle = await rowProbe();
+  evidence.push(`新建的密钥行（按名称 ${KEY_NAME} 定位）: ${JSON.stringify(rowBeforeToggle)}`);
+  const keyId =
+    typeof rowBeforeToggle?.keyId === "string" && /^[A-Za-z0-9._:-]+$/.test(rowBeforeToggle.keyId)
+      ? rowBeforeToggle.keyId
+      : null;
+  const scoped = (tid) =>
+    keyId === null
+      ? `[data-testid="${tid}"]`
+      : `[data-testid="api-key-row"][data-key-id="${keyId}"] [data-testid="${tid}"]`;
+
+  // ⑤ 真鉴权：带 key 非 401、不带 key 401。**必须先于"停用"这一步**，否则带 key 也会被挡。
+  let withKey = null;
+  let noKey = null;
+  if (gatewayUp) {
+    withKey = await probe(plaintext);
+    noKey = await probe(null);
+    evidence.push(`带这个 key：${JSON.stringify(withKey)}；不带 key：${JSON.stringify(noKey)}`);
   } else {
-    evidence.push("没有 api-key-toggle，无法从界面禁用（这一条没测到）");
+    // 网关没监听时照样探一次：拿到的必然是 status:0，这正是与"被 401 挡下"的区分证据
+    withKey = await probe(plaintext);
+    evidence.push(
+      `网关没监听，带 key 再探一次也只是证明"没人在听"：${JSON.stringify(withKey)}` +
+        `（若网关在监听且鉴权生效，这里应当是 401，而不是 status:0）`,
+    );
   }
 
+  // ⑥ 启用/停用：先验**本地**（点一下，MUI Switch 的真实勾选状态真的翻过去）；
+  //    网关在监听时再验"禁用后带同一个 key 立刻 401"。
+  let toggleFlipped = false;
+  let disabledProbe = null;
+  if (rowBeforeToggle?.mine !== 1) {
+    evidence.push(`按名称 ${KEY_NAME} 没定位到唯一一行（mine=${rowBeforeToggle?.mine}），启停开关这一条没测到`);
+  } else {
+    const toggleEl =
+      (await wd.findElement(`${scoped("api-key-toggle")} input`)) ?? (await wd.findElement(scoped("api-key-toggle")));
+    if (toggleEl === null) {
+      evidence.push(`找不到开关控件 ${scoped("api-key-toggle")}`);
+    } else {
+      try {
+        await wd.click(toggleEl);
+        await sleep(1200);
+      } catch (err) {
+        evidence.push(`开关点不动：${wdErrText(err)}`);
+      }
+      const rowAfterToggle = await rowProbe();
+      toggleFlipped = rowAfterToggle?.checked !== null && rowAfterToggle.checked !== rowBeforeToggle.checked;
+      evidence.push(
+        `点开关后: ${JSON.stringify(rowAfterToggle)} · 本地状态翻转=${toggleFlipped}` +
+          `（这是本地证据：命令真的跑完并重新渲染了；它对 HTTP 的影响见下一行）`,
+      );
+      if (gatewayUp) {
+        disabledProbe = await probe(plaintext);
+        evidence.push(`界面上停用后带同一个 key：${JSON.stringify(disabledProbe)}`);
+      }
+    }
+  }
+
+  // ⑦ 删除：真点「删除」→ 确认对话框 → 那一行真的消失（本地 CRUD）
+  let deleteOk = false;
+  const delEl = (await wd.findElement(scoped("api-key-delete"))) ?? null;
+  if (delEl === null) {
+    evidence.push(`找不到删除控件 ${scoped("api-key-delete")}（这一条没测到）`);
+  } else {
+    try {
+      await wd.click(delEl);
+      await sleep(400);
+    } catch (err) {
+      evidence.push(`删除按钮点不动：${wdErrText(err)}`);
+    }
+    if (!(await wd.probeTestIds()).includes("api-key-delete-confirm")) {
+      evidence.push("点了「删除」但没有出现确认对话框（api-key-delete-confirm 不存在）");
+    } else {
+      await wdClickTid(wd, "api-key-delete-confirm", evidence);
+      await sleep(1200);
+      const rowAfterDelete = await rowProbe();
+      deleteOk = rowAfterDelete?.mine === 0;
+      evidence.push(
+        `删除后按名称 ${KEY_NAME} 定位到的行数=${rowAfterDelete?.mine}（列表总行数=${rowAfterDelete?.rows}）· 行消失=${deleteOk}`,
+      );
+      await shot(wd, "step18-deleted");
+    }
+  }
+
+  // ---- 判定：本地 CRUD 与 HTTP 鉴权**分开报**
   const okCreate = plaintext.startsWith("ta-sk-");
   const okHidden = hiddenAfterDone;
-  const okAuth = withKey.status !== 401 && noKey.status === 401;
-  const okDisabled = disabledProbe !== null && disabledProbe.status === 401;
+  const crudOk = okCreate && okHidden && okListNoPlain && toggleFlipped && deleteOk;
   evidence.push(
-    `判定：明文形状=${okCreate} 只显示一次=${okHidden} 鉴权生效=${okAuth} 禁用即挡住=${okDisabled}`,
+    `本地 CRUD 判定：明文形状=${okCreate} 只显示一次=${okHidden} 列表不含明文=${okListNoPlain} ` +
+      `启停翻转=${toggleFlipped} 删除后行消失=${deleteOk}`,
   );
-  if (okCreate && okHidden && okAuth && okDisabled) {
-    record("step18", "PASS", `访问密钥真能管：创建（明文只显示一次）→ 带 key 放行 / 不带 key 401 → 界面禁用后立刻 401`, evidence);
+
+  if (!gatewayUp) {
+    if (crudOk) {
+      record(
+        "step18",
+        "PASS",
+        "访问密钥本地 CRUD 全通过：创建并显示明文（只显示一次）→ 列表只留前缀不含明文 → 启停开关真翻转 → 删除后行消失",
+        evidence,
+      );
+      record(
+        "step18",
+        "SKIP",
+        `HTTP 鉴权这一段**在本环境未验证**：网关没在监听（${JSON.stringify(before)}），端口不可达，` +
+          `不是鉴权失效也不是产品回归；带 key / 不带 key / 停用三档一律记未验证，绝不当成通过`,
+        [
+          "环境事实：E2E 环境里没有内核；启动编排在内核未就绪时**故意不启动网关**。",
+          "依据 1：src-tauri/src/boot.rs:454 start_gateway —— boot.rs 单测里同一句断言「内核没就绪就不该往下走」。",
+          "依据 2：src-tauri/src/gateway.rs:335 的「网关开始服务（只绑回环）」在本环境日志里**从未出现**。",
+          '实机日志只有：「网关已装配（尚未开始服务） port=127.0.0.1:8787」与「启动阶段：界面已就绪，正在准备网关 phase="skeleton"」。',
+          `实测：不带任何 key 的一次探测同样返回 ${JSON.stringify(before)} —— 端口没人听，与鉴权无关。`,
+          "要在本段拿到真结论，需要在**有内核**的机器上跑同一个脚本（网关真的开始服务后，这一段会自动走完整断言）。",
+        ],
+      );
+    } else {
+      record(
+        "step18",
+        "FAIL",
+        `访问密钥本地 CRUD 没做到位：明文形状=${okCreate} 只显示一次=${okHidden} 列表不含明文=${okListNoPlain} ` +
+          `启停翻转=${toggleFlipped} 删除后行消失=${deleteOk}（HTTP 鉴权段另记未验证）`,
+        evidence,
+      );
+    }
+    return;
+  }
+
+  const okAuth = withKey !== null && withKey.status !== 401 && noKey !== null && noKey.status === 401;
+  const okDisabled = disabledProbe !== null && disabledProbe.status === 401;
+  const ok = crudOk && okAuth && okDisabled;
+  evidence.push(`HTTP 鉴权判定：鉴权生效=${okAuth} 停用即挡住=${okDisabled}`);
+  if (ok) {
+    record(
+      "step18",
+      "PASS",
+      "访问密钥真能管也能挡人：创建（明文只显示一次）→ 列表只留前缀 → 带 key 放行 / 不带 key 401 → 界面停用后立刻 401 → 删除后行消失",
+      evidence,
+    );
   } else {
     record(
       "step18",
       "FAIL",
-      `访问密钥没做到位：明文形状=${okCreate} 只显示一次=${okHidden} 鉴权生效=${okAuth} 禁用即挡住=${okDisabled}`,
+      `访问密钥没做到位：明文形状=${okCreate} 只显示一次=${okHidden} 列表不含明文=${okListNoPlain} ` +
+        `启停翻转=${toggleFlipped} 删除后行消失=${deleteOk} 鉴权生效=${okAuth} 停用即挡住=${okDisabled}`,
       evidence,
     );
   }
@@ -2657,7 +2840,7 @@ async function step2(wd, fixture) {
 
   // ---- ① 添加服务商：走 /providers 页头的**两步向导**（[docs/19 §1]）----
   // 第 71 轮用户要的就是这个：显示名称(不重复) → 协议 → URL → key → 测试连接(非必填) → 下一步 → 添加模型。
-  const pid = "ta-e2e-provider";
+  // 挂具只固定**显示名称**：provider id 由界面从名称派生（见下面的真实 id 读取），不写 id 常量。
   const pname = "TA E2E 供应商";
   if (!(await wdClickTid(wd, "providers-add-open", evidence))) {
     record("step2", "FAIL", "点不开「添加服务商」", evidence);
@@ -2681,21 +2864,44 @@ async function step2(wd, fixture) {
   evidence.push(`pw-test-result: ${JSON.stringify(testText)}`);
   const testShowsLatency = /ms|毫秒/.test(testText) && !/TA-\d/.test(testText);
 
-  // 再验一档用户会遇到的真实情况：**上游没有 /models 端点**（404）不能被说成"连接失败"
-  const noModels = await runProviderWizardProbeOnNoModelsEndpoint(wd, fixture, evidence);
+  // 「上游没有 /models 端点」那一档**不在这里跑**：它自己会开一轮新向导并把它关掉，
+  // 插在这个位置会把主流程紧接着要点的 `pw-next` 一起关没（详见方法末尾的说明）。
+  // 它改到主流程全部结束之后执行。
 
   // 下一步 → 真落库（provider + credential + secret）
   await wdClickTid(wd, "pw-next", evidence);
   await sleep(2000);
   await shot(wd, "step2-wizard-step2");
   const step2Tids = await wd.probeTestIds();
+  // 诊断证据（**只记录，不改判定**）：如果是"点了下一步却还停在第 1 步"，就把第 1 步的本地校验
+  // 原文抓下来 —— 那才是"为什么没进第 2 步"的现场，而不是让人对着"缺 pw-scan"猜。
+  if (!step2Tids.includes("provider-wizard-step2")) {
+    evidence.push(
+      `点了 pw-next 之后没有进第 2 步（provider-wizard-step2 不存在）；` +
+        `页面上仍是第 1 步的控件: pw-name=${step2Tids.includes("pw-name")} pw-next=${step2Tids.includes("pw-next")}`,
+    );
+    const issuesAfterNext = await wd.textOf('[data-testid="pw-step1-issues"]');
+    evidence.push(`pw-next 之后 pw-step1-issues 原文: ${JSON.stringify((issuesAfterNext ?? "").replace(/\s+/g, " ").trim())}`);
+    const saveErrAfterNext = await wd.textOf('[data-testid="pw-save-error"]');
+    evidence.push(`pw-next 之后 pw-save-error: ${JSON.stringify(saveErrAfterNext)}`);
+  }
   const notice = await wd.textOf('[data-testid="pw-saved-notice"]');
   evidence.push(`pw-saved-notice: ${JSON.stringify((notice ?? "").replace(/\s+/g, " ").trim())}`);
   evidence.push(`步骤 2 命中: ${step2Tids.filter((t) => t.startsWith("pw-")).join(", ")}`);
   const dumpAfterNext = dumpScratchDb("step2-step2");
   evidence.push(`db(config) kind 计数: ${JSON.stringify(configEntityKinds(dumpAfterNext))}`);
-  const providerInDb = configIds(dumpAfterNext, "provider").includes(pid);
-  evidence.push(`步骤 1 落库: provider ${pid} = ${providerInDb}`);
+  // 判"服务商真的建出来了"：**按显示名称**去 config(kind=provider) 里找，并把真实 id 读出来。
+  // 不再断言手写的 id 常量 —— 向导的 provider.id 是从名称派生的（providerWizardModel.deriveProviderId），
+  // 名称 "TA E2E 供应商" 派生出的 id 实测是 `ta-e2e`（证据：同一次 run 里凭据回显 `· ta-e2e ·`）。
+  const providerRows = configEntities(dumpAfterNext, "provider");
+  const providerRow = providerRows.find((r) => String(r.json.name ?? "").trim() === pname) ?? null;
+  const realProviderId = providerRow === null ? null : String(providerRow.json.id ?? providerRow.entityId);
+  const providerInDb = providerRow !== null;
+  evidence.push(
+    `步骤 1 落库: config(kind=provider) 共 ${providerRows.length} 行；按名称 ${JSON.stringify(pname)} 命中=${providerInDb}` +
+      `；读出的真实 id=${JSON.stringify(realProviderId)}（entity_id=${JSON.stringify(providerRow?.entityId ?? null)}）` +
+      `；库里全部 provider id=${JSON.stringify(providerRows.map((r) => r.entityId))}`,
+  );
 
   // 第 2 步：一键扫描（真调 model_import_from_provider）→ 全选 → 添加选中（真调 model_apply_import）
   let scanRows = 0;
@@ -2752,8 +2958,15 @@ async function step2(wd, fixture) {
   await wd.closeDialog();
   await sleep(400);
 
-  const providerInUi = providerInDb && (await wd.pageText()).includes(pname);
-  evidence.push(`服务商: 落库=${providerInDb} 列表出现=${providerInUi}`);
+  // 列表里也按**名称**核对（列表行渲染的是名称/id，没有独立的 id 文本；真实 id 从上面的库里读）
+  const listProbe = await wd.exec(`
+    const want = ${JSON.stringify(pname)};
+    const rows = [...document.querySelectorAll('[data-testid="providers-row"]')];
+    return { rows: rows.length, hit: rows.some((r) => (r.textContent || '').includes(want)) };
+  `);
+  evidence.push(`服务商列表 [data-testid="providers-row"]: ${JSON.stringify(listProbe)}`);
+  const providerInUi = listProbe?.hit === true;
+  evidence.push(`服务商: 落库=${providerInDb}（真实 id=${JSON.stringify(realProviderId)}）列表出现=${providerInUi}（按名称核对）`);
 
   // ---- ② 添加密钥：明文只进密钥仓库；成功后显示的是**后端返回的那个 Credential** ----
   const cid = "ta-e2e-cred";
@@ -2788,9 +3001,41 @@ async function step2(wd, fixture) {
     await wd.closeDialog();
   }
 
+  // 向导第 1 步的契约（[docs/19 §1.3]）：provider 落库时同时挂一份 `<provider>-default` 凭据。
+  // 用**库里读出的真实 id** 去认领它 —— 这比"按钮点过了"强：证明库里真的存在这样一对实体，
+  // 而不是挂具自己想象出来的 id 上有这么一对。
+  const dumpAfterCred = dumpScratchDb("step2-default-credential");
+  const credentialRows = configEntities(dumpAfterCred, "credential");
+  const defaultCredential =
+    realProviderId === null
+      ? null
+      : (credentialRows.find(
+          (c) =>
+            String(c.json.provider ?? "") === realProviderId &&
+            String(c.json.id ?? "") === `${realProviderId}-default`,
+        ) ?? null);
+  const hasDefaultCredential = defaultCredential !== null;
+  evidence.push(
+    `向导默认凭据（按真实 id ${JSON.stringify(realProviderId)} 认领）: config(kind=credential) 共 ${credentialRows.length} 行；` +
+      `命中 id=${JSON.stringify(defaultCredential?.json.id ?? null)} provider=${JSON.stringify(defaultCredential?.json.provider ?? null)} ` +
+      `label=${JSON.stringify(defaultCredential?.json.label ?? null)} → ${hasDefaultCredential}`,
+  );
+
+  // ---- ③ 「上游没有 /models 端点」那一档：**必须放在主流程全部结束之后**跑 ----
+  //
+  // 时序缺陷（96fae9a 那次实机 run 里 step2 的 FAIL 就是它）：这个子探测自己会**开一轮新向导
+  // 并把它关掉**（`wd.closeDialog()`），而它原先被插在 `pw-test` 与 `pw-next` 之间 —— 于是主流程
+  // 接下来要点的 `pw-next` 所在的对话框已经被关掉了。原始证据正是这一串连锁现象：
+  //   `缺控件 pw-next` → `步骤 2 命中: `（空）→ `pw-saved-notice: ""` → `扫描行数=0`
+  //   → `信息面板 hasInfoBtn=false`。
+  // 挪到末尾之后：主流程（重名 / 测试连接 / 下一步 / 扫描 / 全选 / 添加 / 模型信息只读）一路上
+  // 不再被另一轮向导会话打断；这一档该跑的断言一条都没少，评测口径也没有放宽。
+  const noModels = await runProviderWizardProbeOnNoModelsEndpoint(wd, fixture, evidence);
+
   const ok =
     providerInDb &&
     providerInUi &&
+    hasDefaultCredential &&
     credentialInDb &&
     credentialInUi &&
     testShowsLatency &&
@@ -2802,15 +3047,16 @@ async function step2(wd, fixture) {
     record(
       "step2",
       "PASS",
-      `服务商两步向导：名称去重拦下重名 · 测试连接显示真实延迟 · 上游无 /models 端点如实说明 · 下一步落库 · 扫描 ${scanRows} 条并成功添加 · 密钥向导落库`,
+      `服务商两步向导：名称去重拦下重名 · 测试连接显示真实延迟 · 上游无 /models 端点如实说明 · 下一步落库（真实 id=${realProviderId}，含 <id>-default 凭据） · 扫描 ${scanRows} 条并成功添加 · 密钥向导落库`,
       evidence,
     );
   } else {
     record(
       "step2",
       "FAIL",
-      `两步向导没走通：落库=${providerInDb} 列表=${providerInUi} 密钥(回显=${credentialInUi} 落库=${credentialInDb}) ` +
-        `测试连接显示延迟=${testShowsLatency} 无端点档=${noModels.ok} 扫描行数=${scanRows} 已添加模型=${addedModels} 重名拦下=${dupBlocked}`,
+      `两步向导没走通：落库=${providerInDb}（真实 id=${JSON.stringify(realProviderId)}）列表=${providerInUi} 默认凭据=${hasDefaultCredential} ` +
+        `密钥(回显=${credentialInUi} 落库=${credentialInDb}) 测试连接显示延迟=${testShowsLatency} 无端点档=${noModels.ok} ` +
+        `扫描行数=${scanRows} 已添加模型=${addedModels} 重名拦下=${dupBlocked}`,
       evidence,
     );
   }
@@ -2820,6 +3066,15 @@ async function step2(wd, fixture) {
  * 「上游没有 /models 端点」那一档（[docs/19 §1.1]）：建第二个服务商，baseUrl 指向 fixture 的
  * `/notfound/v1`（恒 404），点「测试连接」→ 结果区必须说"上游没有 /models 端点"，
  * **不许**渲染成"连接失败"（那会把一个正常的上游说成坏的）。
+ *
+ * 调用时机是**硬约束**：它自己会开一轮新向导，收尾时也会把这轮向导关掉
+ * （`closeDialog()` 是必须的，否则下次点 `providers-add-open` 会被 Dialog 的 backdrop 拦下）。
+ * 所以只能放在 step2 主流程全部结束之后调用 —— 早一步就会把主流程还要用的向导一起关掉
+ * （96fae9a 那次 run 的 `缺控件 pw-next` 就是这么来的）。
+ * 顺带一个已知副作用：这一步的 `pw-test` 与主流程一样会**先落库再探测**
+ * （`runTest` 里 `if (id === undefined) id = await saveStep1()`），所以它会在
+ * config 里多留一条 provider + 一条 credential。这是产品语义（测试连接前先如实落库），
+ * 不是挂具制造的假数据；它只发生在主流程的所有断言之后，不影响任何判定。
  */
 async function runProviderWizardProbeOnNoModelsEndpoint(wd, fixture, evidence) {
   const name = "TA E2E 无端点";
