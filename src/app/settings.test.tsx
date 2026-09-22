@@ -245,21 +245,26 @@ describe("[I2] 设置页只展示系统网络信息，不提供任何改系统�
     expect(baseDoc.gateway.listen).toBe("127.0.0.1:8787");
   });
 
-  it("高级节展开后：系统网络信息块里连一个控件都没有", async () => {
+  it("网络/内核那一块已从设置页**移除**：整块（含展开按钮/I2 说明）都不存在", async () => {
     renderPage();
     await waitForConfig();
 
-    fireEvent.click(screen.getByTestId("settings-advanced-toggle"));
+    // 用户要求「设置界面的向导关掉」（[docs/19 §2.1] 第 2 条）：内核路径改由 /network 直接编辑，
+    // 所以设置页里不再有这一块，连"展开"这种入口都不留。
+    expect(screen.queryByTestId("settings-section-advanced")).toBeNull();
+    expect(screen.queryByTestId("settings-advanced-toggle")).toBeNull();
+    expect(screen.queryByTestId("settings-net-readonly")).toBeNull();
+    expect(screen.queryByTestId("settings-advanced-i2")).toBeNull();
 
-    const block = screen.getByTestId("settings-net-readonly");
-    expect(within(block).queryAllByRole("checkbox")).toEqual([]);
-    expect(within(block).queryAllByRole("switch")).toEqual([]);
-    expect(within(block).queryAllByRole("button")).toEqual([]);
-    expect(within(block).queryAllByRole("combobox")).toEqual([]);
-    expect(within(block).queryAllByRole("textbox")).toEqual([]);
+    // 自证：页面真的渲染完了 —— 否则"找不到"可能只是因为整页还没出来
+    expect(screen.getByTestId("settings-page")).toBeTruthy();
+    expect(screen.getByTestId("settings-section-service")).toBeTruthy();
+  });
 
-    // 而且要把边界写在页面上，用户才知道"这里为什么不能改"
-    expect(screen.getByTestId("settings-advanced-i2").textContent).toMatch(/I2/);
+  it("设置页里不再出现「内核路径」这一行（它现在归 /network 页直接编辑）", async () => {
+    renderPage();
+    await waitForConfig();
+    expect(screen.queryByText("内核路径")).toBeNull();
   });
 });
 

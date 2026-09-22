@@ -373,7 +373,6 @@ export default function SettingsPage() {
   const [clearOpen, setClearOpen] = useState(false);
   const [clearMode, setClearMode] = useState<ClearMode>("all");
 
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [accessText, setAccessText] = useState<string | undefined>(undefined);
 
   // 草稿初始化：只在"后端内容真的变了"时覆盖（同一份内容重复拉到不动草稿）
@@ -1574,91 +1573,11 @@ export default function SettingsPage() {
           </Stack>
         </SectionPaper>
 
-        {/* ⑥ 系统网络信息（只读：I2） */}
-        <SectionPaper titleKey="settings.section.advanced" testId="settings-section-advanced">
-          <Typography
-            variant="body1"
-            data-testid="settings-advanced-i2"
-            sx={{ color: "warning.main" }}
-          >
-            {t("settings.advanced.i2")}
-          </Typography>
-          <Box>
-            <Button
-              variant="outlined"
-              data-testid="settings-advanced-toggle"
-              onClick={() => setAdvancedOpen((prev) => !prev)}
-            >
-              {advancedOpen ? t("settings.advanced.collapse") : t("settings.advanced.expand")}
-            </Button>
-          </Box>
-          {advancedOpen ? (
-            <Box data-testid="settings-net-readonly">
-              <Stack spacing={3}>
-                <ReadonlyRow
-                  label={t("settings.advanced.tun")}
-                  value={
-                    draft === undefined
-                      ? DASH
-                      : draft.net.tun
-                        ? t("settings.advanced.on")
-                        : t("settings.advanced.off")
-                  }
-                />
-                <ReadonlyRow
-                  label={t("settings.advanced.systemProxy")}
-                  value={
-                    draft === undefined
-                      ? DASH
-                      : draft.net.system_proxy
-                        ? t("settings.advanced.on")
-                        : t("settings.advanced.off")
-                  }
-                />
-                <ReadonlyRow
-                  label={t("settings.advanced.kernelProvider")}
-                  value={draft?.net.kernel.provider ?? DASH}
-                />
-                <ReadonlyRow
-                  label={t("settings.advanced.kernelPath")}
-                  value={draft?.net.kernel.path ?? DASH}
-                />
-                <ReadonlyRow
-                  label={t("settings.advanced.kernelController")}
-                  value={draft?.net.kernel.controller ?? DASH}
-                />
-                <ReadonlyRow
-                  label={t("settings.advanced.lanePortRange")}
-                  value={draft === undefined ? DASH : draft.net.kernel.lane_port_range.join("–")}
-                />
-                <ReadonlyRow label={t("settings.advanced.dialer")} value={draft?.net.dialer ?? DASH} />
-                <ReadonlyRow
-                  label={t("settings.advanced.dns")}
-                  value={draft === undefined ? DASH : draft.net.dns.nameserver.join("、")}
-                />
-                <ReadonlyRow
-                  label={t("settings.advanced.dnsProxyServer")}
-                  value={
-                    draft === undefined ? DASH : draft.net.dns.proxy_server_nameserver.join("、")
-                  }
-                />
-                <ReadonlyRow
-                  label={t("settings.advanced.dnsDefault")}
-                  value={draft === undefined ? DASH : draft.net.dns.default_nameserver.join("、")}
-                />
-                <ReadonlyRow
-                  label={t("settings.advanced.defaultLane")}
-                  value={draft?.net.default_lane ?? DASH}
-                />
-                <ReadonlyRow
-                  label={t("settings.advanced.healthInterval")}
-                  value={draft === undefined ? DASH : String(draft.net.health.interval_s)}
-                />
-                <Caption>{t("settings.advanced.readonlyHint")}</Caption>
-              </Stack>
-            </Box>
-          ) : null}
-        </SectionPaper>
+        {/* ⑥ 「系统网络信息（只读）」整块**已删除**（用户要求"设置界面的向导关掉"，
+            [docs/19 §2.1] 第 2 条）：内核路径与网络信息的编辑归 `/network` 页，设置页不再有
+            这一块，也不再有"展开/收起"这种入口。原来那 12 行只读值（TUN / 系统代理 / 内核
+            来源·路径·控制口 / lane 端口段 / dialer / DNS / 默认线路 / 健康间隔）由网络页负责。
+            页面的 I2 边界仍然由 model.ts 的 FORBIDDEN_PATHS + setPath() 强制（那个测试还在）。 */}
 
         {/* ⑦ 关于 */}
         <SectionPaper titleKey="settings.section.about" testId="settings-section-about">
