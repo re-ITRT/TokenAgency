@@ -1722,6 +1722,11 @@ mod tests {
         // m-a 有通道 + 通道组引用 → 未 force 必须拒绝且不改配置
         let err = delete_model(&state, "m-a", false).await.expect_err("有引用必须拒绝");
         assert_eq!(err.code, "TA-5002");
+        assert!(
+            err.message.contains("force=true"),
+            "模型删除**真有** force 参数，就该在拒绝时说清怎么级联：{}",
+            err.message
+        );
         assert!(state.doc().models.iter().any(|m| m.id == "m-a"), "被拒绝时不许改配置");
 
         // force → 通道 + 通道组一起走，策略对组的引用摘掉
@@ -1911,6 +1916,14 @@ mod tests {
     ///
     /// 第 73 轮真机 E2E 抓到 `channel_delete` 的拒绝原文里带着 "要连带删除请传 force=true"，
     /// 而它根本没有这个参数 —— 用户照着做只会再撞一次墙。
+    ///
+    /// **这个单测只钉 helper 自己的两种输出**（它把 `true` / `false` 当字面量喂进去，
+    /// 看不到任何命令的参数表）；"哪个命令真有 force" 由五类实体**各自的拒绝用例**钉住：
+    /// `provider_delete_counts_refs_and_cascades_with_force`、
+    /// `credential_delete_refuses_when_referenced_then_force_cascades`、
+    /// `model_upsert_and_delete_cascade_like_the_docs_say`、
+    /// `channel_delete_prunes_dead_refs_but_refuses_when_it_changes_routing`、
+    /// `group_crud_sticky_and_release` —— 谁把 `force_capable` 传错，谁的用例就红。
     #[test]
     fn referenced_message_only_promises_force_where_a_force_parameter_exists() {
         let refs = vec!["策略 pol-1 的 action.use_channels".to_string()];
@@ -2109,6 +2122,13 @@ mod tests {
         let err = delete_group(&state, "g-a").await.expect_err("策略在用 → 拒绝");
         assert_eq!(err.code, "TA-5002");
         assert!(err.message.contains("pol-a"), "{}", err.message);
+        // `group_delete` **没有** `force` 参数：不许在原文里承诺级联，要指真能走通的路。
+        assert!(
+            !err.message.contains("force=true"),
+            "通道组删除没有 force 参数，不许承诺级联：{}",
+            err.message
+        );
+        assert!(err.message.contains("先解除"), "要给出真能走通的路：{}", err.message);
 
         // 摘掉引用 → 删得掉
         rewrite_doc(&state, |d| d.policies[0].action.use_group = None).await;
