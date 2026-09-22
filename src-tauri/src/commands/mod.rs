@@ -7,6 +7,8 @@
 //! 否则前端要为每个命令猜一套错误语义。
 
 pub mod app;
+// ---- docs/19 §3：我们网关对外的访问密钥（apikey.rs，独立文件，见该文件模块文档）
+pub mod apikey;
 pub mod catalog;
 pub mod config;
 // ---- task-16 批次 A 第 2 组：实体级写命令（entity.rs，独立文件，见该文件模块文档）
@@ -254,6 +256,12 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             net::kernel_generated_config,
             net::kernel_log_tail,
             net::kernel_probe_path,
+            // ---- docs/19 §3：我们网关对外的访问密钥（apikey.rs，本组命令只由本文件的作者登记）
+            apikey::api_key_list,
+            apikey::api_key_create,
+            apikey::api_key_set_enabled,
+            apikey::api_key_delete,
+            apikey::api_key_usage,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Result)
 }

@@ -21,8 +21,8 @@ use ta_core::clock::{Clock, SystemClock};
 use ta_core::domain::ConfigDoc;
 use ta_core::error::{Result, TaError};
 use ta_store::{
-    ConfigStore, SqliteConfigStore, SqliteHealthStore, SqliteQuotaBackend, SqliteSecretMetaStore,
-    SqliteStickyStore, SqliteTraceStore, SqliteUsageStore,
+    ConfigStore, SqliteApiKeyStore, SqliteConfigStore, SqliteHealthStore, SqliteQuotaBackend,
+    SqliteSecretMetaStore, SqliteStickyStore, SqliteTraceStore, SqliteUsageStore,
 };
 
 /// 数据根覆盖用的环境变量名（见 [`AppState::app_data_root`]）。
@@ -61,6 +61,12 @@ pub struct AppState {
     pub sticky: Arc<SqliteStickyStore>,
     pub health: Arc<SqliteHealthStore>,
     pub secret_meta: Arc<SqliteSecretMetaStore>,
+    /// 我们网关对外的访问密钥（`docs/19 §3`）。
+    ///
+    /// 与 `secret_meta` 是两件事：那个记的是**上游凭据**的元数据，
+    /// 这个是我们**发出去**的 key（只存 sha256）。网关的多 key 鉴权也用它
+    /// （`crate::apikey_auth`），所以必须挂在 `AppState` 上而不是每个命令各造一份。
+    pub api_keys: Arc<SqliteApiKeyStore>,
     /// 额度账本的持久化后端（同步 trait，见 `ta-store::quota_backend`）
     pub quota: Arc<SqliteQuotaBackend>,
 
@@ -111,6 +117,7 @@ impl AppState {
             sticky: Arc::new(SqliteStickyStore::new(db.clone())),
             health: Arc::new(SqliteHealthStore::new(db.clone())),
             secret_meta: Arc::new(SqliteSecretMetaStore::new(db.clone())),
+            api_keys: Arc::new(SqliteApiKeyStore::new(db.clone())),
             quota,
             db,
             db_path,

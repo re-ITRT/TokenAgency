@@ -30,6 +30,7 @@
 //!
 //! 模块声明用 `pub mod`：命令层需要 `use crate::tray::…` / `crate::autostart::…`。
 
+pub mod apikey_auth;
 pub mod autostart;
 pub mod boot;
 pub mod commands;

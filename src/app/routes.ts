@@ -22,10 +22,10 @@ import CategoryOutlinedIcon from "@mui/icons-material/CategoryOutlined";
 import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import DeviceHubOutlinedIcon from "@mui/icons-material/DeviceHubOutlined";
 import DnsOutlinedIcon from "@mui/icons-material/DnsOutlined";
+import KeyOutlinedIcon from "@mui/icons-material/KeyOutlined";
 import LanOutlinedIcon from "@mui/icons-material/LanOutlined";
 import PaidOutlinedIcon from "@mui/icons-material/PaidOutlined";
 import ReceiptLongOutlinedIcon from "@mui/icons-material/ReceiptLongOutlined";
-import RocketLaunchOutlinedIcon from "@mui/icons-material/RocketLaunchOutlined";
 import RuleOutlinedIcon from "@mui/icons-material/RuleOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 
@@ -188,15 +188,18 @@ export const ROUTES: readonly AppRoute[] = [
     docRef: "07 §7 设置（含开机自启动，09 §1.2 E1–E5）",
   },
   {
-    key: "onboarding",
-    path: "/onboarding",
-    titleKey: "nav.onboarding",
-    icon: RocketLaunchOutlinedIcon,
+    key: "api-keys",
+    path: "/api-keys",
+    titleKey: "nav.apiKeys",
+    icon: KeyOutlinedIcon,
     owner: "F4",
-    nav: false,
-    pages: ["onboarding", "onboarding/index"],
-    docRef: "12 §6 F4 首启向导",
+    nav: true,
+    pages: ["apikeys", "apikeys/index"],
+    docRef: "19 §3.4 访问密钥（明文只显示一次；列表不放复制按钮）",
   },
+  // 首启向导 `/onboarding` 已**整条移除**（[19 §2.1]：两个向导都关掉）。
+  // `onboarding_*` 三条命令**保留注册**（后端能力不删），但页面不许再引用它们 ——
+  // 见 `src/app/onboarding.test.tsx` 的反向断言：没有路由、也没有页面入口。
 ];
 
 /** 根路径重定向目标（[10 §2.2] 的看板）。 */

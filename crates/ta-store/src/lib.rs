@@ -9,6 +9,7 @@
 //! - [`sticky_store`] / [`health_store`] 会话粘性、健康样本、密钥元数据；
 //! - [`subscription_traffic`] 订阅的"上次已知流量与更新时间"（docs/18 §1.2）。
 
+pub mod api_key;
 pub mod config_store;
 pub mod health_store;
 pub mod migrations;
@@ -20,6 +21,7 @@ pub mod trace_store;
 pub mod usage_store;
 mod util;
 
+pub use api_key::{ApiKeyCreated, ApiKeyView, SqliteApiKeyStore};
 pub use config_store::{ConfigStore, SnapshotId, SnapshotMeta, SqliteConfigStore};
 pub use health_store::{
     HealthSample, HealthStore, SecretMeta, SecretMetaStore, SqliteHealthStore,

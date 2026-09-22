@@ -39,6 +39,8 @@ export const qk = {
   laneAssignments: ["lanes", "assignments"] as const,
   lanePickOptions: ["lanes", "pick-options"] as const,
   subscriptions: ["subscriptions"] as const,
+  /** 网关对外的访问密钥（[docs/19 §3.4]）：创建/启停/删除都会失效这一条。 */
+  apiKeys: ["apiKeys"] as const,
 
   // 用量 / 成本 / 日志
   dashboard: (range: string) => ["dashboard", range] as const,

@@ -19,6 +19,9 @@ chrono.workspace = true
 zstd.workspace = true
 sha2.workspace = true
 base64.workspace = true
+# 访问密钥的明文随机段（docs/19 §3.1：`ta-sk-` + 高熵随机）。
+# 版本与 `ta-kernel` / `ta-secrets` 一致（工作区里没有把它提到 workspace.dependencies）。
+rand = "0.8"
 dirs.workspace = true
 # T1：IPC 的 TS 类型直接由这些 DTO 生成（Store 是唯一真相源，不另写一份 DTO）。
 # 可选依赖：默认构建不带 specta；打开时同时打开 ta-core 的 specta（DTO 里含 ta-core 类型）。

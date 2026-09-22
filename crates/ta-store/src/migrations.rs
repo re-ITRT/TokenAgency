@@ -129,6 +129,59 @@ mod tests {
             let (_, notnull) = found.unwrap_or_else(|| panic!("subscription 缺少列 {c}"));
             assert_eq!(*notnull, 0, "{c} 必须可空（未知 = NULL，不用 0 冒充）");
         }
-        assert_eq!(v, 3, "迁移只增不改：最新版本号应为 3（0001 / 0002 / 0003）");
+        assert_eq!(v, 4, "迁移只增不改：最新版本号应为 4（0001 / 0002 / 0003 / 0004）");
+
+        // 0004 加的**新表**必须在（docs/19 §3.1：我们网关对外的访问密钥）。
+        // 连同可空性一起钉住 —— 这两条各有理由，不是抄一遍 DDL：
+        //   * `last_used_at` **必须可空**：NULL = 从未用过（不是 0；0 会显示成"1970 用过"）；
+        //   * `note` 可空：备注本来就可以不填；
+        //   * 其余列不许为空（`id` 例外，见下）。
+        let key_cols: Vec<(String, i64)> =
+            sqlx::query_as("SELECT name, \"notnull\" FROM pragma_table_info('api_key')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let col = |name: &str| {
+            key_cols
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, notnull)| *notnull)
+                .unwrap_or_else(|| panic!("api_key 缺少列 {name}"))
+        };
+        for c in ["name", "key_hash", "key_prefix", "enabled", "created_at"] {
+            assert_eq!(col(c), 1, "{c} 不许为空（0004 的定义）");
+        }
+        assert_eq!(col("last_used_at"), 0, "last_used_at 必须可空：NULL = 从未用过（不是 0）");
+        assert_eq!(col("note"), 0, "note 可选");
+        // SQLite 在 rowid 表上不把 `TEXT PRIMARY KEY` 标成 NOT NULL（历史行为），
+        // 所以 `id` 的 notnull 是 0 —— 这里如实钉住它，免得下一个人以为写错了。
+        assert_eq!(col("id"), 0, "SQLite 的 TEXT PRIMARY KEY 不标 notnull（rowid 表的历史行为）");
+
+        // `key_hash` 上的 UNIQUE 不是性能优化，是**安全语义**：同一明文不可能有两个 id。
+        //
+        // 注意 `id TEXT PRIMARY KEY` 也会产生一个唯一索引（`origin = 'pk'`），
+        // 所以这里只认**约束建出来的**那一个（`origin = 'u'`），并核对它落在 `key_hash` 上。
+        let unique_from_constraint: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM pragma_index_list('api_key') WHERE \"unique\" = 1 AND origin = 'u'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            unique_from_constraint.len(),
+            1,
+            "key_hash 上必须有一个由 UNIQUE 约束建的唯一索引（实际：{unique_from_constraint:?}）"
+        );
+        let indexed_columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_index_info(?)")
+                .bind(&unique_from_constraint[0])
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            indexed_columns,
+            vec!["key_hash".to_string()],
+            "UNIQUE 必须落在 key_hash 上：同一个明文不可能有两个 id"
+        );
     }
 }
