@@ -39,7 +39,7 @@ use ta_core::quota::QuotaLedgerImpl;
 use ta_core::types::{RequestSummary, UsageRecord};
 use ta_gateway::dispatch::DialerOptions;
 use ta_gateway::events::{EventBus, TaEvent};
-use ta_gateway::ingress::KernelProbe;
+use ta_gateway::ingress::{ApiKeyVerifier, KernelProbe};
 use ta_gateway::pipeline::SecretResolver;
 use ta_gateway::traits_store::GatewayStore;
 use ta_gateway::{build_runtime, kernel_dialer, GatewayDeps, GatewayRuntime, RuntimeParts};
@@ -232,6 +232,25 @@ pub fn event_payload(e: &TaEvent) -> serde_json::Value {
 
 // ================================================================ 装配 + 启动
 
+/// 网关装配入参的**唯一一处**：全透传 + 凭据解析器 + 内核探针 + **API key 验票器**。
+///
+/// 为什么单独成函数：`RuntimeParts::with_api_keys` 少写一句，网关会静默退化成
+/// `NoApiKeys`（既不强制鉴权、也不认任何 api key）—— 那种失效在真机上只表现为
+/// "访问密钥建了也挡不住人"（[docs/19 §3.3]），没有任何东西会红。
+/// 抽出来之后 [`the_api_key_verifier_is_wired_to_the_real_store`] 能直接对装配入参断言。
+fn runtime_parts(state: &AppState) -> RuntimeParts {
+    RuntimeParts::new(
+        Arc::new(SecretsAdapter::with_defaults()),
+        Arc::new(KernelProbeAdapter::new(state.kernel_supervisor())),
+    )
+    .with_api_keys(api_key_verifier(state))
+}
+
+/// 只造验票器（测试用它，避免碰真钥匙串 —— `SecretsAdapter::with_defaults()` 会开钥匙串）。
+fn api_key_verifier(state: &AppState) -> Arc<dyn ApiKeyVerifier> {
+    Arc::new(state.api_key_authenticator())
+}
+
 /// 装配好的网关 + 监听判据。
 pub struct GatewayBoot {
     runtime: Arc<GatewayRuntime>,
@@ -288,10 +307,11 @@ impl GatewayBoot {
         });
 
         // `meter` 保持 None：G4 在途，**不塞空实现**（空实现 = "接了但没数据"，L10）
-        let parts = RuntimeParts::new(
-            Arc::new(SecretsAdapter::with_defaults()),
-            Arc::new(KernelProbeAdapter::new(state.kernel_supervisor())),
-        );
+        //
+        // 装配入参只有一处（[`runtime_parts`]）：它与"验票器接没接上"必须可断言 ——
+        // 少写一句 `.with_api_keys(...)` 会**静默**退化成 `NoApiKeys`，
+        // 在真机上的表现是"访问密钥建了也挡不住人"（[docs/19 §3.3]）。
+        let parts = runtime_parts(state);
 
         let listen = doc.gateway.listen.clone();
         Self {
@@ -406,6 +426,54 @@ pub fn reason_of(e: &TaError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 一个**真的库**：验票器要证明的就是"它查的是这张表"。
+    async fn temp_state(tag: &str) -> AppState {
+        let dir = std::env::temp_dir().join(format!("ta-gw-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        AppState::bootstrap(dir.join("db.sqlite")).await.expect("开库")
+    }
+
+    /// [docs/19 §3.3] 的接线：**装上的是真 store，不是 `NoApiKeys`**。
+    ///
+    /// 两边都断言（反向 + 正向）：空库时 `any_enabled` 必须是假（否则老用户全 401）；
+    /// 建一把之后必须是真，且明文能换回它的 id（`NoApiKeys` 的 `verify` 恒 `None`，
+    /// 所以这条会在"忘了接"时红）。
+    #[tokio::test]
+    async fn the_api_key_verifier_is_wired_to_the_real_store() {
+        let state = temp_state("api-key-wiring").await;
+        let verifier = api_key_verifier(&state);
+        assert!(!verifier.any_enabled().await.unwrap(), "空库 = 一把都没有 → 不强制鉴权");
+
+        let created = state.api_keys.create("客户端", None, 1).await.unwrap();
+        assert!(verifier.any_enabled().await.unwrap(), "装上的必须是真 store，不是 NoApiKeys");
+        assert_eq!(
+            verifier.verify(&created.plaintext).await.unwrap(),
+            Some(created.key.id.clone()),
+            "明文必须换回它自己的 key_id（NoApiKeys 恒 None，忘接线就会红）"
+        );
+        assert!(verifier.verify("ta-sk-别的").await.unwrap().is_none());
+    }
+
+    /// **防漂移**：生产装配路径必须真的用 [`runtime_parts`]（也就是真的接上验票器）。
+    ///
+    /// 上面的行为测试直接调 `api_key_verifier`，所以把 `assemble` 里那一句改回内联
+    /// `RuntimeParts::new(...)` 它照样绿 —— 而"没人接"正是这个缺口的原始形态。
+    /// 只扫 `#[cfg(test)]` 之前的生产段。
+    #[test]
+    fn the_gateway_assembly_actually_wires_the_api_key_verifier() {
+        let full = include_str!("gateway.rs");
+        let production = full.split("#[cfg(test)]").next().unwrap_or(full);
+        assert!(
+            production.contains("let parts = runtime_parts(state);"),
+            "assemble 必须走 runtime_parts（唯一装配点）"
+        );
+        assert!(
+            production.contains(".with_api_keys("),
+            "装配入参必须装上 API key 验票器（docs/19 §3.3：少这一句 = 建了 key 也挡不住人）"
+        );
+    }
 
     /// [docs/10 §2.3] 的 10 个事件名，**逐字**与 `TaEvent::name()` 对齐。
     ///
