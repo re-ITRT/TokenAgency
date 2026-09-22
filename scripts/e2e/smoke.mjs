@@ -94,7 +94,7 @@ const STEP_TITLES = {
   harness: "harness 前置（tauri-driver / msedgedriver）",
   step0: "隔离断言（TA_DATA_DIR 生效 + 真实目录未变）",
   step1: "启动窗口 + 首页渲染 [data-testid=page-header]",
-  step2: "供应商页新增供应商（列表 + 落库）",
+  step2: "供应商页新增供应商（列表 + 落库）；添加模型后上方出现可编辑行且默认直连",
   step3: "订阅页粘贴 Clash 订阅 URL（列表 + 落库）",
   step4: "通道/线路页建通道并指派（lane_upsert / lane_set_node）",
   step5: "设置页：自启动开关 / 文件监听是否真控件",
@@ -106,6 +106,7 @@ const STEP_TITLES = {
   step15: "能力一致的两条线路可路由；把已归组的线路改成不一致 → 后端必须拒绝并点出字段",
   step17: "节点清单真出数据（/network/nodes ← subscription_nodes，含 fixture 节点）",
   step18: "访问密钥能管（创建/明文一次/列表无明文/启停/删除）；HTTP 鉴权段需网关在监听，否则如实记未验证",
+  step20: "服务商详情 →「编辑」进同一个向导的编辑模式：预填现有值、留空密钥不改、第 2 步能改该模型线路",
 };
 
 // ================================================================ 小工具
@@ -2271,6 +2272,153 @@ async function step18(wd) {
 }
 
 /**
+ * **step20：服务商详情 →「编辑」进同一个向导的编辑模式**（[docs/20 §4]；用户第 72 轮第 3 条反馈：
+ * 「服务商点击进去之后我也要可以有图像化界面编辑，功能和刚刚一模一样才行，虽然界面和流程可以不一样」）。
+ *
+ * 断言（缺一条都不算做到）：
+ * - 详情页有 `providers-detail-edit`，点开的是**同一个两步向导的第 1 步**；
+ * - 第 1 步**预填**现有值（名称 / base_url 与库里一致）——"图形化编辑"不该是一张空表；
+ * - **密钥留空**点「下一步」照样进第 2 步（不改密钥不等于不能保存）；
+ * - 第 2 步能看到该服务商已有的模型，把某行的网络代理改成 step4/step10 建的那条线路后，
+ *   库里该通道的 `lane` **真的**变了（这是"能编辑线路"的最终证据）；
+ * - 编辑不许派生出第二个服务商（id 复用，条数不变）。
+ *
+ * 前提：必须在 step4/step10 之后跑（那时才有非直连线路可选）。
+ */
+async function step20(wd) {
+  const evidence = [];
+  const before = dumpScratchDb("step20-before");
+  const providers = configEntities(before, "provider");
+  const channelsBefore = configEntities(before, "channel");
+  // 挑一个有通道的服务商：这样第 2 步一定有行可改
+  const target =
+    providers.find((p) => channelsBefore.some((c) => c.json?.provider === p.entityId)) ?? providers[0];
+  if (target === undefined) {
+    record("step20", "SKIP", "配置里还没有服务商（前面步骤没建出来）", evidence);
+    return;
+  }
+  const mineBefore = channelsBefore.filter((c) => c.json?.provider === target.entityId);
+  evidence.push(
+    `目标服务商: id=${target.entityId} name=${JSON.stringify(target.json?.name)} base_url=${JSON.stringify(target.json?.base_url)}；` +
+      `它有 ${mineBefore.length} 条通道（${JSON.stringify(mineBefore.map((c) => c.entityId))}）`,
+  );
+
+  const detail = await gotoPage(
+    wd,
+    `#/providers/${encodeURIComponent(target.entityId)}`,
+    '[data-testid="providers-detail"], [data-testid="providers-detail-notfound"]',
+  );
+  if (detail === null) {
+    record("step20", "FAIL", "服务商详情页没渲染出来（既没有 providers-detail 也没有 notfound）", evidence);
+    return;
+  }
+  const notFound = await wd.textOf('[data-testid="providers-detail-notfound"]');
+  if (notFound !== null) {
+    record("step20", "FAIL", `详情页说找不到这个服务商：${JSON.stringify(notFound.slice(0, 80))}`, evidence);
+    return;
+  }
+
+  const hasEdit = (await wd.probeTestIds()).includes("providers-detail-edit");
+  evidence.push(`详情页命中 testid 里有 providers-detail-edit = ${hasEdit}`);
+  if (!hasEdit) {
+    record("step20", "FAIL", "详情页没有「编辑」入口（providers-detail-edit）——用户要的是能图形化编辑", evidence);
+    return;
+  }
+  await wdClickTid(wd, "providers-detail-edit", evidence);
+  await sleep(900);
+  const step1Here = (await wd.probeTestIds()).includes("provider-wizard-step1");
+  const prefilled = await wd.exec(`
+    const val = (tid) => {
+      const el = document.querySelector('[data-testid="' + tid + '"]');
+      const i = el ? el.querySelector('input') : null;
+      return i ? i.value : null;
+    };
+    return { name: val('pw-name'), baseUrl: val('pw-baseUrl') };
+  `);
+  const prefilledOk =
+    prefilled?.name === (target.json?.name ?? null) &&
+    prefilled?.baseUrl === (target.json?.base_url ?? null);
+  evidence.push(
+    `编辑模式第 1 步: 命中=${step1Here}；预填=${JSON.stringify(prefilled)}；` +
+      `库里 name=${JSON.stringify(target.json?.name)} base_url=${JSON.stringify(target.json?.base_url)}；预填一致=${prefilledOk}`,
+  );
+
+  // 密钥留空 → 下一步：必须照样进第 2 步（这就是"图形化编辑已有服务商"的主路径）
+  await wdClickTid(wd, "pw-next", evidence);
+  await sleep(1600);
+  const step2Here = (await wd.probeTestIds()).includes("provider-wizard-step2");
+  const rowCount = await wd.exec(
+    `return document.querySelectorAll('[data-testid="pw-model-row"]').length;`,
+  );
+  const keyAfter = await wd.exec(`
+    const el = document.querySelector('[data-testid="pw-key"]');
+    const i = el ? el.querySelector('input') : null;
+    return i ? i.value : null;
+  `);
+  evidence.push(
+    `留空密钥点下一步: 第 2 步命中=${step2Here}；该服务商已有模型行=${rowCount}；密钥框现值=${JSON.stringify(keyAfter)}`,
+  );
+
+  // 改一行网络代理 → 库里该通道的 lane 必须真的变
+  const laneRows = configEntities(before, "lane");
+  const otherLane = laneRows.find((l) => !String(l.json?.name ?? "").includes("直连"));
+  let lanePicked = null;
+  let laneChanged = 0;
+  if (step2Here && otherLane !== undefined && rowCount > 0) {
+    lanePicked = await wdPickOption(
+      wd,
+      "pw-model-lane",
+      evidence,
+      new RegExp(String(otherLane.json?.name ?? otherLane.entityId)),
+    );
+    await sleep(1600);
+    const after = dumpScratchDb("step20-after");
+    const mineAfter = configEntities(after, "channel").filter(
+      (c) => c.json?.provider === target.entityId,
+    );
+    laneChanged = mineAfter.filter((c) => c.json?.lane === otherLane.entityId).length;
+    evidence.push(
+      `改第一行网络代理 → 选了 ${JSON.stringify(lanePicked)}（目标 lane=${otherLane.entityId}「${String(otherLane.json?.name ?? "")}」）；` +
+        `库里该服务商下 lane 变成它的通道数=${laneChanged}（改前=${JSON.stringify(mineBefore.map((c) => c.json?.lane ?? null))}）`,
+    );
+  } else {
+    evidence.push(
+      `没能走到"改线路"这一档：第 2 步命中=${step2Here} 行数=${rowCount} 有非直连线路=${otherLane !== undefined}`,
+    );
+  }
+
+  // 编辑不许派生出第二个服务商（id 复用）
+  const afterAll = dumpScratchDb("step20-providers");
+  const providersAfter = configEntities(afterAll, "provider");
+  const noDuplicate = providersAfter.length === providers.length;
+  evidence.push(
+    `编辑后的服务商条数=${providersAfter.length}（编辑前=${providers.length}）；id 复用=${providersAfter.some((p) => p.entityId === target.entityId)}；没派生新 id=${noDuplicate}`,
+  );
+
+  await wd.closeDialog();
+  await sleep(400);
+
+  const ok =
+    hasEdit && step1Here && prefilledOk && step2Here && lanePicked !== null && laneChanged > 0 && noDuplicate;
+  if (ok) {
+    record(
+      "step20",
+      "PASS",
+      `服务商图形化编辑：详情页「编辑」进同一个两步向导 · 第 1 步预填现有值 · 留空密钥也能到第 2 步（${rowCount} 行模型）· 行内改网络代理后库里通道 lane=${JSON.stringify(otherLane?.entityId ?? null)} · id 未派生新的`,
+      evidence,
+    );
+  } else {
+    record(
+      "step20",
+      "FAIL",
+      `服务商编辑没做到位：有编辑入口=${hasEdit} 进第 1 步=${step1Here} 预填一致=${prefilledOk} 进第 2 步=${step2Here} ` +
+        `改线路选中=${JSON.stringify(lanePicked)} 库里 lane 变化=${laneChanged} 无重复服务商=${noDuplicate}`,
+      evidence,
+    );
+  }
+}
+
+/**
  * **step12：网络代理默认开启（默认直连），不再有"启用"这个动作** —— [docs/19 §2.2]。
  *
  * 上一轮的做法（未配置时**什么都不渲染**、只给一个 `network-optional` 选装入口）被用户明确推翻：
@@ -2589,6 +2737,9 @@ async function main() {
     // ============================================================ step18 访问密钥（会自己造 key 并真打网关）
     if (want("step18")) await step18(wd);
 
+    // ============================================================ step20 服务商图形化编辑（需要先有线路可选）
+    if (want("step20")) await step20(wd);
+
     // ============================================================ 收尾：再查一次隔离
     await stepIsolationAfter(wd);
   } catch (e) {
@@ -2906,6 +3057,11 @@ async function step2(wd, fixture) {
   // 第 2 步：一键扫描（真调 model_import_from_provider）→ 全选 → 添加选中（真调 model_apply_import）
   let scanRows = 0;
   let addedModels = false;
+  /** 第 72 轮加严：添加之后**上面必须真有行**、每行有可改的网络代理、默认直连、库里真建出通道。 */
+  let addedRowsVisible = 0;
+  let addedLaneTexts = [];
+  let addedRowsOk = false;
+  let addedRoutedOk = false;
   if (step2Tids.includes("pw-scan")) {
     await wdClickTid(wd, "pw-scan", evidence);
     await sleep(3000);
@@ -2924,6 +3080,55 @@ async function step2(wd, fixture) {
       const modelIds = configIds(dumpModels, "model");
       evidence.push(`添加后 config(kind=model) = ${JSON.stringify(modelIds)}`);
       addedModels = modelIds.some((id) => id.startsWith("ta-e2e-scan-"));
+
+      // ★ 用户第 72 轮原话：「点击『添加』之后，并没有在上面看到可以编辑的东西，也没有地方编辑线路」
+      //   + 「这个模型的线路是『未配置』，按理来说默认是直连」。
+      //   所以这里断言三件事，缺一条都不算做到：
+      //     ① `pw-added-models` 里**立刻**出现刚加的行（不是等下次开窗）；
+      //     ② 每行都有 `pw-model-lane` 且显示的是「直连」（不是空白、不是"未配置"）；
+      //     ③ 库里真建出了通道（`ch-<provider>-...`）且通道带 lane —— "添加"就是把这个模型接到这个
+      //        服务商上；没有通道的模型既看不到也走不了流量。
+      const addedProbe = await wd.exec(`
+        const rows = [...document.querySelectorAll('[data-testid="pw-model-row"]')];
+        return {
+          rows: rows.length,
+          lanes: rows.map((r) => {
+            const box = r.querySelector('[data-testid="pw-model-lane"]');
+            const combo = box ? box.querySelector('[role="combobox"]') : null;
+            return {
+              hasLane: box !== null,
+              lane: combo ? (combo.textContent || '').replace(/\\s+/g, ' ').trim() : null,
+              text: (r.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 90),
+            };
+          }),
+        };
+      `);
+      addedRowsVisible = addedProbe?.rows ?? 0;
+      addedLaneTexts = (addedProbe?.lanes ?? []).map((l) => l.lane);
+      const laneRows = configEntities(dumpModels, "lane");
+      const newChannels = configEntities(dumpModels, "channel").filter((c) =>
+        c.entityId.startsWith(`ch-${realProviderId}`),
+      );
+      const laneNames = newChannels.map((c) => {
+        const id = c.json?.lane ?? null;
+        const lane = laneRows.find((l) => l.entityId === id);
+        return { channel: c.entityId, lane: id, laneName: lane?.json?.name ?? null, upstream: c.json?.upstream_model ?? null };
+      });
+      evidence.push(
+        `添加后的「已添加的模型」: pw-model-row=${addedRowsVisible} 行；每行的网络代理文案=${JSON.stringify(addedLaneTexts)}；` +
+          `行内文本=${JSON.stringify((addedProbe?.lanes ?? []).map((l) => l.text))}`,
+      );
+      evidence.push(`库里真建出来的通道: ${JSON.stringify(laneNames)}`);
+      addedRowsOk =
+        addedRowsVisible > 0 &&
+        (addedProbe?.lanes ?? []).length === addedRowsVisible &&
+        (addedProbe?.lanes ?? []).every(
+          (l) => l.hasLane === true && typeof l.lane === "string" && l.lane.includes("直连"),
+        );
+      addedRoutedOk =
+        newChannels.length >= addedRowsVisible &&
+        newChannels.every((c) => typeof c.json?.lane === "string" && c.json.lane !== "") &&
+        new Set(newChannels.map((c) => c.json?.lane)).size <= 1;
     }
   } else {
     evidence.push("步骤 2 没有 pw-scan（扫描入口不存在）");
@@ -3042,12 +3247,15 @@ async function step2(wd, fixture) {
     noModels.ok &&
     scanRows > 0 &&
     addedModels &&
+    addedRowsOk &&
+    addedRoutedOk &&
     dupBlocked;
   if (ok) {
     record(
       "step2",
       "PASS",
-      `服务商两步向导：名称去重拦下重名 · 测试连接显示真实延迟 · 上游无 /models 端点如实说明 · 下一步落库（真实 id=${realProviderId}，含 <id>-default 凭据） · 扫描 ${scanRows} 条并成功添加 · 密钥向导落库`,
+      `服务商两步向导：名称去重拦下重名 · 测试连接显示真实延迟 · 上游无 /models 端点如实说明 · 下一步落库（真实 id=${realProviderId}，含 <id>-default 凭据） · ` +
+        `扫描 ${scanRows} 条并添加 → 上方出现 ${addedRowsVisible} 行可编辑模型（网络代理=${JSON.stringify(addedLaneTexts)}）且库里真建出带 lane 的通道 · 密钥向导落库`,
       evidence,
     );
   } else {
@@ -3056,7 +3264,7 @@ async function step2(wd, fixture) {
       "FAIL",
       `两步向导没走通：落库=${providerInDb}（真实 id=${JSON.stringify(realProviderId)}）列表=${providerInUi} 默认凭据=${hasDefaultCredential} ` +
         `密钥(回显=${credentialInUi} 落库=${credentialInDb}) 测试连接显示延迟=${testShowsLatency} 无端点档=${noModels.ok} ` +
-        `扫描行数=${scanRows} 已添加模型=${addedModels} 重名拦下=${dupBlocked}`,
+        `扫描行数=${scanRows} 已添加模型=${addedModels} 添加后可见行=${addedRowsVisible} 行内显示直连=${addedRowsOk} 真建通道=${addedRoutedOk} 重名拦下=${dupBlocked}`,
       evidence,
     );
   }
