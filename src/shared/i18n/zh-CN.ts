@@ -1429,6 +1429,7 @@ export const zhCN = {
   "apiKeys.hashOnlyNotice": "库里只存哈希，列表里无法再取回明文",
   "apiKeys.usage": "用量",
   "apiKeys.usageEmpty": "还没有用量记录",
+  "providers.add.advanced": "高级添加",
 } as const;
 
 /** 全部 i18n key。新增 key 必须同时补 `en.ts`。 */

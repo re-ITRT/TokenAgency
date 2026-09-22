@@ -1504,5 +1504,6 @@ export const en: Record<I18nKey, string> = {
   "apiKeys.hashOnlyNotice": "Only a hash is stored, so the plaintext cannot be recovered from this list",
   "apiKeys.usage": "Usage",
   "apiKeys.usageEmpty": "No usage recorded yet",
+  "providers.add.advanced": "Advanced",
 
 };

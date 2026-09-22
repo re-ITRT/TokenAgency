@@ -4,12 +4,14 @@
  * 三条硬纪律（写在最上面，这一页最容易违反）：
  *
  * 1. **只调用已注册的命令**：本页取数只用 `provider_list` / `credential_list`；
- *    写入口是页头的两个向导（见下），它们调 `provider_upsert` / `credential_upsert` /
- *    `credential_set_secret` —— 三条都在 `src-tauri/src/commands/mod.rs` 的
+ *    写入口是页头的三个向导（见下），它们调 `provider_upsert` / `credential_upsert` /
+ *    `credential_set_secret` / `model_bulk_update` —— 都在 `src-tauri/src/commands/mod.rs` 的
  *    `collect_commands!` 里（`src/app/commandSurface.guard.test.ts` 机械检查）。
- *    **本页已有真入口**：`providers-add-open`（添加服务商，不填 API Key —— 密钥属凭据域）
- *    与 `credentials-add-open`（添加密钥，明文只进密钥仓库）。编辑/删除/连通性测试**仍没有**
- *    入口，那几处的实现见 `./wizards.tsx` 与 `./wizard.ts`；在那之前不放假控件、也不放禁用占位。
+ *    **本页已有真入口**：`providers-add-open`（两步向导：[docs/19 §1] 服务商信息 → 添加模型，
+ *    `./providerWizard.tsx`）、`providers-add-advanced-open`（**原样的单步对话框**，
+ *    `./wizards.tsx`，一次填完 id / 鉴权方式等完整字段）与 `credentials-add-open`（添加密钥，
+ *    明文只进密钥仓库）。编辑/删除/连通性测试（详情页那一档）**仍没有**入口；
+ *    在那之前不放假控件、也不放禁用占位。
  * 2. **没有读取接口的就不猜**：状态灯、成功率、延迟、通道数都**只**取后端返回的那一列；
  *    后端没给（Rust 的 `provider_list` 返回的是完整 `Provider`，没有这几列）就显示「未知/—」。
  *    内核在跑**不等于**服务商可用（[06 §2.1] B2），所以绝不点一个假绿灯。
@@ -35,6 +37,8 @@ import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { radius, typography } from "@/theme";
 
 import { mountOf, readCredential, readProvider, type CredentialRow, type ProviderRow } from "./model";
+import { ProviderTwoStepWizard } from "./providerWizard";
+import { readWizardSession, resetWizardSession, writeWizardSession } from "./providerWizardModel";
 import { CredentialAddDialog, ProviderAddDialog } from "./wizards";
 
 // ================================================================ 文案映射（显式表，不用模板拼 key）
@@ -61,6 +65,15 @@ const STATUS_LABEL: Record<string, I18nKey> = {
 const DASH = "—";
 
 const SECTION_SX = { p: 4, borderRadius: `${radius.surface}px` } as const;
+
+/**
+ * 「高级添加」入口的按钮文案（点开的是**原样的单步对话框**，字段 tid 全不变）。
+ *
+ * 为什么这里是字面量而不是 `t(...)`：本轮的写范围**明确禁止改 `src/shared/i18n/*.ts`**
+ * （键由主管独占），而现有键集合里没有这一条（`providers.add.*` 只有 title / open）。
+ * 缺的键已报给主管：`providers.add.advanced` 一落地，这里就换成 `t("providers.add.advanced")`。
+ */
+const ADVANCED_ADD_LABEL = "高级添加";
 
 // ================================================================ 小组件
 
@@ -265,9 +278,26 @@ export default function ProvidersPage() {
   const providers = useCommandQuery("provider_list", undefined, qk.providers);
   const credentials = useCommandQuery("credential_list", undefined, qk.credentials);
 
-  /** 两个向导的开合。**列表页只读**，写全部落在 `./wizards.tsx` 的两个对话框里。 */
-  const [providerAddOpen, setProviderAddOpen] = useState(false);
+  /**
+   * 三个向导的开合。**列表页只读**，写全部落在 `./providerWizard.tsx`（两步向导）
+   * 与 `./wizards.tsx`（两个单步对话框）里。
+   *
+   * 两步向导的"开着/第几步/草稿"活在 `./providerWizardModel.ts` 的**模块级 store** 里：
+   * 用户点 `pw-proxy` 去 `/network` 会把这一页整个卸载，草稿必须比组件活得久
+   * （[docs/19 §1.4]）。所以初值从 store 读 —— 从 `/network` 回来时向导自己还是开着的。
+   */
+  const [providerAddOpen, setProviderAddOpen] = useState(() => readWizardSession().open);
+  const [advancedAddOpen, setAdvancedAddOpen] = useState(false);
   const [credentialAddOpen, setCredentialAddOpen] = useState(false);
+
+  const openProviderWizard = (): void => {
+    writeWizardSession({ open: true });
+    setProviderAddOpen(true);
+  };
+  const closeProviderWizard = (): void => {
+    resetWizardSession();
+    setProviderAddOpen(false);
+  };
 
   const rows = useMemo(() => (providers.data ?? []).map((p) => readProvider(p)), [providers.data]);
   /** `undefined`（读不到）与 `[]`（确实是空）在这里被严格区分开。 */
@@ -278,6 +308,11 @@ export default function ProvidersPage() {
 
   /** 本地去重用的现有 id：契约的视图与 Rust 的完整实体都有 `id`，两种形状都读得到。 */
   const providerIds = useMemo(() => (providers.data ?? []).map((p) => p.id), [providers.data]);
+  /** 两步向导的显示名称**去重**要对着后端返回的现有名字做（[docs/19 §1.1]）。 */
+  const providerNames = useMemo(
+    () => (providers.data ?? []).map((p) => p.name).filter((name): name is string => typeof name === "string"),
+    [providers.data],
+  );
   const credentialIds = useMemo(() => (credentials.data ?? []).map((c) => c.credential.id), [credentials.data]);
 
   const refresh = () => {
@@ -297,8 +332,9 @@ export default function ProvidersPage() {
               {t("providers.refresh")}
             </Button>
             {/*
-              两个入口的按钮文案用各自的 **title 键**（「添加服务商」/「添加密钥」）而不是
-              `*.add.open`（那两个键的值都是「添加」）—— 并排两个「添加」用户分不出谁是谁。
+              三个入口的按钮文案：两步向导用它的 title 键（「添加服务商」）、密钥入口用
+              `credentials.add.title`（「添加密钥」）—— 并排两个「添加」用户分不出谁是谁。
+              高级添加的文案见下面的常量说明。
             */}
             <Button
               variant="outlined"
@@ -308,9 +344,16 @@ export default function ProvidersPage() {
               {t("credentials.add.title")}
             </Button>
             <Button
+              variant="outlined"
+              data-testid="providers-add-advanced-open"
+              onClick={() => setAdvancedAddOpen(true)}
+            >
+              {ADVANCED_ADD_LABEL}
+            </Button>
+            <Button
               variant="contained"
               data-testid="providers-add-open"
-              onClick={() => setProviderAddOpen(true)}
+              onClick={openProviderWizard}
             >
               {t("providers.add.title")}
             </Button>
@@ -329,10 +372,23 @@ export default function ProvidersPage() {
         onOpen={(id) => navigate(`/providers/${encodeURIComponent(id)}`)}
       />
 
-      <ProviderAddDialog
+      {/*
+        两步向导（[docs/19 §1]）：`providers-add-open` 进的就是它 ——
+        第 1 步服务商信息（含落库）、第 2 步添加模型。
+      */}
+      <ProviderTwoStepWizard
         open={providerAddOpen}
+        existing={{ ids: providerIds, names: providerNames }}
+        onClose={closeProviderWizard}
+      />
+      {/*
+        原来的**单步**对话框**原样保留**（字段 tid 一个没变），改挂到「高级添加」入口：
+        它是真控件、真能提交 —— 老手要的"一次填完 id / 鉴权方式 / 头名 / 值前缀"仍然可达。
+      */}
+      <ProviderAddDialog
+        open={advancedAddOpen}
         existingIds={providerIds}
-        onClose={() => setProviderAddOpen(false)}
+        onClose={() => setAdvancedAddOpen(false)}
       />
       <CredentialAddDialog
         open={credentialAddOpen}

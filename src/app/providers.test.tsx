@@ -11,12 +11,15 @@
  *    连接配置字段没返回时明说"后端没返回这一列"，不排一排空占位。
  * 3. **错误带 `TA-xxxx` 且不吞**：读服务商失败、读凭据失败都要各自显示出来 ——
  *    凭据读失败只该让"凭据数"变未知，不该把整张表打成错误。
- * 4. **没接线的能力不放按钮**：`provider_test` / `provider_echo` 都还没注册
- *    （见 `src-tauri/src/commands/mod.rs` 的 `collect_commands!`，`commandSurface.guard.test.ts`
- *    机械检查），所以这里断言页面上**没有**测试/编辑/删除按钮。
- * 5. **两个添加向导（[docs/17 §3.1]）是真入口**：`provider_upsert` / `credential_upsert` /
- *    `credential_set_secret` 都已在注册表里，所以「添加服务商」「添加密钥」必须是能真填、
- *    真发命令、成功后回显**后端返回值**的向导 —— 不是禁用占位、也不是本地假保存。
+ * 4. **没接线的能力不放按钮**：`provider_test` / `provider_echo` 的本轮状态以
+ *    `src-tauri/src/commands/mod.rs` 的 `collect_commands!` 为准（`commandSurface.guard.test.ts`
+ *    机械检查调用方引用），所以这一份只断言**列表/详情页**上没有测试/编辑/删除按钮
+ *    —— 两步向导里那个「连通性测试」按钮的接线由 `src/app/providerWizard.test.tsx` 负责。
+ * 5. **添加向导（[docs/17 §3.1] + [docs/19 §1]）是真入口**：`provider_upsert` / `credential_upsert` /
+ *    `credential_set_secret` 都已在注册表里，所以「添加服务商」（本轮已是**两步向导**，
+ *    见 `providerWizard.test.tsx`）、「高级添加」（**原来的单步对话框**，字段 tid 不变）
+ *    与「添加密钥」必须是能真填、真发命令、成功后回显**后端返回值**的向导
+ *    —— 不是禁用占位、也不是本地假保存。
  *    断言在 ⑥⑦ 两节：控件存在 → 真输入 → 真的调了命令 → 入参 snake_case 且形状正确 →
  *    成功后显示后端真值；校验分支断言**一次请求都不发**。
  */
@@ -617,15 +620,21 @@ const CREDENTIAL_WIZARD_CONTROLS = [
   "credentials-add-submit",
 ] as const;
 
-describe("[docs/17 §3.1] 添加服务商：真控件 → 真的调 provider_upsert → 显示后端真值", () => {
+describe("[docs/17 §3.1] 高级添加（单步对话框）：真控件 → 真的调 provider_upsert → 显示后端真值", () => {
+  /*
+   * 为什么这里的入口是 `providers-add-advanced-open`：本轮（[docs/19 §1]）`providers-add-open`
+   * 改成**两步向导**（`src/app/providerWizard.test.tsx` 验它），而原来的单步对话框**原样保留**
+   * 并改挂到「高级添加」入口 —— 字段 tid（`providers-add-*`）一个都没变，
+   * 所以下面这些断言一字不改，只换了"点哪个入口"。
+   */
   beforeEach(() => {
     registerBaselineMocks();
   });
 
-  it("页头有「添加服务商」；打开后控件一个不少，且都是能真交互的控件", async () => {
+  it("页头有「高级添加」；打开后控件一个不少，且都是能真交互的控件", async () => {
     renderAt("/providers");
 
-    fireEvent.click(await screen.findByTestId("providers-add-open"));
+    fireEvent.click(await screen.findByTestId("providers-add-advanced-open"));
     for (const id of PROVIDER_WIZARD_CONTROLS) {
       expect(screen.getByTestId(id), `缺控件 ${id}`).toBeTruthy();
     }
@@ -665,7 +674,7 @@ describe("[docs/17 §3.1] 添加服务商：真控件 → 真的调 provider_ups
     registerMock("provider_upsert", upsert.handler);
 
     renderAt("/providers");
-    fireEvent.click(await screen.findByTestId("providers-add-open"));
+    fireEvent.click(await screen.findByTestId("providers-add-advanced-open"));
     typeInto("providers-add-id", "my-gw");
     typeInto("providers-add-name", "我的网关");
     await chooseOption("providers-add-protocol", "Anthropic");
@@ -719,7 +728,7 @@ describe("[docs/17 §3.1] 添加服务商：真控件 → 真的调 provider_ups
     registerMock("provider_upsert", upsert.handler);
 
     renderAt("/providers");
-    fireEvent.click(await screen.findByTestId("providers-add-open"));
+    fireEvent.click(await screen.findByTestId("providers-add-advanced-open"));
     typeInto("providers-add-id", "my-gw");
     typeInto("providers-add-name", "我的网关");
     typeInto("providers-add-baseUrl", "https://gw.example.com/v1");
@@ -735,7 +744,7 @@ describe("[docs/17 §3.1] 添加服务商：真控件 → 真的调 provider_ups
     registerMock("provider_upsert", upsert.handler);
 
     renderAt("/providers");
-    fireEvent.click(await screen.findByTestId("providers-add-open"));
+    fireEvent.click(await screen.findByTestId("providers-add-advanced-open"));
 
     // ① 全空 → 必填
     fireEvent.click(screen.getByTestId("providers-add-submit"));
@@ -777,7 +786,7 @@ describe("[docs/17 §3.1] 添加服务商：真控件 → 真的调 provider_ups
     });
 
     renderAt("/providers");
-    fireEvent.click(await screen.findByTestId("providers-add-open"));
+    fireEvent.click(await screen.findByTestId("providers-add-advanced-open"));
     typeInto("providers-add-id", "my-gw");
     typeInto("providers-add-name", "我的网关");
     typeInto("providers-add-baseUrl", "https://gw.example.com/v1");

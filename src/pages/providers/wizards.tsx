@@ -80,12 +80,14 @@ const WINDOW_LABEL: Record<string, I18nKey> = {
 };
 
 /** 本地预检点名哪个字段时用的标题（文案全部复用既有键）。 */
-const FIELD_LABEL: Record<string, I18nKey> = {
+export const FIELD_LABEL: Record<string, I18nKey> = {
   id: "providers.field.id",
   name: "providers.field.name",
   baseUrl: "providers.field.baseUrl",
   label: "providers.credentials.col.label",
   provider: "channels.add.provider",
+  /** 两步向导（[docs/19 §1.1]）把密钥也放在步骤 1，所以这里也要点得出它的名字。 */
+  key: "onboarding.provider.secret",
 };
 
 // ================================================================ 小组件
@@ -101,8 +103,11 @@ function Caption({ children }: { children: ReactNode }) {
 /**
  * 一个下拉字段。`data-testid` 挂在**容器**上（与线路页 `SelectField` 同一形状）。
  * 值为空时 `renderValue` 显示「必填」：**空就是真的空**，不放"请选择…"的假选项。
+ *
+ * 导出给两步向导（`./providerWizard.tsx`）复用：两个向导的下拉必须是同一个形状，
+ * 否则真机 E2E 按 `[data-testid="X"] [role="combobox"]` 命中的行为会不一样。
  */
-function SelectField({
+export function SelectField({
   testId,
   label,
   value,
