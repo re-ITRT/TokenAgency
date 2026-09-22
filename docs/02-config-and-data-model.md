@@ -355,6 +355,7 @@ CREATE TABLE secret_meta (              -- key 的元数据，值在钥匙串/�
 | 配置校验 | 由 Rust 类型经 `schemars` 导出 JSON Schema + 语义校验（引用完整性、lane 引用了不存在的订阅、channel 引用了不存在的 credential、端口冲突等），错误定位到具体字段路径（`serde_path_to_error`） |
 | 便携导出 | `ta export --with-secrets` 生成加密包（age / AES-GCM，口令解锁） |
 | 版本化 | 每次成功应用配置留一份带时间戳的 YAML 快照，可回滚（最近 N 份） |
+| **数据根覆盖**（`TA_DATA_DIR`） | 环境变量存在且非空时，数据根改为该目录：库 = `<TA_DATA_DIR>/db.sqlite`，日志 = `<TA_DATA_DIR>/logs`，内核与订阅目录同样从它派生。**它是数据根的唯二来源之一**（另一个是 `<AppData>/TokenAgency`），解析只在一个地方（`state::AppState::app_data_root`）。用途：端到端验证必须在**不碰用户真实数据**的前提下驱动真界面；Windows 上 `dirs::data_dir()` 读系统已知文件夹，改 `%APPDATA%` 无效，所以只能由应用自己读。空值（`TA_DATA_DIR=`）不算设置，避免数据静默落到当前目录 |
 
 ## 5. secrets 引用语法
 

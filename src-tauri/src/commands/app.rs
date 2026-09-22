@@ -125,7 +125,7 @@ async fn build_status(state: &AppState) -> IpcResult<AppStatus> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn app_status(state: State<'_, AppState>) -> IpcResult<AppStatus> {
     build_status(&state).await
@@ -145,7 +145,7 @@ fn gate_of(state: &AppState) -> IpcResult<Arc<ta_gateway::ingress::GatewayGate>>
 ///
 /// 拒绝新请求由闸门在 ingress 内完成（错误码 TA-1005 / 503，
 /// 文案让用户看出"是自己按的暂停，不是故障"）—— 本层不自己造拒绝逻辑。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn app_pause_gateway(state: State<'_, AppState>) -> IpcResult<AppStatus> {
     gate_of(&state)?.pause();
@@ -156,7 +156,7 @@ pub async fn app_pause_gateway(state: State<'_, AppState>) -> IpcResult<AppStatu
 }
 
 /// 恢复网关：重新开始接单。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn app_resume_gateway(state: State<'_, AppState>) -> IpcResult<AppStatus> {
     gate_of(&state)?.resume();
@@ -165,7 +165,7 @@ pub async fn app_resume_gateway(state: State<'_, AppState>) -> IpcResult<AppStat
 }
 
 /// 打开应用目录（日志 / 配置 / 数据）。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn app_open_dir(
     app: tauri::AppHandle,
@@ -189,7 +189,7 @@ pub async fn app_open_dir(
 }
 
 /// 给用户复制到客户端的接入信息（base_url + 本地密钥）。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn app_clipboard_access_info(state: State<'_, AppState>) -> IpcResult<String> {
     let doc = state.doc();

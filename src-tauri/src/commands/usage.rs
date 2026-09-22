@@ -10,7 +10,7 @@ use crate::commands::IpcResult;
 use crate::state::AppState;
 use ta_store::UsageStore;
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn usage_dashboard(
     state: State<'_, AppState>,
@@ -19,7 +19,7 @@ pub async fn usage_dashboard(
     Ok(state.usage.dashboard(range).await?)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn usage_query(
     state: State<'_, AppState>,
@@ -28,14 +28,14 @@ pub async fn usage_query(
     Ok(state.usage.query(&q).await?)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn usage_token_kinds(state: State<'_, AppState>) -> IpcResult<Vec<String>> {
     Ok(state.usage.token_kinds_seen().await?.into_iter().map(|k| k.as_key().to_string()).collect())
 }
 
 /// 实时流首次填充（之后靠 `request:new` 事件，[10 §2.3]）。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn usage_request_stream_snapshot(
     state: State<'_, AppState>,
@@ -44,14 +44,14 @@ pub async fn usage_request_stream_snapshot(
     Ok(state.usage.recent_summaries(limit).await?)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn pricing_unpriced_models(state: State<'_, AppState>) -> IpcResult<Vec<String>> {
     Ok(state.usage.unpriced_models().await?)
 }
 
 /// 导出 CSV 到指定路径（[10 §2.2] `usage_export_csv`；任何统计都能导出是硬要求）。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn usage_export_csv(
     state: State<'_, AppState>,
@@ -102,7 +102,7 @@ pub fn limit_gaps_for(doc: &ta_core::domain::ConfigDoc) -> Vec<QuotaLimitGap> {
 }
 
 /// [10 §2.2] `quota_limit_gaps`。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn quota_limit_gaps(state: State<'_, AppState>) -> IpcResult<Vec<QuotaLimitGap>> {
     Ok(limit_gaps_for(&state.doc()))

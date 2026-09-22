@@ -9,7 +9,13 @@
 pub mod app;
 pub mod catalog;
 pub mod config;
+// ---- task-16 批次 A 第 2 组：实体级写命令（entity.rs，独立文件，见该文件模块文档）
+pub mod entity;
 pub mod log;
+// ---- task-16 批次 B 第 3 组：网络面（订阅 / 线路 / 内核，net.rs，本组命令只由本文件的作者登记）
+pub mod net;
+// ---- task-16 批次 B：系统集成 / 诊断导出 / 向导 / 托盘控制（settings_ext.rs，独立文件）
+pub mod settings_ext;
 pub mod usage;
 
 use serde::{Deserialize, Serialize};
@@ -163,6 +169,34 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             catalog::provider_upsert,
             catalog::channel_upsert,
             catalog::channel_set_enabled,
+            // ---- task-16 批次 A 第 2 组：实体级写命令（entity.rs，本组命令只由本文件的作者登记）
+            entity::provider_delete,
+            entity::credential_upsert,
+            entity::credential_delete,
+            entity::credential_set_secret,
+            entity::credential_set_enabled,
+            entity::credential_clear_quota,
+            entity::model_upsert,
+            entity::model_delete,
+            entity::model_bulk_update,
+            entity::channel_delete,
+            entity::channel_set_tags,
+            entity::channel_bulk_assign_lane,
+            entity::channel_matrix,
+            entity::group_upsert,
+            entity::group_delete,
+            entity::group_set_sticky,
+            entity::group_release_sticky,
+            entity::policy_upsert,
+            entity::policy_delete,
+            entity::policy_reorder,
+            entity::policy_set_enabled,
+            entity::policy_simulate,
+            entity::pricing_list,
+            entity::pricing_upsert,
+            entity::pricing_delete,
+            entity::pricing_resolve,
+            entity::pricing_import_builtin,
             usage::usage_dashboard,
             usage::usage_query,
             usage::usage_token_kinds,
@@ -177,6 +211,47 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             log::log_storage_stats,
             log::log_clear,
             log::log_query_capabilities,
+            // ---- task-16 批次 B：settings_ext（本组命令只由本文件的作者登记）
+            settings_ext::app_get_autostart,
+            settings_ext::app_set_autostart,
+            settings_ext::app_repair_autostart,
+            settings_ext::app_check_update,
+            settings_ext::config_set_file_watch_mode,
+            settings_ext::log_export,
+            settings_ext::onboarding_detect,
+            settings_ext::onboarding_apply,
+            settings_ext::onboarding_test_all,
+            settings_ext::secrets_migrate,
+            settings_ext::secrets_scan_plaintext,
+            settings_ext::tray_state,
+            settings_ext::tray_set_active_policy,
+            settings_ext::tray_set_global_lane,
+            settings_ext::tray_emergency,
+            // ---- task-16 批次 B 第 3 组：网络面（net.rs，本组命令只由本文件的作者登记）
+            net::subscription_upsert,
+            net::subscription_delete,
+            net::subscription_refresh,
+            net::subscription_preview,
+            net::subscription_nodes,
+            net::subscription_groups,
+            net::subscription_rules_raw,
+            net::subscription_rollback,
+            net::lane_upsert,
+            net::lane_delete,
+            net::lane_set_node,
+            net::lane_test,
+            net::lane_assignments,
+            net::lane_pick_options,
+            net::lane_reverse_lookup,
+            net::kernel_start,
+            net::kernel_stop,
+            net::kernel_restart,
+            net::kernel_status,
+            net::kernel_reload_config,
+            net::kernel_set_provider,
+            net::kernel_generated_config,
+            net::kernel_log_tail,
+            net::kernel_probe_path,
         ])
         .error_handling(tauri_specta::ErrorHandlingMode::Result)
 }

@@ -30,7 +30,7 @@ fn validator() -> ta_core::config::TaConfigValidator {
 }
 
 /// 校验**但不写库**（前端编辑时实时调用）。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn config_validate(
     _state: State<'_, AppState>,
@@ -39,14 +39,14 @@ pub async fn config_validate(
     Ok(validator().validate(&doc))
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn config_get(state: State<'_, AppState>) -> IpcResult<ConfigDoc> {
     Ok((*state.doc()).clone())
 }
 
 /// 全量应用：校验不过直接拒（不写库），通过则事务写库 + 快照 + 换内存快照。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn config_apply(state: State<'_, AppState>, doc: ConfigDoc) -> IpcResult<ApplyResult> {
     let report = validator().validate(&doc);
@@ -61,7 +61,7 @@ pub async fn config_apply(state: State<'_, AppState>, doc: ConfigDoc) -> IpcResu
 
 /// 导出 YAML。`with_secrets=false` 时把明文 `local_key` 打码
 /// （上游 key 本来就只有 `${secret:...}` 引用，**不存在**明文可导）。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn config_export_yaml(
     state: State<'_, AppState>,
@@ -74,7 +74,7 @@ pub async fn config_export_yaml(
     ta_core::config::to_yaml(&doc).map_err(IpcError::from)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn config_import_yaml(
     state: State<'_, AppState>,
@@ -123,7 +123,7 @@ fn merge_docs(base: &ConfigDoc, incoming: ConfigDoc) -> ConfigDoc {
     out
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn config_history_list(
     state: State<'_, AppState>,
@@ -132,7 +132,7 @@ pub async fn config_history_list(
     Ok(state.config.list_snapshots(limit).await?)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn config_rollback(
     state: State<'_, AppState>,

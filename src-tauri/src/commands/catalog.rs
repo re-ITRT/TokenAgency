@@ -49,13 +49,13 @@ fn doc(state: &AppState) -> Arc<ConfigDoc> {
     state.doc()
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn provider_list(state: State<'_, AppState>) -> IpcResult<Vec<Provider>> {
     Ok(doc(&state).providers.clone())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn provider_get(state: State<'_, AppState>, id: String) -> IpcResult<Option<Provider>> {
     let key = ProviderId::new(id);
@@ -80,7 +80,7 @@ fn used_pct_of(c: &Credential, state: Option<&ta_store::QuotaStateRow>) -> Optio
     Some((used / limit).clamp(0.0, 10.0))
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn credential_list(state: State<'_, AppState>) -> IpcResult<Vec<CredentialView>> {
     let d = doc(&state);
@@ -95,7 +95,7 @@ pub async fn credential_list(state: State<'_, AppState>) -> IpcResult<Vec<Creden
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn model_list(state: State<'_, AppState>) -> IpcResult<Vec<ModelView>> {
     let d = doc(&state);
@@ -113,20 +113,20 @@ pub async fn model_list(state: State<'_, AppState>) -> IpcResult<Vec<ModelView>>
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn channel_list(state: State<'_, AppState>) -> IpcResult<Vec<ChannelConfig>> {
     Ok(doc(&state).channels.clone())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn group_list(state: State<'_, AppState>) -> IpcResult<Vec<ChannelGroup>> {
     Ok(doc(&state).channel_groups.clone())
 }
 
 /// 按 priority 升序（UI 的拖拽顺序就是求值顺序，见 [02 §2.8]）。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn policy_list(state: State<'_, AppState>) -> IpcResult<Vec<Policy>> {
     let mut list = doc(&state).policies.clone();
@@ -134,7 +134,7 @@ pub async fn policy_list(state: State<'_, AppState>) -> IpcResult<Vec<Policy>> {
     Ok(list)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn lane_list(state: State<'_, AppState>) -> IpcResult<Vec<LaneView>> {
     let d = doc(&state);
@@ -154,7 +154,7 @@ pub async fn lane_list(state: State<'_, AppState>) -> IpcResult<Vec<LaneView>> {
     Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn subscription_list(state: State<'_, AppState>) -> IpcResult<Vec<Subscription>> {
     Ok(doc(&state).proxy_subscriptions.clone())
@@ -168,7 +168,11 @@ pub async fn subscription_list(state: State<'_, AppState>) -> IpcResult<Vec<Subs
 /// 实体级命令不该各自发明一套写库顺序。
 ///
 /// **校验不过不写库**：宁可前端拿到字段路径，也不要库里出现一份非法配置。
-async fn save_validated(state: &AppState, doc: ConfigDoc, label: &str) -> IpcResult<()> {
+///
+/// **为什么是 `pub(crate)`**（第 12 轮由主管放开）：其它命令模块（如 `entity.rs`）的实体写命令
+/// 必须走这**同一条**写路径；私有会让它们各自复制一份"validate → save → snapshot → set_doc"，
+/// 那就是两份写库顺序，将来必然分叉（[docs/13 L21] 同族错误）。
+pub(crate) async fn save_validated(state: &AppState, doc: ConfigDoc, label: &str) -> IpcResult<()> {
     let report = ta_core::config::TaConfigValidator.validate(&doc);
     if !report.ok {
         return Err(IpcError::from_field_errors(&report.errors));
@@ -201,7 +205,7 @@ pub async fn upsert_provider(state: &AppState, provider: Provider) -> IpcResult<
     Ok(provider)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn provider_upsert(
     state: State<'_, AppState>,
@@ -221,7 +225,7 @@ pub async fn upsert_channel(state: &AppState, channel: ChannelConfig) -> IpcResu
     Ok(channel)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn channel_upsert(
     state: State<'_, AppState>,
@@ -240,7 +244,7 @@ pub async fn set_channel_enabled(state: &AppState, id: &str, enabled: bool) -> I
     save_validated(state, doc, "channel_set_enabled").await
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn channel_set_enabled(
     state: State<'_, AppState>,

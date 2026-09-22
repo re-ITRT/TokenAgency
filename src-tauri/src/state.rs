@@ -25,6 +25,26 @@ use ta_store::{
     SqliteStickyStore, SqliteTraceStore, SqliteUsageStore,
 };
 
+/// 数据根覆盖用的环境变量名（见 [`AppState::app_data_root`]）。
+pub const DATA_DIR_ENV: &str = "TA_DATA_DIR";
+
+/// [`AppState::app_data_root`] 的**纯函数内核**：不读环境、不碰进程状态，只做决策。
+///
+/// 抽出来的理由和 `TimeRange` 那类守卫一样：环境变量会让测试互相干扰
+/// （`set_var` 是进程级共享状态），而纯函数可以把"覆盖生效 / 空值不算 / 没有系统目录时报错"
+/// 三种情形逐条钉死。
+fn resolve_data_root(
+    env_override: Option<std::ffi::OsString>,
+    system: Option<PathBuf>,
+) -> Result<PathBuf> {
+    if let Some(v) = env_override {
+        if !v.is_empty() {
+            return Ok(PathBuf::from(v));
+        }
+    }
+    system.ok_or_else(|| TaError::Store("找不到系统数据目录（dirs::data_dir）".into()))
+}
+
 pub struct AppState {
     pub db: SqlitePool,
     /// 库文件路径（`app_open_dir("data")` 与设置页要显示）
@@ -104,11 +124,24 @@ impl AppState {
         })
     }
 
-    /// 默认库位置：`<AppData>/TokenAgency/db.sqlite`（`docs/02` §4）。
+    /// 默认库位置：`<数据根>/db.sqlite`（`docs/02` §4）。
     pub fn default_db_path() -> Result<PathBuf> {
-        let dir = dirs::data_dir()
-            .ok_or_else(|| TaError::Store("找不到系统数据目录（dirs::data_dir）".into()))?;
-        Ok(dir.join("TokenAgency").join("db.sqlite"))
+        Ok(Self::app_data_root()?.join("db.sqlite"))
+    }
+
+    /// 数据根的**唯一解析口**：`TA_DATA_DIR` 覆盖 > `<AppData>/TokenAgency`（`docs/02` §4）。
+    ///
+    /// **为什么需要覆盖口**：端到端验证要用 `tauri-driver` 驱动**真的界面**（真 IPC、真库），
+    /// 必须能在完全不碰用户真实数据的前提下跑完整链路。而 Windows 上 `dirs::data_dir()`
+    /// 读的是系统已知文件夹，改 `%APPDATA%` 环境变量对它无效 —— 覆盖口只能由我们自己的代码读。
+    ///
+    /// 规则：环境变量**存在且非空**才生效（`TA_DATA_DIR=` 空值不算，否则会静默把数据落到当前目录）。
+    /// 日志目录（`logging::log_dir`）与内核/订阅目录都从这一个根派生，见 `logging.rs` 的说明。
+    pub fn app_data_root() -> Result<PathBuf> {
+        resolve_data_root(
+            std::env::var_os(DATA_DIR_ENV),
+            dirs::data_dir().map(|d| d.join("TokenAgency")),
+        )
     }
 
     /// 应用数据目录（`app_open_dir` 用）。
@@ -166,5 +199,57 @@ impl AppState {
 
     pub fn gateway_gate(&self) -> Option<Arc<ta_gateway::ingress::GatewayGate>> {
         self.gateway_gate.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 覆盖口不生效就等于端到端验证会往用户真实数据目录里写 —— 这条必须有牙。
+    #[test]
+    fn data_root_override_wins() {
+        let got = resolve_data_root(
+            Some(std::ffi::OsString::from(r"C:\tmp\ta-e2e")),
+            Some(PathBuf::from(r"C:\Users\x\AppData\Roaming\TokenAgency")),
+        )
+        .expect("有覆盖值时不该报错");
+        assert_eq!(got, PathBuf::from(r"C:\tmp\ta-e2e"));
+    }
+
+    /// `TA_DATA_DIR=`（空值）**不算设置**：否则数据会静默落到当前目录。
+    #[test]
+    fn empty_override_is_ignored() {
+        let got = resolve_data_root(
+            Some(std::ffi::OsString::from("")),
+            Some(PathBuf::from(r"C:\Users\x\AppData\Roaming\TokenAgency")),
+        )
+        .expect("空值应回退到系统目录");
+        assert_eq!(got, PathBuf::from(r"C:\Users\x\AppData\Roaming\TokenAgency"));
+    }
+
+    /// 没设环境变量时走系统目录（并断言拼上了 `TokenAgency`）。
+    #[test]
+    fn no_override_uses_system_dir() {
+        let got =
+            resolve_data_root(None, Some(PathBuf::from(r"C:\Users\x\AppData\Roaming\TokenAgency")))
+                .expect("有系统目录时不该报错");
+        assert_eq!(got, PathBuf::from(r"C:\Users\x\AppData\Roaming\TokenAgency"));
+    }
+
+    /// 两个来源都没有 → 报错，而不是悄悄用相对路径 `"TokenAgency"`。
+    #[test]
+    fn no_source_at_all_is_an_error() {
+        let err = resolve_data_root(None, None).expect_err("两个来源都没有时必须报错");
+        assert!(err.to_string().contains("数据目录"), "错误信息要说清是数据目录：{err}");
+    }
+
+    /// 库与日志目录必须同根：改了根的解析口，日志不能还走老路。
+    #[test]
+    fn db_path_and_log_dir_share_the_same_root() {
+        let root = resolve_data_root(Some(std::ffi::OsString::from(r"C:\tmp\ta-e2e")), None)
+            .expect("有覆盖值时不该报错");
+        assert_eq!(root.join("db.sqlite"), PathBuf::from(r"C:\tmp\ta-e2e").join("db.sqlite"));
+        assert_eq!(root.join("logs"), PathBuf::from(r"C:\tmp\ta-e2e").join("logs"));
     }
 }

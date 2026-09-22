@@ -28,11 +28,12 @@ pub const FILE_PREFIX: &str = "tokenagency.log";
 
 /// 把我们自己的日志目录**定死在确定路径**（C1 的"确定"就是这个意思）。
 ///
-/// 与 `state.rs::default_db_path()` 同一个根：`<AppData>/TokenAgency/`。
+/// 与 `state.rs::AppState::default_db_path()` 同一个根（`state::AppState::app_data_root()`）：
+/// `<AppData>/TokenAgency/logs`，或 `TA_DATA_DIR` 覆盖时 `<TA_DATA_DIR>/logs`。
 /// 与 `commands::app` 的 `"logs"` 分支、`boot.rs` 的内核日志目录**一致** ——
 /// 目录解析只能有一个来源，否则"一键打开日志目录"会打开一个空目录。
 pub fn log_dir() -> Option<std::path::PathBuf> {
-    Some(dirs::data_dir()?.join("TokenAgency").join("logs"))
+    crate::state::AppState::app_data_root().ok().map(|root| root.join("logs"))
 }
 
 /// 把写入也过一遍脱敏层。
