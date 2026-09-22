@@ -104,6 +104,8 @@ const STEP_TITLES = {
   step11: "路由向导：能力不一致时必须显示逐字段差异并禁用提交",
   step14: "数据安全回归：设置页「校验并应用」之后，之前建的线路必须还在",
   step15: "能力一致的两条线路可路由；把已归组的线路改成不一致 → 后端必须拒绝并点出字段",
+  step17: "节点清单真出数据（/network/nodes ← subscription_nodes，含 fixture 节点）",
+  step18: "访问密钥真能管也真能挡人（创建/明文一次/带 key 放行、不带 key 401/禁用即 401）",
 };
 
 // ================================================================ 小工具
@@ -1917,6 +1919,169 @@ async function step15(wd, fixture) {
   }
 }
 
+// ---------------------------------------------------------------- step17 节点清单
+
+/**
+ * **step17：/network 的节点清单真的出数据**（用户第 71 轮最直接的不满：「没有节点啊」）。
+ *
+ * 事实（已核实，别再猜）：`subscription_nodes({ id })`（不带 group）走该订阅**已采纳的解析结果**
+ * （`net.rs:774-775`）；而**未解析**的订阅会让后端**报错**（不是返回空数组），
+ * 所以"还没解析过"这一档必须由页面的**前置判定**渲染（用 `subscription_list` 的
+ * `last_update_ms` / `error`），而不是等命令报错。
+ *
+ * 本步骤同时覆盖：真节点出现（fixture 里的 `ta-e2e-node-hk`）、刷新后仍在、以及
+ * **不许有**"点了会报错的组筛选器"（本轮 `group` 参数在后端是硬错误，所以页面不放它）。
+ */
+async function step17(wd) {
+  const evidence = [];
+  const page = await gotoPage(wd, "#/network/nodes", '[data-testid="nodes-list"], [data-testid="nodes-empty"], [data-testid="nodes-error"]');
+  if (page === null) {
+    record("step17", "FAIL", "/network/nodes 既没有节点清单也没有空态/错误区（页面没渲染出任何一种状态）", evidence);
+    return;
+  }
+  const tids = await wd.probeTestIds();
+  evidence.push(`/network/nodes 命中 data-testid: ${tids.slice(0, 35).join(", ")}`);
+  const err = await wd.textOf('[data-testid="nodes-error"]');
+  if (err !== null) evidence.push(`nodes-error 原文: ${JSON.stringify(err.replace(/\s+/g, " "))}`);
+  const empty = await wd.textOf('[data-testid="nodes-empty"]');
+  if (empty !== null) evidence.push(`nodes-empty 原文: ${JSON.stringify(empty.replace(/\s+/g, " "))}`);
+
+  // 先点一次「刷新」：拉一次订阅 → 触发解析 → 节点清单才有东西可读
+  if (tids.includes("nodes-refresh")) {
+    await wdClickTid(wd, "nodes-refresh", evidence);
+    await sleep(3000);
+  } else {
+    evidence.push("这一页没有 nodes-refresh（没法主动拉订阅解析结果）");
+  }
+
+  const rows = await wd.exec(`return document.querySelectorAll('[data-testid="nodes-row"]').length;`);
+  const text = await wd.pageText();
+  const hasFixtureNode = text.includes("ta-e2e-node-hk");
+  evidence.push(`刷新后 nodes-row 行数 = ${rows}；页面文本里出现 fixture 节点 ta-e2e-node-hk = ${hasFixtureNode}`);
+  evidence.push(
+    `本轮**不放**组筛选器（后端带 group 是硬错误：net.rs:765-773 要求先给 ta-subscription 的 GroupMeta 加 members）：` +
+      `nodes-group-filter 存在=${tids.includes("nodes-group-filter")}`,
+  );
+  // 反向断言：空态与错误**不能同时**出现（那说明页面在自欺）
+  if (empty !== null && err !== null) {
+    record("step17", "FAIL", "空态与错误区同时存在（状态没分档）", evidence);
+    return;
+  }
+  if (rows > 0 && hasFixtureNode) {
+    record("step17", "PASS", `节点清单真出数据：${rows} 行，且包含 fixture 里的 ta-e2e-node-hk`, evidence);
+  } else if (empty !== null) {
+    record(
+      "step17",
+      "FAIL",
+      `节点清单是空的（nodes-empty: ${JSON.stringify(String(empty).replace(/\s+/g, " ").slice(0, 60))}）—— 用户要的是看到节点`,
+      evidence,
+    );
+  } else {
+    record("step17", "FAIL", `节点清单没出现节点（rows=${rows}，hasFixtureNode=${hasFixtureNode}）`, evidence);
+  }
+}
+
+// ---------------------------------------------------------------- step18 API key 管理
+
+/**
+ * **step18：访问密钥真的能管、也真的能挡人**（用户第 71 轮：「API key 的管理也需要」）。
+ *
+ * 关键语义（[docs/19 §3.3] 已定死）：`gateway.local_key` 为空**且**表里没有 enabled 的 key → **不鉴权**；
+ * 一旦存在任一凭据来源 → **必须匹配**。所以本步骤按顺序证明：
+ * 建 key 之前无凭据不 401 → 建 key 之后无凭据 401、带 key 非 401 → 界面上禁用后立刻回到 401 → 删除。
+ * 明文只在创建时出现一次，点「我已保存」后必须从界面上消失。
+ */
+async function step18(wd) {
+  const evidence = [];
+  const GW = "http://127.0.0.1:8787";
+  const probe = async (token) => {
+    const headers = token === null ? {} : { authorization: `Bearer ${token}` };
+    try {
+      const res = await fetch(`${GW}/v1/models`, { headers });
+      return { status: res.status, body: (await res.text()).slice(0, 120) };
+    } catch (err) {
+      return { status: 0, body: String(err.message ?? err).slice(0, 120) };
+    }
+  };
+
+  const page = await gotoPage(wd, "#/api-keys", '[data-testid="api-keys-page"]');
+  if (page === null) {
+    record("step18", "FAIL", "/api-keys 页面没渲染出来", evidence);
+    return;
+  }
+  const tids = await wd.probeTestIds();
+  evidence.push(`/api-keys 命中 data-testid: ${tids.slice(0, 30).join(", ")}`);
+  if (!tids.includes("api-keys-create")) {
+    record("step18", "FAIL", "界面上没有「新建密钥」入口（api-keys-create 不存在）", evidence);
+    return;
+  }
+
+  // ① 建之前：没有凭据来源 → 不该被挡（默认不鉴权，这是既有行为）
+  const before = await probe(null);
+  evidence.push(`建 key 之前：无凭据 GET /v1/models → ${JSON.stringify(before)}`);
+
+  // ② 真界面新建
+  await wdClickTid(wd, "api-keys-create", evidence);
+  await sleep(400);
+  await wdFillByTid(wd, "api-keys-create-name", "ta-e2e-key", evidence);
+  await wdClickTid(wd, "api-keys-create-submit", evidence);
+  await sleep(1500);
+  await shot(wd, "step18-created");
+  const plaintextRaw = await wd.textOf('[data-testid="api-keys-created-plaintext"]');
+  const plaintext = (plaintextRaw ?? "").trim().replace(/\s+/g, "");
+  evidence.push(`创建结果区原文: ${JSON.stringify((plaintextRaw ?? "").replace(/\s+/g, " ").slice(0, 200))}`);
+  if (plaintextRaw === null) {
+    const e = await wd.textOf('[data-testid="api-keys-error"]');
+    if (e !== null) evidence.push(`api-keys-error: ${JSON.stringify(e)}`);
+    record("step18", "FAIL", "创建后没有显示明文（api-keys-created-plaintext 不存在）", evidence);
+    return;
+  }
+  evidence.push(`取到的明文前 12 字符: ${JSON.stringify(plaintext.slice(0, 12))}`);
+
+  // ③ 明文只出现一次：点「我已保存」后从界面消失
+  let hiddenAfterDone = false;
+  if ((await wd.probeTestIds()).includes("api-keys-created-done")) {
+    await wdClickTid(wd, "api-keys-created-done", evidence);
+    await sleep(500);
+    hiddenAfterDone = !(await wd.probeTestIds()).includes("api-keys-created-plaintext");
+  }
+  evidence.push(`点「我已保存」之后明文从界面消失 = ${hiddenAfterDone}`);
+
+  // ④ 真鉴权：带 key 非 401、不带 key 401
+  const withKey = await probe(plaintext);
+  const noKey = await probe(null);
+  evidence.push(`带这个 key：${JSON.stringify(withKey)}；不带 key：${JSON.stringify(noKey)}`);
+
+  // ⑤ 界面上禁用 → 立刻 401
+  let disabledProbe = null;
+  if ((await wd.probeTestIds()).includes("api-key-toggle")) {
+    await wdClickTid(wd, "api-key-toggle", evidence);
+    await sleep(1200);
+    disabledProbe = await probe(plaintext);
+    evidence.push(`界面上禁用后带同一个 key：${JSON.stringify(disabledProbe)}`);
+  } else {
+    evidence.push("没有 api-key-toggle，无法从界面禁用（这一条没测到）");
+  }
+
+  const okCreate = plaintext.startsWith("ta-sk-");
+  const okHidden = hiddenAfterDone;
+  const okAuth = withKey.status !== 401 && noKey.status === 401;
+  const okDisabled = disabledProbe !== null && disabledProbe.status === 401;
+  evidence.push(
+    `判定：明文形状=${okCreate} 只显示一次=${okHidden} 鉴权生效=${okAuth} 禁用即挡住=${okDisabled}`,
+  );
+  if (okCreate && okHidden && okAuth && okDisabled) {
+    record("step18", "PASS", `访问密钥真能管：创建（明文只显示一次）→ 带 key 放行 / 不带 key 401 → 界面禁用后立刻 401`, evidence);
+  } else {
+    record(
+      "step18",
+      "FAIL",
+      `访问密钥没做到位：明文形状=${okCreate} 只显示一次=${okHidden} 鉴权生效=${okAuth} 禁用即挡住=${okDisabled}`,
+      evidence,
+    );
+  }
+}
+
 async function step12(wd) {
   const evidence = [];
   // 用例前提：这一步必须在**还没配置任何网络**时跑（干净 scratch），否则语义不成立。
@@ -2212,6 +2377,12 @@ async function main() {
 
     // ============================================================ step15 能力规则的强制面
     if (want("step15")) await step15(wd, fixture);
+
+    // ============================================================ step17 节点清单（需要先有订阅 + 解析）
+    if (want("step17")) await step17(wd);
+
+    // ============================================================ step18 访问密钥（会自己造 key 并真打网关）
+    if (want("step18")) await step18(wd);
 
     // ============================================================ 收尾：再查一次隔离
     await stepIsolationAfter(wd);
