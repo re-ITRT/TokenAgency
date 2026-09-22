@@ -1845,6 +1845,15 @@ mod tests {
                 Err(_) => break,
             }
         }
+        // 只有**真的发出了 HTTP 请求**的连接才消耗一份脚本响应。
+        //
+        // 为什么（第 72 轮在 `cargo test --workspace` 上偶发抓到过）：负载高时会出现"连上了、
+        // 请求还没发出去就被重置"的连接；旧写法无条件 `hits.fetch_add(1)`，这种连接会**偷走**
+        // 一条脚本响应，把整条脚本错位 —— 现象是"第一版拿到了本该给第二版的 HTML"，于是一版都
+        // 没被采纳，断言里的计数变成 `None`（而单跑这个测试永远复现不出来）。
+        if !buf.windows(7).any(|w| w == b"HTTP/1.") {
+            return;
+        }
         let n = hits.fetch_add(1, Ordering::SeqCst);
         let (body, headers) = {
             let list = scripts.lock().unwrap_or_else(|e| e.into_inner());
@@ -2316,7 +2325,11 @@ mod tests {
         ]);
         let state = seeded("sub-view-rejected", &airport.url("/sub")).await;
         let id = SubscriptionId::new("sub-a");
-        refresh_subscriptions(&state, Some(id.clone()), true).await.expect("v1 是好内容");
+        // 前置写死：v1 **必须真的被采纳**。旧写法只 `.expect(...)` 了"命令返回 Ok" ——
+        // 而命令在"下载失败/被拦下"时同样返回 Ok，于是脚本一旦错位，失败会推迟到下面
+        // 那个计数断言上，读起来像"计数逻辑坏了"，其实是脚本错位（见 `serve_one` 的注释）。
+        let first = refresh_subscriptions(&state, Some(id.clone()), true).await.expect("v1 请求");
+        assert!(first.ok, "v1 必须是好内容且被采纳：{first:?}");
         refresh_subscriptions(&state, Some(id.clone()), true).await.expect("v2 是坏内容，会被拦下");
 
         let views = views_of_subscriptions(&state).expect("清单");
