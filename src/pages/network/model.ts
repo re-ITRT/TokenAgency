@@ -37,6 +37,7 @@
 
 import type { I18nKey } from "@/shared/i18n";
 import type { SemStatus } from "@/shared/components";
+import type { Subscription, SubscriptionFormat } from "@/shared/bindings";
 
 // ================================================================ 基础读取件
 
@@ -259,6 +260,84 @@ export function readSubscription(raw: unknown): SubscriptionRow {
     total: pickNum(asRow(parsed["userinfo"]), "total"),
     expireMs: pickNum(asRow(parsed["userinfo"]), "expire_ms"),
   };
+}
+
+// ================================================================ 写载荷（订阅）
+
+/** 契约里 `SubscriptionFormat` 的五个取值（表单的格式下拉用它，顺序即显示顺序）。 */
+export const SUBSCRIPTION_FORMATS: readonly SubscriptionFormat[] = [
+  "auto",
+  "clash",
+  "base64_links",
+  "plain_links",
+  "convert_links",
+];
+
+/**
+ * 订阅表单的原始输入。数字字段**保持字符串**：`""`（用户没填）与 `0` 不是一回事 ——
+ * 前者不发这个字段（让后端默认值生效），后者是"我确实要 0"。
+ */
+export type SubscriptionDraft = {
+  id: string;
+  name: string;
+  url: string;
+  format: SubscriptionFormat;
+  intervalS: string;
+  keepVersions: string;
+  include: string;
+  exclude: string;
+  enabled: boolean;
+};
+
+/**
+ * 数字字段的解析，三态：
+ * - `undefined` = 没填 → **不发这个字段**（后端默认值说了算）；
+ * - `null` = 填了但不是非负整数 → 调用方报错，**不静默丢掉**（静默丢 = 用户以为改了）；
+ * - `number` = 合法值。
+ */
+export function parseOptionalCount(text: string): number | undefined | null {
+  const trimmed = text.trim();
+  if (trimmed === "") return undefined;
+  const value = Number(trimmed);
+  if (!Number.isInteger(value) || value < 0) return null;
+  return value;
+}
+
+/** 三个没有 serde 默认值的字段（`id` / `name` / `url`）是否都填了。空值不发给后端。 */
+export function subscriptionDraftComplete(draft: SubscriptionDraft): boolean {
+  return draft.id.trim() !== "" && draft.name.trim() !== "" && draft.url.trim() !== "";
+}
+
+/**
+ * 表单草稿 → `subscription_upsert` 的载荷。
+ *
+ * **只放用户真的填了的字段**：契约的 `Subscription` 把 `user_agent` / `health_check` 也标成必填，
+ * 但 Rust 侧对它们有 `#[serde(default)]`（`crates/ta-core/src/domain/mod.rs`）—— **权威在 Rust**。
+ * 前端补一份默认值就是把后端默认值复刻成第二个真相源：后端改了默认值，前端还在发旧值，
+ * 而且不会报错。缺的字段交给后端填 —— 下面这一处 `as` 就是那个决定的唯一落点。
+ */
+export function subscriptionPayload(draft: SubscriptionDraft): Subscription {
+  const payload: Record<string, unknown> = {
+    id: draft.id.trim(),
+    name: draft.name.trim(),
+    url: draft.url.trim(),
+    format: draft.format,
+    enabled: draft.enabled,
+  };
+  const intervalS = parseOptionalCount(draft.intervalS);
+  if (intervalS !== undefined && intervalS !== null) payload.interval_s = intervalS;
+  const keepVersions = parseOptionalCount(draft.keepVersions);
+  if (keepVersions !== undefined && keepVersions !== null) payload.keep_versions = keepVersions;
+
+  const include = draft.include.trim();
+  const exclude = draft.exclude.trim();
+  if (include !== "" || exclude !== "") {
+    const filter: Record<string, string> = {};
+    if (include !== "") filter.include = include;
+    if (exclude !== "") filter.exclude = exclude;
+    payload.filter = filter;
+  }
+  return payload as unknown as Subscription;
 }
 
 // ================================================================ 线路

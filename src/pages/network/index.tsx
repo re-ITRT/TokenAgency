@@ -3,13 +3,24 @@
  *
  * ## 两条硬纪律
  *
- * 1. **I2：系统网络零副作用。** 这一页（含节点列表与线路分配）**只展示**：
- *    没有任何"顺带改系统代理 / DNS / 路由 / 网卡 / 开机自启"的路径或按钮。
+ * 1. **I2：系统网络零副作用。** 这一页（含节点列表与线路分配）**不碰系统网络**：
+ *    没有"改系统代理 / DNS / 路由 / 网卡 / 开机自启"的路径或按钮，也没有启停网关或内核的按钮。
  *    页面调用的命令是一条可机械检查的白名单（见 `src/app/network.test.tsx` 的命令面守卫）：
- *    `app_status` / `subscription_list` / `lane_list` / `config_get` —— **全部只读**。
+ *    只读的 `app_status` / `subscription_list` / `lane_list` / `config_get`，
+ *    外加**只管订阅与线路这两个配置实体**的写命令（`subscription_*` / `lane_upsert` /
+ *    `lane_delete` / `lane_set_node`）—— 后者改的是 TokenAgency 自己的配置与内核运行态，
+ *    系统网络配置一个字段都不动。守卫对"系统/内核/托盘写命令"仍然零容忍。
  * 2. **不猜。** 读不到的字段显示「未读取」，配置里确实是空的显示空状态，两者**不是一回事**；
+ *    写操作**只显示后端返回的对象**（不拼一句"保存成功"），失败原样显示 TA 码。
  *    需要但尚未注册的后端接口如实点名，而不是编一份看起来完整的节点清单
  *    （见 `model.ts` 文件头「一」的三态区分）。
+ *
+ * ## 写界面与读界面为什么在同一页
+ *
+ * 订阅与线路是"看一眼、改一下、再看一眼"的闭环：列表里的每一行都带刷新 / 删除，
+ * 表单就在列表下面。**只读的五级链路解析**（后端算的最终生效线路）放在 `/network/assignments`，
+ * 因为"删 lane 之前先看谁在引用它"是另一个操作流。
+ * 写操作走 `useCommandMutation` + `invalidateQueries`：**不用本地状态伪造一行结果**。
  *
  * ## 为什么这个文件还导出别的视图要用的组件
  *
@@ -21,11 +32,28 @@
  * 因此挂在本文件（`/network` 的页面模块）上，由 `./nodes` 与 `./assignments` import。
  */
 
-import { Box, Button, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
-import type { ReactNode } from "react";
+import {
+  Box,
+  Button,
+  Checkbox,
+  Divider,
+  FormControlLabel,
+  MenuItem,
+  Paper,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { useQueryClient } from "@tanstack/react-query";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { errorMessage, qk, useAppStatus, useCommandQuery } from "@/shared/api";
+import { errorMessage, qk, useAppStatus, useCommandMutation, useCommandQuery } from "@/shared/api";
 import type { AppStatus } from "@/shared/bindings";
 import { KernelStateDot, PageHeader, StatusDot } from "@/shared/components";
 import { formatBytes, formatDuration, formatLatency, formatLocalTime } from "@/shared/format";
@@ -36,14 +64,19 @@ import {
   DASH,
   HEALTH_LABEL,
   HEALTH_STATUS,
+  SUBSCRIPTION_FORMATS,
   filterSummary,
   isKnownHealth,
   laneKindLabel,
   laneNameOf,
+  parseOptionalCount,
   readLane,
   readSubscription,
+  subscriptionDraftComplete,
   subscriptionFormatLabel,
+  subscriptionPayload,
   type LaneRow,
+  type SubscriptionDraft,
   type SubscriptionRow,
 } from "./model";
 
@@ -229,7 +262,277 @@ function CurrentExit({ status, lanes }: { status: AppStatus | undefined; lanes: 
   );
 }
 
-// ================================================================ ② 订阅
+// ================================================================ ② 订阅（读 + 写）
+
+/** 表单里的一行：标签 + 控件。窄屏时换行（`flexWrap`），不做"响应式隐藏"。 */
+const FIELD_ROW_SX = { flexWrap: "wrap", alignItems: "flex-start" } as const;
+
+/** 一个输入字段：`testId` 挂在容器上（测试用 `within(...).getByRole("textbox")` 取输入框）。 */
+function Field({
+  testId,
+  label,
+  value,
+  onChange,
+  hint,
+  minWidth = 200,
+}: {
+  testId: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  hint?: string;
+  minWidth?: number;
+}) {
+  return (
+    <Stack spacing={1} data-testid={testId} sx={{ minWidth: 0 }}>
+      <TextField
+        size="small"
+        label={label}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        // 数字字段用 `inputMode` 而不是 `type="number"`：留一个真正可编辑的文本框，
+        // 校验（是非负整数吗）由我们自己说清楚，而不是靠浏览器静默丢掉非法输入。
+        slotProps={{ htmlInput: { sx: { minWidth } } }}
+      />
+      {hint === undefined ? null : <Caption>{hint}</Caption>}
+    </Stack>
+  );
+}
+
+/** 写操作的错误区：一律 `errorMessage`（带 TA 码），不吞错、不改写成一句"保存失败"。 */
+function WriteError({ testId, error }: { testId: string; error: unknown }) {
+  if (error === undefined || error === null) return null;
+  return (
+    <Typography
+      variant="body1"
+      data-testid={testId}
+      sx={{ color: "error.main", overflowWrap: "anywhere" }}
+    >
+      {errorMessage(error)}
+    </Typography>
+  );
+}
+
+/** 表单里的本地校验消息（必填 / 数字格式）：**说清缺什么**，而不是把空值发给后端。 */
+function FormNotice({ testId, message }: { testId: string; message: string | undefined }) {
+  if (message === undefined) return null;
+  return (
+    <Typography
+      variant="body1"
+      data-testid={testId}
+      sx={{ color: "error.main", overflowWrap: "anywhere" }}
+    >
+      {message}
+    </Typography>
+  );
+}
+
+const EMPTY_SUBSCRIPTION_DRAFT: SubscriptionDraft = {
+  id: "",
+  name: "",
+  url: "",
+  format: "auto",
+  // 表单里显示的值就是发出去的值；后端默认值也是这两个（21_600s / 3 个版本）
+  intervalS: "21600",
+  keepVersions: "3",
+  include: "",
+  exclude: "",
+  enabled: true,
+};
+
+/**
+ * 新建 / 覆盖订阅的表单。
+ *
+ * 成功区显示的**是 `subscription_upsert` 的返回值**（经 `readSubscription` 归一并遮蔽地址），
+ * 不是前端拼的一行"添加成功" —— 后者在"后端其实没存进去"时也会显示成功。
+ */
+function SubscriptionWriteForm() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<SubscriptionDraft>(EMPTY_SUBSCRIPTION_DRAFT);
+  const [formError, setFormError] = useState<string | undefined>(undefined);
+  const upsert = useCommandMutation("subscription_upsert");
+  const preview = useCommandMutation("subscription_preview");
+
+  const set = <K extends keyof SubscriptionDraft>(key: K, value: SubscriptionDraft[K]) =>
+    setDraft((previous) => ({ ...previous, [key]: value }));
+
+  const saved = upsert.data === undefined ? undefined : readSubscription(upsert.data);
+  const savedFormat = saved === undefined ? undefined : subscriptionFormatLabel(saved.format);
+
+  const onPreview = () => {
+    setFormError(undefined);
+    upsert.reset();
+    preview.reset();
+    if (draft.url.trim() === "") {
+      setFormError(t("network.subscriptions.write.required"));
+      return;
+    }
+    preview.mutate({ url: draft.url.trim(), format: draft.format });
+  };
+
+  const onSubmit = () => {
+    setFormError(undefined);
+    upsert.reset();
+    preview.reset();
+    if (!subscriptionDraftComplete(draft)) {
+      setFormError(t("network.subscriptions.write.required"));
+      return;
+    }
+    if (
+      parseOptionalCount(draft.intervalS) === null ||
+      parseOptionalCount(draft.keepVersions) === null
+    ) {
+      setFormError(t("network.subscriptions.write.badNumber"));
+      return;
+    }
+    upsert.mutate(
+      { subscription: subscriptionPayload(draft) },
+      {
+        // 后端真值回来之后重新拉列表：**不用本地状态拼一行"添加成功"**
+        onSuccess: () => {
+          void queryClient.invalidateQueries({ queryKey: qk.subscriptions });
+        },
+      },
+    );
+  };
+
+  const previewData = preview.data;
+
+  return (
+    <Stack spacing={3} data-testid="network-subscriptions-write">
+      <Box>
+        <Typography variant="h5">{t("network.subscriptions.write.title")}</Typography>
+        <Caption>{t("network.subscriptions.write.hint")}</Caption>
+      </Box>
+
+      <Stack spacing={2} sx={FIELD_ROW_SX} direction="row">
+        <Field
+          testId="network-subscriptions-add-id"
+          label={t("network.subscriptions.write.id")}
+          value={draft.id}
+          onChange={(value) => set("id", value)}
+          hint={t("network.subscriptions.write.idHint")}
+        />
+        <Field
+          testId="network-subscriptions-add-name"
+          label={t("network.subscriptions.write.name")}
+          value={draft.name}
+          onChange={(value) => set("name", value)}
+        />
+      </Stack>
+
+      <Field
+        testId="network-subscriptions-add-url"
+        label={t("network.subscriptions.write.url")}
+        value={draft.url}
+        onChange={(value) => set("url", value)}
+        hint={t("network.subscriptions.write.urlHint")}
+        minWidth={360}
+      />
+
+      <Stack spacing={2} sx={FIELD_ROW_SX} direction="row">
+        <Stack spacing={1} data-testid="network-subscriptions-add-format" sx={{ minWidth: 200 }}>
+          <TextField
+            select
+            size="small"
+            label={t("network.subscriptions.write.format")}
+            value={draft.format}
+            onChange={(event) => set("format", event.target.value as SubscriptionDraft["format"])}
+          >
+            {SUBSCRIPTION_FORMATS.map((format) => {
+              const labelKey = subscriptionFormatLabel(format);
+              return (
+                <MenuItem key={format} value={format}>
+                  {labelKey === undefined ? format : t(labelKey)}
+                </MenuItem>
+              );
+            })}
+          </TextField>
+        </Stack>
+        <Field
+          testId="network-subscriptions-add-interval"
+          label={t("network.subscriptions.write.interval")}
+          value={draft.intervalS}
+          onChange={(value) => set("intervalS", value)}
+        />
+        <Field
+          testId="network-subscriptions-add-keep-versions"
+          label={t("network.subscriptions.write.keepVersions")}
+          value={draft.keepVersions}
+          onChange={(value) => set("keepVersions", value)}
+        />
+      </Stack>
+
+      <Stack spacing={2} sx={FIELD_ROW_SX} direction="row">
+        <Field
+          testId="network-subscriptions-add-include"
+          label={t("network.subscriptions.write.include")}
+          value={draft.include}
+          onChange={(value) => set("include", value)}
+        />
+        <Field
+          testId="network-subscriptions-add-exclude"
+          label={t("network.subscriptions.write.exclude")}
+          value={draft.exclude}
+          onChange={(value) => set("exclude", value)}
+        />
+      </Stack>
+
+      <FormControlLabel
+        data-testid="network-subscriptions-add-enabled"
+        control={
+          <Checkbox
+            size="small"
+            checked={draft.enabled}
+            onChange={(event) => set("enabled", event.target.checked)}
+          />
+        }
+        label={t("network.subscriptions.write.enabled")}
+      />
+
+      <Stack direction="row" spacing={2} sx={{ flexWrap: "wrap" }}>
+        <Button variant="outlined" data-testid="network-subscriptions-preview" onClick={onPreview}>
+          {t("network.subscriptions.write.preview")}
+        </Button>
+        <Button variant="contained" data-testid="network-subscriptions-add-submit" onClick={onSubmit}>
+          {t("network.subscriptions.write.submit")}
+        </Button>
+      </Stack>
+
+      <FormNotice testId="network-subscriptions-write-error" message={formError} />
+      <WriteError testId="network-subscriptions-write-error" error={upsert.error ?? preview.error} />
+
+      {saved === undefined ? null : (
+        <Typography variant="body1" data-testid="network-subscriptions-write-result" sx={{ overflowWrap: "anywhere" }}>
+          {`${t("network.subscriptions.write.saved")}：${saved.name ?? saved.id} · ${saved.id}`}
+          {savedFormat === undefined ? "" : ` · ${saved.format === undefined ? "" : t(savedFormat)}`}
+          {saved.intervalS === undefined ? "" : ` · ${formatDuration(saved.intervalS)}`}
+          {saved.keepVersions === undefined
+            ? ""
+            : ` · ${t("network.subscriptions.col.keepVersions")} ${saved.keepVersions}`}
+          {` · ${saved.enabled ? t("common.enabled") : t("common.disabled")}`}
+          {saved.url === "" ? "" : ` · ${saved.url}`}
+        </Typography>
+      )}
+
+      {previewData === undefined ? null : (
+        <Typography variant="body1" data-testid="network-subscriptions-preview-result" sx={{ overflowWrap: "anywhere" }}>
+          {`${t("network.subscriptions.write.previewTitle")}：`}
+          {t("network.subscriptions.write.previewCounts", {
+            groups: previewData.groups.length,
+            nodes: previewData.nodes.length,
+          })}
+          {previewData.sample.length === 0
+            ? ""
+            : ` · ${t("network.subscriptions.write.previewSample", {
+                sample: previewData.sample.map((node) => node.name).join(" · "),
+              })}`}
+        </Typography>
+      )}
+    </Stack>
+  );
+}
 
 function SubscriptionsSection({
   rows,
@@ -243,6 +546,41 @@ function SubscriptionsSection({
   onRetry: () => void;
 }) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  // 行级写操作：刷新（强制重下）与删除。都**不碰系统网络**，只改 TokenAgency 自己的配置 /
+  // 订阅版本存储；删完 / 刷完重新拉列表，显示的是后端下一次给的事实。
+  const refreshOne = useCommandMutation("subscription_refresh");
+  const removeOne = useCommandMutation("subscription_delete");
+  const busy = refreshOne.isPending || removeOne.isPending;
+
+  const onRefresh = (id: string) => {
+    refreshOne.reset();
+    removeOne.reset();
+    refreshOne.mutate(
+      { id, force: true },
+      {
+        onSuccess: () => {
+          void queryClient.invalidateQueries({ queryKey: qk.subscriptions });
+        },
+      },
+    );
+  };
+
+  const onDelete = (id: string) => {
+    refreshOne.reset();
+    removeOne.reset();
+    removeOne.mutate(
+      { id },
+      {
+        onSuccess: () => {
+          void queryClient.invalidateQueries({ queryKey: qk.subscriptions });
+        },
+      },
+    );
+  };
+
+  const deletedId = removeOne.isSuccess ? removeOne.variables?.id : undefined;
+  const refreshResult = refreshOne.data;
 
   return (
     <SectionPaper
@@ -254,6 +592,7 @@ function SubscriptionsSection({
           <Caption>{t("network.subscriptions.countHint")}</Caption>
           <Caption>{t("network.subscriptions.urlHint")}</Caption>
           <Caption>{t("network.subscriptions.healthHint")}</Caption>
+          <Caption>{t("network.subscriptions.row.refreshHint")}</Caption>
         </Stack>
       }
       testId="network-subscriptions"
@@ -294,6 +633,7 @@ function SubscriptionsSection({
                 <TableCell>{t("network.subscriptions.col.lastUpdate")}</TableCell>
                 <TableCell>{t("network.subscriptions.col.parser")}</TableCell>
                 <TableCell>{t("network.subscriptions.col.error")}</TableCell>
+                <TableCell align="right">{t("network.subscriptions.col.actions")}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -369,6 +709,28 @@ function SubscriptionsSection({
                         </Typography>
                       )}
                     </TableCell>
+                    <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                      <Stack direction="row" spacing={2} justifyContent="flex-end">
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          data-testid="network-subscriptions-refresh"
+                          disabled={busy}
+                          onClick={() => onRefresh(row.id)}
+                        >
+                          {t("network.subscriptions.row.refresh")}
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          data-testid="network-subscriptions-delete"
+                          disabled={busy}
+                          onClick={() => onDelete(row.id)}
+                        >
+                          {t("network.subscriptions.row.delete")}
+                        </Button>
+                      </Stack>
+                    </TableCell>
                   </TableRow>
                 );
               })}
@@ -376,6 +738,34 @@ function SubscriptionsSection({
           </Table>
         </Box>
       )}
+
+      {/* 行级写操作的结果：显示后端返回的事实，不是前端拼的一句话 */}
+      {refreshResult === undefined ? null : (
+        <Typography variant="body1" data-testid="network-subscriptions-refresh-result" sx={{ overflowWrap: "anywhere" }}>
+          {`${t("network.subscriptions.write.refreshTitle")}：${
+            refreshResult.ok
+              ? t("network.subscriptions.write.refreshOk")
+              : t("network.subscriptions.write.refreshFailed")
+          }`}
+          {` · ${t("network.subscriptions.col.nodes")} ${refreshResult.node_count}`}
+          {` · ${t("network.subscriptions.col.groups")} ${refreshResult.group_count}`}
+          {refreshResult.error === undefined || refreshResult.error === null
+            ? ""
+            : ` · ${refreshResult.error}`}
+        </Typography>
+      )}
+
+      {deletedId === undefined ? null : (
+        <Typography variant="body1" data-testid="network-subscriptions-delete-result">
+          {t("network.subscriptions.write.deleteDone", { id: deletedId })}
+        </Typography>
+      )}
+
+      <WriteError testId="network-subscriptions-row-error" error={refreshOne.error ?? removeOne.error} />
+
+      <Divider />
+
+      <SubscriptionWriteForm />
     </SectionPaper>
   );
 }

@@ -231,6 +231,20 @@ export const en: Record<I18nKey, string> = {
   "logs.clear.cancel": "Cancel",
   "logs.clear.done": "Deleted {{value}} rows.",
   "logs.clear.doneUnknown": "Cleared (the backend returned no count).",
+  "logs.export.title": "Export a diagnostic package",
+  "logs.export.query":
+    "The export uses the currently applied filters (the same ones as the results above): {{summary}}",
+  "logs.export.path": "Export path",
+  "logs.export.path.placeholder": "D:\\\\exports or D:\\\\exports\\\\tokenagency-diagnostic.zip",
+  "logs.export.path.hint":
+    "There is no default path: no backend command reports the log or data directory, so the UI does not guess one (it never hard-codes AppData). Enter a directory (the backend then writes tokenagency-diagnostic-<timestamp>.zip) or a full .zip path; the receipt below is what tells you where it actually landed.",
+  "logs.export.run": "Export",
+  "logs.export.running": "Exporting…",
+  "logs.export.written": "Backend receipt: wrote {{path}} ({{bytes}} bytes).",
+  "logs.export.writtenNoBytes": "Backend receipt: wrote {{path}}.",
+  "logs.export.requested":
+    "Export requested to {{path}}; the backend returned no receipt, so this page cannot confirm it was written — please check that path in your file manager.",
+  "logs.export.error": "Export failed: {{message}}",
 
   // ---------------------------------------------------------------- shared components
   "component.numberCard.hintExact": "Exact {{value}}",
@@ -345,15 +359,22 @@ export const en: Record<I18nKey, string> = {
 
   "settings.tray.showLatency": "Show latency in the tray",
   "settings.tray.fileWatch": "Config file watch mode",
-  "settings.tray.fileWatch.blocked":
-    "No switch: the dedicated command that writes it, config_set_file_watch_mode, is registered, but this page does not call it yet. While it is on, writing the config back from the UI would overwrite edits made in the file — a toggle with side effects, so the generic config apply is not used as a substitute.",
+  "settings.tray.fileWatch.configValue": "Value in the config: {{value}}",
+  "settings.tray.fileWatch.hint":
+    "The switch writes the config: clicking it really calls config_set_file_watch_mode. But the watcher itself is not implemented yet (the backend logs a warning when writing), so this switch is only read on the next start — the result can only be \"restart required\", never \"watching now\". While it is on, writing the config back from the UI would overwrite edits made in the file.",
+  "settings.tray.fileWatch.restart":
+    "Written to the config; it will only be read after a restart (the watcher is not implemented yet).",
+  "settings.tray.fileWatch.appliedNoRestart": "Written to the config; the backend did not ask for a restart.",
+  "settings.tray.fileWatch.notApplied":
+    "The backend did not write this config (applied=false); the value read back from the store is what counts.",
+  "settings.tray.fileWatch.error": "Writing the file watch switch failed: {{message}}",
   "settings.tray.on": "On",
   "settings.tray.off": "Off",
 
   "settings.storage.stats": "Storage usage",
   "settings.storage.toLogs": "Query on the request log page",
   "settings.storage.noExport":
-    "This page offers no log export: the backend command log_export is registered, but this page does not call it yet, so no button is drawn.",
+    "Log export lives on the **request log page** (/logs): that page calls log_export to build the diagnostic package, and the on-disk path comes from the backend receipt. No export button is drawn here.",
   "settings.storage.modeWritten": "Recording mode written as {{mode}} in this session (backend confirmed).",
   "settings.storage.retentionWritten": "Retention written as {{value}} in this session (backend confirmed).",
   "settings.storage.modeEvidence": "Mode recorded on the newest log row: {{mode}} ({{time}})",
@@ -755,6 +776,42 @@ export const en: Record<I18nKey, string> = {
   "network.subscriptions.col.lastUpdate": "Last update",
   "network.subscriptions.col.parser": "Parser",
   "network.subscriptions.col.error": "Error",
+  "network.subscriptions.col.actions": "Actions",
+  "network.subscriptions.row.refresh": "Refresh",
+  "network.subscriptions.row.delete": "Delete",
+  "network.subscriptions.row.refreshHint":
+    "Refresh on a row forces a re-download (force: true) instead of being skipped by interval_s, which would make the button look broken.",
+  "network.subscriptions.write.title": "Create / overwrite a subscription",
+  "network.subscriptions.write.hint":
+    "After saving, the panel shows the object the backend returned, not a hand-written “saved” line. Same id = overwrite: fields not in the form (user_agent, health_check) fall back to the backend defaults — the frontend does not keep a second copy of those defaults, because a drifting copy silently corrupts the config.",
+  "network.subscriptions.write.id": "Subscription id",
+  "network.subscriptions.write.idHint":
+    "The id is the key: same id overwrites an existing subscription (the kernel provider key is derived from it).",
+  "network.subscriptions.write.name": "Name",
+  "network.subscriptions.write.url": "Subscription URL",
+  "network.subscriptions.write.urlHint":
+    "The URL is sent to the backend only on save / preview; the list and the result panel show the masked form.",
+  "network.subscriptions.write.format": "Format",
+  "network.subscriptions.write.interval": "Update interval (seconds)",
+  "network.subscriptions.write.keepVersions": "Versions kept",
+  "network.subscriptions.write.include": "Include regex (optional)",
+  "network.subscriptions.write.exclude": "Exclude regex (optional)",
+  "network.subscriptions.write.enabled": "Enable this subscription",
+  "network.subscriptions.write.submit": "Save subscription",
+  "network.subscriptions.write.preview": "Preview (no save)",
+  "network.subscriptions.write.required":
+    "Subscription id / name / URL are required — empty values are not sent to the backend.",
+  "network.subscriptions.write.badNumber":
+    "Update interval and versions kept must be numbers.",
+  "network.subscriptions.write.saved": "Subscription returned by the backend",
+  "network.subscriptions.write.previewTitle":
+    "Preview (parsed by the backend, nothing written to the config)",
+  "network.subscriptions.write.previewCounts": "{{groups}} groups · {{nodes}} nodes",
+  "network.subscriptions.write.previewSample": "Sample nodes: {{sample}}",
+  "network.subscriptions.write.refreshTitle": "Refresh result returned by the backend",
+  "network.subscriptions.write.refreshOk": "Succeeded",
+  "network.subscriptions.write.refreshFailed": "Failed",
+  "network.subscriptions.write.deleteDone": "Deleted by the backend: {{id}}",
 
   "network.format.auto": "Auto-detect",
   "network.format.clash": "Clash YAML",
