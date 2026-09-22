@@ -991,6 +991,55 @@ pub struct DisplayConfig {
     pub extra: Map<String, Value>,
 }
 
+/// 上游能力声明（[docs/17 §2]）。
+///
+/// **为什么需要它**：同一个对外模型可以由多条线路服务（Ollama 一条、CommandCode 一条），
+/// 但只有两家上游暴露的能力**完全一致**时，路由到它们才是等价的；否则会出现
+/// "有时有 vision、有时报错"这种不可预期行为。所以能力要**显式声明**、并由后端强制校验。
+///
+/// **默认值的语义是契约的一部分**（老配置不写 `capabilities` 也要能用）：
+/// 全 `false`、`context_tokens = 0`、`max_output_tokens = None`（未声明）、`modalities = ["text"]`。
+/// 注意 `[]`（显式声明没有模态）与"没写"（默认 `["text"]`）**不是一回事**。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelCapabilities {
+    /// 支持图片输入
+    #[serde(default)]
+    pub vision: bool,
+    /// 支持函数调用 / 工具
+    #[serde(default)]
+    pub tools: bool,
+    /// 支持推理 / 思考内容
+    #[serde(default)]
+    pub reasoning: bool,
+    /// 上下文窗口（token）
+    #[serde(default)]
+    pub context_tokens: u64,
+    /// 单次最大输出；`None` = **未声明**（比较时 `None` 只等于 `None`）
+    #[serde(default)]
+    pub max_output_tokens: Option<u64>,
+    /// 模态，如 `["text", "image"]`；**比较时先排序去重**
+    #[serde(default = "default_modalities")]
+    pub modalities: Vec<String>,
+}
+
+fn default_modalities() -> Vec<String> {
+    vec!["text".to_string()]
+}
+
+impl Default for ChannelCapabilities {
+    fn default() -> Self {
+        Self {
+            vision: false,
+            tools: false,
+            reasoning: false,
+            context_tokens: 0,
+            max_output_tokens: None,
+            modalities: default_modalities(),
+        }
+    }
+}
+
 /// 通道：一个逻辑模型经某个凭据发往某个上游的**一条具体路径**。
 ///
 /// **Rust 类型名必须是 `ChannelConfig`（不能叫 `Channel`）**：`tauri-specta` 会拒绝把
@@ -1031,6 +1080,10 @@ pub struct ChannelConfig {
     /// 省略 = 启用：**被列进配置就等价于"我要用它"**，停用必须显式写 `false`。
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// 上游能力声明（[docs/17 §2]）。**`#[serde(default)]`：老配置不写也能继续用**，
+    /// 读出来的是 [`ChannelCapabilities::default`]（全 false / 上下文 0 / 未声明 / `["text"]`）。
+    #[serde(default)]
+    pub capabilities: ChannelCapabilities,
     #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -1481,5 +1534,98 @@ impl Default for SystemIntegration {
             file_watch_path: None,
             extra: Map::new(),
         }
+    }
+}
+
+// ================================================================ 能力契约（[docs/17 §2]）
+
+#[cfg(test)]
+mod capability_contract_tests {
+    use super::*;
+
+    /// 老配置（[docs/17 §2] 落地**之前**写的）没有 `capabilities` 这一节。
+    fn old_channel() -> serde_json::Value {
+        serde_json::json!({
+            "id": "ch-a",
+            "model": "deepseek-v4.1flash",
+            "provider": "ollama",
+            "credential": "ollama-personal",
+            "upstream_model": "deepseek-v4.1flash",
+        })
+    }
+
+    /// 文档写死的默认值：全 false、上下文 0、最大输出**未声明**、模态 `["text"]`。
+    fn documented_default() -> ChannelCapabilities {
+        ChannelCapabilities {
+            vision: false,
+            tools: false,
+            reasoning: false,
+            context_tokens: 0,
+            max_output_tokens: None,
+            modalities: vec!["text".to_string()],
+        }
+    }
+
+    #[test]
+    fn old_config_without_capabilities_reads_as_the_documented_default() {
+        let channel: ChannelConfig =
+            serde_json::from_value(old_channel()).expect("老配置必须还能读");
+        assert_eq!(channel.capabilities, documented_default());
+        // 自证：默认值断言不是对着一个"随便什么"变绿
+        assert_eq!(ChannelCapabilities::default(), documented_default());
+    }
+
+    #[test]
+    fn a_partial_capabilities_object_fills_the_missing_fields_from_defaults() {
+        let mut raw = old_channel();
+        raw["capabilities"] = serde_json::json!({ "vision": true, "context_tokens": 1_050_000 });
+        let channel: ChannelConfig = serde_json::from_value(raw).expect("部分声明也要能读");
+
+        assert!(channel.capabilities.vision);
+        assert_eq!(channel.capabilities.context_tokens, 1_050_000);
+        // 没写的字段按**文档默认**补齐，不是随便给一个
+        assert!(!channel.capabilities.tools);
+        assert!(!channel.capabilities.reasoning);
+        assert_eq!(channel.capabilities.max_output_tokens, None);
+        assert_eq!(channel.capabilities.modalities, vec!["text".to_string()]);
+    }
+
+    #[test]
+    fn serialized_shape_is_stable_and_always_carries_every_field() {
+        let channel = ChannelConfig::new("ch-a", "m", "p", "c", "m-up");
+        let json = serde_json::to_value(&channel).expect("序列化");
+        let caps = json
+            .get("capabilities")
+            .expect("capabilities 必须出现在线上形态里（后端永远填好再发）");
+
+        assert_eq!(
+            caps,
+            &serde_json::json!({
+                "vision": false,
+                "tools": false,
+                "reasoning": false,
+                "context_tokens": 0,
+                "max_output_tokens": null,
+                "modalities": ["text"],
+            })
+        );
+        // 键集固定：前端读 `channel.capabilities.vision` 不会拿到 undefined
+        assert_eq!(caps.as_object().map(|o| o.len()), Some(6));
+    }
+
+    #[test]
+    fn explicitly_empty_modalities_is_not_the_same_as_absent() {
+        // `[]` 是**显式**声明"没有模态"；没写才是默认 `["text"]`。两者相比不相等。
+        let mut raw = old_channel();
+        raw["capabilities"] = serde_json::json!({ "modalities": [] });
+        let channel: ChannelConfig = serde_json::from_value(raw).expect("读");
+        assert!(channel.capabilities.modalities.is_empty());
+        assert_ne!(channel.capabilities, documented_default());
+    }
+
+    #[test]
+    fn new_channel_starts_from_the_default_capabilities() {
+        let channel = ChannelConfig::new("ch-a", "m", "p", "c", "m-up");
+        assert_eq!(channel.capabilities, documented_default());
     }
 }

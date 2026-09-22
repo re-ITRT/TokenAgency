@@ -382,6 +382,31 @@ export type Transform = {
   body_patch: Record<string, unknown>;
 };
 
+/**
+ * 上游能力声明（[docs/17 §2]，对应 Rust `ta_core::domain::ChannelCapabilities`）。
+ *
+ * **两条线路只有在这些字段完全一致时**，才允许被同一条路由（同一个对外模型）指向。
+ * 比较规则：逐字段相等；`modalities` 先排序去重再比；`max_output_tokens` 的 `null`
+ * 只等于 `null`（"未声明"不是"无所谓"）。后端会强制校验（TA-2007）。
+ *
+ * 默认值（后端对老配置的填充）：全 false、`context_tokens` 0、`max_output_tokens` null、
+ * `modalities` `["text"]`。
+ */
+export type ChannelCapabilities = {
+  /** 支持图片输入 */
+  vision: boolean;
+  /** 支持函数调用 / 工具 */
+  tools: boolean;
+  /** 支持推理 / 思考内容 */
+  reasoning: boolean;
+  /** 上下文窗口（token） */
+  context_tokens: number;
+  /** 单次最大输出；`null` = 未声明 */
+  max_output_tokens: number | null;
+  /** 模态，如 `["text", "image"]`；比较时先排序去重 */
+  modalities: string[];
+};
+
 export type Channel = {
   id: ChannelId;
   model: string;
@@ -398,6 +423,17 @@ export type Channel = {
   tags: string[];
   target_override?: string | null;
   enabled: boolean;
+  /**
+   * 上游能力声明（[docs/17 §2]）。Rust 侧是 `#[serde(default)] pub capabilities: ChannelCapabilities`：
+   *
+   * - **后端发出来的对象永远带全部 6 个字段**（读 `channel.capabilities.vision` 不会 undefined）；
+   * - **前端写 `channel_upsert` 时可以整个不填** —— 不填就是后端默认
+   *   （全 false / `context_tokens` 0 / `max_output_tokens` null / `modalities` `["text"]`）。
+   *
+   * 所以这里标成**可选**（与 `lane?` / `target_override?` 同一口径：能省的字段标可选）。
+   * 需要比较两条线路的能力时，缺失按后端默认处理，**不要**把它当成"另一种未声明"。
+   */
+  capabilities?: ChannelCapabilities;
 };
 
 export type StickyConfig = {

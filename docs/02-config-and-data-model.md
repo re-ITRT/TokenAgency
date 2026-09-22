@@ -158,6 +158,7 @@ policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.defau
 | `tags` | `vision` / `no-vision`（可选，用于选目的地）、`cheap`、`official`、`cn-direct`、`no-log` |
 | `enabled` | |
 | `state` | 运行态：`available` \| `cooling(until)` \| `exhausted` |
+| `capabilities` | **上游能力声明**（[17 §2](17-add-flows-and-capability-routing.md)）：`vision` / `tools` / `reasoning` / `context_tokens` / `max_output_tokens` / `modalities`。`#[serde(default)]`，老配置不写也能用（默认全 false、0、null、`["text"]`）。**同一条路由下、同一个 `model` 的多条线路能力必须逐一相等**（`modalities` 排序去重后比、`null` 只等于 `null`），否则 `policy_upsert` / `channel_upsert` 直接拒绝并返回 `TA-2007` 与逐字段差异 |
 
 ### 2.7 ChannelGroup（同模型多套餐）
 
