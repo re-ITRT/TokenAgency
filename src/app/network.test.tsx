@@ -51,7 +51,7 @@ import { routeByKey } from "@/app/routes";
 import { registerMock, TokenAgencyError } from "@/shared/api/client";
 import { registerBaselineMocks } from "@/shared/api/mock";
 import { formatLocalTime } from "@/shared/format";
-import { i18n } from "@/shared/i18n";
+import { i18n, type I18nKey } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
 
 beforeAll(async () => {
@@ -2103,5 +2103,236 @@ describe("⑱ /network 线路表：lane_test 真调，结果原样显示", () =>
     const result = await screen.findByTestId("network-lanes-test-result");
     expect(result.textContent).toContain("TA-4001");
     expect(result.textContent).toContain("没有装配内核，无法测速");
+  });
+});
+
+// ================================================================ ⑲ [docs/22] 长简介收进「问号圆圈 + 悬停提示」
+//
+// 用户原话：「我发现里面的简介好长，好多字，这样吧尽量缩短字数，那些比较介绍做成一个问好加一个圆圈，
+// 鼠标移上去能看到提示那种」。这一组按 [docs/22 §2/§3/§5] 钉三件事：
+//
+// 1. 收走的正文**一个字都没丢** —— 它是问号圆圈的 `aria-label`
+//    （提示气泡是懒渲染的，读屏与"只看无障碍树"的调用方仍然拿得到全文）；
+// 2. 那段正文**不再内联**渲染（版面上只剩一个 16px 的圆圈）；
+// 3. §2 红线里的东西（空态 / 错误原文 / 数值 / 结论 / 按钮文案 / I2 承诺）**仍然内联** ——
+//    把状态或错误塞进 tooltip 是"藏问题"，不是"排版"。
+//
+// 另外钉住 §3 的「同一区块最多一个 `-help`」：一个区块的几句解释合成一个问号，而不是一排问号。
+
+describe("⑲ [docs/22] 长简介收进问号圆圈（HelpTip）", () => {
+  const subs: SubscriptionRow[] = [readSubscription(contractSubscription())];
+  const lanes: LaneRow[] = [readLane(contractLane())];
+
+  /** 文案取真源：断言直接用 zh-CN 里的全文，而不是把长句在测试里再抄一遍。 */
+  function copy(key: I18nKey): string {
+    return i18n.t(key);
+  }
+
+  /** 这段正文收进了问号圆圈：`aria-label` 有全文，版面上不再有它。 */
+  function expectCollected(testId: string, key: I18nKey): void {
+    const text = copy(key);
+    expect(
+      screen.getByTestId(testId).getAttribute("aria-label"),
+      `${testId} 的 aria-label 应当是全文`,
+    ).toContain(text);
+    expect(screen.queryByText(text), `${key} 不该再内联：${text}`).toBeNull();
+  }
+
+  it("/network：区块说明与成段解释收进问号圆圈（aria-label 是全文）", () => {
+    renderBody(<NetworkBody {...networkProps({ subscriptions: subs, lanes })} />);
+
+    expectCollected("network-current-exit-help", "network.currentExit.hint");
+    expectCollected("network-subscriptions-help", "network.subscriptions.description");
+    expectCollected("network-lanes-help", "network.lanes.description");
+    expectCollected("network-subscriptions-write-help", "network.subscriptions.write.hint");
+    expectCollected("network-lanes-write-help", "network.lanes.write.hint");
+  });
+
+  it("/network：同一区块最多一个 -help（一个区块的几句解释合成一个问号）", () => {
+    renderBody(<NetworkBody {...networkProps({ subscriptions: subs, lanes })} />);
+
+    // 线路区块：区块说明与五句 hint 合成**一个**问号（testid 用区块自己的 testid）
+    const lanesHelp = screen.getByTestId("network-lanes-help");
+    for (const key of [
+      "network.lanes.description",
+      "network.lanes.kindHint",
+      "network.lanes.channelCountHint",
+      "network.lanes.sampleHint",
+      "network.lanes.row.setNodeHint",
+      "network.lanes.testHint",
+    ] as const) {
+      expect(lanesHelp.getAttribute("aria-label"), `${key} 应当进同一个提示`).toContain(copy(key));
+      expect(screen.queryByText(copy(key)), `${key} 不该再内联`).toBeNull();
+    }
+
+    // 订阅区块的 3 句 hint 也合成一个问号（`network-subscriptions-hint` 是既有测试锚定的容器）
+    const subsHint = screen.getByTestId("network-subscriptions-hint-help");
+    for (const key of [
+      "network.subscriptions.urlHint",
+      "network.subscriptions.healthHint",
+      "network.subscriptions.row.refreshHint",
+    ] as const) {
+      expect(subsHint.getAttribute("aria-label"), `${key} 应当进同一个提示`).toContain(copy(key));
+      expect(screen.queryByText(copy(key)), `${key} 不该再内联`).toBeNull();
+    }
+
+    for (const block of [
+      "network-subscriptions-hint",
+      "network-lanes-write",
+      "network-subscriptions-write",
+    ]) {
+      expect(
+        within(screen.getByTestId(block)).getAllByTestId(/-help$/),
+        `${block} 里不该出现一排问号`,
+      ).toHaveLength(1);
+    }
+    // 线路区块整个（含内嵌的写表单）只有两个问号：区块一个、写表单一个
+    expect(within(screen.getByTestId("network-lanes")).getAllByTestId(/-help$/)).toHaveLength(2);
+  });
+
+  it("/network：红线留在版面上（空态 / 错误原文 / 数值 / 按钮文案 / I2 承诺）", () => {
+    renderBody(<NetworkBody {...networkProps({ subscriptions: [], lanes: [] })} />);
+    expect(screen.getByTestId("network-subscriptions-empty").textContent).toContain("配置里还没有订阅");
+    expect(screen.getByTestId("network-lanes-empty").textContent).toContain("配置里还没有线路");
+    cleanup();
+
+    renderBody(
+      <NetworkBody
+        {...networkProps({
+          subscriptionsError: new Error("[TA-9001] 未注册 mock：subscription_list"),
+          lanesError: new Error("[TA-4001] 配置不可用"),
+        })}
+      />,
+    );
+    expect(screen.getByTestId("network-subscriptions-error").textContent).toContain("TA-9001");
+    expect(screen.getByTestId("network-lanes-error").textContent).toContain("TA-4001");
+    cleanup();
+
+    renderBody(<NetworkBody {...networkProps({ subscriptions: subs, lanes })} />);
+    expect(within(screen.getByTestId("network-subscriptions-table")).getByText("12")).toBeTruthy();
+    expect(within(screen.getByTestId("network-lanes-table")).getByText("82ms")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "保存订阅" })).toBeTruthy();
+    // I2 的用户可见面（"不设置系统代理"）是这一页的承诺，不许收进 tooltip
+    expect(screen.getByTestId("network-zero-side-effect").textContent).toContain("不设置系统代理");
+  });
+
+  it("/network/nodes：区块说明收进问号圆圈；声明来源的两句合成一个", () => {
+    renderBody(<NodesBody {...nodesProps({ lanes: [readLane(rustLane())] })} />);
+
+    expectCollected("network-nodes-command-section-help", "network.nodes.description");
+    expectCollected("network-nodes-samples-section-help", "network.nodes.samples.description");
+    // 声明来源区块：description 与 hint 是同一件事的两个说法 → 合成一个问号
+    const declared = screen.getByTestId("network-nodes-declared-section-help");
+    expect(declared.getAttribute("aria-label")).toContain(copy("network.nodes.declared.description"));
+    expect(declared.getAttribute("aria-label")).toContain(copy("network.nodes.declared.hint"));
+    expect(screen.queryByText(copy("network.nodes.declared.hint"))).toBeNull();
+    expect(
+      within(screen.getByTestId("network-nodes-declared-section")).getAllByTestId(/-help$/),
+    ).toHaveLength(1);
+  });
+
+  it("/network/nodes：红线留在版面上（空态 / 错误原文 / 节点数值）", () => {
+    renderBody(<NodesBody {...nodesProps({ lanes: [] })} />);
+    expect(screen.getByTestId("network-nodes-empty").textContent).toContain("没有任何线路带健康样本");
+    expect(screen.getByTestId("network-nodes-declared-empty").textContent).toContain("没有可显示的线路");
+    cleanup();
+
+    renderBody(
+      <NodesBody {...nodesProps({ lanesError: new Error("[TA-9001] 未注册 mock：lane_list") })} />,
+    );
+    expect(screen.getByTestId("network-nodes-error").textContent).toContain("TA-9001");
+    cleanup();
+
+    renderBody(<NodesBody {...nodesProps({ lanes: [readLane(rustLane())] })} />);
+    const samples = within(screen.getByTestId("network-nodes-samples"));
+    expect(samples.getByText("82ms")).toBeTruthy();
+    expect(samples.getByText("200")).toBeTruthy();
+  });
+
+  it("/network/assignments：解释性说明收进问号圆圈（倒排那句命令名留在版面上）", () => {
+    renderBody(<AssignmentsBody {...assignmentsProps({ doc: configDoc() as never })} />);
+
+    // 五级优先顺序 + "为什么不在前端再算一遍" 合成一个问号
+    const noResolve = screen.getByTestId("network-assignments-no-resolve-help");
+    expect(noResolve.getAttribute("aria-label")).toContain(copy("network.assignments.precedence"));
+    expect(noResolve.getAttribute("aria-label")).toContain(copy("network.assignments.noResolve.body"));
+    expect(screen.queryByText(copy("network.assignments.precedence"))).toBeNull();
+    expect(screen.queryByText(copy("network.assignments.noResolve.body"))).toBeNull();
+
+    expectCollected("network-assignments-policies-help", "network.assignments.policies.hint");
+    expectCollected("network-assignments-channels-help", "network.assignments.channels.hint");
+    expectCollected("network-assignments-providers-help", "network.assignments.providers.hint");
+    // 倒排区块：含命令名的那句留在版面上，附注收进问号（该区块仍然只有一个 -help）
+    expect(screen.getByTestId("network-assignments-reverse-hint").textContent).toContain(
+      "lane_reverse_lookup",
+    );
+    expectCollected(
+      "network-assignments-reverse-hint-help",
+      "network.assignments.reverse.noneHint",
+    );
+    expect(
+      within(screen.getByTestId("network-assignments-reverse")).getAllByTestId(/-help$/),
+    ).toHaveLength(1);
+  });
+
+  it("/network/assignments：后端结论三节（链路 / 候选 / 查引用）的说明也收进问号圆圈", async () => {
+    registerMock("lane_assignments", () => []);
+    registerMock("lane_pick_options", () => []);
+    registerMock("lane_list", () => []);
+
+    renderPage(<AssignmentsPage />);
+    for (const [testId, key] of [
+      ["network-assignments-resolved-help", "network.assignments.chain.hint"],
+      ["network-assignments-pick-options-help", "network.assignments.pick.hint"],
+      [
+        "network-assignments-reverse-lookup-section-help",
+        "network.assignments.reverseLookup.hint",
+      ],
+    ] as const) {
+      const help = await screen.findByTestId(testId);
+      expect(help.getAttribute("aria-label"), `${testId} 的 aria-label 应当是全文`).toContain(
+        copy(key),
+      );
+      expect(screen.queryByText(copy(key)), `${key} 不该再内联`).toBeNull();
+    }
+  });
+
+  it("/network/assignments：红线留在版面上（结论 / 未读取 / 空态 / 数值 / TA 码）", () => {
+    renderBody(<AssignmentsBody {...assignmentsProps({ doc: configDoc() as never })} />);
+    // 结论句是标题，不许收走（[docs/22 §2] 第 1 条）
+    expect(screen.getByTestId("network-assignments-no-resolve").textContent).toContain("不自己算");
+    expect(
+      within(screen.getByTestId("network-assignments-policies")).getByText("900"),
+    ).toBeTruthy();
+    expect(
+      within(screen.getByTestId("network-assignments-channels")).getByText("未指定（继承上一级）"),
+    ).toBeTruthy();
+    cleanup();
+
+    // 只读到 net：channels / credentials / providers 三段都「未读取」——
+    // 「未读取」的解释是状态结论的一部分，必须留在版面上
+    renderBody(
+      <AssignmentsBody
+        {...assignmentsProps({ doc: { net: { default_lane: "lane-direct" } } as never })}
+      />,
+    );
+    expect(screen.getAllByText(copy("network.assignments.unread.body")).length).toBeGreaterThan(0);
+    expect(screen.getByTestId("network-assignments-policies-empty").textContent).toContain(
+      "没有任何策略显式指定",
+    );
+    cleanup();
+
+    renderBody(
+      <AssignmentsBody {...assignmentsProps({ doc: configDoc({ channels: [] }) as never })} />,
+    );
+    expect(screen.getByTestId("network-assignments-channels-empty").textContent).toContain(
+      "配置里还没有通道",
+    );
+    cleanup();
+
+    renderBody(
+      <AssignmentsBody {...assignmentsProps({ error: new Error("[TA-1004] 请求格式错误") })} />,
+    );
+    expect(screen.getByTestId("network-assignments-error").textContent).toContain("TA-1004");
   });
 });

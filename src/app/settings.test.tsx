@@ -23,7 +23,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import SettingsPage from "@/pages/settings";
+import SettingsPage, { sectionHelpMode } from "@/pages/settings";
 import {
   EDITABLE_PATHS,
   FORBIDDEN_PATHS,
@@ -43,6 +43,7 @@ import { TokenAgencyError, invokeCommand, registerMock } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
 import type { AutostartState, ConfigDoc, UpdateInfo } from "@/shared/bindings";
 import { i18n } from "@/shared/i18n";
+import { zhCN, type I18nKey } from "@/shared/i18n/zh-CN";
 import { buildTheme } from "@/theme";
 
 // ================================================================ 夹具
@@ -758,5 +759,92 @@ describe("设置页模型层（纯函数）", () => {
     });
     expect(readNewestRow({ rows: [] })).toEqual({});
     expect(readNewestRow(undefined)).toEqual({});
+  });
+});
+
+// ================================================================ ⑦ 长篇说明收进「问号圆圈」（[docs/22]）
+
+/**
+ * [docs/22 §2] 的机械验收：
+ *
+ * - 区块说明 **> 12 字符** → 收进 `<区块 testid>-help`，`aria-label` 就是全文，版面上不再有那段字；
+ * - 一个区块**最多一个**问号（§3：一排问号比一排字更糟）；
+ * - §2 的红线（读不到 / 未读取 / 校验失败原文 / 破坏性后果 / 数值）**仍然内联** ——
+ *   把错误信息塞进 tooltip 是"藏问题"，不是"排版"。
+ */
+describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () => {
+  /**
+   * 每个区块只收一条"这一段是干什么的"的说明。
+   *
+   * 键是主管的所有权范围（i18n 不许写者动），这里**只换渲染位置**；正文一个字都没丢 ——
+   * 它同时是问号圆圈的 `aria-label`。
+   */
+  const SECTION_DESCRIPTIONS: readonly (readonly [string, I18nKey])[] = [
+    ["settings-section-service", "settings.service.editHint"],
+    ["settings-section-startup", "settings.startup.desired.hint"],
+    ["settings-section-storage", "logs.storage.scope"],
+    ["settings-section-config", "settings.config.localFirst"],
+    ["settings-section-about", "settings.about.checkUpdate.hint"],
+  ];
+
+  it("> 12 字符的区块说明收进 `${testid}-help`：正文不再内联，aria-label 就是全文", async () => {
+    renderPage();
+    await waitForConfig();
+
+    for (const [section, key] of SECTION_DESCRIPTIONS) {
+      const text = zhCN[key];
+      // 自证：这些确实是"长说明"（否则这条断言会落在 ≤12 的内联分支上假绿）
+      expect(text.length, key).toBeGreaterThan(12);
+
+      const help = screen.getByTestId(`${section}-help`);
+      expect(help.getAttribute("aria-label"), key).toBe(text);
+      // 版面上**不再**有那段正文
+      expect(screen.queryByText(text), key).toBeNull();
+      // §3：同一区块最多一个问号
+      expect(within(screen.getByTestId(section)).getAllByTestId(/-help$/), section).toHaveLength(1);
+    }
+  });
+
+  it("≤ 12 字符的说明留在版面上（一行短字不值得再画一个问号）", () => {
+    expect(sectionHelpMode("只读")).toBe("inline");
+    expect(sectionHelpMode("来自配置")).toBe("inline");
+    expect(sectionHelpMode("")).toBe("inline");
+    expect(sectionHelpMode("这一组的输入框改的是本地草稿")).toBe("help");
+  });
+
+  it("红线不许收：读不到 / 未读取 / 破坏性后果 / 数值仍然一眼可见", async () => {
+    autostartFails = true;
+    renderPage();
+    await waitForConfig();
+
+    // ① 读不到：后端原文（含 TA 码）在版面上
+    expect(screen.getByTestId("settings-autostart-error").textContent).toMatch(/\[TA-5002\]/);
+    // ② 状态结论：没有读取接口就是"未读取"，不许藏进提示
+    expect(screen.getByText(/^当前模式：未读取/)).toBeTruthy();
+    expect(screen.getByText(/^当前保留期：未读取/)).toBeTruthy();
+    // ③ 破坏性操作的后果：清空不可恢复（点了才弹，但弹出来必须一眼看到）
+    fireEvent.click(screen.getByTestId("settings-clear-open"));
+    expect(screen.getByText(/清空不可恢复/)).toBeTruthy();
+    // ④ 数值：占用是真读回来的数字，留在版面上
+    expect(screen.getByTestId("settings-storage-stats").textContent).toMatch(/12,840/);
+  });
+
+  it("带破坏性后果的说明不整段收：文件监听那句里写着「会覆盖文件里的改动」", async () => {
+    renderPage();
+    await waitForConfig();
+
+    // §2 第 4 条（破坏性操作的后果）优先于 §2 的"超 12 字符就收" ——
+    // 这一节里 [settings.tray.fileWatch.hint] 含"写回配置会覆盖文件里的改动"，所以它整段留在版面上，
+    // 托盘那一块也就**一个问号都没有**（§3 的"同一区块最多一个"是上限，不是配额）。
+    const tray = screen.getByTestId("settings-section-tray");
+    expect(screen.getByText(zhCN["settings.tray.fileWatch.hint"])).toBeTruthy();
+    expect(within(tray).queryAllByTestId(/-help$/)).toHaveLength(0);
+  });
+
+  it("配置读不到的说明仍然内联（那是错误处理路径的一部分，不是简介）", async () => {
+    configFails = true;
+    renderPage();
+    await screen.findByTestId("settings-config-error");
+    expect(screen.getByText(zhCN["settings.config.loadFailedHint"])).toBeTruthy();
   });
 });

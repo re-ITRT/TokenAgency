@@ -25,6 +25,7 @@ import { TokenAgencyError, registerMock } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
 import type { ApiKeyUsageRow, ApiKeyView } from "@/shared/bindings";
 import { i18n } from "@/shared/i18n";
+import { zhCN, type I18nKey } from "@/shared/i18n/zh-CN";
 import { buildTheme } from "@/theme";
 
 // ================================================================ 夹具
@@ -412,5 +413,74 @@ describe("启停、删除（二次确认）、用量", () => {
     fireEvent.click(screen.getByTestId("api-key-usage-open"));
     const err = await screen.findByTestId("api-key-usage-error");
     expect(err.textContent).toMatch(/\[TA-9001\]/);
+  });
+});
+
+// ================================================================ ⑤ 长篇说明（[docs/22]）
+
+/**
+ * [docs/22 §2]：这一页**几乎没有可收的"简介"** —— 它是"红线"最密集的一页：
+ *
+ * - `apiKeys.createdHint`（明文只显示一次）是**不可逆的后果** → 留在版面上；
+ * - `apiKeys.hashOnlyNotice`（只存哈希）是"为什么没有复制按钮"的诚实交代，
+ *   既有用例写明了"说明句本身必须存在，否则用户会以为忘了做" → 留在版面上；
+ * - `apiKeys.deleteHint`（删除后 401）是破坏性后果；
+ * - `apiKeys.empty` / `apiKeys.neverUsed` 是状态结论与空态。
+ *
+ * 所以这一页只有**页头**那句说明被收进问号圆圈（由 `PageHeader` 统一负责，
+ * 页头 testid 写死 `page-header-help`）。
+ */
+describe("[docs/22] 页头说明收进问号圆圈，明文/哈希这些红线留在版面上", () => {
+  it("页头说明是 page-header-help（aria-label 就是全文），版面上不再铺那段字", async () => {
+    renderPage();
+    await waitForList();
+
+    const text = zhCN["apiKeys.description"];
+    const help = screen.getByTestId("page-header-help");
+    expect(help.getAttribute("aria-label")).toBe(text);
+    expect(screen.queryByText(text)).toBeNull();
+  });
+
+  it("红线一个字都不许收进提示：明文一次性 / 只存哈希 / 空态 / 删除后果", async () => {
+    keys = [];
+    renderPage();
+    await waitForList();
+
+    const helps = screen.queryAllByTestId(/-help$/);
+    const redLineKeys: readonly I18nKey[] = [
+      "apiKeys.createdHint",
+      "apiKeys.hashOnlyNotice",
+      "apiKeys.deleteHint",
+      "apiKeys.empty",
+    ];
+    for (const key of redLineKeys) {
+      const text = zhCN[key];
+      // 藏问题不是排版：这些正文都不在任何问号圆圈的 aria-label 里
+      expect(
+        helps.some((el) => (el.getAttribute("aria-label") ?? "").includes(text)),
+        key,
+      ).toBe(false);
+    }
+
+    // 空态与"只存哈希"这两条本来就该在版面上，仍然一眼可见
+    expect(screen.getByTestId("api-keys-empty").textContent).toBe(zhCN["apiKeys.empty"]);
+    expect(screen.getByTestId("api-keys-hash-only").textContent).toBe(
+      zhCN["apiKeys.hashOnlyNotice"],
+    );
+  });
+
+  it("「唯一一次能看到明文」的提示仍然内联，且它自己不带任何问号", async () => {
+    renderPage();
+    await waitForList();
+
+    fireEvent.click(screen.getByTestId("api-keys-create"));
+    fireEvent.change(within(screen.getByTestId("api-keys-create-name")).getByRole("textbox"), {
+      target: { value: "红线" },
+    });
+    fireEvent.click(screen.getByTestId("api-keys-create-submit"));
+
+    const hint = await screen.findByTestId("api-keys-created-hint");
+    expect(hint.textContent).toBe(zhCN["apiKeys.createdHint"]);
+    expect(within(hint).queryAllByRole("button")).toEqual([]);
   });
 });

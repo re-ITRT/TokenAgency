@@ -59,7 +59,7 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import { errorMessage, qk, useAppStatus, useCommandMutation, useCommandQuery } from "@/shared/api";
 import type { AppStatus } from "@/shared/bindings";
-import { KernelStateDot, PageHeader, StatusDot } from "@/shared/components";
+import { HelpTip, KernelStateDot, PageHeader, StatusDot } from "@/shared/components";
 import { formatBytes, formatDuration, formatLatency, formatLocalTime } from "@/shared/format";
 import { useTranslation } from "@/shared/i18n";
 import { radius, typography } from "@/theme";
@@ -96,6 +96,34 @@ import {
 
 // ================================================================ 共用展示件（见文件头末节）
 
+/**
+ * 一个区块的说明长到多少就该收进问号圆圈（[docs/22 §2]）。
+ *
+ * 12 个字符以内的短语（如「只读」「来自配置」）留在版面上：一眼看完的东西不值得让人悬停一次。
+ * 超过就收 —— 用户原话是「里面的简介好长，好多字」。
+ */
+const HELP_TIP_MIN_LENGTH = 12;
+
+/**
+ * 把同一区块的几句解释合成**一条**提示正文（[docs/22 §3]：一个区块最多一个问号）。
+ *
+ * 两件事逼着要合并：提示气泡只吃一个字符串；而"一排问号"比一排字更糟。
+ * 分隔符用换行 —— `aria-label` 里保留断句，读屏不会把三句话连成一坨。
+ */
+export function mergeHelpText(...parts: readonly (string | undefined)[]): string {
+  return parts.filter((part): part is string => part !== undefined && part !== "").join("\n");
+}
+
+/**
+ * 这个区块的说明要不要收进问号圆圈（[docs/22 §2]）。
+ *
+ * 三个"不收"的取值分开写：没有说明（`undefined` / 空串）**既不渲染也不占位**；
+ * 短的留在原位；只有超过门槛的才收。
+ */
+function collectIntoHelpTip(description: string | undefined): description is string {
+  return description !== undefined && description !== "" && description.length > HELP_TIP_MIN_LENGTH;
+}
+
 /** 契约出处标注、说明文字：一律 `caption` + 次要色，不抢正文。 */
 export function Caption({ children }: { children: ReactNode }) {
   return (
@@ -105,7 +133,14 @@ export function Caption({ children }: { children: ReactNode }) {
   );
 }
 
-/** 一个只读区块：标题 + 一句话说明 + 内容。**不是一个装饰性卡片**（无阴影、无强调色）。 */
+/**
+ * 一个只读区块：标题 + 说明 + 内容。**不是一个装饰性卡片**（无阴影、无强调色）。
+ *
+ * 说明的去处由长度决定（[docs/22 §2]）：超过 {@link HELP_TIP_MIN_LENGTH} 个字符的收进标题右边的
+ * 问号圆圈（正文进 tooltip + `aria-label`，一个字都不丢），短的留在原位。
+ * **没有 `description` 时不留空行/占位**（`description` 为 `undefined` 或空串都算没有）。
+ * `children` 可省：纯说明区块（把整页的边界讲清楚、没有数据要摆）收完之后就只剩标题 + 问号。
+ */
 export function SectionPaper({
   title,
   description,
@@ -119,14 +154,27 @@ export function SectionPaper({
   hint?: ReactNode;
   hintTestId?: string;
   testId?: string;
-  children: ReactNode;
+  children?: ReactNode;
 }) {
+  const asHelpTip = collectIntoHelpTip(description);
+
   return (
     <Paper variant="outlined" sx={{ p: 4, borderRadius: `${radius.surface}px` }} data-testid={testId}>
       <Stack spacing={3}>
         <Box>
-          <Typography variant="h4">{title}</Typography>
-          {description === undefined ? null : <Caption>{description}</Caption>}
+          {/* 问号圆圈与标题同一行（与页头同一个排布）；短说明仍走下一行的 `caption` */}
+          <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+            <Typography variant="h4">{title}</Typography>
+            {asHelpTip ? (
+              <HelpTip
+                text={description}
+                testId={testId === undefined ? undefined : `${testId}-help`}
+              />
+            ) : null}
+          </Box>
+          {asHelpTip || description === undefined || description === "" ? null : (
+            <Caption>{description}</Caption>
+          )}
         </Box>
         {hint === undefined ? null : <Box data-testid={hintTestId}>{hint}</Box>}
         {children}
@@ -481,9 +529,16 @@ function SubscriptionWriteForm() {
 
   return (
     <Stack spacing={3} data-testid="network-subscriptions-write">
-      <Box>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
         <Typography variant="h5">{t("network.subscriptions.write.title")}</Typography>
-        <Caption>{t("network.subscriptions.write.hint")}</Caption>
+        {/* 「保存后显示的是后端返回的对象 / 同 id = 覆盖 / 不复刻默认值」是一整段设计说明
+            （[docs/22 §2] 的成段 prose）→ 收进表单标题右边的问号圆圈。
+            表单里**每个字段自己的**提示（id 主键语义、地址遮蔽）留在字段下面：
+            它们是"填错就写坏配置"的校验/后果说明，不属于可以藏起来的东西（§2 第 3、4 条）。 */}
+        <HelpTip
+          text={t("network.subscriptions.write.hint")}
+          testId="network-subscriptions-write-help"
+        />
       </Box>
 
       <Stack spacing={2} sx={FIELD_ROW_SX} direction="row">
@@ -721,17 +776,22 @@ function SubscriptionsSection({
       description={t("network.subscriptions.description")}
       hintTestId="network-subscriptions-hint"
       hint={
-        <Stack spacing={1}>
-          {/* 「节点数 / 组数从哪来」那一句（`network.subscriptions.countHint`）已作废：
-              它写着"本页尚未接入 subscription_nodes / subscription_groups"，而这两条命令
-              这一页真的在调（见 `LaneWriteForm`）；/network/nodes 上更是直接列出了节点清单（[19 §2.3]）。 */}
-          <Caption>{t("network.subscriptions.urlHint")}</Caption>
-          <Caption>{t("network.subscriptions.healthHint")}</Caption>
-          <Caption>{t("network.subscriptions.row.refreshHint")}</Caption>
-        </Stack>
+        // 三句解释合成**一个**问号（[docs/22 §3]）：地址遮蔽、健康检查的语义、刷新为什么强制重下。
+        // 正文一个字都没丢 —— `aria-label` 就是全文；下面那张表本身不再被一屏灰字压住。
+        <HelpTip
+          text={mergeHelpText(
+            t("network.subscriptions.urlHint"),
+            t("network.subscriptions.healthHint"),
+            t("network.subscriptions.row.refreshHint"),
+          )}
+          testId="network-subscriptions-hint-help"
+        />
       }
       testId="network-subscriptions"
     >
+      {/* 「节点数 / 组数从哪来」那一句（`network.subscriptions.countHint`）已作废：
+          它写着"本页尚未接入 subscription_nodes / subscription_groups"，而这两条命令
+          这一页真的在调（见 `LaneWriteForm`）；/network/nodes 上更是直接列出了节点清单（[19 §2.3]）。 */}
       {error !== undefined && error !== null ? (
         <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
           <Typography variant="body1" data-testid="network-subscriptions-error" sx={{ color: "error.main" }}>
@@ -1013,9 +1073,11 @@ function LaneWriteForm() {
 
   return (
     <Stack spacing={3} data-testid="network-lanes-write">
-      <Box>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
         <Typography variant="h5">{t("network.lanes.write.title")}</Typography>
-        <Caption>{t("network.lanes.write.hint")}</Caption>
+        {/* 表单级的那段设计说明收进问号圆圈（[docs/22 §2] 的成段 prose）；
+            字段级的必填/校验提示（类型决定必填项、组名逐字一致…）留在字段下面（§2 第 3 条）。 */}
+        <HelpTip text={t("network.lanes.write.hint")} testId="network-lanes-write-help" />
       </Box>
 
       <Stack spacing={2} sx={FIELD_ROW_SX} direction="row">
@@ -1258,18 +1320,17 @@ function LanesSection({
   return (
     <SectionPaper
       title={t("network.lanes.title")}
-      description={t("network.lanes.description")}
-      hintTestId="network-lanes-hint"
-      hint={
-        <Stack spacing={1}>
-          <Caption>{t("network.lanes.kindHint")}</Caption>
-          <Caption>{t("network.lanes.channelCountHint")}</Caption>
-          <Caption>{t("network.lanes.sampleHint")}</Caption>
-          <Caption>{t("network.lanes.row.setNodeHint")}</Caption>
-          {/* 测速的口径（[19 §2.4]）：**没有装配内核时后端会如实报错**，这里也如实显示 */}
-          <Caption>{t("network.lanes.testHint")}</Caption>
-        </Stack>
-      }
+      description={mergeHelpText(
+        t("network.lanes.description"),
+        // 五句解释与区块说明合成**一个**问号（[docs/22 §3]）：类型词表、通道数的口径、
+        // 样本从哪来、钉住改了哪里、测速为什么可能报错。正文都在 `aria-label` 里，一个字都没丢。
+        t("network.lanes.kindHint"),
+        t("network.lanes.channelCountHint"),
+        t("network.lanes.sampleHint"),
+        t("network.lanes.row.setNodeHint"),
+        // 测速的口径（[19 §2.4]）：**没有装配内核时后端会如实报错**，这里也如实显示
+        t("network.lanes.testHint"),
+      )}
       testId="network-lanes"
     >
       {error !== undefined && error !== null ? (

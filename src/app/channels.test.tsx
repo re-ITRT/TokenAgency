@@ -29,6 +29,7 @@ import {
 // 这样红的时候是**一条条断言失败**（`xxx is not a function`），而不是整个文件加载不了。
 import * as channelsModel from "@/pages/channels/model";
 import type {
+  ApplyResult,
   Channel,
   ChannelGroup,
   Credential,
@@ -38,8 +39,8 @@ import type {
   ProviderView,
   QuotaConfig,
 } from "@/shared/bindings";
-import { registerBaselineMocks, registerMock, TokenAgencyError } from "@/shared/api";
-import { i18n } from "@/shared/i18n";
+import { registerBaselineMocks, registerMock, qk, TokenAgencyError } from "@/shared/api";
+import { i18n, type I18nKey } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
 
 const MODEL_ID = "deepseek-v4.1flash";
@@ -232,6 +233,20 @@ function makeProps(overrides: Partial<ChannelsBodyProps> = {}): ChannelsBodyProp
     isLoading: false,
     error: undefined,
     onRetry: () => {},
+    // 线路下拉（[docs/21 §4.2]）：选项就是 lane_list，回调用空实现 —— 展示件这一层不拼载荷，
+    // 「选直连必须发 lane_id: null」由整页用例（⑬）钉。
+    lanes: lanes(),
+    onAssignLane: () => {},
+    selectedChannelIds: [],
+    onToggleChannel: () => {},
+    onToggleAllChannels: () => {},
+    onDeleteChannel: () => {},
+    // 通道组区块（[docs/21 §3]）：纯展示渲染，命令由整页用例（⑮）钉
+    groups: [],
+    selectedGroupIds: [],
+    onToggleGroup: () => {},
+    onToggleAllGroups: () => {},
+    onDeleteGroup: () => {},
     ...overrides,
   };
 }
@@ -244,15 +259,30 @@ function renderBody(overrides: Partial<ChannelsBodyProps> = {}) {
   );
 }
 
-function renderPage() {
+function renderPage(): ReturnType<typeof render> & { client: QueryClient } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={buildTheme("dark")}>
         <ChannelsPage />
       </ThemeProvider>
     </QueryClientProvider>,
   );
+  // 把 client 一起交出去：⑬ 要机械地检查"改完线路之后到底失效了哪些 query"
+  return { ...view, client: queryClient };
+}
+
+/**
+ * 每个用例前把本页要的命令 mock 复位。
+ *
+ * 为什么不能只调 `registerBaselineMocks()`：`registerMock` 是**进程级**的注册表，
+ * 上一个用例里为某个命令注册的替身会漏到下一个用例（例如 ⑬ 把 `channel_list` 换成了
+ * 只有一条通道的桩，⑭ 就再也看不到两条通道了）。夹具必须每个用例重新注册一次。
+ */
+function resetPageMocks(): void {
+  registerBaselineMocks();
+  registerMock("channel_list", () => channelsFixture());
+  registerMock("quota_limit_gaps", () => []);
 }
 
 // ================================================================ ① 纯逻辑：线路继承
@@ -534,7 +564,12 @@ describe("有数据：按服务商分组的列表 + 额度 + 线路 + 未配额�
       "日本线（继承自凭据）",
       "继承（凭据 / 服务商 / 默认线路）",
     ]);
-    expect(screen.getByText(/只读得到凭据那一级/)).toBeTruthy();
+    // [docs/22 §2] 之后这句解释收进了「按服务商分组」标题右边的问号：
+    // 断言改成读那个 `?` 的 `aria-label`（**全文一个字都没丢**，而且额外钉住"版面上不再内联"）。
+    expect(screen.getByTestId("channels-by-provider-help").getAttribute("aria-label")).toContain(
+      i18n.t("channels.lane.hint"),
+    );
+    expect(screen.queryByText(/只读得到凭据那一级/)).toBeNull();
   });
 
   it("额度：算得出占用比时给进度条 + 原始数字（单位来自凭据的口径，不猜）", () => {
@@ -690,7 +725,12 @@ describe("真机形状：两套字段名都认，缺列时不编结论", () => {
     expect(screen.queryByText("未设上限")).toBeNull();
     // 服务商那格：配置事实 + 一句"为什么不点状态灯"
     expect(screen.getByText("配置为已启用")).toBeTruthy();
-    expect(screen.getByText(/后端没有返回服务商健康状态这一列/)).toBeTruthy();
+    // [docs/22 §2] 之后这句解释收进了「按服务商分组」标题右边的问号
+    // （`aria-label` 是全文，版面上不再内联）
+    expect(screen.getByTestId("channels-by-provider-help").getAttribute("aria-label")).toContain(
+      i18n.t("channels.provider.statusAbsent"),
+    );
+    expect(screen.queryByText(/后端没有返回服务商健康状态这一列/)).toBeNull();
   });
 
   it("渲染：有 latest 时把最近样本（节点 + 延迟）显示出来，且不混进线路名里", () => {
@@ -1330,5 +1370,497 @@ describe("⑫ 能力与计费的整形：默认值照抄 Rust、只发填了的�
       { field: "priceInput", problem: "number" },
     ]);
     expect(channelsModel.channelDraftIssues(base)).toEqual([]);
+  });
+});
+
+// ================================================================ ⑬ 通道页每行的线路下拉（docs/21 §4.2）
+//
+// 用户原话：「线路设置不能点进服务商里面去修改」—— 所以线路的**唯一**编辑入口就是通道页这一列。
+// 这一组钉三件事（都是只有机械检查才抓得住的）：
+//   1. 每行真的有一个可交互的下拉（容器 `channels-lane-select`，里面是**真** `combobox`）；
+//   2. 「直连（继承）」发的是 `lane_id: null`（= 清空，回到五级继承链），选某条线路发的是那个 id；
+//   3. 成功后**真的重取**（矩阵 + 通道清单），行内展示跟着后端重取回来的值走；
+//      失败原样显示后端原文（含 TA 码），**不**在本地偷偷改掉显示的值。
+
+/** 在一个容器（一行）里操作 MUI Select：先 `mouseDown` 打开菜单，再点 `option`。 */
+async function chooseInBox(box: HTMLElement, optionName: RegExp | string): Promise<void> {
+  fireEvent.mouseDown(within(box).getByRole("combobox"));
+  fireEvent.click(await screen.findByRole("option", { name: optionName }));
+}
+
+/** MUI Checkbox：`data-testid` 在根 `span` 上，真可点的是里面那个 `input[type=checkbox]`。 */
+function toggleBox(host: HTMLElement): void {
+  const input = host.tagName === "INPUT" ? host : host.querySelector("input");
+  if (input === null) throw new Error("容器里没有可点的 input");
+  fireEvent.click(input);
+}
+
+/** `channel_bulk_assign_lane` 的成功回执（形状 = 契约的 `ApplyResult`）。 */
+function applyOk(): ApplyResult {
+  return { applied: true, restart_required: false, kernel_reload: false, channels_created: 0 };
+}
+
+describe("⑬ 通道页每行的线路下拉：直连=null、真实线路=id、失败原样显示", () => {
+  beforeEach(resetPageMocks);
+
+  it("每行一个 channels-lane-select（容器里有真 combobox），第一条选项永远是「直连（继承）」", async () => {
+    renderPage();
+
+    const boxes = await screen.findAllByTestId("channels-lane-select");
+    expect(boxes).toHaveLength(2);
+    expect(within(boxes[0]!).getByRole("combobox")).toBeTruthy();
+
+    fireEvent.mouseDown(within(boxes[0]!).getByRole("combobox"));
+    const options = (await screen.findAllByRole("option")).map((o) => o.textContent);
+    // 第一条永远是「直连（继承）」；其余来自 lane_list（无名回落 id）
+    expect(options[0]).toBe("直连（继承）");
+    expect(options).toContain("直连（本机网络）");
+    expect(options).toContain("日本线");
+  });
+
+  it("选「直连（继承）」-> channel_bulk_assign_lane({channel_ids:[那条], lane_id: null})", async () => {
+    const assign = recordingMock(applyOk());
+    registerMock("channel_bulk_assign_lane", assign.handler);
+
+    renderPage();
+
+    const first = (await screen.findAllByTestId("channels-row"))[0]!;
+    await chooseInBox(within(first).getByTestId("channels-lane-select"), "直连（继承）");
+
+    await waitFor(() => expect(assign.calls).toHaveLength(1));
+    // 载荷就是契约那一对：一个通道 + lane_id: null（= 清空 = 回到继承链）
+    expect(assign.calls[0]).toEqual({ channel_ids: ["ch-bytedance"], lane_id: null });
+  });
+
+  it("选某条真实线路 -> lane_id 是那个 id；成功后重取（矩阵 + 通道清单），行内显示新线路名", async () => {
+    let listCalls = 0;
+    registerMock("channel_list", () => {
+      listCalls += 1;
+      // 重取之后后端**真的变了**：这条通道自己钉上了 lane-jp
+      return listCalls === 1
+        ? [channel({ id: "ch-bytedance", lane: null })]
+        : [channel({ id: "ch-bytedance", lane: "lane-jp" })];
+    });
+    // 本页现在没有 `channel_matrix` 的观察者（矩阵那一段如实写着"尚未接入"），
+    // 所以"是否失效了矩阵"只能机械地看 invalidateQueries 的入参 —— 见下面的 spy。
+    registerMock("channel_matrix", () => ({ models: [], credentials: [], cells: [] }));
+    const assign = recordingMock(applyOk());
+    registerMock("channel_bulk_assign_lane", assign.handler);
+
+    const page = renderPage();
+    const invalidate = vi.spyOn(page.client, "invalidateQueries");
+
+    const first = (await screen.findAllByTestId("channels-row"))[0]!;
+    // 通道自己没有 lane -> 下拉显示「直连（继承）」，而**当前生效**的是继承来的那条（两者不是一回事）
+    expect(within(first).getByTestId("channels-lane").textContent).toBe("直连（本机网络）（继承自凭据）");
+
+    await chooseInBox(within(first).getByTestId("channels-lane-select"), "日本线");
+
+    await waitFor(() => expect(assign.calls).toHaveLength(1));
+    expect(assign.calls[0]).toEqual({ channel_ids: ["ch-bytedance"], lane_id: "lane-jp" });
+
+    // 成功后**真的重取**：矩阵与通道清单都被失效（不是本地乐观改一个）
+    await waitFor(() =>
+      expect(
+        invalidate.mock.calls.some(
+          ([arg]) => JSON.stringify(arg?.queryKey) === JSON.stringify(qk.channelMatrix),
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(listCalls).toBeGreaterThan(1));
+
+    // 行内展示跟着**后端重取回来**的值走
+    await waitFor(() =>
+      expect(
+        within(screen.getAllByTestId("channels-row")[0]!).getByTestId("channels-lane").textContent,
+      ).toBe("日本线"),
+    );
+    // 并且如实说这一次改成了什么
+    expect(screen.getByTestId("channels-lane-changed").textContent).toContain("日本线");
+  });
+
+  it("后端拒绝时原样显示后端原文（含 TA 码），且行内展示一个数都不许偷偷改", async () => {
+    registerMock("channel_bulk_assign_lane", () => {
+      throw new TokenAgencyError({ code: "TA-1004", message: "lanes 里没有 lane-ghost" });
+    });
+
+    renderPage();
+
+    const first = (await screen.findAllByTestId("channels-row"))[0]!;
+    const before = within(first).getByTestId("channels-lane").textContent;
+
+    await chooseInBox(within(first).getByTestId("channels-lane-select"), "日本线");
+
+    const error = await screen.findByTestId("channels-lane-error");
+    expect(error.textContent).toContain("TA-1004");
+    expect(error.textContent).toContain("lane-ghost");
+    // 失败 = 没改：行内展示还是原来那条（不许本地乐观更新）
+    expect(screen.getAllByTestId("channels-lane")[0]!.textContent).toBe(before);
+    expect(screen.queryByTestId("channels-lane-changed")).toBeNull();
+  });
+});
+
+// ================================================================ ⑭ 通道删除（docs/21 §1 / §3）
+//
+// 通道**没有** force 语义（`channel_delete` 的载荷只有 `{id}`），所以被引用时：
+// 只把后端原文摆出来，**一个级联按钮都不许有**（那会是假按钮）。
+// 批量是用户明确要的：一次确认 → 逐条调用 → 逐条汇报，一条失败不许中止其余条。
+
+describe("⑭ 通道删除：先二次确认、失败原样显示、批量逐条汇报", () => {
+  beforeEach(resetPageMocks);
+
+  it("表头全选与选中计数：一条都没选时不摆点了没用的按钮", async () => {
+    renderPage();
+
+    const all = await screen.findAllByTestId("channels-select-all");
+    // 每个服务商一张表，各有一个表头全选
+    expect(all).toHaveLength(2);
+    expect(screen.queryByTestId("channels-selected-count")).toBeNull();
+    expect(screen.queryByTestId("channels-delete-selected")).toBeNull();
+
+    toggleBox(all[0]!);
+    expect(screen.getByTestId("channels-selected-count").textContent).toContain("1");
+    expect(screen.getByTestId("channels-delete-selected")).toBeTruthy();
+
+    // 再点一次 = 取消选择 -> 计数与按钮都收回去
+    toggleBox(all[0]!);
+    expect(screen.queryByTestId("channels-selected-count")).toBeNull();
+  });
+
+  it("行内删除 -> 确认框先于命令；确认后才 channel_delete({id})", async () => {
+    const del = recordingMock(undefined);
+    registerMock("channel_delete", del.handler);
+
+    renderPage();
+
+    const first = (await screen.findAllByTestId("channels-row"))[0]!;
+    fireEvent.click(within(first).getByTestId("channels-delete"));
+
+    // 二次确认：确认框里写清删的是哪一个，此时**一条命令都没发**
+    expect(await screen.findByTestId("channels-delete-dialog")).toBeTruthy();
+    expect(screen.getByTestId("channels-delete-target").textContent).toContain("ch-bytedance");
+    expect(del.calls).toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId("channels-delete-confirm"));
+
+    await waitFor(() => expect(del.calls).toHaveLength(1));
+    // 载荷就是 `{id}` —— 没有 force 这个字段（这条命令没有级联语义）
+    expect(del.calls[0]).toEqual({ id: "ch-bytedance" });
+    // 成功后如实写「已删除 <名称 + id>」
+    const result = await screen.findByTestId("channels-delete-result");
+    expect(result.textContent).toContain("已删除");
+    expect(result.textContent).toContain("ch-bytedance");
+  });
+
+  it("被引用时只显示后端原文（含 TA 码），不放任何级联按钮，也不谎报成功", async () => {
+    registerMock("channel_delete", () => {
+      throw new TokenAgencyError({
+        code: "TA-5002",
+        message: "通道 ch-bytedance 被策略 pol-default 引用",
+      });
+    });
+
+    renderPage();
+
+    const first = (await screen.findAllByTestId("channels-row"))[0]!;
+    fireEvent.click(within(first).getByTestId("channels-delete"));
+    fireEvent.click(await screen.findByTestId("channels-delete-confirm"));
+
+    const error = await screen.findByTestId("channels-delete-error");
+    expect(error.textContent).toContain("TA-5002");
+    expect(error.textContent).toContain("pol-default");
+    // 通道没有 force 语义 -> 级联按钮一个都不许有
+    expect(screen.queryByTestId("channels-delete-cascade")).toBeNull();
+    // 也没删成：确认框还开着，结果区不出现（不许假装删掉了）
+    expect(screen.getByTestId("channels-delete-dialog")).toBeTruthy();
+    expect(screen.queryByTestId("channels-delete-result")).toBeNull();
+  });
+
+  it("批量：一次确认、逐条调用、逐条汇报（1 成功 1 失败，一条失败不中止另一条）", async () => {
+    const calls: Record<string, unknown>[] = [];
+    registerMock("channel_delete", (args) => {
+      calls.push(args ?? {});
+      if (args?.["id"] === "ch-commandcode") {
+        throw new TokenAgencyError({
+          code: "TA-5002",
+          message: "通道 ch-commandcode 被策略 pol-default 引用",
+        });
+      }
+      return undefined;
+    });
+
+    renderPage();
+
+    const boxes = await screen.findAllByTestId("channels-select");
+    expect(boxes).toHaveLength(2);
+    toggleBox(boxes[0]!);
+    toggleBox(boxes[1]!);
+    expect(screen.getByTestId("channels-selected-count").textContent).toContain("2");
+
+    fireEvent.click(screen.getByTestId("channels-delete-selected"));
+    expect(await screen.findByTestId("channels-delete-dialog")).toBeTruthy();
+    // 一次确认之前一条命令都不许发
+    expect(calls).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("channels-delete-confirm"));
+
+    // 两条都发了（失败的后面那条不许被中止）
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls.map((c) => c["id"]).sort()).toEqual(["ch-bytedance", "ch-commandcode"]);
+
+    // 逐条汇报：成功 N 条 / 失败 M 条 + 失败项逐条给 id 与后端原文
+    const result = await screen.findByTestId("channels-delete-result");
+    expect(result.textContent).toContain("成功 1 条，失败 1 条");
+    expect(result.textContent).toContain("ch-commandcode");
+    expect(result.textContent).toContain("TA-5002");
+  });
+});
+
+// ================================================================ ⑮ 通道组区块（docs/21 §3）
+//
+// 通道组（`group_list`）此前只在通道行里以 id 露过一面，删除入口一个都没有。
+// 这一组钉：列表的列（模型 / 策略 / 通道数）、空态、以及删除载荷 `{id}`（同样没有 force）。
+
+describe("⑮ 通道组区块：列表（模型 / 策略 / 通道数）+ 删除载荷 {id}", () => {
+  beforeEach(resetPageMocks);
+
+  it("列出 group_list 的每一条：模型 / 选择策略 / 通道数", async () => {
+    registerMock("group_list", () => groups());
+
+    renderPage();
+
+    const rows = await screen.findAllByTestId("channels-group-row");
+    expect(rows).toHaveLength(1);
+    expect(within(rows[0]!).getByTestId("channels-group-id").textContent).toBe("grp-deepseek");
+    expect(within(rows[0]!).getByTestId("channels-group-model").textContent).toBe(MODEL_ID);
+    // 选择策略是本页**原样**显示后端的枚举值（不翻译成另一套说法）
+    expect(within(rows[0]!).getByTestId("channels-group-strategy").textContent).toBe(
+      "sticky_then_priority",
+    );
+    expect(within(rows[0]!).getByTestId("channels-group-count").textContent).toBe("2");
+  });
+
+  it("没有通道组时不编一行假数据，只说「配置里还没有通道组」", async () => {
+    registerMock("group_list", () => []);
+
+    renderPage();
+
+    expect((await screen.findByTestId("channels-groups-empty")).textContent).toContain(
+      "配置里还没有通道组",
+    );
+    expect(screen.queryByTestId("channels-group-row")).toBeNull();
+  });
+
+  it("行内删除 -> 先确认，再 group_delete({id})；没有级联按钮", async () => {
+    registerMock("group_list", () => groups());
+    const del = recordingMock(undefined);
+    registerMock("group_delete", del.handler);
+
+    renderPage();
+
+    const row = (await screen.findAllByTestId("channels-group-row"))[0]!;
+    fireEvent.click(within(row).getByTestId("groups-delete"));
+
+    expect(await screen.findByTestId("groups-delete-dialog")).toBeTruthy();
+    expect(screen.getByTestId("groups-delete-target").textContent).toContain("grp-deepseek");
+    expect(del.calls).toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId("groups-delete-confirm"));
+
+    await waitFor(() => expect(del.calls).toHaveLength(1));
+    expect(del.calls[0]).toEqual({ id: "grp-deepseek" });
+    expect(screen.queryByTestId("groups-delete-cascade")).toBeNull();
+    expect((await screen.findByTestId("groups-delete-result")).textContent).toContain("已删除");
+  });
+
+  it("批量：groups-select-all 选中整表 -> groups-delete-selected 逐条调用并汇报", async () => {
+    const first = groups()[0]!;
+    registerMock("group_list", () => [first, { ...first, id: "grp-second", members: ["ch-commandcode"] }]);
+    const calls: Record<string, unknown>[] = [];
+    registerMock("group_delete", (args) => {
+      calls.push(args ?? {});
+      return undefined;
+    });
+
+    renderPage();
+
+    toggleBox(await screen.findByTestId("groups-select-all"));
+    expect(screen.getByTestId("groups-selected-count").textContent).toContain("2");
+
+    fireEvent.click(screen.getByTestId("groups-delete-selected"));
+    expect(await screen.findByTestId("groups-delete-dialog")).toBeTruthy();
+    expect(calls).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("groups-delete-confirm"));
+
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls.map((c) => c["id"]).sort()).toEqual(["grp-deepseek", "grp-second"]);
+    expect((await screen.findByTestId("groups-delete-result")).textContent).toContain(
+      "成功 2 条，失败 0 条",
+    );
+  });
+});
+
+// ================================================================ ⑯ [docs/22] 长简介收进「问号圆圈 + 悬停提示」
+//
+// 用户第 74 轮原话：「我发现里面的简介好长，好多字，这样吧尽量缩短字数，那些比较介绍做成一个
+// 问好加一个圆圈，鼠标移上去能看到提示那种」。这一组按 [docs/22 §2/§3/§5] 钉两件事：
+//
+// 1. **解释收走了**：`?` 在、`aria-label` 是全文（提示气泡是懒渲染的，读屏仍然拿得到全文）、
+//    那段正文**不再内联**渲染；
+// 2. **红线没被收走**：空态 / 现状结论 / 额度结论 / 数值与单位 / 后端原文 / 必填提示
+//    —— 把状态或错误塞进 tooltip 是"藏问题"，不是"排版"。
+//
+// 判不准的一律留在版面上（§2 末尾的默认），所以下面这几处**故意不收**：
+// `channels.empty.what`（空态）、`channels.matrix.absent`（现状结论）、
+// `channels.quota.*` / `channels.tags.none`（每一格的结论）、
+// `channels.add.price`（带单位「美元 / 百万 token」）。
+//
+// 同一区块**最多一个** `?`（§3）：线路继承与「为什么不点状态灯」两句合成一条提示。
+
+describe("⑯ [docs/22] 长简介收进问号圆圈，红线一律留在版面上", () => {
+  /** 文案取真源：断言直接用 zh-CN 里的全文，而不是把长句在测试里再抄一遍。 */
+  function copy(key: I18nKey): string {
+    return i18n.t(key);
+  }
+
+  /** 某个 `?` 的 `aria-label`（= 提示正文全文）。 */
+  function helpLabel(testId: string): string {
+    const label = screen.getByTestId(testId).getAttribute("aria-label");
+    expect(label, `${testId} 的 aria-label 必须是提示全文`).toBeTruthy();
+    return label ?? "";
+  }
+
+  it("概览 / 未配额度 / 按服务商分组：区块说明收进问号，正文不再内联", () => {
+    renderBody({
+      rows: readChannelRows(
+        [
+          ...channelsFixture(),
+          // 通道与凭据两级都没有线路 -> 这一行只能显示「继承」，它的解释跟着出现
+          channel({ id: "ch-c", lane: null, credential: "c-nolane" }),
+        ],
+        context({
+          credentials: [
+            view(credential()),
+            view(credential("c-commandcode")),
+            view(credential("c-nolane", { lane: null, label: "没有线路的凭据" })),
+          ],
+        }),
+      ),
+      limitGaps: [{ credential_id: "c-commandcode", message: "未设上限：用完不会自动切换" }],
+    });
+
+    expect(helpLabel("channels-summary-help")).toContain(copy("channels.summary.hint"));
+    expect(screen.queryByText(copy("channels.summary.hint"))).toBeNull();
+
+    expect(helpLabel("channels-limit-gaps-help")).toContain(copy("channels.limitGaps.hint"));
+    expect(screen.queryByText(copy("channels.limitGaps.hint"))).toBeNull();
+
+    // 线路继承那一句（这一页最长的解释之一）也收走了
+    expect(helpLabel("channels-by-provider-help")).toContain(copy("channels.lane.hint"));
+    expect(screen.queryByText(copy("channels.lane.hint"))).toBeNull();
+  });
+
+  it("同一区块最多一个问号：线路继承与「为什么不点状态灯」合成一条提示", () => {
+    // 真机形状：`provider_list` 直接返回 Provider 实体（**没有 status 这一列**）
+    const rustProvider = {
+      id: "p-bytedance",
+      name: "字节方舟",
+      protocol: "openai",
+      base_url: "https://ark.example.com",
+      enabled: true,
+    } as unknown as ProviderView;
+
+    renderBody({
+      rows: readChannelRows(
+        [
+          channel(),
+          // 两级都没有线路 -> 只能显示「继承」
+          channel({ id: "ch-c", lane: null, credential: "c-nolane" }),
+        ],
+        context({
+          providers: [rustProvider],
+          credentials: [
+            view(credential()),
+            view(credential("c-nolane", { lane: null, label: "没有线路的凭据" })),
+          ],
+        }),
+      ),
+    });
+
+    const label = helpLabel("channels-by-provider-help");
+    expect(label).toContain(copy("channels.lane.hint"));
+    expect(label).toContain(copy("channels.provider.statusAbsent"));
+    expect(label).not.toBe(copy("channels.lane.hint"));
+    expect(screen.queryByText(copy("channels.provider.statusAbsent"))).toBeNull();
+    // 一个区块只有一个 `?`（一排问号比一排字更糟），整页正文里也只有这两个
+    expect(screen.getAllByTestId("channels-by-provider-help")).toHaveLength(1);
+    expect(screen.getAllByTestId(/-help$/).map((node) => node.getAttribute("data-testid"))).toEqual([
+      "channels-summary-help",
+      "channels-by-provider-help",
+    ]);
+  });
+
+  it("红线仍内联：空态 / 现状结论 / 额度结论与数值 / 后端原文 / 未配额度提醒", () => {
+    renderBody();
+    // §2 第 1 条：空态里"一条通道是什么"的解释与空态本身绑在一起，留在版面上
+    expect(screen.getByTestId("channels-empty").textContent).toContain(copy("channels.empty.what"));
+    expect(screen.getByTestId("channels-empty").textContent).toContain(copy("channels.empty.title"));
+    cleanup();
+
+    // §2 第 1 条：矩阵的现状结论（含"点了没反应"这句边界）一眼可见
+    renderBody({ rows: readChannelRows(channelsFixture(), context()) });
+    expect(screen.getByTestId("channels-matrix-absent").textContent).toContain(
+      copy("channels.matrix.absent"),
+    );
+    cleanup();
+
+    // §2 第 5 条：数值与单位一眼可见
+    renderBody({ rows: readChannelRows([channel()], context({ credentials: [view(credential())] })) });
+    expect(screen.getByText("82.0%")).toBeTruthy();
+    expect(screen.getByText("4.1M / 5M · token 数 · 月")).toBeTruthy();
+    cleanup();
+
+    // §2 第 1 条：这一格的结论（缺的是用量、不是上限）与上限绑在一起，不许收
+    renderBody({
+      rows: readChannelRows(
+        [channel()],
+        context({
+          credentials: [{ credential: credential() } as unknown as CredentialView],
+        }),
+      ),
+    });
+    expect(screen.getByText("— / 5M · token 数 · 月")).toBeTruthy();
+    expect(screen.getByText(/还没有用量记录/)).toBeTruthy();
+    // 关键：不许把"缺用量"说成"未设上限"
+    expect(screen.queryByText("未设上限")).toBeNull();
+  });
+
+  it("红线仍内联：未配额度提醒的后端原文（含 TA 码）", () => {
+    renderBody({
+      rows: readChannelRows(channelsFixture(), context()),
+      limitGaps: [],
+      limitGapsError: new Error("[TA-9001] 未注册 mock：quota_limit_gaps"),
+    });
+    const error = screen.getByTestId("channels-limit-gaps-error").textContent ?? "";
+    expect(error).toContain("TA-9001");
+    // 「这不等于没有这条提醒」是这个错误的一部分（把读失败说清楚），不许收
+    expect(error).toContain("这不等于没有这条提醒");
+  });
+
+  it("添加向导：能力声明说明收进问号；带单位的计费说明与必填提示仍内联", async () => {
+    resetPageMocks();
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("channels-add-open"));
+
+    // §2 的成段解释 → 收进「上游能力声明」旁边的问号
+    expect(helpLabel("channels-add-capabilities-help")).toContain(copy("capabilities.hint"));
+    expect(screen.queryByText(copy("capabilities.hint"))).toBeNull();
+
+    // §2 第 5 条：这句是**计费字段的单位**（美元 / 百万 token），一个字都不许收
+    expect(screen.getByText(copy("channels.add.price"))).toBeTruthy();
+
+    // §2 第 3 条：本地预检的必填提示留在版面上（点了才出现，说的就是这次输入）
+    fireEvent.click(screen.getByTestId("channels-add-submit"));
+    expect(screen.getByTestId("channels-add-issues").textContent).toContain(copy("wizard.required"));
   });
 });

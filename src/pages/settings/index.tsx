@@ -77,7 +77,7 @@ import type {
   LogMode,
   Retention,
 } from "@/shared/bindings";
-import { PageHeader, StatusDot } from "@/shared/components";
+import { PageHeader, StatusDot, HelpTip } from "@/shared/components";
 import { formatBytes, formatDuration, formatInt, formatLocalTime } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { useAppStore } from "@/stores/app";
@@ -194,20 +194,49 @@ function ReadonlyRow({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+/**
+ * 区块说明的呈现方式（[docs/22 §2]）：**超过 12 个字符**就收进问号圆圈，
+ * 短的（如「只读」「来自配置」）留在标题右边。
+ *
+ * 抽成纯函数是为了让这条阈值能被机械钉住 —— 判据写在测试里，不靠"看着差不多"。
+ */
+export function sectionHelpMode(text: string): "help" | "inline" {
+  return text.length > 12 ? "help" : "inline";
+}
+
+/**
+ * 一个区块（[docs/22 §2] 的"区块说明"）。
+ *
+ * `descriptionKey` 是**这一段是干什么的**那一句：> 12 字符收进标题右边的问号圆圈
+ * （`testId` 就是 `<区块 testid>-help`，§3），≤ 12 字符留在版面上。
+ * **一个区块最多一个问号**（§3）—— 一排问号比一排字更糟，所以其它说明行照旧留在版面上；
+ * §2 的红线（读不到 / 未读取 / 校验失败 / 破坏性后果 / 数值）更是一句都不许收。
+ */
 function SectionPaper({
   titleKey,
   testId,
+  descriptionKey,
   children,
 }: {
   titleKey: I18nKey;
   testId: string;
+  /** 区块说明的 i18n 键（不传就不占位）。 */
+  descriptionKey?: I18nKey;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
+  const description = descriptionKey === undefined ? "" : t(descriptionKey);
   return (
     <Paper variant="outlined" sx={SECTION_SX} data-testid={testId}>
       <Stack spacing={4}>
-        <Typography variant="h4">{t(titleKey)}</Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+          <Typography variant="h4">{t(titleKey)}</Typography>
+          {description === "" ? null : sectionHelpMode(description) === "help" ? (
+            <HelpTip text={description} testId={`${testId}-help`} />
+          ) : (
+            <Caption>{description}</Caption>
+          )}
+        </Box>
         {children}
       </Stack>
     </Paper>
@@ -783,8 +812,12 @@ export default function SettingsPage() {
           </Paper>
         ) : null}
 
-        {/* ① 服务 */}
-        <SectionPaper titleKey="settings.section.service" testId="settings-section-service">
+        {/* ① 服务：说明收进 `settings-section-service-help`（其余说明行与红线留在版面上） */}
+        <SectionPaper
+          titleKey="settings.section.service"
+          testId="settings-section-service"
+          descriptionKey="settings.service.editHint"
+        >
           <Stack spacing={3}>
             <ReadonlyRow
               label={t("settings.service.gateway")}
@@ -859,7 +892,6 @@ export default function SettingsPage() {
 
           <Stack spacing={1}>
             <Caption>{t("settings.service.localKey.hint")}</Caption>
-            <Caption>{t("settings.service.editHint")}</Caption>
           </Stack>
 
           <Box sx={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
@@ -910,7 +942,11 @@ export default function SettingsPage() {
         </SectionPaper>
 
         {/* ② 启动与常驻：开机自启动是**唯一会写系统状态**的开关，所以显示的是系统事实 */}
-        <SectionPaper titleKey="settings.section.startup" testId="settings-section-startup">
+        <SectionPaper
+          titleKey="settings.section.startup"
+          testId="settings-section-startup"
+          descriptionKey="settings.startup.desired.hint"
+        >
           <Stack spacing={2}>
             <Typography variant="h4">{t("settings.startup.autostart")}</Typography>
 
@@ -1013,8 +1049,6 @@ export default function SettingsPage() {
                 ) : null}
               </Stack>
             )}
-
-            <Caption>{t("settings.startup.desired.hint")}</Caption>
           </Stack>
 
           <Box
@@ -1047,7 +1081,9 @@ export default function SettingsPage() {
           <Caption>{t("settings.startup.writeHint")}</Caption>
         </SectionPaper>
 
-        {/* ③ 托盘行为 */}
+        {/* ③ 托盘行为 —— 这一节**故意没有问号**：唯一的说明行 [settings.tray.fileWatch.hint]
+            里写着"它开着时用界面写回配置会覆盖文件里的改动"（破坏性后果，§2 第 4 条），
+            整段留在版面上；§3 的"同一区块最多一个问号"是上限，不是配额。 */}
         <SectionPaper titleKey="settings.section.tray" testId="settings-section-tray">
           <EditableField
             testId="settings-field-trayShowLatency"
@@ -1120,7 +1156,11 @@ export default function SettingsPage() {
         </SectionPaper>
 
         {/* ④ 记录与存储（命令已注册：真做） */}
-        <SectionPaper titleKey="settings.section.storage" testId="settings-section-storage">
+        <SectionPaper
+          titleKey="settings.section.storage"
+          testId="settings-section-storage"
+          descriptionKey="logs.storage.scope"
+        >
           <Stack spacing={3}>
             <Typography variant="h4">{t("settings.storage.stats")}</Typography>
             <Box
@@ -1163,7 +1203,6 @@ export default function SettingsPage() {
                 {t("logs.storage.failed", { message: errorMessage(stats.error) })}
               </Typography>
             ) : null}
-            <Caption>{t("logs.storage.scope")}</Caption>
             <Caption>{t("settings.storage.toLogs")}</Caption>
           </Stack>
 
@@ -1325,7 +1364,11 @@ export default function SettingsPage() {
         </SectionPaper>
 
         {/* ⑤ 配置：校验 → 应用 / 导入导出 / 快照 */}
-        <SectionPaper titleKey="settings.section.config" testId="settings-section-config">
+        <SectionPaper
+          titleKey="settings.section.config"
+          testId="settings-section-config"
+          descriptionKey="settings.config.localFirst"
+        >
           <Stack spacing={2}>
             <Typography variant="h4">{t("settings.config.editableTitle")}</Typography>
             <Typography
@@ -1340,7 +1383,6 @@ export default function SettingsPage() {
                   })
                 : t("settings.config.clean")}
             </Typography>
-            <Caption>{t("settings.config.localFirst")}</Caption>
           </Stack>
 
           {localIssues.length > 0 ? (
@@ -1580,7 +1622,11 @@ export default function SettingsPage() {
             页面的 I2 边界仍然由 model.ts 的 FORBIDDEN_PATHS + setPath() 强制（那个测试还在）。 */}
 
         {/* ⑦ 关于 */}
-        <SectionPaper titleKey="settings.section.about" testId="settings-section-about">
+        <SectionPaper
+          titleKey="settings.section.about"
+          testId="settings-section-about"
+          descriptionKey="settings.about.checkUpdate.hint"
+        >
           <Box
             data-testid="settings-about-status"
             sx={{
@@ -1625,7 +1671,6 @@ export default function SettingsPage() {
                   ? t("settings.about.checkUpdate.running")
                   : t("settings.about.checkUpdate.run")}
               </Button>
-              <Caption>{t("settings.about.checkUpdate.hint")}</Caption>
             </Box>
             {checkUpdate.error !== null && checkUpdate.error !== undefined ? (
               <Typography

@@ -817,3 +817,280 @@ describe("⑦ /models 添加模型向导：真控件 → 真的调 model_upsert 
     expect(screen.queryByTestId("models-add-result")).toBeNull();
   });
 });
+
+// ================================================================ ⑧ [docs/21 §1] 删除模型
+//
+// 与 `providers.test.tsx` ⑨ 同一套语义：先确认 → `force=false` → 被引用时**原样显示后端原文**
+// 且此时才给级联按钮 → 成功后结果区如实写"已删除 X" → 批量**逐条**调、逐条汇报。
+// 这一节全部走整页（`renderPage`），因为"点了到底发什么载荷"只在数据层看得见。
+
+/**
+ * 多选复选框：`data-testid` 挂在 MUI `Checkbox` 的根 `span` 上，真正的 `input` 在它里面。
+ * 选择器 `[data-testid="X"] input` 与真机 E2E 的 `wdFillByTid` 同一口径（见 §⑦ 的说明）。
+ */
+function selectBoxAt(testId: string, index: number): HTMLInputElement {
+  const host = screen.getAllByTestId(testId)[index];
+  if (host === undefined) throw new Error(`没有第 ${index} 个 [data-testid="${testId}"]`);
+  const input = host.getAttribute("type") === "checkbox" ? host : host.querySelector("input");
+  if (input === null) throw new Error(`[data-testid="${testId}"] 里没有 input`);
+  return input as HTMLInputElement;
+}
+
+describe("[docs/21 §1] 模型删除：先确认、再 force=false、被引用才给级联、批量逐条", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+    registerMock("channel_list", () => channelsFixture());
+  });
+
+  it("行内 models-delete → 先弹确认框（模型 id），此时一个删除命令都没发", async () => {
+    const remove = recordingMock(undefined);
+    registerMock("model_delete", remove.handler);
+
+    renderPage();
+    const buttons = await screen.findAllByTestId("models-delete");
+    expect(buttons[0]!.tagName).toBe("BUTTON");
+
+    fireEvent.click(buttons[0]!);
+    expect(screen.getByTestId("models-delete-dialog")).toBeTruthy();
+    expect(screen.getByTestId("models-delete-target").textContent).toContain(MODEL_ID);
+    expect(remove.calls).toHaveLength(0);
+  });
+
+  it("确认 → model_delete({id, force:false})；成功：结果区写「已删除 <id>」并失效相关查询", async () => {
+    const remove = recordingMock(undefined);
+    registerMock("model_delete", remove.handler);
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("models-delete"))[0]!);
+    fireEvent.click(screen.getByTestId("models-delete-confirm"));
+
+    await waitFor(() => expect(remove.calls).toHaveLength(1));
+    expect(remove.calls[0]).toEqual({ id: MODEL_ID, force: false });
+
+    const result = await screen.findByTestId("models-delete-result");
+    expect(result.textContent).toContain("已删除");
+    expect(result.textContent).toContain(MODEL_ID);
+    // 成功后确认框收起来（MUI 的 Dialog 有一个退场过渡，所以要等它真的卸载）
+    await waitFor(() => expect(screen.queryByTestId("models-delete-dialog")).toBeNull());
+
+    for (const key of [qk.models, qk.credentials, qk.providers, qk.channelMatrix]) {
+      const hits = invalidate.mock.calls.filter(
+        ([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(key),
+      );
+      expect(hits.length, `没有失效 ${JSON.stringify(key)}`).toBeGreaterThan(0);
+    }
+    invalidate.mockRestore();
+  });
+
+  it("被引用：原样显示后端原文（含 TA 码），此时才出现级联按钮，且不假装成功", async () => {
+    registerMock("model_delete", () => {
+      throw new TokenAgencyError({
+        code: "TA-5002",
+        message: `models[0] ${MODEL_ID} 仍被 2 条通道引用`,
+      });
+    });
+
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("models-delete"))[0]!);
+    expect(screen.queryByTestId("models-delete-cascade")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("models-delete-confirm"));
+    const error = await screen.findByTestId("models-delete-error");
+    expect(error.textContent).toContain("TA-5002");
+    expect(error.textContent).toContain("仍被 2 条通道引用");
+    expect(screen.getByTestId("models-delete-cascade")).toBeTruthy();
+    expect(screen.queryByTestId("models-delete-result")).toBeNull();
+  });
+
+  it("级联按钮走 force=true", async () => {
+    const calls: Record<string, unknown>[] = [];
+    registerMock("model_delete", (args) => {
+      calls.push(args ?? {});
+      if (args?.["force"] !== true) {
+        throw new TokenAgencyError({ code: "TA-5002", message: "仍被通道引用" });
+      }
+      return undefined;
+    });
+
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("models-delete"))[0]!);
+    fireEvent.click(screen.getByTestId("models-delete-confirm"));
+    fireEvent.click(await screen.findByTestId("models-delete-cascade"));
+
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[0]).toEqual({ id: MODEL_ID, force: false });
+    expect(calls[1]).toEqual({ id: MODEL_ID, force: true });
+  });
+
+  it("「会连带删除」清单来自真实通道数据（这个模型下的通道数），读不到就不编", async () => {
+    renderPage();
+    fireEvent.click((await screen.findAllByTestId("models-delete"))[0]!);
+    const listed = screen.getByTestId("models-delete-consequences").textContent ?? "";
+    // 通道夹具里两条通道的 model 都是 MODEL_ID
+    expect(listed).toContain("2");
+    expect(listed).toContain("通道");
+  });
+
+  it("批量：逐条 force=false，一条失败不中止其余条，如实汇报成功/失败并逐条给 id + 后端原文", async () => {
+    registerMock("model_list", () => [modelView(), otherModel("gpt-4o-mini")]);
+    const calls: Record<string, unknown>[] = [];
+    registerMock("model_delete", (args) => {
+      calls.push(args ?? {});
+      if (args?.["id"] === "gpt-4o-mini") {
+        throw new TokenAgencyError({ code: "TA-5002", message: "仍被 1 条通道引用" });
+      }
+      return undefined;
+    });
+
+    renderPage();
+    await screen.findByTestId("models-table");
+    fireEvent.click(selectBoxAt("models-select", 0));
+    fireEvent.click(selectBoxAt("models-select", 1));
+    expect(screen.getByTestId("models-selected-count").textContent).toContain("2");
+
+    fireEvent.click(screen.getByTestId("models-delete-selected"));
+    expect(screen.getByTestId("models-delete-dialog")).toBeTruthy();
+    expect(calls).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("models-delete-confirm"));
+
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls).toEqual([
+      { id: MODEL_ID, force: false },
+      { id: "gpt-4o-mini", force: false },
+    ]);
+
+    const text = (await screen.findByTestId("models-delete-result")).textContent ?? "";
+    expect(text).toContain("成功 1 条，失败 1 条");
+    expect(text).not.toContain("批量删除成功");
+    expect(text).toContain("gpt-4o-mini");
+    expect(text).toContain("TA-5002");
+  });
+
+  it("表头全选（models-select-all）选中当前列表全部", async () => {
+    registerMock("model_list", () => [modelView(), otherModel("gpt-4o-mini")]);
+    renderPage();
+    await screen.findAllByTestId("models-delete");
+
+    fireEvent.click(selectBoxAt("models-select-all", 0));
+    expect(screen.getByTestId("models-selected-count").textContent).toContain("2");
+    expect(selectBoxAt("models-select", 0).checked).toBe(true);
+    expect(selectBoxAt("models-select", 1).checked).toBe(true);
+  });
+});
+
+// ================================================================ ⑧ [docs/22] 长解释收进问号圆圈
+
+/**
+ * [docs/22]（用户第 74 轮：「简介好长，好多字……做成一个问号加一个圆圈」）的验收。
+ *
+ * 两条：解释**收走了**（`?` 存在、`aria-label` 是全文、正文不再内联）、
+ * 红线**没被收走**（空态 / 数值 / 后端原文 / 连带清单，[docs/22 §2]）。
+ *
+ * 特别注意这一页有两个"看着像解释、其实不能收"的东西，这一节把它们钉住：
+ * `models.priced.unknownHint`（每一行"定价为什么是未知"的状态说明）与
+ * `models.mismatch.hint`（口径不一致时给的那句裁决说明）—— 后者被既有用例断言在
+ * `models-mismatch` 元素**内部**，收走就等于把结论挪出它所属的那一块。
+ */
+describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", () => {
+  /** 取某个 `?` 的 `aria-label`（= 提示正文全文）。 */
+  function helpLabel(testId: string): string {
+    const label = screen.getByTestId(testId).getAttribute("aria-label");
+    expect(label, `${testId} 的 aria-label 必须是提示全文`).toBeTruthy();
+    return label ?? "";
+  }
+
+  it("概览：models.summary.hint 收进 models-summary-help，四个统计格的值仍内联", () => {
+    renderBody({ rows: readModelRows([modelView()], lookup()), unpricedIds: [] });
+
+    // 先钉"不再内联"（旧代码上这一条先红：那句说明正铺在概览下面）
+    expect(screen.queryByText(/「引用通道」是去重后的实际通道数/)).toBeNull();
+
+    const label = helpLabel("models-summary-help");
+    expect(label).toContain("「引用通道」是去重后的实际通道数");
+    expect(label).toContain("「未定价」来自定价接口的未定价清单");
+    expect(screen.getAllByTestId("models-summary-help")).toHaveLength(1);
+
+    // 提示正文就是**全文**（不是被截短的半句）：一个字都没丢
+    expect(label).toBe(
+      "「引用通道」是去重后的实际通道数（来自通道清单）；「未定价」来自定价接口的未定价清单。读不到的那一维显示「—」，不显示 0。",
+    );
+
+    // §2 第 5 条：统计格里的数与单位仍然一眼可见
+    const summary = within(screen.getByTestId("models-summary"));
+    expect(summary.getByText("逻辑模型")).toBeTruthy();
+    expect(summary.getByText("引用通道")).toBeTruthy();
+    expect(summary.getByText("未对外暴露")).toBeTruthy();
+    expect(summary.getByTestId("models-summary-unpriced")).toBeTruthy();
+  });
+
+  it("定价区块：models.unpriced.hint 收进 models-pricing-help，正文不再内联", () => {
+    renderBody({ rows: readModelRows([modelView()], lookup()), unpricedIds: [] });
+
+    const label = helpLabel("models-pricing-help");
+    expect(label).toContain("未定价清单来自后端 pricing_unpriced_models");
+    expect(screen.getAllByTestId("models-pricing-help")).toHaveLength(1);
+    expect(screen.queryByText(/未定价清单来自后端 pricing_unpriced_models/)).toBeNull();
+
+    // §2 第 1 条：「全部已定价」是一条状态结论，留在一眼可见的地方
+    expect(screen.getByText("全部已定价。")).toBeTruthy();
+    expect(label).not.toContain("全部已定价");
+  });
+
+  it("红线仍内联：本地筛选的计数、通道缺数据的提示、逐行定价未知、口径不一致的裁决", () => {
+    // §2 第 5 条：本地筛选自报家门那一句里带着计数，必须内联
+    renderBody({ rows: readModelRows([modelView()], lookup()), unpricedIds: [] });
+    expect(screen.getByText("只筛选已加载的 1 个模型（本地筛选，不是后端检索）。")).toBeTruthy();
+    expect(helpLabel("models-summary-help")).not.toContain("本地筛选");
+    cleanup();
+
+    // §2 第 2 条：通道清单读不到是缺数据 + 后端原文（TA 码）
+    renderBody({
+      rows: readModelRows([modelView()], lookup({ channels: [] })),
+      unpricedIds: [],
+      channelsError: new Error("[TA-9001] 未注册 mock：channel_list"),
+    });
+    const note = screen.getByTestId("models-channels-error");
+    expect(note.textContent).toContain("TA-9001");
+    expect(helpLabel("models-summary-help")).not.toContain("TA-9001");
+    cleanup();
+
+    // 逐行「定价为什么是未知」是状态说明，不是区块说明 → 内联（每一行一个问号更糟）
+    const rustView = {
+      model: { id: MODEL_ID, aliases: [], display: { order: 1 }, expose: true },
+      channel_count: 2,
+      upstream_models: [MODEL_ID],
+    } as unknown as ModelView;
+    renderBody({ rows: readModelRows([rustView], lookup()), unpricedIds: undefined });
+    const row = screen.getAllByTestId("models-row")[0]!;
+    expect(within(row).getByText(/后端没有给出定价这一列/)).toBeTruthy();
+    expect(within(row).queryByTestId("models-priced-help")).toBeNull();
+    expect(helpLabel("models-pricing-help")).not.toContain("后端没有给出定价这一列");
+    cleanup();
+
+    // 口径不一致时那句裁决说明留在 models-mismatch **里面**
+    renderBody({
+      rows: readModelRows([modelView(), otherModel("gpt-4o-mini")], lookup()),
+      unpricedIds: ["gpt-4o-mini"],
+    });
+    expect(screen.getByTestId("models-mismatch").textContent).toContain("不替它们裁决");
+    expect(helpLabel("models-pricing-help")).not.toContain("不替它们裁决");
+  });
+
+  it("删除确认框与删除结果区照旧一眼可见（第 73 轮落地的东西没被弄坏）", async () => {
+    registerMock("model_list", () => [modelView()]);
+    renderPage();
+    await screen.findAllByTestId("models-delete");
+
+    fireEvent.click(screen.getAllByTestId("models-delete")[0]!);
+    expect(screen.getByTestId("models-delete-dialog")).toBeTruthy();
+    expect(screen.getByTestId("models-delete-confirm").textContent).toBe("删除");
+    expect(screen.getByTestId("models-delete-cancel").textContent).toBe("取消");
+    expect(screen.getByTestId("models-delete-selected").textContent).toBe("删除选中");
+
+    for (const help of screen.queryAllByTestId(/-help$/)) {
+      expect(help.getAttribute("aria-label") ?? "").not.toContain("会连带删除");
+      expect(help.getAttribute("aria-label") ?? "").not.toContain("无法撤销");
+    }
+  });
+});

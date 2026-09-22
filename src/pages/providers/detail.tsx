@@ -29,6 +29,7 @@
 import {
   Box,
   Button,
+  Checkbox,
   Paper,
   Stack,
   Table,
@@ -38,12 +39,13 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
-import { useMemo, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
-import { errorMessage, qk, useCommandQuery } from "@/shared/api";
+import { errorMessage, qk, useCommandMutation, useCommandQuery } from "@/shared/api";
 import type { Protocol, QuotaStateValue } from "@/shared/bindings";
-import { PageHeader, QuotaBar, StatusDot, type SemStatus } from "@/shared/components";
+import { ConfirmDelete, HelpTip, PageHeader, QuotaBar, StatusDot, type SemStatus } from "@/shared/components";
 import { formatInt, formatLatency, formatMoney, formatPercent, formatTokens } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { radius, typography } from "@/theme";
@@ -139,6 +141,59 @@ const GRID_SX = {
   gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
   gap: 4,
 } as const;
+
+// ================================================================ 删除（[docs/21 §1]）
+
+/**
+ * 「会连带删除 / 影响」清单的行文案：用 i18n 键 `delete.consequence.credentials` / `.channels`
+ * （第 73 轮主管补上；在这之前这里是带注释的字面量，英文界面会露中文）。
+ *
+ * **只放前端真算得出来的事实**：本页读得到 `provider_list` / `credential_list` / `lane_list`，
+ * **读不到通道清单** —— 所以"这份凭据被几条通道引用"这类话这里**一个字都不写**（算不出来不编）。
+ */
+
+/** 表头全选复选框的无障碍标签：用 `common.selectAll`（见 `providers/index.tsx` 同一常量说明）。 */
+const SELECT_ALL_LABEL_KEY: I18nKey = "common.selectAll";
+
+/** 一次删除的目标（单条与批量共用同一个形状）。 */
+type DeleteTarget = {
+  readonly ids: readonly string[];
+  readonly label: string;
+  /** 批量**没有**级联按钮（[docs/21 §1.2]：批量一律 `force=false`）。 */
+  readonly batch: boolean;
+  readonly consequences: readonly string[];
+};
+
+/** 执行完的**事实**（不带文案：文案由页面用 `t(...)` 拼）。 */
+type DeleteOutcome = {
+  deletedIds: string[];
+  failures: { id: string; message: string }[];
+};
+
+/**
+ * 逐条执行删除：**一条失败不中止其余条**；批量一律 `force=false`（机械地钉在这里）。
+ * 本页两条流程（服务商 / 凭据）共用这一份，语义与 `providers/index.tsx` 完全一致。
+ */
+async function runDelete(
+  target: DeleteTarget,
+  force: boolean,
+  remove: (id: string, force: boolean) => Promise<unknown>,
+): Promise<DeleteOutcome> {
+  const effectiveForce = target.batch ? false : force;
+  const deletedIds: string[] = [];
+  const failures: { id: string; message: string }[] = [];
+
+  for (const id of target.ids) {
+    try {
+      await remove(id, effectiveForce);
+      deletedIds.push(id);
+    } catch (err) {
+      failures.push({ id, message: errorMessage(err) });
+    }
+  }
+
+  return { deletedIds, failures };
+}
 
 // ================================================================ 小组件与纯函数
 
@@ -260,6 +315,17 @@ export type ProviderDetailBodyProps = {
   laneError: unknown;
   /** 返回列表（展示层不认识 router）。 */
   onBack: () => void;
+  /**
+   * 凭据表上的删除入口（[docs/21 §3]）。**省略 = 这一页没有凭据删除入口** ——
+   * 纯展示件不自己造写入口，数据层（页面）注入真处理器。
+   */
+  onDeleteCredential?: (credential: CredentialRow) => void;
+  /** 凭据多选：行 `providers-credential-select` / 表头 `-select-all` / 计数 `-selected-count`。 */
+  credentialSelectedIds?: readonly string[];
+  onToggleCredentialSelect?: (id: string) => void;
+  onToggleCredentialSelectAll?: () => void;
+  /** 「删除选中」凭据（`providers-credential-delete-selected`）：一次确认后**逐条**删。 */
+  onDeleteCredentialsSelected?: () => void;
 };
 
 export function ProviderDetailBody({
@@ -274,10 +340,28 @@ export function ProviderDetailBody({
   laneName,
   laneError,
   onBack,
+  onDeleteCredential,
+  credentialSelectedIds,
+  onToggleCredentialSelect,
+  onToggleCredentialSelectAll,
+  onDeleteCredentialsSelected,
 }: ProviderDetailBodyProps) {
   const { t } = useTranslation();
 
   const mounted = credentials === undefined ? undefined : credentialsOf(credentials, id);
+  const credentialSelected = credentialSelectedIds ?? [];
+  const credentialSelectedSet = useMemo(
+    () => new Set(credentialSelected),
+    [credentialSelected],
+  );
+  /** 多选只在数据层把两个处理器都注入时才画（否则是一排点了没用的复选框）。 */
+  const credentialSelectable =
+    onToggleCredentialSelect !== undefined && onToggleCredentialSelectAll !== undefined;
+  const mountedIds = (mounted ?? []).map((credential) => credential.id);
+  const allCredentialsSelected =
+    mountedIds.length > 0 && mountedIds.every((credentialId) => credentialSelectedSet.has(credentialId));
+  const someCredentialsSelected =
+    !allCredentialsSelected && mountedIds.some((credentialId) => credentialSelectedSet.has(credentialId));
 
   return (
     <Box
@@ -321,9 +405,17 @@ export function ProviderDetailBody({
       ) : (
         <>
           {/* ① 概览：契约视图给的健康列 + 完整实体给的默认线路 */}
-          <Paper variant="outlined" sx={SECTION_SX}>
+          <Paper variant="outlined" sx={SECTION_SX} data-testid="providers-overview">
             <Stack spacing={4}>
-              <Typography variant="h4">{t("providers.section.overview")}</Typography>
+              {/* 区块说明（那句"这四列只有后端视图才提供"）是**解释** → 收进标题右边的问号
+                  （[docs/22 §2]）；它不再铺在字段网格下面。**数值与「—」照旧留在网格里。** */}
+              <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+                <Typography variant="h4">{t("providers.section.overview")}</Typography>
+                <HelpTip
+                  text={t("providers.honesty.detailFields")}
+                  testId="providers-overview-help"
+                />
+              </Box>
 
               <Box sx={GRID_SX}>
                 <Field label={t("providers.field.id")}>
@@ -383,25 +475,35 @@ export function ProviderDetailBody({
                 </Field>
               </Box>
 
-              <Stack spacing={1}>
-                <Caption>{t("providers.honesty.detailFields")}</Caption>
-                {laneError !== undefined && laneError !== null ? (
-                  <Typography
-                    variant="caption"
-                    data-testid="providers-lane-error"
-                    sx={{ color: "error.main" }}
-                  >
-                    {t("providers.lane.error", { message: errorMessage(laneError) })}
-                  </Typography>
-                ) : null}
-              </Stack>
+              {/* 线路名读不到是**后端原文 + TA 码**（[docs/22 §2 第 2 条]）→ 留在版面上 */}
+              {laneError !== undefined && laneError !== null ? (
+                <Typography
+                  variant="caption"
+                  data-testid="providers-lane-error"
+                  sx={{ color: "error.main" }}
+                >
+                  {t("providers.lane.error", { message: errorMessage(laneError) })}
+                </Typography>
+              ) : null}
             </Stack>
           </Paper>
 
           {/* ② 连接：只有完整 `Provider` 才有这些字段 */}
           <Paper variant="outlined" sx={SECTION_SX} data-testid="providers-connection">
             <Stack spacing={4}>
-              <Typography variant="h4">{t("providers.section.connection")}</Typography>
+              {/* 三句区块说明（「—」是什么意思 / 读超时为什么给流式留余量 / 额外 CA 在这里只显示配没配）
+                  合成**一条**提示（[docs/22 §2/§3]：一个区块最多一个问号）。 */}
+              <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+                <Typography variant="h4">{t("providers.section.connection")}</Typography>
+                <HelpTip
+                  text={[
+                    t("providers.connection.partial"),
+                    t("providers.connection.hint"),
+                    t("providers.tls.extraCaHint"),
+                  ].join("\n")}
+                  testId="providers-connection-help"
+                />
+              </Box>
 
               {!row.hasConnectionConfig ? (
                 /* 后端只给了视图 → 明说不可用，不排空占位（"没返回"与"空值"是两件事） */
@@ -452,11 +554,6 @@ export function ProviderDetailBody({
                       <MonoValue>{row.tlsMinVersion ?? DASH}</MonoValue>
                     </Field>
                   </Box>
-                  <Stack spacing={1}>
-                    <Caption>{t("providers.connection.partial")}</Caption>
-                    <Caption>{t("providers.connection.hint")}</Caption>
-                    <Caption>{t("providers.tls.extraCaHint")}</Caption>
-                  </Stack>
                 </>
               )}
             </Stack>
@@ -466,7 +563,12 @@ export function ProviderDetailBody({
           {row.hasConnectionConfig ? (
             <Paper variant="outlined" sx={SECTION_SX} data-testid="providers-headers">
               <Stack spacing={4}>
-                <Typography variant="h4">{t("providers.section.headers")}</Typography>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+                  <Typography variant="h4">{t("providers.section.headers")}</Typography>
+                  {/* 「附加头默认只补缺，不覆盖同名头」是解释 → 收进问号（[docs/22 §2]）；
+                      同名头冲突的**取值**仍在下面那个字段格里原样可见。 */}
+                  <HelpTip text={t("providers.headers.hint")} testId="providers-headers-help" />
+                </Box>
 
                 {row.headers.length === 0 ? (
                   <Typography variant="body1" sx={{ color: "text.secondary" }}>
@@ -512,8 +614,6 @@ export function ProviderDetailBody({
                     <Value>{labelOf(PASSTHROUGH_BODY_LABEL, t, row.passthroughBody) ?? DASH}</Value>
                   </Field>
                 </Box>
-
-                <Caption>{t("providers.headers.hint")}</Caption>
               </Stack>
             </Paper>
           ) : null}
@@ -521,7 +621,16 @@ export function ProviderDetailBody({
           {/* ④ 凭据：挂载关系写在凭据的 provider 字段上 */}
           <Paper variant="outlined" sx={SECTION_SX} data-testid="providers-credentials">
             <Stack spacing={4}>
-              <Typography variant="h4">{t("providers.section.credentials")}</Typography>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+                <Typography variant="h4">{t("providers.section.credentials")}</Typography>
+                {/* 「密钥只以引用形式出现 / 已用比例只用后端给的 used_pct」是解释 → 收进问号
+                    （[docs/22 §2]）。**空态与「这份凭据存的是明文密钥」那条状态留在版面上**：
+                    前者是结论（§2 第 1 条），后者是这一行的告警。 */}
+                <HelpTip
+                  text={t("providers.credentials.secretHint")}
+                  testId="providers-credentials-help"
+                />
+              </Box>
 
               {credentialsError !== undefined && credentialsError !== null ? (
                 <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
@@ -546,19 +655,51 @@ export function ProviderDetailBody({
                   <Caption>{t("providers.credentials.emptyHint")}</Caption>
                 </Stack>
               ) : (
-                <Box sx={{ overflowX: "auto" }}>
-                  <Table size="small" data-testid="providers-credentials-table">
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>{t("providers.credentials.col.label")}</TableCell>
-                        <TableCell>{t("providers.credentials.col.enabled")}</TableCell>
-                        <TableCell>{t("providers.credentials.col.lane")}</TableCell>
-                        <TableCell>{t("providers.credentials.col.quota")}</TableCell>
-                        <TableCell>{t("providers.credentials.col.tags")}</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {mounted.map((credential) => {
+                <>
+                  {/* 删除选中：选中数 + 「删除选中」（[docs/21 §1.2]） */}
+                  {onDeleteCredentialsSelected === undefined ? null : (
+                    <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
+                      <Typography variant="caption" data-testid="providers-credential-selected-count">
+                        {t("delete.selectedCount", { count: credentialSelected.length })}
+                      </Typography>
+                      <Button
+                        variant="outlined"
+                        color="error"
+                        data-testid="providers-credential-delete-selected"
+                        disabled={credentialSelected.length === 0}
+                        onClick={onDeleteCredentialsSelected}
+                      >
+                        {t("common.deleteSelected")}
+                      </Button>
+                    </Stack>
+                  )}
+
+                  <Box sx={{ overflowX: "auto" }}>
+                    <Table size="small" data-testid="providers-credentials-table">
+                      <TableHead>
+                        <TableRow>
+                          {credentialSelectable ? (
+                            <TableCell padding="checkbox">
+                              <Checkbox
+                                data-testid="providers-credential-select-all"
+                                checked={allCredentialsSelected}
+                                indeterminate={someCredentialsSelected}
+                                onChange={onToggleCredentialSelectAll}
+                                slotProps={{ input: { "aria-label": t(SELECT_ALL_LABEL_KEY) } }}
+                              />
+                            </TableCell>
+                          ) : null}
+                          <TableCell>{t("providers.credentials.col.label")}</TableCell>
+                          <TableCell>{t("providers.credentials.col.enabled")}</TableCell>
+                          <TableCell>{t("providers.credentials.col.lane")}</TableCell>
+                          <TableCell>{t("providers.credentials.col.quota")}</TableCell>
+                          <TableCell>{t("providers.credentials.col.tags")}</TableCell>
+                          {/* 操作列表头留空（同列表页）：不为一个表头去造 i18n 键 */}
+                          {onDeleteCredential === undefined ? null : <TableCell align="right" />}
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {mounted.map((credential) => {
                         const stateValue =
                           credential.quotaState !== undefined &&
                           QUOTA_STATE_SEM[credential.quotaState] !== undefined
@@ -593,6 +734,22 @@ export function ProviderDetailBody({
 
                         return (
                           <TableRow key={credential.id} data-testid="providers-credential-row">
+                            {credentialSelectable ? (
+                              <TableCell padding="checkbox">
+                                <Checkbox
+                                  data-testid="providers-credential-select"
+                                  checked={credentialSelectedSet.has(credential.id)}
+                                  onChange={() => onToggleCredentialSelect?.(credential.id)}
+                                  slotProps={{
+                                    // 无障碍标签用这一行自己的标签 / id（用户数据，不需要新键）
+                                    input: {
+                                      "aria-label":
+                                        credential.label === "" ? credential.id : credential.label,
+                                    },
+                                  }}
+                                />
+                              </TableCell>
+                            ) : null}
                             <TableCell>
                               <Value>{credential.label === "" ? DASH : credential.label}</Value>
                               {credential.secret === undefined ? null : (
@@ -655,23 +812,42 @@ export function ProviderDetailBody({
                             <TableCell sx={{ color: "text.secondary", maxWidth: 280 }}>
                               {credential.tags.length === 0 ? DASH : credential.tags.join(" · ")}
                             </TableCell>
+                            {onDeleteCredential === undefined ? null : (
+                              <TableCell align="right">
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  color="error"
+                                  data-testid="providers-credential-delete"
+                                  onClick={() => onDeleteCredential(credential)}
+                                >
+                                  {t("common.delete")}
+                                </Button>
+                              </TableCell>
+                            )}
                           </TableRow>
                         );
                       })}
                     </TableBody>
                   </Table>
                 </Box>
+                </>
               )}
-
-              <Caption>{t("providers.credentials.secretHint")}</Caption>
             </Stack>
           </Paper>
 
           {/* ⑤ 原始字段：后端返回的整条记录，原样显示（未做任何清洗） */}
-          <Paper variant="outlined" sx={SECTION_SX}>
+          <Paper variant="outlined" sx={SECTION_SX} data-testid="providers-raw-section">
             <Stack spacing={2}>
-              <Typography variant="h4">{t("providers.section.raw")}</Typography>
-              <Caption>{t("providers.section.rawHint")}</Caption>
+              <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+                <Typography variant="h4">{t("providers.section.raw")}</Typography>
+                {/* 「原样显示、未做任何清洗」是解释 → 收进问号（[docs/22 §2]）；
+                    下面的 `pre` 里那份原文一个字都没动。 */}
+                <HelpTip
+                  text={t("providers.section.rawHint")}
+                  testId="providers-raw-section-help"
+                />
+              </Box>
               <Box
                 component="pre"
                 data-testid="providers-raw"
@@ -762,6 +938,118 @@ export default function ProviderDetailPage() {
     [providers.data],
   );
 
+  // ---------------------------------------------------------------- 删除（[docs/21 §1]）
+  //
+  // 本页有**两条**删除流程（页头删服务商、凭据表删凭据），语义完全一样：
+  // 先确认 → `force=false` → 被引用时后端原文原样显示且此时才给级联按钮 → 成功写结果区。
+  // 两条各自持有一份状态（mutate 的目标不同），执行体都是模块级的 `runDelete`。
+
+  const qc = useQueryClient();
+  const removeProvider = useCommandMutation("provider_delete");
+  const removeCredential = useCommandMutation("credential_delete");
+
+  /** 挂在当前服务商下的凭据（空数组 = 确实没有；凭据清单读不到时它也是空的）。 */
+  const mountedCredentials = useMemo(
+    () => (credentialRows === undefined ? [] : credentialsOf(credentialRows, id)),
+    [credentialRows, id],
+  );
+
+  /** 一条删除流程的状态（本页两条：服务商 / 凭据）。 */
+  type DeleteFlowState = {
+    target: DeleteTarget | undefined;
+    /** 后端原文（被引用时的错误）；有它对话框才显示、也才给级联按钮。 */
+    error: string | undefined;
+    /** 结果区：每一次事实一行。 */
+    result: readonly string[];
+  };
+  const EMPTY_FLOW: DeleteFlowState = { target: undefined, error: undefined, result: [] };
+  /** `useState` 的 setter 类型（`openFlow` / `cancelFlow` / `runFlow` 三个执行体共用）。 */
+  type SetFlow = Dispatch<SetStateAction<DeleteFlowState>>;
+  const [providerFlow, setProviderFlow] = useState<DeleteFlowState>(EMPTY_FLOW);
+  const [credentialFlow, setCredentialFlow] = useState<DeleteFlowState>(EMPTY_FLOW);
+  /** 凭据多选（按 id 存，顺序 = 勾选顺序）。 */
+  const [credentialSelectedIds, setCredentialSelectedIds] = useState<readonly string[]>([]);
+  /** 批量进行中（`mutateAsync` 逐条之间 `isPending` 会回落，所以单独记一笔）。 */
+  const [batchRunning, setBatchRunning] = useState(false);
+
+  const openFlow = (setFlow: SetFlow, target: DeleteTarget): void => {
+    // 新一次操作开始 → 清掉上一次的汇报与错误（结果区永远只讲刚刚发生的事）
+    setFlow({ target, error: undefined, result: [] });
+  };
+
+  const cancelFlow = (setFlow: SetFlow): void => {
+    setFlow((prev) => ({ ...prev, target: undefined, error: undefined }));
+  };
+
+  /** 删除成功后要失效的查询（[docs/21 §1.1 第 4 条]）：服务商级联会动到凭据 / 模型 / 通道矩阵。 */
+  const invalidateAfterDelete = async (): Promise<void> => {
+    for (const key of [qk.providers, qk.credentials, qk.models, qk.channelMatrix]) {
+      await qc.invalidateQueries({ queryKey: key });
+    }
+  };
+
+  /** 「会连带删除 / 影响」清单：只用本页读得到的查询算（凭据数 = 这一页的凭据表）。 */
+  const providerConsequences = (): string[] => {
+    if (credentialRows === undefined) return [];
+    const lines = [
+      t("delete.consequence.credentials", {
+        value: formatInt(credentialsOf(credentialRows, id).length),
+      }),
+    ];
+    // 通道数只有后端给了 `channel_count` 才算得出来（Rust 的 provider_list 没有这一列）
+    if (row?.channelCount !== undefined) {
+      lines.push(t("delete.consequence.channels", { value: formatInt(row.channelCount) }));
+    }
+    return lines;
+  };
+
+  /** 一次删除的公共执行体：跑完把**事实**写回对应的那份状态。 */
+  const runFlow = async (
+    setFlow: SetFlow,
+    target: DeleteTarget,
+    force: boolean,
+    remove: (targetId: string, effectiveForce: boolean) => Promise<unknown>,
+    nameOf: (targetId: string) => string,
+  ): Promise<void> => {
+    if (target.batch) setBatchRunning(true);
+    const outcome = await runDelete(target, force, remove);
+    setBatchRunning(false);
+    const singleFailed = !target.batch && outcome.failures.length > 0;
+    const result = target.batch
+      ? [
+          t("delete.result.summary", {
+            ok: formatInt(outcome.deletedIds.length),
+            failed: formatInt(outcome.failures.length),
+          }),
+          ...outcome.deletedIds.map((deletedId) => t("delete.result.ok", { name: nameOf(deletedId) })),
+          ...outcome.failures.map((failure) =>
+            t("delete.result.failed", { message: `${failure.id} · ${failure.message}` }),
+          ),
+        ]
+      : singleFailed
+        ? []
+        : outcome.deletedIds.map((deletedId) => t("delete.result.ok", { name: nameOf(deletedId) }));
+    setFlow((prev) => ({
+      ...prev,
+      error: singleFailed ? outcome.failures[0]!.message : undefined,
+      result,
+      // 单条失败时留着框（后端原文与级联按钮就在那里）；其余情况收框
+      target: target.batch || !singleFailed ? undefined : target,
+    }));
+    // 只有真的删掉的才从选中里摘掉；失败的留着（用户可以直接再来一次）
+    setCredentialSelectedIds((prev) => prev.filter((selectedId) => !outcome.deletedIds.includes(selectedId)));
+    await invalidateAfterDelete();
+  };
+
+  const detailLabel = (name: string, entityId: string): string =>
+    name === "" ? entityId : `${name}（${entityId}）`;
+
+  const credentialNameOf = (credentialId: string): string => {
+    const found = mountedCredentials.find((credential) => credential.id === credentialId);
+    if (found === undefined) return credentialId;
+    return found.label === "" ? found.id : found.label;
+  };
+
   return (
     <>
       <PageHeader
@@ -781,6 +1069,27 @@ export default function ProviderDetailPage() {
                 onClick={openEdit}
               >
                 {t("providers.edit")}
+              </Button>
+            )}
+            {/*
+              「删除服务商」（[docs/21 §1 / §3]）：只在这一行真的存在时出现 ——
+              目录里没有这个 id 时不放一个点了会错的按钮。点击**先弹确认框**，不发命令。
+            */}
+            {row === undefined ? null : (
+              <Button
+                variant="outlined"
+                color="error"
+                data-testid="providers-detail-delete"
+                onClick={() =>
+                  openFlow(setProviderFlow, {
+                    ids: [row.id],
+                    label: detailLabel(row.name, row.id),
+                    batch: false,
+                    consequences: providerConsequences(),
+                  })
+                }
+              >
+                {t("delete.title.provider")}
               </Button>
             )}
             <Button
@@ -809,6 +1118,148 @@ export default function ProviderDetailPage() {
         laneName={(laneId) => laneNameOf(laneOptions, laneId)}
         laneError={lanes.error ?? undefined}
         onBack={() => navigate("/providers")}
+        onDeleteCredential={(credential) =>
+          openFlow(setCredentialFlow, {
+            ids: [credential.id],
+            label: detailLabel(credential.label, credential.id),
+            batch: false,
+            // 本页读不到通道清单 → 这份凭据被哪些通道引用**算不出来**，就不写（不编）
+            consequences: [],
+          })
+        }
+        credentialSelectedIds={credentialSelectedIds}
+        onToggleCredentialSelect={(credentialId) =>
+          setCredentialSelectedIds((prev) =>
+            prev.includes(credentialId)
+              ? prev.filter((selectedId) => selectedId !== credentialId)
+              : [...prev, credentialId],
+          )
+        }
+        onToggleCredentialSelectAll={() => {
+          const visible = mountedCredentials.map((credential) => credential.id);
+          setCredentialSelectedIds((prev) =>
+            visible.length > 0 && visible.every((credentialId) => prev.includes(credentialId))
+              ? prev.filter((credentialId) => !visible.includes(credentialId))
+              : [...new Set([...prev, ...visible])],
+          );
+        }}
+        onDeleteCredentialsSelected={() => {
+          const chosen = mountedCredentials.filter((credential) =>
+            credentialSelectedIds.includes(credential.id),
+          );
+          if (chosen.length === 0) return;
+          openFlow(setCredentialFlow, {
+            ids: chosen.map((credential) => credential.id),
+            label: chosen
+              .map((credential) => detailLabel(credential.label, credential.id))
+              .join("、"),
+            batch: true,
+            // 每一份凭据都算不出连带清单（本页没有通道清单）→ 保持空，不编
+            consequences: [],
+          });
+        }}
+      />
+
+      {/* 删除结果区（两份流程各一块）：只写真的发生过的事 */}
+      {providerFlow.result.length === 0 ? null : (
+        <Box sx={{ px: 8, pb: 8 }}>
+          <Paper variant="outlined" sx={SECTION_SX}>
+            <Stack spacing={1} data-testid="providers-delete-result">
+              {providerFlow.result.map((line, index) => (
+                <Typography key={`${index}-${line}`} variant="body1" sx={{ overflowWrap: "anywhere" }}>
+                  {line}
+                </Typography>
+              ))}
+            </Stack>
+          </Paper>
+        </Box>
+      )}
+      {credentialFlow.result.length === 0 ? null : (
+        <Box sx={{ px: 8, pb: 8 }}>
+          <Paper variant="outlined" sx={SECTION_SX}>
+            <Stack spacing={1} data-testid="providers-credential-delete-result">
+              {credentialFlow.result.map((line, index) => (
+                <Typography key={`${index}-${line}`} variant="body1" sx={{ overflowWrap: "anywhere" }}>
+                  {line}
+                </Typography>
+              ))}
+            </Stack>
+          </Paper>
+        </Box>
+      )}
+
+      {/*
+        删除服务商（[docs/21 §1 / §2]）：testid 前缀用 `providers`（与列表页同一个实体同一个前缀，
+        §3 表里点名的级联按钮就是 `providers-delete-cascade`）。先确认 → `force=false` →
+        被引用时后端原文原样显示、此时才出现级联按钮。
+      */}
+      <ConfirmDelete
+        open={providerFlow.target !== undefined}
+        testIdPrefix="providers"
+        title={t("delete.title.provider")}
+        targetLabel={providerFlow.target?.label ?? ""}
+        consequences={providerFlow.target?.consequences}
+        cascadeAvailable={providerFlow.target !== undefined && !providerFlow.target.batch}
+        pending={removeProvider.isPending || batchRunning}
+        errorText={providerFlow.error}
+        onConfirm={() => {
+          if (providerFlow.target !== undefined) {
+            void runFlow(
+              setProviderFlow,
+              providerFlow.target,
+              false,
+              (targetId, effectiveForce) => removeProvider.mutateAsync({ id: targetId, force: effectiveForce }),
+              (targetId) => (row === undefined ? targetId : row.name === "" ? row.id : row.name),
+            );
+          }
+        }}
+        onConfirmCascade={() => {
+          if (providerFlow.target !== undefined) {
+            void runFlow(
+              setProviderFlow,
+              providerFlow.target,
+              true,
+              (targetId, effectiveForce) => removeProvider.mutateAsync({ id: targetId, force: effectiveForce }),
+              (targetId) => (row === undefined ? targetId : row.name === "" ? row.id : row.name),
+            );
+          }
+        }}
+        onCancel={() => cancelFlow(setProviderFlow)}
+      />
+
+      {/* 删除凭据（[docs/21 §3]）：单条与批量同一个组件、同一套语义 */}
+      <ConfirmDelete
+        open={credentialFlow.target !== undefined}
+        testIdPrefix="providers-credential"
+        title={t("delete.title.credential")}
+        targetLabel={credentialFlow.target?.label ?? ""}
+        consequences={credentialFlow.target?.consequences}
+        cascadeAvailable={credentialFlow.target !== undefined && !credentialFlow.target.batch}
+        pending={removeCredential.isPending || batchRunning}
+        errorText={credentialFlow.error}
+        onConfirm={() => {
+          if (credentialFlow.target !== undefined) {
+            void runFlow(
+              setCredentialFlow,
+              credentialFlow.target,
+              false,
+              (targetId, effectiveForce) => removeCredential.mutateAsync({ id: targetId, force: effectiveForce }),
+              credentialNameOf,
+            );
+          }
+        }}
+        onConfirmCascade={() => {
+          if (credentialFlow.target !== undefined) {
+            void runFlow(
+              setCredentialFlow,
+              credentialFlow.target,
+              true,
+              (targetId, effectiveForce) => removeCredential.mutateAsync({ id: targetId, force: effectiveForce }),
+              credentialNameOf,
+            );
+          }
+        }}
+        onCancel={() => cancelFlow(setCredentialFlow)}
       />
 
       {/* 与「添加服务商」同一个两步向导：这里只是以编辑模式打开（功能一模一样） */}

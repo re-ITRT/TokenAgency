@@ -69,6 +69,7 @@ import type {
   TraceRow,
 } from "@/shared/bindings";
 import {
+  HelpTip,
   outcomeDisplay,
   PageHeader,
   StatusDot,
@@ -327,9 +328,15 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
   return (
     <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
       {/* ① 查询条件（[07 §2.4]：时间范围 / 检索 / 状态） */}
-      <Paper variant="outlined" sx={SECTION_SX}>
+      <Paper variant="outlined" sx={SECTION_SX} data-testid="logs-filter">
         <Stack spacing={3}>
-          <Typography variant="h4">{t("logs.filter.title")}</Typography>
+          {/* 区块说明收进问号圆圈（[docs/22 §2]）：下面那几行说明里，
+              "检索上限的条数"是数值（§2 第 5 条）、"off 的后果"是状态结论（第 1 条），
+              它们照旧留在版面上 —— 这一块只收这一条"检索是怎么工作的"解释 */}
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+            <Typography variant="h4">{t("logs.filter.title")}</Typography>
+            <HelpTip text={t("logs.filter.errorCodeHint")} testId="logs-filter-help" />
+          </Box>
 
           <Box
             sx={{
@@ -404,7 +411,6 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
           <Stack spacing={1}>
             <Caption>{t("logs.filter.searchExclusive")}</Caption>
             <Caption>{t("logs.filter.searchScanLimit", { limit: formatInt(SEARCH_SCAN_ROWS) })}</Caption>
-            <Caption>{t("logs.filter.errorCodeHint")}</Caption>
             <Caption>{t("logs.filter.levelHint")}</Caption>
             {/* off 的真后果：不落任何行 → 筛选必然空。写在这里，用户才不会以为是页面坏了 */}
             <Caption>{t("logs.filter.offHint")}</Caption>
@@ -602,9 +608,13 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
       </Paper>
 
       {/* ③ 记录与留存（C1：占用 + 一键打开目录在页头；模式/保留期/清空在这里） */}
-      <Paper variant="outlined" sx={SECTION_SX}>
+      <Paper variant="outlined" sx={SECTION_SX} data-testid="logs-storage">
         <Stack spacing={4}>
-          <Typography variant="h4">{t("logs.storage.title")}</Typography>
+          {/* "这组数字算的是什么"收进问号圆圈（[docs/22 §2]）；脱敏说明与导出说明留在版面上 */}
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+            <Typography variant="h4">{t("logs.storage.title")}</Typography>
+            <HelpTip text={t("logs.storage.scope")} testId="logs-storage-help" />
+          </Box>
 
           {log.statsError !== undefined && log.statsError !== null ? (
             <Typography variant="body1" data-testid="logs-stats-error" sx={{ color: "error.main" }}>
@@ -664,7 +674,6 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
           )}
 
           <Stack spacing={1}>
-            <Caption>{t("logs.storage.scope")}</Caption>
             <Caption>{t("logs.storage.sanitized")}</Caption>
           </Stack>
 
