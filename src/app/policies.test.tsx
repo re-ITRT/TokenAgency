@@ -14,13 +14,13 @@
 
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import PoliciesPage, { PoliciesBody, readPolicyList, type PoliciesBodyProps } from "@/pages/policies";
 import { registerBaselineMocks, registerMock, TokenAgencyError } from "@/shared/api";
 import type { Policy } from "@/shared/bindings";
-import { i18n } from "@/shared/i18n";
+import { i18n, type I18nKey } from "@/shared/i18n";
 import { zhCN } from "@/shared/i18n/zh-CN";
 import { buildTheme } from "@/theme";
 
@@ -148,18 +148,33 @@ describe("读 policy_list 的结果（不猜、不补默认值）", () => {
 // ================================================================ ② 只读：不许有按钮
 
 describe("[只读] 未实现的命令不许出现在界面上（不按钮、不禁用占位）", () => {
-  it("有数据时：正文里一个按钮都没有", () => {
+  it("有数据时：正文里除了那个问号，一个操作按钮都没有", () => {
     renderBody({ policies: readPolicyList([policy()]) });
-    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    // [docs/22] 之后正文里多了一个**没有文字**的按钮：收走解释的那个问号圆圈（`HelpTip` 是
+    // `IconButton`）。这条断言钉的仍然是"正文里没有任何操作按钮"，并且**额外**钉住
+    // "没有文字的按钮只能是它"（比原来只多不少）。
+    const buttons = screen.queryAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual([""]);
+    expect(buttons.map((b) => b.getAttribute("data-testid"))).toEqual([
+      "policies-list-section-help",
+    ]);
   });
 
   it("页头操作区只有「添加路由」与「刷新」：没有排序 / 启停 / 模拟入口", () => {
     renderPage();
     const buttons = screen.queryAllByRole("button");
-    expect(buttons.map((b) => b.textContent)).toEqual([
-      zhCN["policies.add.open"],
-      zhCN["policies.refresh"],
-    ]);
+    // 页头说明已经收进 `?` 悬停提示（[docs/22 §1]：`PageHeader` 的 `description` 不再内联）——
+    // 那个按钮**没有文字**。这条断言钉的仍是"操作区里没有排序 / 启停 / 模拟这些文字入口"，
+    // 并且**额外**钉住"没有文字的按钮只能是页头与策略列表那两处 `?`"（比原来只多不少，另一侧由
+    // `page-header.test.tsx` 自己钉全文与 aria-label）。
+    expect(
+      buttons.filter((b) => (b.textContent ?? "") !== "").map((b) => b.textContent),
+    ).toEqual([zhCN["policies.add.open"], zhCN["policies.refresh"]]);
+    expect(
+      buttons
+        .filter((b) => (b.textContent ?? "") === "")
+        .map((b) => b.getAttribute("data-testid")),
+    ).toEqual(["page-header-help", "policies-list-section-help"]);
     // 未实现的命令名不许出现在界面上（既不是按钮，也不是文案里的操作）
     for (const name of ["policy_reorder", "policy_set_enabled", "policy_simulate"]) {
       expect(screen.queryAllByRole("button", { name: new RegExp(name) })).toHaveLength(0);
@@ -672,5 +687,255 @@ describe("[添加路由] 提交：真实入参 + 回显后端返回值 + 原样�
     expect(text.textContent).toContain("vision（ch-1=true / ch-2=false）");
     const detailsBox = screen.getByTestId("policies-add-error-details");
     expect(detailsBox.textContent).toContain('"field": "vision"');
+  });
+});
+
+// ================================================================ ⑥ 删除（[docs/21 §1]）
+
+/**
+ * 删除的 mock：列表数据、`policy_delete` 的载荷记录、以及"某一条失败"的钩子。
+ *
+ * 载荷必须是 `{ id }`（`bindings.ts:1309`：`policy_delete: { args: { id: PolicyId } }`），
+ * 而且**没有 force 参数**（[docs/21 §1.1 第 3 条]：只有 provider / credential / model 有级联语义）。
+ */
+function registerDeleteMocks(options: {
+  policies: Policy[];
+  remove?: (id: string) => void;
+}): { id: string }[] {
+  const calls: { id: string }[] = [];
+  registerMock("policy_list", () => options.policies);
+  registerMock("policy_delete", (args) => {
+    const call = args as unknown as { id: string };
+    calls.push(call);
+    options.remove?.(call.id);
+    return undefined;
+  });
+  return calls;
+}
+
+/** 按 zh-CN 的真源拼预期文案（断言里不写死中文，改文案时只改一处）。 */
+function textOf(key: I18nKey, vars: Record<string, string | number> = {}): string {
+  let out: string = zhCN[key];
+  for (const [name, value] of Object.entries(vars)) {
+    out = out.replace(`{{${name}}}`, String(value));
+  }
+  return out;
+}
+
+/** 点一次确认框里的「删除」。 */
+function confirmDelete() {
+  fireEvent.click(screen.getByTestId("policies-delete-confirm"));
+}
+
+describe("[删除] 单条：先二次确认，再按 id 调 policy_delete", () => {
+  it("点行内「删除」只弹确认框（一条命令都不发），确认后才发 policy_delete({id})", async () => {
+    const calls = registerDeleteMocks({
+      policies: [policy({ id: "pol-a", name: "甲" }), policy({ id: "pol-b", name: "乙" })],
+    });
+    renderPage();
+
+    const buttons = await screen.findAllByTestId("policies-delete");
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[0]!);
+
+    // ① 确认框先出现，且写清删的是哪一个（名称 + id）
+    expect(screen.getByTestId("policies-delete-dialog")).toBeTruthy();
+    const target = screen.getByTestId("policies-delete-target").textContent ?? "";
+    expect(target).toContain("甲");
+    expect(target).toContain("pol-a");
+    // ② **二次确认之前绝不调用后端**
+    expect(calls).toHaveLength(0);
+
+    confirmDelete();
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({ id: "pol-a" });
+
+    // ③ 成功后在结果区如实写「已删除 <名称>」
+    const result = await screen.findByTestId("policies-delete-result");
+    expect(result.textContent).toContain(textOf("delete.result.ok", { name: "甲" }));
+    expect(result.textContent).toContain("pol-a");
+  });
+
+  it("被引用时：确认框里**原样**显示后端原文（含 TA 码），且不放级联按钮", async () => {
+    registerDeleteMocks({
+      policies: [policy({ id: "pol-a", name: "甲" })],
+      remove: () => {
+        throw new TokenAgencyError({
+          code: "TA-5002",
+          message: "策略 pol-a 正被引用，无法删除",
+          details: { referencing: ["pol-b"] },
+        });
+      },
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("policies-delete"));
+    confirmDelete();
+
+    const err = await screen.findByTestId("policies-delete-error");
+    expect(err.textContent).toContain("TA-5002");
+    expect(err.textContent).toContain("策略 pol-a 正被引用，无法删除");
+    // `policy_delete` 没有 force 语义 → 没有"强行删除"按钮（那会是假按钮）
+    expect(screen.queryByTestId("policies-delete-cascade")).toBeNull();
+    // 确认框保持打开：用户看得见后端为什么拒绝
+    expect(screen.getByTestId("policies-delete-dialog")).toBeTruthy();
+    // 失败时**不许**在结果区写"已删除"
+    expect(screen.queryByText(textOf("delete.result.ok", { name: "甲" }))).toBeNull();
+  });
+});
+
+describe("[删除] 批量：一次确认、逐条调用、逐条如实汇报", () => {
+  it("全选 → 一次确认 → 逐条 policy_delete；1 成功 1 失败都发出去，失败项给 id + 后端原文", async () => {
+    const calls = registerDeleteMocks({
+      policies: [policy({ id: "pol-a", name: "甲" }), policy({ id: "pol-b", name: "乙" })],
+      remove: (id) => {
+        if (id === "pol-b") {
+          throw new TokenAgencyError({ code: "TA-5002", message: "策略 pol-b 正被引用" });
+        }
+      },
+    });
+    renderPage();
+
+    // 没勾选时「删除选中」不可用（不是假按钮：勾上就能用）
+    const toolbarButton = await screen.findByTestId("policies-delete-selected");
+    expect((toolbarButton as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(
+      within(screen.getByTestId("policies-select-all")).getByRole("checkbox"),
+    );
+    expect(screen.getByTestId("policies-selected-count").textContent).toContain(
+      textOf("delete.selectedCount", { count: 2 }),
+    );
+    expect((screen.getByTestId("policies-delete-selected") as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+
+    fireEvent.click(toolbarButton);
+    // 批量也只弹**一次**确认，确认之前一条命令都不发
+    expect(screen.getByTestId("policies-delete-dialog")).toBeTruthy();
+    expect(calls).toHaveLength(0);
+
+    confirmDelete();
+
+    // **一条失败不中止其它条**：两条都发出去了
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls.map((call) => call.id)).toEqual(["pol-a", "pol-b"]);
+
+    const result = await screen.findByTestId("policies-delete-result");
+    // 逐条如实汇报：成功 1 条，失败 1 条（不用一句"批量删除成功"盖住部分失败）
+    expect(result.textContent).toContain(
+      textOf("delete.result.summary", { ok: 1, failed: 1 }),
+    );
+    expect(result.textContent).toContain(textOf("delete.result.ok", { name: "甲" }));
+    // 失败项：标识（id）+ 后端原文
+    const failed = screen.getByTestId("policies-delete-result-pol-b").textContent ?? "";
+    expect(failed).toContain("pol-b");
+    expect(failed).toContain("TA-5002");
+    expect(failed).toContain("策略 pol-b 正被引用");
+  });
+});
+
+// ================================================================ ⑦ [docs/22] 长解释收进「问号圆圈 + 悬停提示」
+//
+// 用户第 74 轮原话：「我发现里面的简介好长，好多字，这样吧尽量缩短字数，那些比较介绍做成一个
+// 问好加一个圆圈，鼠标移上去能看到提示那种」。按 [docs/22 §2/§3/§5] 钉：
+//
+// 1. **解释收走了**：`?` 在、`aria-label` 是全文、那段正文**不再内联**；
+// 2. **红线一条都不收**：这一页有两处"看着像解释、其实不能收"——
+//    - `policies.readonly`（哪些命令还没接入 = 当前能力的**结论**，既有用例也锚着它）；
+//    - 每行的命中条件判定（`policies.match.always` / `unconstrained`）与数值（顺序 / 优先级 / 次数）；
+//    另外 `policies.empty.*`（空态）与后端原文（含 TA 码）本来就留在版面上。
+//
+// 同一区块**最多一个** `?`（§3）：顺序说明与命中条件的 AND/OR 说明合成一条提示，
+// 而不是在每一行的命中条件下面各摆一个（"一排问号比一排字更糟"）。
+
+describe("⑦ [docs/22] 长解释收进问号圆圈，红线一律留在版面上", () => {
+  /** 文案取真源：断言直接用 zh-CN 里的全文，而不是把长句在测试里再抄一遍。 */
+  function copy(key: I18nKey): string {
+    return i18n.t(key);
+  }
+
+  /** 某个 `?` 的 `aria-label`（= 提示正文全文）。 */
+  function helpLabel(testId: string): string {
+    const label = screen.getByTestId(testId).getAttribute("aria-label");
+    expect(label, `${testId} 的 aria-label 必须是提示全文`).toBeTruthy();
+    return label ?? "";
+  }
+
+  it("策略列表：顺序说明与「AND / OR」说明合成一个问号，正文不再内联", () => {
+    renderBody({
+      policies: readPolicyList([
+        policy({ id: "pol-a", name: "甲" }),
+        policy({ id: "pol-b", name: "乙" }),
+      ]),
+    });
+
+    const label = helpLabel("policies-list-section-help");
+    expect(label).toContain(copy("policies.orderNote"));
+    expect(label).toContain(copy("policies.match.andHint"));
+    expect(screen.queryByText(copy("policies.orderNote"))).toBeNull();
+    expect(screen.queryByText(copy("policies.match.andHint"))).toBeNull();
+    // 两行策略只有一个 `?`：命中条件那一列**没有**变成一排问号
+    expect(screen.getAllByTestId(/-help$/).map((node) => node.getAttribute("data-testid"))).toEqual([
+      "policies-list-section-help",
+    ]);
+  });
+
+  it("红线仍内联：未接入命令的结论 / 空态 / 每行的判定与数值", () => {
+    // §2 第 1 条：这一块写的是"现在能做什么、不能做什么"，是结论，不是解释
+    renderBody();
+    const note = screen.getByTestId("policies-readonly").textContent ?? "";
+    expect(note).toContain("policy_reorder");
+    expect(note).toContain("policy_set_enabled");
+    expect(note).toContain("policy_simulate");
+    const empty = screen.getByTestId("policies-empty").textContent ?? "";
+    expect(empty).toContain(copy("policies.empty.title"));
+    expect(empty).toContain(copy("policies.empty.body"));
+    cleanup();
+
+    // §2 第 1 / 5 条：每行的判定（恒真 / 未约束）与数值（顺序、优先级、故障转移参数）
+    renderBody({
+      policies: readPolicyList([policy({ id: "pol-a", name: "甲", priority: 1000 })]),
+    });
+    expect(screen.getByTestId("policies-match-0").textContent).toContain(
+      copy("policies.match.always"),
+    );
+    expect(screen.getByTestId("policies-order-0").textContent).toBe("1");
+    expect(screen.getByTestId("policies-priority-0").textContent).toBe("1,000");
+    expect(screen.getByTestId("policies-action-0").textContent).toContain("3");
+    cleanup();
+
+    // §2 第 1 条：没有条件时的判定
+    renderBody({
+      policies: readPolicyList([policy({ id: "pol-b", match: { ...policy().match, all: false } })]),
+    });
+    expect(screen.getByTestId("policies-match-0").textContent).toContain(
+      copy("policies.match.unconstrained"),
+    );
+    cleanup();
+
+    // §2 第 2 条：后端原文（含 TA 码）
+    renderBody({
+      policies: undefined,
+      error: new TokenAgencyError({ code: "TA-5001", message: "策略读取失败" }),
+    });
+    expect(screen.getByTestId("policies-error").textContent).toContain("TA-5001");
+  });
+
+  it("添加路由向导：字段级提示一律留在版面上（不是「成段解释」，一个问号都不加）", async () => {
+    registerWizardMocks({ channels: [channel("ch-1", MODEL, capabilities(1_050_000, true))] });
+    await openWizard();
+
+    // `policies.add.stickyNote` 是**字段级**提示（它解释的正是下面那个控件怎么用），
+    // 与 [docs/22 §2] 要收的"区块说明 / 成段 prose"不是一类 → 留在版面上。
+    expect(screen.getByText(copy("policies.add.stickyNote"))).toBeTruthy();
+    // §2 第 1 / 3 条：还没选模型时的引导留在版面上
+    expect(screen.getByTestId("policies-add-channels").textContent).toContain(
+      copy("policies.add.channelsNeedModel"),
+    );
+    // 这个对话框里一个 `?` 都没有
+    expect(
+      within(screen.getByTestId("policies-add-dialog")).queryAllByTestId(/-help$/),
+    ).toHaveLength(0);
   });
 });

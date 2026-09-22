@@ -35,6 +35,7 @@ import { useState, type ReactNode } from "react";
 
 import { errorMessage, qk, useCommandMutation } from "@/shared/api";
 import type { ProviderView } from "@/shared/bindings";
+import { HelpTip } from "@/shared/components";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { typography } from "@/theme";
 
@@ -306,7 +307,14 @@ export function ProviderAddDialog({ open, existingIds, onClose }: ProviderAddDia
             />
           </Stack>
 
-          <Caption>{t("providers.honesty.fields")}</Caption>
+          {/*
+            「这些字段来自哪个视图」是**解释**，不是结论 → 收进问号圆圈（[docs/22 §2/§3]）。
+            它与两个单步对话框（添加服务商 / 添加密钥）共用，所以测试 id 取 `providers-add-help`。
+            这里**不留内联正文**：用户要的正是"介绍收进圆圈"，正文在 `aria-label` 与气泡里一个字不少。
+          */}
+          <Caption>
+            <HelpTip text={t("providers.honesty.fields")} testId="providers-add-help" />
+          </Caption>
 
           <Issues testId="providers-add-issues" issues={issues} />
 

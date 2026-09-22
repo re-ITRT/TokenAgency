@@ -53,12 +53,15 @@ describe("[15 §4.2] PageHeader：页面标题只有一档", () => {
     expect(getComputedStyle(title).fontSize).toBe(`${typography.size.page}px`);
   });
 
-  it("标题下方只能是正文/元信息层级：说明用 body1（13px），出处用 caption（12px）", () => {
+  it("[docs/22] 说明不再铺在版面上：收进标题右边的问号圆圈，悬停/聚焦才展开", () => {
     renderHeader({ title: "请求日志", description: "每一次转发都留痕", docRef: "07 §2 请求日志" });
 
-    const desc = screen.getByText("每一次转发都留痕");
-    expect(desc.className).toContain("MuiTypography-body1");
-    expect(getComputedStyle(desc).fontSize).toBe(`${typography.size.body}px`);
+    // 正文一个字都没丢：它是问号圆圈的 `aria-label`（读屏与"只看无障碍树"的调用方仍拿得到全文）
+    const help = screen.getByTestId("page-header-help");
+    expect(help.getAttribute("aria-label")).toBe("每一次转发都留痕");
+
+    // 但页面上**不再**有那段正文（用户原话："简介好长，好多字"）
+    expect(screen.queryByText("每一次转发都留痕")).toBeNull();
 
     const doc = screen.getByText(/07 §2 请求日志/);
     expect(doc.className).toContain("MuiTypography-caption");

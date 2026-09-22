@@ -9,7 +9,7 @@
  * 3. 排版/颜色/间距全部走 [15] 令牌（守卫会机械检查）。
  */
 
-import { Box, Button, Paper, Stack, Tooltip, Typography } from "@mui/material";
+import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import { useTranslation } from "@/shared/i18n";
 import { useMemo, useState, type ReactNode } from "react";
 import {
@@ -22,6 +22,7 @@ import {
 import type { AppStatus, CommandArgs, DashboardData, TimeRange } from "@/shared/bindings";
 import { formatMoney, formatPercent } from "@/shared/format";
 import {
+  HelpTip,
   KernelStateDot,
   NumberCard,
   PageHeader,
@@ -138,13 +139,12 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
             ) : null}
           </ReadinessRow>
 
-          {/* 关键：契约里没有"provider 是否加载成功"的判据 → 如实显示未知，不点绿灯 */}
+          {/* 关键：契约里没有"provider 是否加载成功"的判据 → 如实显示未知，不点绿灯。
+              "为什么是未知"这段解释收进问号圆圈（[docs/22 §2]：这是"怎么理解这一维"的说明）——
+              它本来就在 tooltip 里，收进统一件之后多了个看得见的问号与 `aria-label`（读屏也拿得到）。 */}
           <ReadinessRow label={t("dashboard.providerCheck")}>
-            <Tooltip title={t("dashboard.providerCheck.hint")}>
-              <Box component="span" sx={{ display: "inline-flex" }}>
-                <StatusDot status="off" label={t("common.unknown")} />
-              </Box>
-            </Tooltip>
+            <StatusDot status="off" label={t("common.unknown")} />
+            <HelpTip text={t("dashboard.providerCheck.hint")} testId="dashboard-provider-check-help" />
           </ReadinessRow>
 
           <ReadinessRow label={t("status.exit")}>

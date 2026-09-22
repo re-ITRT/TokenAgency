@@ -50,6 +50,7 @@ import { formatBytes } from "@/shared/format";
 import { TokenAgencyError, registerMock } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
 import { i18n } from "@/shared/i18n";
+import { zhCN } from "@/shared/i18n/zh-CN";
 import { buildTheme } from "@/theme";
 
 /** `log_export` 收到过的参数（证据：发的是当前生效条件 + 用户填的路径）。 */
@@ -819,5 +820,72 @@ describe("[task-23] log_export 的返回形态：回执路径与防御的 void �
     const out = exportOutcome({ path: "C:\\a.csv", bytes: "2048" }, "C:\\b.csv");
     expect(out.kind).toBe("written");
     expect(out.kind === "written" ? out.bytes : "x").toBeUndefined();
+  });
+});
+
+// ================================================================ ⑩ 长篇说明收进「问号圆圈」（[docs/22]）
+
+/**
+ * [docs/22 §2]：**解释**收进问号圆圈，**红线**留在版面上。
+ *
+ * 这一页的红线特别多（用户原话之外的硬约束）：空态三种可能、off 的后果、检索上限的**数值**、
+ * "未读取"这种状态结论、以及"导出路径没有默认值"这种"按钮为什么禁用"的说明 ——
+ * 它们一句都不许进 tooltip。
+ */
+describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () => {
+  it("筛选区：错误码走文本检索这解释收进 logs-filter-help，正文不再内联", () => {
+    renderBody();
+
+    const text = zhCN["logs.filter.errorCodeHint"];
+    // 自证：确实是"成段的解释"（≥ 20 字符）才收
+    expect(text.length).toBeGreaterThan(20);
+
+    const help = screen.getByTestId("logs-filter-help");
+    expect(help.getAttribute("aria-label")).toBe(text);
+    expect(screen.queryByText(text)).toBeNull();
+  });
+
+  it("占用区：这组数字只算请求日志表 —— 收进 logs-storage-help", () => {
+    renderBody();
+
+    const text = zhCN["logs.storage.scope"];
+    expect(text.length).toBeGreaterThan(12);
+
+    const help = screen.getByTestId("logs-storage-help");
+    expect(help.getAttribute("aria-label")).toBe(text);
+    expect(screen.queryByText(text)).toBeNull();
+  });
+
+  it("轨迹面板：面板说明收进 logs-trace-help", () => {
+    renderPanel(readTraceDetail({ row: rustRow(), attempts: [] } as unknown as TraceDetail));
+
+    const text = zhCN["logs.trace.subtitle"];
+    expect(text.length).toBeGreaterThan(12);
+
+    const help = screen.getByTestId("logs-trace-help");
+    expect(help.getAttribute("aria-label")).toBe(text);
+    expect(screen.queryByText(text)).toBeNull();
+  });
+
+  it("红线仍然内联：空态 / off 的后果 / 检索上限的数值 / 未读取 / 导出路径没有默认值", () => {
+    renderBody();
+
+    // 空态文案（§2 第 1 条）
+    expect(screen.getByText(zhCN["logs.empty.title"])).toBeTruthy();
+    expect(screen.getByText(zhCN["logs.empty.off"])).toBeTruthy();
+    // off 的真后果写在筛选项旁边（§2 第 1 条：状态结论）
+    expect(screen.getByText(zhCN["logs.filter.offHint"])).toBeTruthy();
+    // 数值 + 单位：检索最多扫多少条候选 —— 数字永远留在版面上（§2 第 5 条）
+    expect(screen.getByText(/最近 2,000 条候选里匹配/)).toBeTruthy();
+    // 状态结论：没有读取接口 → "未读取"
+    expect(screen.getByText(/^当前模式：未读取/)).toBeTruthy();
+    expect(screen.getByText(/^当前保留期：未读取/)).toBeTruthy();
+    // "导出路径没有默认值"（按钮为什么禁用）必须一眼看到
+    expect(screen.getByText(zhCN["logs.export.path.hint"])).toBeTruthy();
+
+    // 这一页正文里只有上面那两处被收走 —— 没有"一排问号"
+    expect(
+      screen.queryAllByTestId(/-help$/).map((el) => el.getAttribute("data-testid")),
+    ).toEqual(["logs-filter-help", "logs-storage-help"]);
   });
 });

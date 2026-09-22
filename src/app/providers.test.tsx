@@ -39,7 +39,7 @@ import { mountOf, readCredential, readProvider } from "@/pages/providers/model";
 import { resetWizardSession } from "@/pages/providers/providerWizardModel";
 import { knownPages, resolvePage } from "@/app/pageRegistry";
 import { routeByKey } from "@/app/routes";
-import { TokenAgencyError, registerMock } from "@/shared/api";
+import { TokenAgencyError, qk, registerMock } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
 import { i18n } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
@@ -393,16 +393,22 @@ describe("[07 §3.1] 列表页：空 / 加载 / 错误 / 有数据", () => {
     expect(screen.getByTestId("providers-table")).toBeTruthy();
   });
 
-  it("点名称进入详情；列表行上没有测试/编辑/删除按钮（本轮只接「添加」入口）", () => {
+  it("点名称进入详情；行上只有「删除」这一个写入口（测试/编辑/复制/停用仍然没有）", () => {
     const onOpen = vi.fn();
-    renderList({ rows: [readProvider(viewProvider())], onOpen });
+    const onDelete = vi.fn();
+    renderList({ rows: [readProvider(viewProvider())], onOpen, onDelete });
 
     fireEvent.click(screen.getByRole("button", { name: "command code" }));
     expect(onOpen).toHaveBeenCalledWith("p-view");
 
-    for (const label of ["测试连通性", "编辑", "删除", "复制", "停用"]) {
+    for (const label of ["测试连通性", "编辑", "复制", "停用"]) {
       expect(screen.queryByRole("button", { name: label })).toBeNull();
     }
+    // [docs/21 §1] 删除是本轮新接的写入口：是真按钮、点得到（不是禁用占位）
+    const remove = screen.getByTestId("providers-delete");
+    expect(remove.tagName).toBe("BUTTON");
+    fireEvent.click(remove);
+    expect(onDelete).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1098,7 +1104,14 @@ describe("[docs/20 §4] 详情页的图形化编辑：与新增同一个两步�
     expect(document.body.textContent ?? "").not.toContain(KEY);
   });
 
-  it("编辑模式第 2 步：列出该服务商已有模型，并能就地改线路", async () => {
+  /*
+   * [docs/21 §4.3] 这一条原来是"能就地改线路"（断言 `model_bulk_update({patch:{lane}})`）。
+   * 用户在第 73 轮明确要求"线路设置不能点进服务商里面去修改"，向导里的 `pw-model-lane`
+   * 已由 WP-73B 改成**只读展示**（`providerWizard.test.tsx` 里那一组是同一条规格的正式验收）。
+   * 本文件这一条与它重复，且**旧断言现在是错的**（它在要求一个已经被产品决定去掉的写入口），
+   * 所以按同一条规格改准：读到的是真值、但**一个字节都不写**。
+   */
+  it("编辑模式第 2 步：列出该服务商已有模型，线路是只读展示（[docs/21 §4.3]）", async () => {
     registerMock("provider_upsert", () => ({ id: "p-bytedance", name: "字节方舟" }));
     registerMock("credential_list", () => [boundCredential("c-bytedance", "p-bytedance")]);
     const bulk = recordingMock({
@@ -1119,9 +1132,523 @@ describe("[docs/20 §4] 详情页的图形化编辑：与新增同一个两步�
     // 「已添加的模型」不是空态
     expect(screen.queryByTestId("pw-added-models-empty")).toBeNull();
 
-    // 就地改线路：走的是同一个 pw-model-lane
-    await chooseOption("pw-model-lane", /日本/);
-    await waitFor(() => expect(bulk.calls).toHaveLength(1));
-    expect(bulk.calls[0]).toEqual({ ids: [BASELINE_MODEL], patch: { lane: "lane-jp" } });
+    // 线路只读：没有下拉（也没有 textbox），显示的是后端给的真值；点它不会发任何写命令
+    const laneBox = within(row).getByTestId("pw-model-lane");
+    expect(within(laneBox).queryByRole("combobox")).toBeNull();
+    expect(within(laneBox).queryByRole("textbox")).toBeNull();
+    expect(within(row).getByTestId("pw-model-lane-name").textContent).not.toBe("");
+    fireEvent.click(laneBox);
+    expect(bulk.calls).toHaveLength(0);
+  });
+});
+
+// ================================================================ ⑨ [docs/21 §1] 删除服务商 / 凭据
+//
+// 为什么这一节全部走**整页**（`renderAt`）而不是只看 `ProvidersBody`：
+// 「删除」的语义一半在展示层（行内按钮 / 多选 / 确认框），一半在数据层
+// （载荷到底是 `{id, force:false}` 还是 `force:true`、成功后失效哪些查询、后端原文怎么摆出来）。
+// 只测展示层的话，"点了到底发了什么"完全不设防 —— 而那恰好是 [docs/21 §1] 的核心。
+
+/**
+ * 多选复选框：`data-testid` 挂在 MUI `Checkbox` 的根 `span` 上，真正的 `input` 在它里面。
+ *
+ * 用 `[data-testid="X"] input` 这个选择器而不是 `getByRole("checkbox")`：真机 E2E 的
+ * `wdFillByTid` 就是**同一个**口径（见本文件 §⑥ 的说明），单测照抄它，两边不会各认一套。
+ */
+function selectBoxAt(testId: string, index: number): HTMLInputElement {
+  const host = screen.getAllByTestId(testId)[index];
+  if (host === undefined) throw new Error(`没有第 ${index} 个 [data-testid="${testId}"]`);
+  const input = host.getAttribute("type") === "checkbox" ? host : host.querySelector("input");
+  if (input === null) throw new Error(`[data-testid="${testId}"] 里没有 input`);
+  return input as HTMLInputElement;
+}
+
+describe("[docs/21 §1] 服务商删除：先确认、再 force=false、被引用才给级联", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("列表每行有 providers-delete；点了先弹确认框（写清名称 + id），此时一个删除命令都没发", async () => {
+    const remove = recordingMock(undefined);
+    registerMock("provider_delete", remove.handler);
+
+    renderAt("/providers");
+    const buttons = await screen.findAllByTestId("providers-delete");
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]!.tagName).toBe("BUTTON");
+
+    fireEvent.click(buttons[0]!);
+
+    expect(screen.getByTestId("providers-delete-dialog")).toBeTruthy();
+    const target = screen.getByTestId("providers-delete-target");
+    expect(target.textContent).toContain("字节方舟");
+    expect(target.textContent).toContain("p-bytedance");
+    // **确认框必须在命令之前**：此刻一条都没发
+    expect(remove.calls).toHaveLength(0);
+  });
+
+  it("确认 → provider_delete({id, force:false})；成功后结果区写「已删除 <名称>」并失效相关查询", async () => {
+    const remove = recordingMock(undefined);
+    registerMock("provider_delete", remove.handler);
+    const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+
+    renderAt("/providers");
+    fireEvent.click((await screen.findAllByTestId("providers-delete"))[0]!);
+    fireEvent.click(screen.getByTestId("providers-delete-confirm"));
+
+    await waitFor(() => expect(remove.calls).toHaveLength(1));
+    expect(remove.calls[0]).toEqual({ id: "p-bytedance", force: false });
+
+    const result = await screen.findByTestId("providers-delete-result");
+    expect(result.textContent).toContain("已删除 字节方舟");
+    // 成功后确认框收起来（MUI 的 Dialog 有一个退场过渡，所以要等它真的卸载）
+    await waitFor(() => expect(screen.queryByTestId("providers-delete-dialog")).toBeNull());
+
+    // 受影响的查询真的失效（[docs/21 §1.1 第 4 条]）
+    for (const key of [qk.providers, qk.credentials, qk.models, qk.channelMatrix]) {
+      const hits = invalidate.mock.calls.filter(
+        ([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(key),
+      );
+      expect(hits.length, `没有失效 ${JSON.stringify(key)}`).toBeGreaterThan(0);
+    }
+    invalidate.mockRestore();
+  });
+
+  it("被引用：原样显示后端原文（含 TA 码），此时才出现级联按钮，且不假装成功", async () => {
+    registerMock("provider_delete", () => {
+      throw new TokenAgencyError({
+        code: "TA-5002",
+        message: "providers[0] p-bytedance 仍被 1 条策略引用（pol-default）",
+      });
+    });
+
+    renderAt("/providers");
+    fireEvent.click((await screen.findAllByTestId("providers-delete"))[0]!);
+    // 还没拿到"被引用"这句话之前，级联按钮**不许**出现
+    expect(screen.queryByTestId("providers-delete-cascade")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("providers-delete-confirm"));
+
+    const error = await screen.findByTestId("providers-delete-error");
+    expect(error.textContent).toContain("TA-5002");
+    expect(error.textContent).toContain("仍被 1 条策略引用（pol-default）");
+    // 确认框仍然开着（用户要能选择级联），并且这时才有级联按钮
+    expect(screen.getByTestId("providers-delete-dialog")).toBeTruthy();
+    expect(screen.getByTestId("providers-delete-cascade")).toBeTruthy();
+    // 失败不许写成功
+    expect(screen.queryByTestId("providers-delete-result")).toBeNull();
+  });
+
+  it("级联按钮走 force=true（与第一次的载荷不是同一个）", async () => {
+    const calls: Record<string, unknown>[] = [];
+    registerMock("provider_delete", (args) => {
+      calls.push(args ?? {});
+      if (args?.["force"] !== true) {
+        throw new TokenAgencyError({ code: "TA-5002", message: "仍被引用" });
+      }
+      return undefined;
+    });
+
+    renderAt("/providers");
+    fireEvent.click((await screen.findAllByTestId("providers-delete"))[0]!);
+    fireEvent.click(screen.getByTestId("providers-delete-confirm"));
+    await screen.findByTestId("providers-delete-cascade");
+    fireEvent.click(screen.getByTestId("providers-delete-cascade"));
+
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[0]).toEqual({ id: "p-bytedance", force: false });
+    expect(calls[1]).toEqual({ id: "p-bytedance", force: true });
+    expect((await screen.findByTestId("providers-delete-result")).textContent).toContain("已删除");
+  });
+
+  it("「会连带删除」清单只用前端算得出来的事实（该服务商下的凭据数 / 通道数）", async () => {
+    renderAt("/providers");
+    fireEvent.click((await screen.findAllByTestId("providers-delete"))[0]!);
+
+    const listed = screen.getByTestId("providers-delete-consequences").textContent ?? "";
+    // 基准 mock：c-bytedance 挂在 p-bytedance 下（凭据数来自 credential_list）
+    expect(listed).toContain("1");
+    expect(listed).toContain("凭据");
+    // 通道数来自 provider_list 的 channel_count 这一列
+    expect(listed).toContain("通道");
+    // 本页读不到策略清单 → **不许编**"被 N 条策略引用"
+    expect(listed).not.toContain("策略");
+  });
+
+  it("批量：先确认，再逐条 force=false；一条失败不中止其余条；如实汇报成功/失败并逐条给 id + 后端原文", async () => {
+    const calls: Record<string, unknown>[] = [];
+    registerMock("provider_delete", (args) => {
+      calls.push(args ?? {});
+      if (args?.["id"] === "p-commandcode") {
+        throw new TokenAgencyError({ code: "TA-5002", message: "仍被 1 条通道引用" });
+      }
+      return undefined;
+    });
+
+    renderAt("/providers");
+    await screen.findAllByTestId("providers-delete");
+    fireEvent.click(selectBoxAt("providers-select", 0));
+    fireEvent.click(selectBoxAt("providers-select", 1));
+    expect(screen.getByTestId("providers-selected-count").textContent).toContain("2");
+
+    fireEvent.click(screen.getByTestId("providers-delete-selected"));
+    // 批量也要先确认
+    expect(screen.getByTestId("providers-delete-dialog")).toBeTruthy();
+    expect(calls).toHaveLength(0);
+    // 批量框里写清删的是哪几条（名称 + id）
+    const target = screen.getByTestId("providers-delete-target").textContent ?? "";
+    expect(target).toContain("p-bytedance");
+    expect(target).toContain("p-commandcode");
+
+    fireEvent.click(screen.getByTestId("providers-delete-confirm"));
+
+    await waitFor(() => expect(calls).toHaveLength(2));
+    // 逐条调，一条失败也不中止后面那条；**两条都是 force=false**
+    expect(calls).toEqual([
+      { id: "p-bytedance", force: false },
+      { id: "p-commandcode", force: false },
+    ]);
+
+    const result = await screen.findByTestId("providers-delete-result");
+    const text = result.textContent ?? "";
+    // 不许写一句"批量删除成功"
+    expect(text).toContain("成功 1 条，失败 1 条");
+    expect(text).not.toContain("批量删除成功");
+    // 失败项逐条给 id + 后端原文
+    expect(text).toContain("p-commandcode");
+    expect(text).toContain("TA-5002");
+    expect(text).toContain("仍被 1 条通道引用");
+  });
+
+  it("表头全选（providers-select-all）把当前列表全选上；一行都没选时「删除选中」不发命令", async () => {
+    const remove = recordingMock(undefined);
+    registerMock("provider_delete", remove.handler);
+
+    renderAt("/providers");
+    await screen.findAllByTestId("providers-delete");
+
+    // ① 一行都没选：点「删除选中」不该弹框、更不该发命令
+    fireEvent.click(screen.getByTestId("providers-delete-selected"));
+    expect(screen.queryByTestId("providers-delete-dialog")).toBeNull();
+    expect(remove.calls).toHaveLength(0);
+
+    // ② 表头全选
+    fireEvent.click(selectBoxAt("providers-select-all", 0));
+    expect(screen.getByTestId("providers-selected-count").textContent).toContain("2");
+    expect(selectBoxAt("providers-select", 0).checked).toBe(true);
+    expect(selectBoxAt("providers-select", 1).checked).toBe(true);
+  });
+});
+
+describe("[docs/21 §1] 详情页删除：页头删服务商 + 凭据表逐行/批量删凭据", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("页头有 providers-detail-delete；确认后 provider_delete({id, force:false})", async () => {
+    const remove = recordingMock(undefined);
+    registerMock("provider_delete", remove.handler);
+
+    renderAt("/providers/p-bytedance");
+    fireEvent.click(await screen.findByTestId("providers-detail-delete"));
+
+    expect(screen.getByTestId("providers-delete-dialog")).toBeTruthy();
+    expect(screen.getByTestId("providers-delete-target").textContent).toContain("p-bytedance");
+    expect(remove.calls).toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId("providers-delete-confirm"));
+    await waitFor(() => expect(remove.calls).toHaveLength(1));
+    expect(remove.calls[0]).toEqual({ id: "p-bytedance", force: false });
+  });
+
+  it("页头删服务商被引用时：原文原样显示，级联按钮是 §3 点名的 providers-delete-cascade（force=true）", async () => {
+    const calls: Record<string, unknown>[] = [];
+    registerMock("provider_delete", (args) => {
+      calls.push(args ?? {});
+      if (args?.["force"] !== true) {
+        throw new TokenAgencyError({ code: "TA-5002", message: "仍被 1 条策略引用" });
+      }
+      return undefined;
+    });
+
+    renderAt("/providers/p-bytedance");
+    fireEvent.click(await screen.findByTestId("providers-detail-delete"));
+    // 拿到"被引用"之前没有级联按钮
+    expect(screen.queryByTestId("providers-delete-cascade")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("providers-delete-confirm"));
+    const error = await screen.findByTestId("providers-delete-error");
+    expect(error.textContent).toContain("TA-5002");
+    expect(error.textContent).toContain("仍被 1 条策略引用");
+
+    fireEvent.click(await screen.findByTestId("providers-delete-cascade"));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[0]).toEqual({ id: "p-bytedance", force: false });
+    expect(calls[1]).toEqual({ id: "p-bytedance", force: true });
+  });
+
+  it("凭据表每行有 providers-credential-delete；确认后 credential_delete({id, force:false})", async () => {
+    const remove = recordingMock(undefined);
+    registerMock("credential_delete", remove.handler);
+
+    renderAt("/providers/p-bytedance");
+    await screen.findByTestId("providers-credentials-table");
+    fireEvent.click(screen.getByTestId("providers-credential-delete"));
+
+    expect(screen.getByTestId("providers-credential-delete-dialog")).toBeTruthy();
+    const target = screen.getByTestId("providers-credential-delete-target").textContent ?? "";
+    expect(target).toContain("c-bytedance");
+    expect(remove.calls).toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId("providers-credential-delete-confirm"));
+    await waitFor(() => expect(remove.calls).toHaveLength(1));
+    expect(remove.calls[0]).toEqual({ id: "c-bytedance", force: false });
+    expect((await screen.findByTestId("providers-credential-delete-result")).textContent).toContain(
+      "已删除",
+    );
+  });
+
+  it("凭据被引用：原样显示后端原文，此时才出现 providers-credential-delete-cascade（force=true）", async () => {
+    const calls: Record<string, unknown>[] = [];
+    registerMock("credential_delete", (args) => {
+      calls.push(args ?? {});
+      if (args?.["force"] !== true) {
+        throw new TokenAgencyError({ code: "TA-5001", message: "credential c-bytedance 仍被 1 条通道引用" });
+      }
+      return undefined;
+    });
+
+    renderAt("/providers/p-bytedance");
+    await screen.findByTestId("providers-credentials-table");
+    fireEvent.click(screen.getByTestId("providers-credential-delete"));
+    expect(screen.queryByTestId("providers-credential-delete-cascade")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("providers-credential-delete-confirm"));
+    const error = await screen.findByTestId("providers-credential-delete-error");
+    expect(error.textContent).toContain("TA-5001");
+    expect(error.textContent).toContain("仍被 1 条通道引用");
+
+    fireEvent.click(await screen.findByTestId("providers-credential-delete-cascade"));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[0]).toEqual({ id: "c-bytedance", force: false });
+    expect(calls[1]).toEqual({ id: "c-bytedance", force: true });
+  });
+
+  it("凭据批量：逐行 providers-credential-select + 表头全选 + providers-credential-delete-selected 逐条 force=false", async () => {
+    registerMock("credential_list", () => [
+      boundCredential("c-a", "p-bytedance"),
+      boundCredential("c-b", "p-bytedance"),
+    ]);
+    const calls: Record<string, unknown>[] = [];
+    registerMock("credential_delete", (args) => {
+      calls.push(args ?? {});
+      if (args?.["id"] === "c-b") {
+        throw new TokenAgencyError({ code: "TA-5001", message: "仍被 1 条通道引用" });
+      }
+      return undefined;
+    });
+
+    renderAt("/providers/p-bytedance");
+    await screen.findByTestId("providers-credentials-table");
+    fireEvent.click(selectBoxAt("providers-credential-select-all", 0));
+    expect(screen.getByTestId("providers-credential-selected-count").textContent).toContain("2");
+
+    fireEvent.click(screen.getByTestId("providers-credential-delete-selected"));
+    expect(screen.getByTestId("providers-credential-delete-dialog")).toBeTruthy();
+    expect(calls).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("providers-credential-delete-confirm"));
+
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls).toEqual([
+      { id: "c-a", force: false },
+      { id: "c-b", force: false },
+    ]);
+    const text = (await screen.findByTestId("providers-credential-delete-result")).textContent ?? "";
+    expect(text).toContain("成功 1 条，失败 1 条");
+    expect(text).toContain("c-b");
+    expect(text).toContain("TA-5001");
+  });
+});
+
+// ================================================================ ⑦ [docs/22] 长解释收进问号圆圈
+
+/**
+ * [docs/22]（用户第 74 轮：「简介好长，好多字……做成一个问号加一个圆圈」）的验收。
+ *
+ * 这一节只钉**两件事**：
+ * 1. 解释**收走了**：`?` 存在、`aria-label` 是全文（正文一个字都没丢）、那句正文**不再内联**；
+ * 2. 红线**没被收走**（[docs/22 §2] 六条）：空态 / 后端原文（TA 码）/ 破坏性后果 / 数值 / 按钮文案
+ *    仍然一眼可见 —— 把错误塞进 tooltip 是"藏问题"，不是排版。
+ *
+ * 既有用例（含第 73 轮的删除那一批）一条都没动：这里只加断言，不放宽任何东西。
+ */
+describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  /** 取某个 `?` 的 `aria-label`（= 提示正文全文，提示气泡本身是懒渲染的）。 */
+  function helpLabel(testId: string): string {
+    const label = screen.getByTestId(testId).getAttribute("aria-label");
+    expect(label, `${testId} 的 aria-label 必须是提示全文`).toBeTruthy();
+    return label ?? "";
+  }
+
+  it("列表页：四句诚实说明合成**一个** providers-table-help（换行分隔），正文不再内联", () => {
+    renderList({
+      rows: [readProvider(viewProvider())],
+      credentials: [readCredential(viewCredential())],
+    });
+
+    // 先钉"不再内联"（旧代码上这一条先红：四行灰字正铺在表的下面）
+    expect(screen.queryByText(/状态灯只取后端返回的 status 列/)).toBeNull();
+
+    const label = helpLabel("providers-table-help");
+    expect(label).toContain("状态灯只取后端返回的 status 列");
+    expect(label).toContain("成功率、平均延迟、通道数来自服务商的只读视图");
+    expect(label).toContain("「挂载」里的凭据数按凭据自己的 provider 字段归并");
+    expect(label).toContain("点名称进入详情");
+    // 多句合成一条、一个区块只有一个问号（[docs/22 §3]：一排问号比一排字更糟）
+    expect(label).toContain("\n");
+    expect(screen.getAllByTestId("providers-table-help")).toHaveLength(1);
+
+    // 正文不再内联（原来的四行灰字一行都不剩）
+    expect(screen.queryByText(/成功率、平均延迟、通道数来自服务商的只读视图/)).toBeNull();
+    expect(screen.queryByText(/「挂载」里的凭据数按凭据自己的 provider 字段归并/)).toBeNull();
+    expect(screen.queryByText(/点名称进入详情/)).toBeNull();
+  });
+
+  it("列表页红线仍内联：计数与单位、空态、TA 码都没被收进去", () => {
+    renderList({
+      rows: [readProvider(viewProvider())],
+      credentials: [readCredential(viewCredential())],
+    });
+    // §2 第 5 条：任何数值与单位一眼可见
+    expect(screen.getByText("共 1 个服务商")).toBeTruthy();
+    expect(screen.getByText("1 个凭据 · 3 条通道")).toBeTruthy();
+    const withData = helpLabel("providers-table-help");
+    expect(withData).not.toContain("个服务商");
+    expect(withData).not.toContain("个凭据");
+    cleanup();
+
+    // §2 第 1 条：空态是结论，不是解释
+    renderList();
+    expect(screen.getByTestId("providers-empty")).toBeTruthy();
+    expect(screen.getByText("配置里还没有服务商")).toBeTruthy();
+    expect(screen.getByText(/服务商来自配置文件的 providers 段/)).toBeTruthy();
+    expect(helpLabel("providers-table-help")).not.toContain("配置里还没有服务商");
+    cleanup();
+
+    // §2 第 2 条：后端原文（含 TA 码）原样可见
+    renderList({ error: new TokenAgencyError({ code: "TA-5001", message: "配置校验失败" }) });
+    expect(screen.getByTestId("providers-error").textContent).toContain("TA-5001");
+    expect(helpLabel("providers-table-help")).not.toContain("TA-5001");
+  });
+
+  it("详情页：五个区块各一个问号，长解释不再内联", () => {
+    renderDetail({
+      id: "p-rust",
+      row: readProvider(rustProvider()),
+      credentials: [readCredential(rustCredential())],
+      laneName: (lane) => (lane === "lane-jp" ? "日本线" : undefined),
+    });
+
+    // 先钉"不再内联"（旧代码上这一条先红：概览下面正铺着那句灰字）
+    expect(screen.queryByText(/健康状态、成功率、平均延迟、通道数只有后端视图才提供/)).toBeNull();
+
+    expect(helpLabel("providers-overview-help")).toContain(
+      "健康状态、成功率、平均延迟、通道数只有后端视图才提供",
+    );
+    const connection = helpLabel("providers-connection-help");
+    expect(connection).toContain("「—」表示后端没有返回这一列");
+    expect(connection).toContain("读取超时要给流式留足余量");
+    expect(connection).toContain("额外 CA 在这里只显示是否配置");
+    expect(connection).toContain("\n");
+
+    expect(helpLabel("providers-headers-help")).toContain("附加头默认只补缺");
+    expect(helpLabel("providers-credentials-help")).toContain("密钥以引用形式显示");
+    expect(helpLabel("providers-raw-section-help")).toContain("原样显示（未做任何清洗与删减）");
+
+    // 每个区块**只有**一个问号
+    for (const testId of [
+      "providers-overview-help",
+      "providers-connection-help",
+      "providers-headers-help",
+      "providers-credentials-help",
+      "providers-raw-section-help",
+    ]) {
+      expect(screen.getAllByTestId(testId), `${testId} 只能有一个`).toHaveLength(1);
+    }
+
+    // 正文不再内联
+    expect(screen.queryByText(/健康状态、成功率、平均延迟、通道数只有后端视图才提供/)).toBeNull();
+    expect(screen.queryByText(/「—」表示后端没有返回这一列/)).toBeNull();
+    expect(screen.queryByText(/读取超时要给流式留足余量/)).toBeNull();
+    expect(screen.queryByText(/额外 CA 在这里只显示是否配置/)).toBeNull();
+    expect(screen.queryByText(/附加头默认只补缺/)).toBeNull();
+    expect(screen.queryByText(/密钥以引用形式显示/)).toBeNull();
+    expect(screen.queryByText(/原样显示（未做任何清洗与删减）/)).toBeNull();
+  });
+
+  it("详情页红线仍内联：不可用结论、超时秒数、已用比例都没被收进去", () => {
+    // §2 第 1 条：「后端没有连接配置字段」是一句**结论**，必须一眼可见
+    renderDetail({ id: "p-view", row: readProvider(viewProvider()) });
+    expect(screen.getByTestId("providers-connection-unavailable")).toBeTruthy();
+    expect(screen.getByText(/后端返回的是服务商视图/)).toBeTruthy();
+    expect(helpLabel("providers-connection-help")).not.toContain("后端返回的是服务商视图");
+    cleanup();
+
+    // §2 第 5 条：数值与单位
+    renderDetail({
+      id: "p-rust",
+      row: readProvider(rustProvider()),
+      credentials: [readCredential(rustCredential())],
+      laneName: () => undefined,
+    });
+    const connectionSection = within(screen.getByTestId("providers-connection"));
+    expect(connectionSection.getByText("10s")).toBeTruthy();
+    expect(connectionSection.getByText("120s")).toBeTruthy();
+    expect(
+      within(screen.getByTestId("providers-credentials-table")).getByText("82.0%"),
+    ).toBeTruthy();
+    expect(helpLabel("providers-connection-help")).not.toContain("120s");
+    expect(helpLabel("providers-credentials-help")).not.toContain("82.0%");
+    // 明文密钥那条**状态**（不是解释）也留在版面上
+    expect(screen.getByText("已配置")).toBeTruthy();
+  });
+
+  it("详情页：连接配置没返回时，概览与附加头区块不画问号也不留空占位", () => {
+    renderDetail({ id: "p-view", row: readProvider(viewProvider()) });
+    // 视图形状没有附加头 → 那个区块整个不出现（不是"一个问号 + 空白"）
+    expect(screen.queryByTestId("providers-headers")).toBeNull();
+    expect(screen.queryByTestId("providers-headers-help")).toBeNull();
+  });
+
+  it("删除确认框的破坏性后果与按钮文案仍然一眼可见（§2 第 4、6 条）", async () => {
+    const remove = recordingMock(undefined);
+    registerMock("provider_delete", remove.handler);
+
+    renderAt("/providers");
+    fireEvent.click((await screen.findAllByTestId("providers-delete"))[0]!);
+
+    // 第 73 轮刚落地的"会连带删除 / 影响"清单：一个字都不许收进 tooltip
+    expect(screen.getByTestId("providers-delete-dialog")).toBeTruthy();
+    expect(screen.getByText("删除后无法撤销。确认删除以下对象？")).toBeTruthy();
+    expect(screen.getByText("会连带删除 / 影响：")).toBeTruthy();
+    const consequences = screen.getByTestId("providers-delete-consequences").textContent ?? "";
+    expect(consequences).toContain("凭据");
+    expect(consequences).toContain("通道");
+
+    // 按钮文案永远留在按钮上
+    expect(screen.getByTestId("providers-delete-confirm").textContent).toBe("删除");
+    expect(screen.getByTestId("providers-delete-cancel").textContent).toBe("取消");
+    expect(screen.getByTestId("providers-delete-selected").textContent).toBe("删除选中");
+
+    // 页面上任何一个问号的正文都不是这段警告
+    for (const help of screen.queryAllByTestId(/-help$/)) {
+      expect(help.getAttribute("aria-label") ?? "").not.toContain("会连带删除");
+      expect(help.getAttribute("aria-label") ?? "").not.toContain("无法撤销");
+    }
+    expect(remove.calls).toHaveLength(0);
   });
 });

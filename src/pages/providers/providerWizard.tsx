@@ -44,6 +44,7 @@ import { useNavigate } from "react-router-dom";
 
 import { api, errorMessage, qk, useCommandMutation, useCommandQuery } from "@/shared/api";
 import type { ImportPreview, LaneId, ProbeResult } from "@/shared/bindings";
+import { HelpTip } from "@/shared/components";
 import { formatInt } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { typography } from "@/theme";
@@ -57,7 +58,6 @@ import {
   deriveProviderId,
   directLaneIdOf,
   laneChoices,
-  lanePatch,
   laneValue,
   nameTakenIssue,
   probeFailureText,
@@ -185,7 +185,6 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   /** 后端返回的 `channels_created`：本次**真新建**了几条线路。如实显示，不编数字。 */
   const [channelsCreated, setChannelsCreated] = useState<number | undefined>(undefined);
   /** 改线路失败时后端说的话（[docs/20 §3]：不许吞）。 */
-  const [laneError, setLaneError] = useState<unknown>(undefined);
   const [needsProvider, setNeedsProvider] = useState(false);
   const [selection, setSelection] = useState<readonly string[]>([]);
   const [infoOpen, setInfoOpen] = useState<string | undefined>(undefined);
@@ -220,7 +219,6 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   const upsertProvider = useCommandMutation("provider_upsert");
   const upsertCredential = useCommandMutation("credential_upsert");
   const setSecret = useCommandMutation("credential_set_secret");
-  const bulkUpdate = useCommandMutation("model_bulk_update");
 
   // ---- 本地校验
 
@@ -423,30 +421,6 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
     })();
   };
 
-  /**
-   * 行内改线路（[docs/20 §3]）：落库载荷固定是 `{ ids: [模型], patch: { lane } }`。
-   *
-   * 成功后**等**矩阵与模型清单重取回来，行里的值才会真的变（不然就是"界面上改了、值没变"）；
-   * 失败把后端原文放进 `pw-lane-error` 显示出来 —— 静默失败正是第 71 轮那个坑。
-   */
-  const changeLane = (modelId: string, value: string): void => {
-    setLaneError(undefined);
-    void (async () => {
-      try {
-        await bulkUpdate.mutateAsync({
-          ids: [modelId],
-          patch: { lane: lanePatch(value, directLaneId) },
-        });
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: qk.channelMatrix }),
-          queryClient.invalidateQueries({ queryKey: qk.models }),
-        ]);
-      } catch (err) {
-        setLaneError(err);
-      }
-    })();
-  };
-
   const close = (): void => {
     // 取消 = 停止继续，**不回滚**已经落库的服务商与凭据（[docs/19 §1.3]）；
     // 只把界面草稿清干净，免得下次打开带着上一次的残值与旧回显。
@@ -460,7 +434,6 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
     setApplyError(undefined);
     setAppliedCount(undefined);
     setChannelsCreated(undefined);
-    setLaneError(undefined);
     setSelection([]);
     setInfoOpen(undefined);
     onClose();
@@ -662,9 +635,17 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
               </Typography>
 
               <Stack spacing={2}>
-                <Typography variant="h4">{t("providers.wizard.addedModels")}</Typography>
-                {/* 空态那句话会让人以为"这里本来就没有"：先把默认语义说清楚（继承链末端是直连） */}
-                <Caption>{t("providers.wizard.modelLaneDefaultHint")}</Caption>
+                {/* 「没选过就是直连（继承链末端是直连）」是这一块的**说明**（[docs/22 §2]：
+                    区块说明超过 12 个字符就收）→ 收进标题右边的问号。
+                    **下面每一行那句「线路只在通道页改」不走这里**：它是只读约束 + 指路文案
+                    （[docs/21 §4.3]），用户必须一眼看到，属于红线。 */}
+                <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+                  <Typography variant="h4">{t("providers.wizard.addedModels")}</Typography>
+                  <HelpTip
+                    text={t("providers.wizard.modelLaneDefaultHint")}
+                    testId="pw-added-models-help"
+                  />
+                </Box>
                 <Stack spacing={2} data-testid="pw-added-models">
                   {addedModels.length === 0 ? (
                     <Typography variant="body1" data-testid="pw-added-models-empty">
@@ -713,25 +694,26 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
                               </IconButton>
                             </Box>
 
-                            {/* 这一行唯一可改的东西：网络代理（[docs/19 §1.2]） */}
-                            <Box sx={{ minWidth: 240 }}>
-                              <SelectField
-                                testId="pw-model-lane"
-                                label={t("providers.wizard.modelLane")}
-                                value={value}
-                                onChange={(next) => changeLane(row.modelId, next)}
-                                options={laneOptionList}
-                                emptyLabel={t("network.directLabel")}
-                              />
-                              {/* 除了下拉，行内还要有**一处可读的当前线路名**：空白下拉什么都说明不了 */}
-                              <Typography
-                                variant="caption"
-                                data-testid="pw-model-lane-name"
-                                sx={{ color: "text.secondary" }}
-                              >
+                            {/* 线路：**这里只看不改**（[docs/21 §4.3]）。
+                                用户原话是"线路设置不能点进服务商里面去修改" —— 所以设置入口搬到了
+                                通道页（每条通道一个线路下拉），这里只显示当前生效的线路 + 一句指路。 */}
+                            <Stack
+                              spacing={0.5}
+                              sx={{ minWidth: 240 }}
+                              data-testid="pw-model-lane"
+                            >
+                              <Caption>{t("providers.wizard.modelLane")}</Caption>
+                              <Typography variant="body1" data-testid="pw-model-lane-name">
                                 {laneLabelOf(value)}
                               </Typography>
-                            </Box>
+                              <Typography
+                                variant="caption"
+                                data-testid="pw-model-lane-readonly"
+                                sx={{ color: "text.secondary" }}
+                              >
+                                {t("providers.wizard.laneReadonlyHint")}
+                              </Typography>
+                            </Stack>
                           </Stack>
 
                           {/* 只读信息面板：里面不许有任何可写控件（面板内 0 个 input/select/button） */}
@@ -763,17 +745,6 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
                     })
                   )}
                 </Stack>
-
-                {/* 改线路失败必须说出来（[docs/20 §3]：不许吞）—— 静默失败是第 71 轮的坑 */}
-                {laneError !== undefined && laneError !== null ? (
-                  <Typography
-                    variant="body1"
-                    data-testid="pw-lane-error"
-                    sx={{ color: "error.main" }}
-                  >
-                    {errorMessage(laneError)}
-                  </Typography>
-                ) : null}
               </Stack>
 
               {/* ---------------- 扫描结果 ---------------- */}

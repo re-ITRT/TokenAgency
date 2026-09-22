@@ -19,6 +19,7 @@ import DashboardPage, { DashboardBody, type DashboardBodyProps } from "@/pages/d
 import { TokenAgencyError } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
 import { i18n } from "@/shared/i18n";
+import { zhCN } from "@/shared/i18n/zh-CN";
 import type { AppStatus, DashboardData } from "@/shared/bindings";
 import { buildTheme, tokens } from "@/theme";
 
@@ -207,5 +208,27 @@ describe("[07 §1] 看板：诚实优先", () => {
     expect(screen.getByText("未选策略")).toBeTruthy();
     expect(screen.getByText("直连")).toBeTruthy();
     expect((document.body.textContent ?? "").split("undefined")).toHaveLength(1);
+  });
+});
+
+// ================================================================ [docs/22] 长篇说明收进「问号圆圈」
+
+describe("[docs/22] provider 加载检查的说明收进问号圆圈，状态结论留在版面上", () => {
+  it("说明不再是行内文本：收进 dashboard-provider-check-help，aria-label 就是全文", () => {
+    renderBody({ status: KERNEL_READY_STATUS });
+
+    const text = zhCN["dashboard.providerCheck.hint"];
+    // 自证：确实是"成段的解释"（≥ 20 字符）
+    expect(text.length).toBeGreaterThan(20);
+
+    const help = screen.getByTestId("dashboard-provider-check-help");
+    expect(help.getAttribute("aria-label")).toBe(text);
+    // 版面上不再有那段正文（正文一个字都没丢：它同时是 aria-label）
+    expect(screen.queryByText(text)).toBeNull();
+
+    // §2 第 1 条：状态结论（"未知"）仍然一眼可见，且这一行不许出现"正常"这种断言
+    const row = screen.getByText("provider 加载检查").parentElement;
+    expect(row?.textContent).toContain("未知");
+    expect(row?.textContent).not.toContain("正常");
   });
 });

@@ -43,7 +43,8 @@ import { useMemo, useState, type ReactNode } from "react";
 
 import { errorMessage, qk, useCommandMutation, useCommandQuery } from "@/shared/api";
 import type { Model } from "@/shared/bindings";
-import { PageHeader, StatusDot } from "@/shared/components";import { formatInt } from "@/shared/format";
+import { ConfirmDelete, HelpTip, PageHeader, StatusDot } from "@/shared/components";
+import { formatInt } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { radius, typography } from "@/theme";
 
@@ -69,6 +70,56 @@ import {
 } from "./model";
 
 const SECTION_SX = { p: 4, borderRadius: `${radius.surface}px` } as const;
+
+// ================================================================ 删除（[docs/21 §1]）
+
+/**
+ * 「会连带删除 / 影响」清单的行文案：用 i18n 键 `delete.consequence.modelChannels`
+ * （第 73 轮主管补上；在这之前这里是带注释的字面量，英文界面会露中文）。
+ */
+
+/** 表头全选复选框的无障碍标签：用 `common.selectAll`（见 `providers/index.tsx` 同一常量说明）。 */
+const SELECT_ALL_LABEL_KEY: I18nKey = "common.selectAll";
+
+/** 一次删除的目标（单条与批量共用同一个形状）。 */
+type DeleteTarget = {
+  readonly ids: readonly string[];
+  readonly label: string;
+  /** 批量**没有**级联按钮（[docs/21 §1.2]：批量一律 `force=false`）。 */
+  readonly batch: boolean;
+  readonly consequences: readonly string[];
+};
+
+/** 执行完的**事实**（不带文案：文案由页面用 `t(...)` 拼）。 */
+type DeleteOutcome = {
+  deletedIds: string[];
+  failures: { id: string; message: string }[];
+};
+
+/**
+ * 逐条执行删除：**一条失败不中止其余条**、**批量一律 `force=false`**（[docs/21 §1]）。
+ * 与 `pages/providers/index.tsx` 的同名函数是同一套语义（同一份契约、同一套 testid 约定）。
+ */
+async function runDelete(
+  target: DeleteTarget,
+  force: boolean,
+  remove: (id: string, force: boolean) => Promise<unknown>,
+): Promise<DeleteOutcome> {
+  const effectiveForce = target.batch ? false : force;
+  const deletedIds: string[] = [];
+  const failures: { id: string; message: string }[] = [];
+
+  for (const id of target.ids) {
+    try {
+      await remove(id, effectiveForce);
+      deletedIds.push(id);
+    } catch (err) {
+      failures.push({ id, message: errorMessage(err) });
+    }
+  }
+
+  return { deletedIds, failures };
+}
 
 /**
  * 定价结论 → 文案。**「未知」是一等公民**：真机的 `model_list` 没有 `priced` 这一列，
@@ -170,6 +221,18 @@ export type ModelsBodyProps = {
   /** `model_list` 读取失败的原因（读不到清单时不许给"配置里还没有模型"这种结论）。 */
   error: unknown;
   onRetry: () => void;
+  /**
+   * 行内「删除」（[docs/21 §1]）。**省略 = 这一行没有删除入口** ——
+   * 纯展示件不自己造写入口，页面（数据层）注入真处理器。
+   */
+  onDelete?: (row: ModelRowView) => void;
+  /** 多选（行 `models-select` / 表头 `models-select-all` / 计数 `models-selected-count`）。 */
+  selectedIds?: readonly string[];
+  onToggleSelect?: (id: string) => void;
+  /** 表头全选：把**当前筛选后看得见的那批 id** 交回数据层。 */
+  onToggleSelectAll?: (visibleIds: readonly string[]) => void;
+  /** 「删除选中」（`models-delete-selected`）：一次确认后**逐条**删。 */
+  onDeleteSelected?: () => void;
 };
 
 export function ModelsBody({
@@ -180,6 +243,11 @@ export function ModelsBody({
   isLoading,
   error,
   onRetry,
+  onDelete,
+  selectedIds,
+  onToggleSelect,
+  onToggleSelectAll,
+  onDeleteSelected,
 }: ModelsBodyProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -191,6 +259,15 @@ export function ModelsBody({
     () => pricingDiscrepancy(ordered, unpricedIds),
     [ordered, unpricedIds],
   );
+
+  const selected = selectedIds ?? [];
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  /** 多选只在数据层把两个处理器都注入时才画（否则是一排点了没用的复选框）。 */
+  const selectable = onToggleSelect !== undefined && onToggleSelectAll !== undefined;
+  /** 全选的"可见集合" = **本地筛选之后**的行 —— 筛选框里的东西才是用户眼里"当前这批"。 */
+  const visibleIds = filtered.map((row) => row.id);
+  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedSet.has(id));
+  const someSelected = !allSelected && visibleIds.some((id) => selectedSet.has(id));
 
   const listBroken = error !== undefined && error !== null;
   const channelsMissing = channelsError !== undefined && channelsError !== null;
@@ -213,9 +290,14 @@ export function ModelsBody({
   return (
     <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
       {/* 1 概览：读不到的那一维一律画破折号，不画 0 */}
-      <Paper variant="outlined" sx={SECTION_SX}>
+      <Paper variant="outlined" sx={SECTION_SX} data-testid="models-summary">
         <Stack spacing={3}>
-          <Typography variant="h4">{t("models.summary.title")}</Typography>
+          {/* 「引用通道 / 未定价这两个数从哪来」是**解释** → 收进标题右边的问号（[docs/22 §2]）；
+              四个统计格里的**数值**照旧留在一眼可见的地方（§2 第 5 条）。 */}
+          <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+            <Typography variant="h4">{t("models.summary.title")}</Typography>
+            <HelpTip text={t("models.summary.hint")} testId="models-summary-help" />
+          </Box>
 
           <Box
             sx={{
@@ -243,9 +325,8 @@ export function ModelsBody({
             />
           </Box>
 
-          <Caption>{t("models.summary.hint")}</Caption>
-
-          {/* 缺数据必须说出来：这一列不可用 != 这个模型没有被引用 */}
+          {/* 缺数据必须说出来：这一列不可用 != 这个模型没有被引用
+              （后端原文 + TA 码是红线，[docs/22 §2 第 2 条] → 永远内联） */}
           {channelsMissing ? (
             <Typography
               variant="body1"
@@ -260,9 +341,15 @@ export function ModelsBody({
 
       {/* 2 定价：两个后端来源 + 交叉核对（只在真的有模型时才说定价的事） */}
       {ordered.length > 0 ? (
-        <Paper variant="outlined" sx={SECTION_SX}>
+        <Paper variant="outlined" sx={SECTION_SX} data-testid="models-pricing">
           <Stack spacing={3}>
-            <Typography variant="h4">{t("models.unpriced.title")}</Typography>
+            {/* 「未定价清单来自哪条命令」是解释 → 收进标题右边的问号（[docs/22 §2]）。
+                而下面那句「全部已定价。」是**空态结论**、「本页不替它们裁决」是**这一块自己的
+                判定说明** → 都留在版面上（§2 第 1 条；且既有用例断言后者在 `models-mismatch` 里）。 */}
+            <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+              <Typography variant="h4">{t("models.unpriced.title")}</Typography>
+              <HelpTip text={t("models.unpriced.hint")} testId="models-pricing-help" />
+            </Box>
 
             {unpricedError !== undefined && unpricedError !== null ? (
               <Typography
@@ -298,8 +385,6 @@ export function ModelsBody({
                     ))}
                   </Box>
                 )}
-
-                <Caption>{t("models.unpriced.hint")}</Caption>
 
                 {discrepancy !== undefined && discrepancy.listedButUnknown.length > 0 ? (
                   <Typography
@@ -388,26 +473,71 @@ export function ModelsBody({
               {t("models.search.empty", { value: formatInt(ordered.length) })}
             </Typography>
           ) : (
-            <Box sx={{ overflowX: "auto" }}>
-              <Table size="small" data-testid="models-table">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>{t("models.col.expose")}</TableCell>
-                    <TableCell>{t("models.col.model")}</TableCell>
-                    <TableCell>{t("models.col.aliases")}</TableCell>
-                    <TableCell>{t("models.col.group")}</TableCell>
-                    <TableCell>{t("models.col.upstream")}</TableCell>
-                    <TableCell>{t("models.col.channels")}</TableCell>
-                    <TableCell>{t("models.col.priced")}</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {filtered.map((row) => {
-                    // 定价结论：**未定价清单（定价引擎自己的）> 后端显式 priced > 未知**
-                    const verdict = pricingVerdict(row, unpricedIds);
-                    return (
-                      <TableRow key={row.id} hover data-testid="models-row">
-                      <TableCell>
+            <>
+              {/* 删除选中：选中数 + 「删除选中」（[docs/21 §1.2]） */}
+              {onDeleteSelected === undefined ? null : (
+                <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
+                  <Typography variant="caption" data-testid="models-selected-count">
+                    {t("delete.selectedCount", { count: selected.length })}
+                  </Typography>
+                  <Button
+                    variant="outlined"
+                    color="error"
+                    data-testid="models-delete-selected"
+                    disabled={selected.length === 0}
+                    onClick={onDeleteSelected}
+                  >
+                    {t("common.deleteSelected")}
+                  </Button>
+                </Stack>
+              )}
+
+              <Box sx={{ overflowX: "auto" }}>
+                <Table size="small" data-testid="models-table">
+                  <TableHead>
+                    <TableRow>
+                      {selectable ? (
+                        <TableCell padding="checkbox">
+                          <Checkbox
+                            data-testid="models-select-all"
+                            checked={allSelected}
+                            indeterminate={someSelected}
+                            onChange={() => onToggleSelectAll?.(visibleIds)}
+                            slotProps={{ input: { "aria-label": t(SELECT_ALL_LABEL_KEY) } }}
+                          />
+                        </TableCell>
+                      ) : null}
+                      <TableCell>{t("models.col.expose")}</TableCell>
+                      <TableCell>{t("models.col.model")}</TableCell>
+                      <TableCell>{t("models.col.aliases")}</TableCell>
+                      <TableCell>{t("models.col.group")}</TableCell>
+                      <TableCell>{t("models.col.upstream")}</TableCell>
+                      <TableCell>{t("models.col.channels")}</TableCell>
+                      <TableCell>{t("models.col.priced")}</TableCell>
+                      {/* 操作列表头留空（同服务商页）：不为一个表头去造 i18n 键 */}
+                      {onDelete === undefined ? null : <TableCell align="right" />}
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {filtered.map((row) => {
+                      // 定价结论：**未定价清单（定价引擎自己的）> 后端显式 priced > 未知**
+                      const verdict = pricingVerdict(row, unpricedIds);
+                      return (
+                        <TableRow key={row.id} hover data-testid="models-row">
+                        {selectable ? (
+                          <TableCell padding="checkbox">
+                            <Checkbox
+                              data-testid="models-select"
+                              checked={selectedSet.has(row.id)}
+                              onChange={() => onToggleSelect?.(row.id)}
+                              slotProps={{
+                                // 无障碍标签用这一行自己的模型 id（用户数据，不需要新键）
+                                input: { "aria-label": row.id },
+                              }}
+                            />
+                          </TableCell>
+                        ) : null}
+                        <TableCell>
                         <StatusDot
                           status={row.expose ? "ok" : "off"}
                           label={row.expose ? t("models.expose.on") : t("models.expose.off")}
@@ -486,12 +616,26 @@ export function ModelsBody({
                           <Caption>{t("models.priced.costHint", { hint: row.costHint })}</Caption>
                         ) : null}
                       </TableCell>
+                      {onDelete === undefined ? null : (
+                        <TableCell align="right">
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="error"
+                            data-testid="models-delete"
+                            onClick={() => onDelete(row)}
+                          >
+                            {t("common.delete")}
+                          </Button>
+                        </TableCell>
+                      )}
                     </TableRow>
                     );
                   })}
                 </TableBody>
               </Table>
             </Box>
+            </>
           )}
         </Stack>
       </Paper>
@@ -537,6 +681,94 @@ export default function ModelsPage() {
     void providers.refetch();
     void credentials.refetch();
     void unpriced.refetch();
+  };
+
+  // ---------------------------------------------------------------- 删除（[docs/21 §1]）
+
+  const removeModel = useCommandMutation("model_delete");
+
+  /** 多选（按 id 存，顺序 = 勾选顺序）。 */
+  const [selectedIds, setSelectedIds] = useState<readonly string[]>([]);
+  /** 确认框里那一条（`undefined` = 框没开）。 */
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | undefined>(undefined);
+  /** 后端原文（被引用时的错误）：有它才在对话框里显示、也才有级联按钮。 */
+  const [deleteError, setDeleteError] = useState<string | undefined>(undefined);
+  /** 结果区：每一次事实一行。 */
+  const [deleteResult, setDeleteResult] = useState<readonly string[]>([]);
+  /** 批量进行中（`mutateAsync` 逐条之间 `isPending` 会回落，所以单独记一笔）。 */
+  const [batchRunning, setBatchRunning] = useState(false);
+
+  /** 删除成功后要失效的查询（[docs/21 §1.1 第 4 条]）：模型级联会动到通道与通道组。 */
+  const invalidateAfterDelete = async (): Promise<void> => {
+    for (const key of [qk.models, qk.credentials, qk.providers, qk.channelMatrix]) {
+      await qc.invalidateQueries({ queryKey: key });
+    }
+  };
+
+  /**
+   * 「会连带删除 / 影响」清单：模型级联删的是挂在它下面的通道。
+   * 通道清单**读失败时一个字都不写** —— 那一列本来就已经是"未知"（[docs/21 §1.1 第 3 条]：
+   * 算不出来不编）；就算读到了，0 条也不写成一句多余的话。
+   */
+  const consequencesOf = (row: ModelRowView): string[] => {
+    if (channels.error !== null && channels.error !== undefined) return [];
+    return row.channels.length === 0
+      ? []
+      : [t("delete.consequence.modelChannels", { value: formatInt(row.channels.length) })];
+  };
+
+  const openDelete = (target: DeleteTarget): void => {    setDeleteTarget(target);
+    setDeleteError(undefined);
+    // 新一次操作开始 → 清掉上一次的汇报（结果区永远只讲刚刚发生的事）
+    setDeleteResult([]);
+  };
+
+  const confirmDelete = async (force: boolean): Promise<void> => {
+    const target = deleteTarget;
+    if (target === undefined) return;
+    if (target.batch) setBatchRunning(true);
+    const outcome = await runDelete(target, force, (id, effectiveForce) =>
+      removeModel.mutateAsync({ id, force: effectiveForce }),
+    );
+    setBatchRunning(false);
+    const singleFailed = !target.batch && outcome.failures.length > 0;
+    setDeleteResult(
+      target.batch
+        ? [
+            t("delete.result.summary", {
+              ok: formatInt(outcome.deletedIds.length),
+              failed: formatInt(outcome.failures.length),
+            }),
+            ...outcome.deletedIds.map((id) => t("delete.result.ok", { name: id })),
+            ...outcome.failures.map((failure) =>
+              t("delete.result.failed", { message: `${failure.id} · ${failure.message}` }),
+            ),
+          ]
+        : singleFailed
+          ? []
+          : outcome.deletedIds.map((id) => t("delete.result.ok", { name: id })),
+    );
+    setDeleteError(singleFailed ? outcome.failures[0]!.message : undefined);
+    // 只有真的删掉的才从选中里摘掉；失败的留着
+    setSelectedIds((prev) => prev.filter((id) => !outcome.deletedIds.includes(id)));
+    // 单条失败时留着框（后端原文与级联按钮就在那里）；其余情况收框
+    if (target.batch || !singleFailed) setDeleteTarget(undefined);
+    await invalidateAfterDelete();
+  };
+
+  const toggleSelect = (id: string): void => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((selectedId) => selectedId !== id) : [...prev, id],
+    );
+  };
+
+  /** 表头全选：只对**本地筛选后看得见**的那些行生效（可见集合由展示层交回来）。 */
+  const toggleSelectAll = (visible: readonly string[]): void => {
+    setSelectedIds((prev) =>
+      visible.length > 0 && visible.every((id) => prev.includes(id))
+        ? prev.filter((id) => !visible.includes(id))
+        : [...new Set([...prev, ...visible])],
+    );
   };
 
   const submitAdd = () => {
@@ -590,6 +822,62 @@ export default function ModelsPage() {
         isLoading={models.isPending}
         error={models.error ?? undefined}
         onRetry={refresh}
+        onDelete={(row) =>
+          openDelete({ ids: [row.id], label: row.id, batch: false, consequences: consequencesOf(row) })
+        }
+        selectedIds={selectedIds}
+        onToggleSelect={toggleSelect}
+        onToggleSelectAll={toggleSelectAll}
+        onDeleteSelected={() => {
+          const chosen = rows.filter((row) => selectedIds.includes(row.id));
+          if (chosen.length === 0) return;
+          openDelete({
+            ids: chosen.map((row) => row.id),
+            // 确认框里写清删的是哪几条（模型的名字就是 id）
+            label: chosen.map((row) => row.id).join("、"),
+            batch: true,
+            // 批量的连带清单 = 每一条各自的清单（算不出来就是空）
+            consequences: chosen.flatMap((row) =>
+              consequencesOf(row).map((line) => `${row.id}：${line}`),
+            ),
+          });
+        }}
+      />
+
+      {/* 删除结果区（[docs/21 §3] 的 `models-delete-result`）：只写真的发生过的事 */}
+      {deleteResult.length === 0 ? null : (
+        <Box sx={{ px: 8, pb: 8 }}>
+          <Paper variant="outlined" sx={SECTION_SX}>
+            <Stack spacing={1} data-testid="models-delete-result">
+              {deleteResult.map((line, index) => (
+                <Typography key={`${index}-${line}`} variant="body1" sx={{ overflowWrap: "anywhere" }}>
+                  {line}
+                </Typography>
+              ))}
+            </Stack>
+          </Paper>
+        </Box>
+      )}
+
+      {/*
+        删除确认（[docs/21 §1 / §2]）：**先确认再发命令**；被引用时后端原文原样显示、
+        此时才出现级联按钮；批量一律 `force=false`，所以批量框里没有级联按钮。
+      */}
+      <ConfirmDelete
+        open={deleteTarget !== undefined}
+        testIdPrefix="models"
+        title={t("delete.title.model")}
+        targetLabel={deleteTarget?.label ?? ""}
+        consequences={deleteTarget?.consequences}
+        cascadeAvailable={deleteTarget !== undefined && !deleteTarget.batch}
+        pending={removeModel.isPending || batchRunning}
+        errorText={deleteError}
+        onConfirm={() => void confirmDelete(false)}
+        onConfirmCascade={() => void confirmDelete(true)}
+        onCancel={() => {
+          setDeleteTarget(undefined);
+          setDeleteError(undefined);
+        }}
       />
 
       <Dialog open={addOpen} onClose={() => setAddOpen(false)} fullWidth maxWidth="sm">

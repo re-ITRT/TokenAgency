@@ -66,17 +66,16 @@ function typeInto(testId: string, value: string): void {
   fireEvent.change(inputOf(testId), { target: { value } });
 }
 
-async function chooseOption(testId: string, name: RegExp | string): Promise<void> {
-  fireEvent.mouseDown(within(screen.getByTestId(testId)).getByRole("combobox"));
-  fireEvent.click(await screen.findByRole("option", { name }));
-}
-
 /**
- * 下拉当前显示的文案。MUI 的 `Select` 把选中值渲染在 `[role="combobox"]` 里
- * （真机上 E2E 看的是同一处），所以断言它而不是隐藏 input 的 value。
+ * 读「已添加的模型」行里那条线路的展示文案。
+ *
+ * [docs/21 §4.3] 之后它不是下拉而是**只读展示**（用户原话"线路设置不能点进服务商里面去修改"），
+ * 所以断言的是文案而不是 combobox 的值。原来的 `selectTextOf` / `chooseOption` 两个下拉 helper
+ * 随这次改动一起删掉了 —— 留着没人用的 helper 只会让下一个读代码的人以为还有下拉可点。
  */
-function selectTextOf(testId: string): string {
-  return (within(screen.getByTestId(testId)).getByRole("combobox").textContent ?? "").trim();
+function laneTextOf(row?: HTMLElement): string {
+  const scope = row ?? screen.getAllByTestId("pw-model-row")[0]!;
+  return (within(scope).getByTestId("pw-model-lane-name").textContent ?? "").trim();
 }
 
 function recordingMock(result: unknown): {
@@ -593,7 +592,7 @@ describe("[docs/19 §1.2] 第 2 步：添加模型", () => {
     expect(within(row).getByTestId("pw-model-lane")).toBeTruthy();
   });
 
-  it("pw-model-lane 默认值：channel 有 lane 就用它；没有就继承第 1 步（/network 选的 net.default_lane）；再没有 = 直连", async () => {
+  it("[docs/21 §4.3] 第 2 步的线路列是**只读展示**：读出的值按 channel → Model.default_lane → net.default_lane → 直连", async () => {
     registerUpsertMocks();
     registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
     let cellLane: string | null = null;
@@ -616,7 +615,7 @@ describe("[docs/19 §1.2] 第 2 步：添加模型", () => {
     registerMock("config_get", () => ({ net: { default_lane: null } }));
     await gotoStep2();
     await screen.findAllByTestId("pw-model-row");
-    expect(selectTextOf("pw-model-lane")).toBe("直连");
+    expect(laneTextOf()).toBe("直连");
 
     cleanup();
     resetWizardSession();
@@ -625,7 +624,7 @@ describe("[docs/19 §1.2] 第 2 步：添加模型", () => {
     registerMock("config_get", () => ({ net: { default_lane: "lane-jp" } }));
     await gotoStep2();
     await screen.findAllByTestId("pw-model-row");
-    await waitFor(() => expect(selectTextOf("pw-model-lane")).toContain("日本"));
+    await waitFor(() => expect(laneTextOf()).toContain("日本"));
 
     cleanup();
     resetWizardSession();
@@ -634,13 +633,12 @@ describe("[docs/19 §1.2] 第 2 步：添加模型", () => {
     cellLane = "lane-jp";
     await gotoStep2();
     await screen.findAllByTestId("pw-model-row");
-    expect(selectTextOf("pw-model-lane")).toContain("日本");
+    expect(laneTextOf()).toContain("日本");
 
     cleanup();
     resetWizardSession();
 
     // ④ 还没有 channel、但模型级默认 lane 已经存下来了（`Model.default_lane`）→ 显示它
-    //    （否则用户改完 lane 在界面上看不到任何变化）
     cellLane = null;
     registerMock("config_get", () => ({ net: { default_lane: null } }));
     registerMock("model_list", () => [
@@ -648,10 +646,10 @@ describe("[docs/19 §1.2] 第 2 步：添加模型", () => {
     ]);
     await gotoStep2();
     await screen.findAllByTestId("pw-model-row");
-    expect(selectTextOf("pw-model-lane")).toContain("日本");
+    expect(laneTextOf()).toContain("日本");
   });
 
-  it("改 pw-model-lane 真的落库：model_bulk_update({ ids: [模型], patch: { lane } })", async () => {
+  it("[docs/21 §4.3] 向导里**改不了**线路：没有下拉、一次 model_bulk_update 都不发，并指路到通道页", async () => {
     registerUpsertMocks();
     registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
     registerMock("channel_matrix", () =>
@@ -672,13 +670,19 @@ describe("[docs/19 §1.2] 第 2 步：添加模型", () => {
     registerMock("model_bulk_update", bulk.handler);
 
     await gotoStep2();
-    await screen.findAllByTestId("pw-model-row");
+    const row = (await screen.findAllByTestId("pw-model-row"))[0]!;
 
-    // 换成直连 → [docs/20 §1.3.1] 写的是**直连那条 lane 的具体 id**（不是 null）：
-    // 用户选的是"直连"这个具体线路，落库就得存它，免得以后改全局默认线路把它悄悄带走
-    await chooseOption("pw-model-lane", "直连");
-    await waitFor(() => expect(bulk.calls).toHaveLength(1));
-    expect(bulk.calls[0]).toEqual({ ids: ["m-added"], patch: { lane: "lane-direct" } });
+    // 用户原话：「线路设置不能点进服务商里面去修改」——这一列必须只剩只读展示
+    const laneBox = within(row).getByTestId("pw-model-lane");
+    expect(within(laneBox).queryByRole("combobox")).toBeNull();
+    expect(within(laneBox).queryByRole("textbox")).toBeNull();
+    expect(within(row).getByTestId("pw-model-lane-name").textContent).toContain("日本");
+    expect(within(row).getByTestId("pw-model-lane-readonly").textContent).not.toBe("");
+
+    // 点它、敲它都不该产生任何落库调用（旧代码里这是个可改的下拉）
+    fireEvent.click(laneBox);
+    fireEvent.keyDown(laneBox, { key: "ArrowDown" });
+    expect(bulk.calls).toHaveLength(0);
   });
 
   it("pw-cancel / pw-finish 都能关掉向导（cancel 一次命令都不发）", async () => {
@@ -900,7 +904,7 @@ describe("[docs/20 §3] 添加之后上面立刻看得到，且每一行都能�
     expect(screen.getByTestId("pw-channels-created").textContent).toContain("1");
   });
 
-  it("每行的 pw-model-lane 永不为空：没配过显示「直连」，值就是直连那条 lane 的 id", async () => {
+  it("[docs/21 §4.3] 只读展示也永不为空：没配过就是「直连」，并在旁边指路到通道页", async () => {
     registerUpsertMocks();
     registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
     // 第 1 步也没选过默认代理：链路末端就是直连
@@ -910,44 +914,111 @@ describe("[docs/20 §3] 添加之后上面立刻看得到，且每一行都能�
     await gotoStep2();
     const row = (await screen.findAllByTestId("pw-model-row"))[0]!;
 
-    // 空下拉 = 用户看到的「未配置」：这里必须是可读的名字，且值真的是那条直连 lane
-    expect(selectTextOf("pw-model-lane")).toBe("直连");
-    expect(inputOf("pw-model-lane").value).toBe("lane-direct");
+    // 旧代码里这里是个空下拉（用户看到的"未配置"）；现在必须是可读的名字 + 指路文案
     expect(within(row).getByTestId("pw-model-lane-name").textContent).toBe("直连");
+    expect(within(row).getByTestId("pw-model-lane-readonly").textContent).not.toBe("");
+    expect(within(row).queryByRole("combobox")).toBeNull();
   });
 
-  it("行内改线路：落库载荷是 { ids: [模型], patch: { lane } }，重取后行内显示该线路名", async () => {
+  it("[docs/21 §4.3] 线路的编辑入口不在向导里：旧代码那条 model_bulk_update 路径必须消失", async () => {
     const { cells, bulkCalls } = registerMatrixBackend();
     cells.push(matrixCell());
     registerMock("config_get", () => ({ net: { default_lane: null } }));
 
     await gotoStep2();
-    await screen.findAllByTestId("pw-model-row");
+    const row = (await screen.findAllByTestId("pw-model-row"))[0]!;
 
-    await chooseOption("pw-model-lane", /日本/);
-    await waitFor(() => expect(bulkCalls).toHaveLength(1));
-    expect(bulkCalls[0]).toEqual({ ids: ["m-x"], patch: { lane: "lane-jp" } });
+    // 行内只剩只读展示：点它、敲它都不会产生任何落库调用（旧代码这里是可改的下拉）
+    const laneBox = within(row).getByTestId("pw-model-lane");
+    fireEvent.click(laneBox);
+    fireEvent.keyDown(laneBox, { key: "ArrowDown" });
+    expect(bulkCalls).toHaveLength(0);
+    expect(laneTextOf(row)).toBe("直连");
+  });
+});
 
-    // 重取之后显示的真的是新线路（不是"界面上改了、值没变回来"）
-    await waitFor(() => expect(selectTextOf("pw-model-lane")).toContain("日本"));
-    expect(
-      within(await screen.findByTestId("pw-model-row")).getByTestId("pw-model-lane-name").textContent,
-    ).toContain("日本");
+// ================================================================ ⑤ [docs/22] 长解释收进问号圆圈
+
+/**
+ * [docs/22]（用户第 74 轮：「简介好长，好多字……做成一个问号加一个圆圈」）的验收。
+ *
+ * 向导这一块的边界特别要紧：**第 2 步线路那一行已经明确"只读 + 指路到通道页"**
+ * （[docs/21 §4.3]），那句 `pw-model-lane-readonly` 是用户必须一眼看到的约束，
+ * 不是可藏起来的解释 —— 收紧它等于把"这里改不了"变成"要悬停才知道这里改不了"。
+ */
+describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", () => {
+  it("第 2 步：modelLaneDefaultHint 收进 pw-added-models-help，正文不再内联", async () => {
+    await gotoStep2();
+
+    // 先钉"不再内联"（旧代码上这一条先红：那句灰字正挂在区块标题下面）
+    expect(screen.queryByText(/没选过就是直连/)).toBeNull();
+
+    const help = screen.getByTestId("pw-added-models-help");
+    // 正文一个字都没丢：`aria-label` 就是全文
+    expect(help.getAttribute("aria-label")).toBe("没选过就是直连（继承链末端是直连）");
+    expect(screen.getAllByTestId("pw-added-models-help")).toHaveLength(1);
+
+    // 区块标题与**空态**都还在版面上（空态是结论，不是解释：[docs/22 §2 第 1 条]）
+    expect(screen.getByText("已添加的模型")).toBeTruthy();
+    expect(screen.getByTestId("pw-added-models-empty").textContent).toBe(
+      "这个服务商下还没有模型",
+    );
+    expect(help.getAttribute("aria-label") ?? "").not.toContain("这个服务商下还没有模型");
   });
 
-  it("改线路失败：原样显示后端原文（含 TA 码），不吞", async () => {
-    const { cells } = registerMatrixBackend();
-    cells.push(matrixCell());
-    registerMock("model_bulk_update", () => {
-      throw new TokenAgencyError({ code: "TA-5001", message: "线路 lane-jp 不存在" });
-    });
+  it("第 2 步：线路的只读指路文案 pw-model-lane-readonly 仍然内联（不许收进问号）", async () => {
+    registerUpsertMocks();
+    registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
+    registerMock("channel_matrix", () =>
+      matrixView([
+        {
+          model_id: "m-added",
+          credential_id: "my-gateway-default",
+          channel_id: "ch-1",
+          lane_id: "lane-jp",
+          upstream_model: "upstream-added",
+        },
+      ]),
+    );
 
     await gotoStep2();
-    await screen.findAllByTestId("pw-model-row");
-    await chooseOption("pw-model-lane", /日本/);
+    const row = (await screen.findAllByTestId("pw-model-row"))[0]!;
 
-    const error = await screen.findByTestId("pw-lane-error");
-    expect(error.textContent).toContain("TA-5001");
-    expect(error.textContent).toContain("线路 lane-jp 不存在");
+    const readonly = within(row).getByTestId("pw-model-lane-readonly");
+    expect(readonly.textContent).toContain("线路只在通道页改");
+    // 这一行只有那一个区块级的问号，行内没有第二个
+    expect(within(row).queryByTestId("pw-model-lane-help")).toBeNull();
+    expect(screen.getAllByTestId("pw-added-models-help")).toHaveLength(1);
+  });
+
+  it("第 1 步红线仍内联：非必填说明、密钥字段语义、按钮文案，且第 1 步没有问号", async () => {
+    await openWizard();
+    const step1 = within(screen.getByTestId("provider-wizard-step1"));
+
+    // §2 第 3 条：必填 / 可选这类提示留在版面上
+    expect(step1.getByText("测试连接不是必须的，可以先跳过")).toBeTruthy();
+    // 密钥字段的语义（只写密钥仓库、永不回显）是字段级提示，留在字段下面
+    expect(step1.getByText("密钥（只写入密钥仓库，界面上永不回显）")).toBeTruthy();
+    // 第 1 步里**一个问号都没有**：它里面的长句全是红线（校验 / 后果 / 按钮）
+    expect(step1.queryAllByTestId(/-help$/)).toHaveLength(0);
+  });
+
+  it("第 2 步的落库后果、扫描结果里的数与后端原文仍然一眼可见", async () => {
+    await gotoStep2();
+
+    // §2 第 4 条：关掉向导不会撤销已经写入的配置 —— 破坏性/持久化后果
+    expect(screen.getByTestId("pw-saved-notice").textContent).toContain(
+      "服务商与凭据已经写入配置；关掉向导不会撤销它们",
+    );
+    // §2 第 6 条：按钮文案永远留在按钮上
+    expect(screen.getByTestId("pw-scan").textContent).toBe("一键扫描");
+    expect(screen.getByTestId("pw-finish").textContent).toBe("完成");
+    expect(screen.getByTestId("pw-cancel").textContent).toBe("取消");
+    // 页面上任何一个问号的正文都不是这几句红线
+    for (const help of screen.queryAllByTestId(/-help$/)) {
+      const label = help.getAttribute("aria-label") ?? "";
+      expect(label).not.toContain("关掉向导不会撤销");
+      expect(label).not.toContain("一键扫描");
+    }
   });
 });

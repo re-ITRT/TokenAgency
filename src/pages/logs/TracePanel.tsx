@@ -22,7 +22,7 @@ import { Box, Button, Stack, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 
 import { errorMessage } from "@/shared/api";
-import { StatusDot, type SemStatus } from "@/shared/components";
+import { HelpTip, StatusDot, type SemStatus } from "@/shared/components";
 import { formatInt, formatLatency, formatLocalTime } from "@/shared/format";
 import { useTranslation } from "@/shared/i18n";
 import { radius, typography } from "@/theme";
@@ -229,11 +229,11 @@ export function TracePanel({ detail, isLoading, error, onRetry }: TracePanelProp
 
   return (
     <Stack spacing={4} data-testid="logs-trace">
-      <Box>
+      {/* 面板说明收进标题右边的问号圆圈（[docs/22 §2]：这一段是"这块是什么"的解释）；
+          下面的字段值、尝试链、TA 码、耗时一个都不动 —— 那些是事实，不是简介 */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
         <Typography variant="h4">{t("logs.trace.title")}</Typography>
-        <Typography variant="caption" sx={{ color: "text.secondary" }}>
-          {t("logs.trace.subtitle")}
-        </Typography>
+        <HelpTip text={t("logs.trace.subtitle")} testId="logs-trace-help" />
       </Box>
 
       {/* ① 请求级字段 */}

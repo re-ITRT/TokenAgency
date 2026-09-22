@@ -56,7 +56,7 @@ import { formatLatency, formatLocalTime } from "@/shared/format";
 import { useTranslation } from "@/shared/i18n";
 import { typography } from "@/theme";
 
-import { Caption, HealthCell, SectionPaper, ZeroSideEffectNotice } from "./index";
+import { HealthCell, SectionPaper, ZeroSideEffectNotice, mergeHelpText } from "./index";
 import {
   DASH,
   HEALTH_LABEL,
@@ -385,9 +385,11 @@ export function NodesBody({ lanes, lanesLoading, lanesError, onRetry }: NodesBod
       {/* ③ 每条线路声明的节点来源（配置里的字面值，原样） */}
       <SectionPaper
         title={t("network.nodes.declared.title")}
-        description={t("network.nodes.declared.description")}
-        hintTestId="network-nodes-declared-hint"
-        hint={<Caption>{t("network.nodes.declared.hint")}</Caption>}
+        // description 与 hint 说的是同一件事（"原样显示 + 只读"）→ 合成**一个**问号（[docs/22 §3]）
+        description={mergeHelpText(
+          t("network.nodes.declared.description"),
+          t("network.nodes.declared.hint"),
+        )}
         testId="network-nodes-declared-section"
       >
         {lanes === undefined || lanes.length === 0 ? (

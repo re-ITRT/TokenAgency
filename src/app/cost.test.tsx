@@ -16,7 +16,7 @@
 
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 // ECharts 要在 canvas 上量文字，jsdom 没有 canvas（`getContext("2d")` 是 null）。
@@ -36,9 +36,14 @@ import CostPage, {
   buildChartOption,
   buildUsageQuery,
   chartInputFromTable,
+  checkPricingIndex,
   costFilterFingerprint,
   readDashboard,
+  readPriceEntries,
   readUsageTable,
+  priceMatchText,
+  priceRateText,
+  priceSourceText,
   usageExportArgs,
   usageQueryArgs,
   DEFAULT_COST_FILTER,
@@ -47,8 +52,8 @@ import CostPage, {
 // `registerMock` 由 `@/shared/api`（门面）导出，不是 `@/shared/api/mock` ——
 // 其它四个测试文件（channels/models/settings/providers）都是从门面导入的。
 import { registerBaselineMocks, registerMock, TokenAgencyError } from "@/shared/api";
-import type { RequestSummary, UsageQuery } from "@/shared/bindings";
-import { i18n } from "@/shared/i18n";
+import type { PriceEntry, RequestSummary, UsageQuery } from "@/shared/bindings";
+import { i18n, type I18nKey } from "@/shared/i18n";
 import { zhCN } from "@/shared/i18n/zh-CN";
 import { buildTheme } from "@/theme";
 
@@ -362,14 +367,23 @@ describe("usage_query 的查询形状（契约与 Rust 不一致处，两种都�
 // ================================================================ ④ 估算 vs 上游上报
 
 describe("估算 vs 上游上报：如实标注，不许把本地口径说成上游数据", () => {
-  it("口径说明点出 usage_source 与「来源标记不可得」，并说清花费是本地算的", () => {
+  it("口径说明：token 来源那句收进问号；「花费是本地算的、不是上游账单」留在版面上", () => {
     renderBody();
-    const box = screen.getByTestId("cost-provenance").textContent ?? "";
-    expect(box).toContain(zhCN["cost.provenance.tokens"]);
-    expect(box).toContain("usage_source");
-    expect(box).toContain(zhCN["cost.provenance.cost"]);
-    // 花费的定性必须是「本地计算」，不是上游账单
+    // [docs/22 §2]：`tokens` / `tokensNote` 是"为什么这么算、为什么读不到来源标记"的**解释** →
+    // 收进标题右边的问号圆圈；断言从 `textContent` 改成读那个 `?` 的 `aria-label`，全文一个字没丢，
+    // 并且**额外**钉住"那段正文不再内联"。
+    const label = screen.getByTestId("cost-provenance-help").getAttribute("aria-label") ?? "";
+    expect(label).toContain(zhCN["cost.provenance.tokens"]);
+    expect(label).toContain("usage_source");
+    expect(screen.queryByText(zhCN["cost.provenance.tokens"])).toBeNull();
+
+    // 注意：但 `cost.provenance.cost`（"花费是本地算的…不是上游账单"）是**数据口径结论**，
+    // 按 §2 红线第 1 条**必须留在版面上**（用户据此判断眼前数字能不能当账单）——
+    // 所以这条断言与上一版正好相反：它必须在 `[data-testid="cost-provenance"]` 里可见。
     expect(zhCN["cost.provenance.cost"]).toContain("本地");
+    const section = screen.getByTestId("cost-provenance");
+    expect(within(section).getByText(zhCN["cost.provenance.cost"])).toBeTruthy();
+    expect(label).not.toContain(zhCN["cost.provenance.cost"]);
   });
 
   it("读表结果里没有来源字段可用 —— 页面不假装有（DTO 就没带）", () => {
@@ -382,10 +396,15 @@ describe("估算 vs 上游上报：如实标注，不许把本地口径说成上
 
   it("未定价模型要显式说出来：花费数字不完整", () => {
     renderBody({ unpriced: ["command-code-preview", "gpt-4o-mini"] });
-    const box = screen.getByTestId("cost-unpriced").textContent ?? "";
-    expect(box).toContain("command-code-preview");
-    expect(box).toContain("gpt-4o-mini");
-    expect(box).toContain(zhCN["cost.unpriced.hint"]);
+    const box = screen.getByTestId("cost-unpriced");
+    // 模型名是**数据**：仍然一眼可见（§2 第 5 条的反面 —— 数据不许收）
+    expect(box.textContent).toContain("command-code-preview");
+    expect(box.textContent).toContain("gpt-4o-mini");
+    // "为什么不给补定价按钮"这句解释收进问号（[docs/22 §2]）；全文进 `aria-label`
+    expect(
+      within(box).getByTestId("cost-unpriced-help").getAttribute("aria-label"),
+    ).toContain(zhCN["cost.unpriced.hint"]);
+    expect(screen.queryByText(zhCN["cost.unpriced.hint"])).toBeNull();
   });
 
   it("没有上期字段就不给涨跌（不给假趋势）", () => {
@@ -609,5 +628,389 @@ describe("导出 CSV 是真调用 usage_export_csv", () => {
     expect(((calls[1] as Record<string, unknown>)["query"] as UsageQuery).metrics).not.toContain(
       "requests",
     );
+  });
+});
+
+// ================================================================ ⑧ 定价条目（[docs/21 §1 / §3]）
+
+/** 一条定价条目（`bindings.ts:525` 的 `PriceEntry`）。 */
+function priceEntry(overrides: Partial<PriceEntry> = {}): PriceEntry {
+  return {
+    match: { model: "deepseek-v4.1flash", provider: null, credential: null },
+    rates: { input: 1.5, output: 6 },
+    multiplier: 1,
+    currency: null,
+    plan_fee: null,
+    source: "manual",
+    effective_from: null,
+    ...overrides,
+  };
+}
+
+/** 按 zh-CN 的真源拼预期文案（断言里不写死中文）。 */
+function textOf(key: I18nKey, vars: Record<string, string | number> = {}): string {
+  let out: string = zhCN[key];
+  for (const [name, value] of Object.entries(vars)) {
+    out = out.replace(`{{${name}}}`, String(value));
+  }
+  return out;
+}
+
+/** 行内「删除」按钮（第 index 行）。 */
+async function rowDeleteButtons() {
+  return await screen.findAllByTestId("pricing-delete");
+}
+
+function confirmPricingDelete() {
+  fireEvent.click(screen.getByTestId("pricing-delete-confirm"));
+}
+
+describe("[定价条目] 读列表与展示（取不到就 —，不猜）", () => {
+  it("空列表：给诚实的空态，不画 0 行的空表格", async () => {
+    registerMock("pricing_list", () => []);
+    renderPage();
+    const empty = await screen.findByTestId("cost-pricing-empty");
+    expect(empty.textContent).toBe(zhCN["cost.pricing.empty"]);
+    expect(screen.queryByTestId("pricing-table")).toBeNull();
+  });
+
+  it("列头是契约给的那四个键；字段取不到就画 —（不编默认值）", async () => {
+    registerMock("pricing_list", () => [
+      priceEntry({
+        match: { model: "m-1", provider: null, credential: null },
+        rates: { input: 1.5 },
+        source: "builtin",
+      }),
+    ]);
+    renderPage();
+
+    const table = await screen.findByTestId("pricing-table");
+    for (const key of [
+      "cost.pricing.col.match",
+      "cost.pricing.col.input",
+      "cost.pricing.col.output",
+      "cost.pricing.col.source",
+    ] as const) {
+      expect(table.textContent).toContain(zhCN[key]);
+    }
+    const row = screen.getByTestId("pricing-row").textContent ?? "";
+    expect(row).toContain("model=m-1");
+    // provider / credential 后端没给 → 逐格 —（不猜成"任意"）
+    expect(row).toContain("provider=—");
+    expect(row).toContain("credential=—");
+    expect(row).toContain("1.5");
+    // rates 里没有 output → —
+    expect(row).toContain("—");
+    // 来源是契约里的枚举值 → 原样显示后端的词
+    expect(row).toContain("builtin");
+  });
+
+  it("读不出来（形状不对）时整格 —，不抛错也不编行", () => {
+    expect(readPriceEntries(undefined)).toEqual([]);
+    expect(readPriceEntries("nope")).toEqual([]);
+    const rows = readPriceEntries([{ match: 7, rates: "x", source: 3 }]);
+    expect(rows).toHaveLength(1);
+    expect(priceMatchText((rows[0]!.raw as Record<string, unknown>)["match"])).toBe("—");
+    expect(priceRateText("x", "input")).toBe("—");
+    expect(priceSourceText(3)).toBe("—");
+  });
+
+  it("保持后端顺序、下标就是删除入参（不重排）", () => {
+    const rows = readPriceEntries([priceEntry(), priceEntry(), priceEntry()]);
+    expect(rows.map((row) => row.index)).toEqual([0, 1, 2]);
+  });
+});
+
+describe("[定价条目] 删除：先确认、按 index 调用", () => {
+  it("点行内「删除」只弹确认框（一条命令都不发），确认后才发 pricing_delete({index})", async () => {
+    const calls: { index: number }[] = [];
+    registerMock("pricing_list", () => [
+      priceEntry({ match: { model: "m-1" } }),
+      priceEntry({ match: { model: "m-2" } }),
+    ]);
+    registerMock("pricing_delete", (args) => {
+      calls.push(args as unknown as { index: number });
+      return undefined;
+    });
+
+    renderPage();
+    const buttons = await rowDeleteButtons();
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[1]!);
+
+    expect(screen.getByTestId("pricing-delete-dialog")).toBeTruthy();
+    // 确认框里写清删的是哪一个：下标 + 匹配
+    const target = screen.getByTestId("pricing-delete-target").textContent ?? "";
+    expect(target).toContain("#1");
+    expect(target).toContain("model=m-2");
+    // **二次确认之前绝不调用后端**
+    expect(calls).toHaveLength(0);
+
+    confirmPricingDelete();
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({ index: 1 });
+    // 成功后在结果区如实写「已删除 <标识>」（标识 = 下标 + 匹配）
+    const result = await screen.findByTestId("pricing-delete-result");
+    expect(result.textContent).toContain(textOf("delete.result.ok", { name: "#1" }));
+    // `pricing_delete` 没有 force 语义 → 不放级联按钮
+    expect(screen.queryByTestId("pricing-delete-cascade")).toBeNull();
+  });
+
+  it("单条删除失败时：结果区原样显示后端原文（含 TA 码），不写「已删除」", async () => {
+    registerMock("pricing_list", () => [priceEntry({ match: { model: "m-1" } })]);
+    registerMock("pricing_delete", () => {
+      throw new TokenAgencyError({ code: "TA-1004", message: "定价条目不存在（index 0）" });
+    });
+
+    renderPage();
+    fireEvent.click(await screen.findByTestId("pricing-delete"));
+    confirmPricingDelete();
+
+    const failed = await screen.findByTestId("pricing-delete-result-0");
+    expect(failed.textContent).toContain("TA-1004");
+    expect(failed.textContent).toContain("定价条目不存在（index 0）");
+    expect(screen.queryByText(textOf("delete.result.ok", { name: "#0" }))).toBeNull();
+    // 这不是"下标错位"那条路（错位根本不会调后端）
+    expect(screen.queryByTestId("pricing-delete-result-stale-0")).toBeNull();
+  });
+
+  it("**下标错位就拒绝**：重新读回来的那个下标已经是另一条 → 一条都不删，并让用户重看", async () => {
+    let current: PriceEntry[] = [priceEntry({ match: { model: "m-1" } })];
+    let reads = 0;
+    registerMock("pricing_list", () => {
+      reads += 1;
+      return current;
+    });
+    const calls: { index: number }[] = [];
+    registerMock("pricing_delete", (args) => {
+      calls.push(args as unknown as { index: number });
+      return undefined;
+    });
+
+    renderPage();
+    fireEvent.click(await screen.findByTestId("pricing-delete"));
+    const readsBeforeDelete = reads;
+
+    // 用户看着列表的时候，列表变了：同一下标上已经是**另一条**
+    current = [priceEntry({ match: { model: "m-2" } })];
+    confirmPricingDelete();
+
+    const stale = await screen.findByTestId("pricing-delete-result-stale-0");
+    // ① 绝不执行删除
+    expect(calls).toHaveLength(0);
+    // ② 重新读了一次（错位判断建立在刚刚返回的那一份上）
+    expect(reads).toBeGreaterThan(readsBeforeDelete);
+    // ③ 把话说清楚
+    expect(stale.textContent).toContain("重看");
+  });
+
+  it("批量时每一条都重新比对；列表真的一条条变短也不会错位（从大到小的理由）", async () => {
+    // 这次让 mock **真的**随着删除变短：只有"从大到小 + 每条重新比对"才可能全成功
+    let current: PriceEntry[] = [
+      priceEntry({ match: { model: "m-1" } }),
+      priceEntry({ match: { model: "m-2" } }),
+    ];
+    registerMock("pricing_list", () => current);
+    const calls: { index: number }[] = [];
+    registerMock("pricing_delete", (args) => {
+      const call = args as unknown as { index: number };
+      calls.push(call);
+      current = current.filter((_, index) => index !== call.index);
+      return undefined;
+    });
+
+    renderPage();
+    fireEvent.click(
+      within(await screen.findByTestId("pricing-select-all")).getByRole("checkbox"),
+    );
+    fireEvent.click(screen.getByTestId("pricing-delete-selected"));
+    confirmPricingDelete();
+
+    await waitFor(() => expect(calls).toHaveLength(2));
+    // 两条都删掉了：先下标 1（列表变短后，原来下标 0 那条仍在 0），再下标 0
+    expect(calls.map((call) => call.index)).toEqual([1, 0]);
+    expect(current).toEqual([]);
+    const result = await screen.findByTestId("pricing-delete-result");
+    expect(result.textContent).toContain(textOf("delete.result.summary", { ok: 2, failed: 0 }));
+  });
+
+  it("批量：按下标**从大到小**逐条删（下标会前移），1 成功 1 失败逐条汇报，不中止其它条", async () => {
+    const calls: { index: number }[] = [];
+    registerMock("pricing_list", () => [
+      priceEntry({ match: { model: "m-1" } }),
+      priceEntry({ match: { model: "m-2" } }),
+    ]);
+    registerMock("pricing_delete", (args) => {
+      const call = args as unknown as { index: number };
+      calls.push(call);
+      if (call.index === 0) {
+        throw new TokenAgencyError({ code: "TA-2007", message: "定价条目非法：删不掉" });
+      }
+      return undefined;
+    });
+
+    renderPage();
+    const toolbarButton = await screen.findByTestId("pricing-delete-selected");
+    expect((toolbarButton as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.click(within(screen.getByTestId("pricing-select-all")).getByRole("checkbox"));
+    expect(screen.getByTestId("pricing-selected-count").textContent).toContain(
+      textOf("delete.selectedCount", { count: 2 }),
+    );
+
+    fireEvent.click(toolbarButton);
+    // 一次确认
+    expect(screen.getByTestId("pricing-delete-dialog")).toBeTruthy();
+    expect(calls).toHaveLength(0);
+    confirmPricingDelete();
+
+    const result = await screen.findByTestId("pricing-delete-result");
+    await waitFor(() => expect(calls).toHaveLength(2));
+    // 从大到小：先删下标 1，再删下标 0（否则第一条删完，后面每条的下标都会前移）
+    expect(calls.map((call) => call.index)).toEqual([1, 0]);
+    // 逐条如实汇报，而不是一句"批量删除成功"
+    expect(result.textContent).toContain(textOf("delete.result.summary", { ok: 1, failed: 1 }));
+    const failed = screen.getByTestId("pricing-delete-result-0").textContent ?? "";
+    expect(failed).toContain("TA-2007");
+    expect(failed).toContain("定价条目非法：删不掉");
+  });
+});
+
+describe("[定价条目] 下标比对（单测：删之前必须逐字段全等）", () => {
+  const a = priceEntry({ match: { model: "m-1" } });
+  const b = priceEntry({ match: { model: "m-2" } });
+
+  it("同一下标仍是同一条 → same（键序不同不改结论：比的还是全部字段）", () => {
+    expect(checkPricingIndex([a], 0, a)).toBe("same");
+    expect(checkPricingIndex([JSON.parse(JSON.stringify(a))], 0, a)).toBe("same");
+    const reordered = {
+      source: a.source,
+      effective_from: a.effective_from,
+      rates: a.rates,
+      match: a.match,
+      plan_fee: a.plan_fee,
+      currency: a.currency,
+      multiplier: a.multiplier,
+    };
+    expect(checkPricingIndex([reordered], 0, a)).toBe("same");
+  });
+
+  it("下标处已经是另一条 → changed（拒绝执行）", () => {
+    expect(checkPricingIndex([b], 0, a)).toBe("changed");
+    // 少一个字段也算变了（逐字段全等，不是"看起来差不多"）
+    expect(checkPricingIndex([{ ...a, rates: {} }], 0, a)).toBe("changed");
+  });
+
+  it("下标越界 / 不是数组 → missing（两边都拒绝）", () => {
+    expect(checkPricingIndex([], 0, a)).toBe("missing");
+    expect(checkPricingIndex([a], 5, a)).toBe("missing");
+    expect(checkPricingIndex("nope", 0, a)).toBe("missing");
+  });
+});
+
+// ================================================================ ⑨ [docs/22] 长简介收进「问号圆圈 + 悬停提示」
+//
+// 用户第 74 轮原话：「我发现里面的简介好长，好多字，这样吧尽量缩短字数，那些比较介绍做成一个
+// 问好加一个圆圈，鼠标移上去能看到提示那种」。按 [docs/22 §2/§3/§5] 钉：
+//
+// 1. **解释收走了**：`?` 在、`aria-label` 是全文、那段正文**不再内联**；
+// 2. **红线一条都不收** —— 这一页尤其要紧：它**全是数字**（§2 第 5 条），
+//    所以"几个模型没定价"（带条数）、"前 N 组 / 共 M 组"（带数值）、
+//    "路径为空时导出按钮不可用"（带例子与禁用条件的校验说明）、空态、后端原文，
+//    一律留在版面上。判不准就留在版面上（§2 末尾的默认）。
+
+describe("⑨ [docs/22] 长简介收进问号圆圈，数值与单位一句都不收", () => {
+  /** 文案取真源：断言直接用 zh-CN 里的全文，而不是把长句在测试里再抄一遍。 */
+  function copy(key: I18nKey): string {
+    return i18n.t(key);
+  }
+
+  /** 某个 `?` 的 `aria-label`（= 提示正文全文）。 */
+  function helpLabel(testId: string): string {
+    const label = screen.getByTestId(testId).getAttribute("aria-label");
+    expect(label, `${testId} 的 aria-label 必须是提示全文`).toBeTruthy();
+    return label ?? "";
+  }
+
+  it("数据口径：token 来源两段合成一个问号（正文不再内联）；花费口径结论留在版面上", () => {
+    renderBody();
+
+    const label = helpLabel("cost-provenance-help");
+    for (const key of ["cost.provenance.tokens", "cost.provenance.tokensNote"] as const) {
+      expect(label, `${key} 应当进同一个提示`).toContain(copy(key));
+      expect(screen.queryByText(copy(key)), `${key} 不该再内联`).toBeNull();
+    }
+    // 注意：`cost.provenance.cost` 是**数据口径结论**（§2 红线第 1 条）→ 必须在版面上，
+    // 也**不许**同时出现在提示里（两处都有就是两个真相源）。
+    expect(screen.queryByText(copy("cost.provenance.cost"))).not.toBeNull();
+    expect(label).not.toContain(copy("cost.provenance.cost"));
+    // 一个区块只有一个 `?`（§3）
+    expect(screen.getAllByTestId("cost-provenance-help")).toHaveLength(1);
+  });
+
+  it("查询口径与最近请求说明也收进问号（各自的区块只有一个 `?`）", () => {
+    renderBody();
+
+    expect(helpLabel("cost-query-metrics-help")).toContain(copy("cost.query.metrics.hint"));
+    expect(screen.queryByText(copy("cost.query.metrics.hint"))).toBeNull();
+
+    expect(helpLabel("cost-recent-help")).toContain(copy("cost.recent.hint"));
+    expect(screen.queryByText(copy("cost.recent.hint"))).toBeNull();
+
+    expect(screen.getAllByTestId(/-help$/).map((node) => node.getAttribute("data-testid"))).toEqual([
+      "cost-provenance-help",
+      "cost-query-metrics-help",
+      "cost-recent-help",
+    ]);
+  });
+
+  it("「几个模型没有定价」带条数 → 留在版面上，一个字都不收（§2 第 5 条）", () => {
+    renderBody({ unpriced: ["command-code-preview", "gpt-4o-mini"] });
+
+    // 这条带 `{{count}}`（条数就是数值）→ 必须在版面上
+    const countLine = screen.getByText(/个模型没有定价/);
+    expect(countLine.textContent).toContain("2");
+    // 而且它**不在**任何提示里（收走它就等于把"花费数字不完整"这条结论藏起来）
+    for (const help of screen.getAllByTestId(/-help$/)) {
+      expect(help.getAttribute("aria-label") ?? "").not.toContain("个模型没有定价");
+    }
+  });
+
+  it("红线仍内联：截断的数值 / 后端原文 / 带例子与禁用条件的导出说明 / 空态 / 不可得的结论", () => {
+    renderBody({
+      table: readUsageTable(rustTable()),
+      tokenKindsError: new TokenAgencyError({ code: "TA-9001", message: "未注册 mock：usage_token_kinds" }),
+    });
+    // §2 第 5 条：截断说明里带着「前 N 组 / 共 M 组」两个数
+    const truncated = screen.getByTestId("cost-truncated").textContent ?? "";
+    expect(truncated).toContain("5");
+    expect(truncated).toContain("2");
+    // §2 第 2 条：指标清单读不到 → 原样显示 [TA-xxxx] + message
+    expect(screen.getByText(/TA-9001/)).toBeTruthy();
+    // §2 第 3 条：导出路径这一句有例子也有"路径为空时按钮不可用"
+    expect(screen.getByTestId("cost-export-hint").textContent).toContain(copy("cost.export.pathHint"));
+    cleanup();
+
+    // §2 第 1 条：空态（"可能这段时间没有请求…"是给用户下一步的说明，与空态绑在一起）
+    renderBody({ table: undefined });
+    const empty = screen.getByTestId("cost-empty").textContent ?? "";
+    expect(empty).toContain(copy("cost.result.empty.title"));
+    expect(empty).toContain(copy("cost.result.empty.body"));
+    cleanup();
+
+    // §2 第 1 条：没有上期字段就是没有涨跌 —— 这条结论一眼可见
+    renderBody({
+      dashboard: readDashboard({
+        cards: {
+          requests: { value: 1_284 },
+          tokens: { value: 12_400_000 },
+          cost: { amount: 18.62, currency: "CNY" },
+          success_rate: 0.992,
+        },
+        trend: [],
+        unpriced_models: [],
+      }),
+    });
+    expect(screen.getByTestId("cost-delta-none").textContent).toBe(copy("cost.deltaUnavailable"));
   });
 });

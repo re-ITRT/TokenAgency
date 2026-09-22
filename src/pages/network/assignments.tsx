@@ -40,12 +40,12 @@ import { Link } from "react-router-dom";
 
 import { errorMessage, qk, useCommandMutation, useCommandQuery } from "@/shared/api";
 import type { ConfigDoc } from "@/shared/bindings";
-import { PageHeader } from "@/shared/components";
+import { HelpTip, PageHeader } from "@/shared/components";
 import { formatLatency } from "@/shared/format";
 import { useTranslation } from "@/shared/i18n";
 import { typography } from "@/theme";
 
-import { Caption, SectionPaper, Unreadable, ZeroSideEffectNotice } from "./index";
+import { Caption, SectionPaper, Unreadable, ZeroSideEffectNotice, mergeHelpText } from "./index";
 import {
   DASH,
   laneKindLabel,
@@ -109,13 +109,14 @@ export function AssignmentsBody({ doc, isLoading, error, onRetry }: AssignmentsB
       {/* ① 这一页的边界：为什么没有"最终生效线路" */}
       <SectionPaper
         title={t("network.assignments.noResolve.title")}
+        // 五级优先顺序 + "为什么不在前端再算一遍" → 合成**一个**问号（[docs/22 §2/§3]）。
+        // 结论句本身是标题（"本页不自己算「最终生效线路」"），留在版面上。
+        description={mergeHelpText(
+          t("network.assignments.precedence"),
+          t("network.assignments.noResolve.body"),
+        )}
         testId="network-assignments-no-resolve"
-      >
-        <Stack spacing={1}>
-          <Caption>{t("network.assignments.precedence")}</Caption>
-          <Caption>{t("network.assignments.noResolve.body")}</Caption>
-        </Stack>
-      </SectionPaper>
+      />
 
       {error !== undefined && error !== null ? (
         <SectionPaper title={t("network.assignments.title")} testId="network-assignments-error-section">
@@ -139,8 +140,8 @@ export function AssignmentsBody({ doc, isLoading, error, onRetry }: AssignmentsB
           {/* ② 策略级（优先级最高） */}
           <SectionPaper
             title={t("network.assignments.policies.title")}
-            hintTestId="network-assignments-policies-hint"
-            hint={<Caption>{t("network.assignments.policies.hint")}</Caption>}
+            // 区块说明（hint）就是解释 → 收进标题右边的问号圆圈，一个区块只有一个问号（[docs/22 §3]）
+            description={t("network.assignments.policies.hint")}
             testId="network-assignments-policies"
           >
             {view.policies.length === 0 ? (
@@ -184,8 +185,7 @@ export function AssignmentsBody({ doc, isLoading, error, onRetry }: AssignmentsB
           {/* ③ 通道级（最常用的手动指定点） */}
           <SectionPaper
             title={t("network.assignments.channels.title")}
-            hintTestId="network-assignments-channels-hint"
-            hint={<Caption>{t("network.assignments.channels.hint")}</Caption>}
+            description={t("network.assignments.channels.hint")}
             testId="network-assignments-channels"
           >
             {!view.has.channels ? (
@@ -263,8 +263,7 @@ export function AssignmentsBody({ doc, isLoading, error, onRetry }: AssignmentsB
           {/* ⑤ 服务商级 */}
           <SectionPaper
             title={t("network.assignments.providers.title")}
-            hintTestId="network-assignments-providers-hint"
-            hint={<Caption>{t("network.assignments.providers.hint")}</Caption>}
+            description={t("network.assignments.providers.hint")}
             testId="network-assignments-providers"
           >
             {!view.has.providers ? (
@@ -321,10 +320,16 @@ export function AssignmentsBody({ doc, isLoading, error, onRetry }: AssignmentsB
             testId="network-assignments-reverse"
             hintTestId="network-assignments-reverse-hint"
             hint={
-              <Stack spacing={1}>
-                <Caption>{t("network.assignments.reverse.hint")}</Caption>
-                <Caption>{t("network.assignments.reverse.noneHint")}</Caption>
-              </Stack>
+              // 第一句留着：它是这个区块的口径说明，而且**点名了命令**
+              // （测试与用户都靠这一句知道倒排是谁算的）。第二句是"为什么没人引用的线路也要列出来"
+              // 的附注 → 收进句尾的问号圆圈（[docs/22 §2/§3]，这一块只有一个 -help）。
+              <Caption>
+                {t("network.assignments.reverse.hint")}
+                <HelpTip
+                  text={t("network.assignments.reverse.noneHint")}
+                  testId="network-assignments-reverse-hint-help"
+                />
+              </Caption>
             }
           >
             {view.reverse.length === 0 ? (
@@ -403,8 +408,7 @@ export function LaneChainSections() {
       {/* ① 后端算的最终生效线路（与上面那节"配置里显式写了什么"互补） */}
       <SectionPaper
         title={t("network.assignments.chain.title")}
-        hintTestId="network-assignments-chain-hint"
-        hint={<Caption>{t("network.assignments.chain.hint")}</Caption>}
+        description={t("network.assignments.chain.hint")}
         testId="network-assignments-resolved"
       >
         {resolved.error !== undefined && resolved.error !== null ? (
@@ -454,8 +458,7 @@ export function LaneChainSections() {
       {/* ② 候选清单（`lane_pick_options`） */}
       <SectionPaper
         title={t("network.assignments.pick.title")}
-        hintTestId="network-assignments-pick-hint"
-        hint={<Caption>{t("network.assignments.pick.hint")}</Caption>}
+        description={t("network.assignments.pick.hint")}
         testId="network-assignments-pick-options"
       >
         {pickOptions.error !== undefined && pickOptions.error !== null ? (
@@ -508,8 +511,7 @@ export function LaneChainSections() {
       {/* ③ 按 lane 查引用（`lane_reverse_lookup`）：删 lane 之前先看这一眼 */}
       <SectionPaper
         title={t("network.assignments.reverseLookup.title")}
-        hintTestId="network-assignments-reverse-lookup-hint"
-        hint={<Caption>{t("network.assignments.reverseLookup.hint")}</Caption>}
+        description={t("network.assignments.reverseLookup.hint")}
         testId="network-assignments-reverse-lookup-section"
       >
         {lanes.error !== undefined && lanes.error !== null ? (

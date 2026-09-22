@@ -1,18 +1,29 @@
 /**
- * 路由策略页 `/policies`（[07 §5]、[02 §2.8]）—— **只读的策略列表**。
+ * 路由策略页 `/policies`（[07 §5]、[02 §2.8]）—— **只读的策略列表 + 删除（[docs/21 §1]）**。
  *
  * 三条纪律（这一页最容易违反，所以写在最上面）：
  *
  * 1. **只用已注册的命令**：整页取数只发 `policy_list`；`policies-add-open` 打开的添加向导
- *    另发 `model_list` / `channel_list`（只在向导打开时才查），提交走 `policy_upsert`。
- *    其余写命令（`policy_reorder` / `policy_set_enabled` / `policy_simulate`）**后端已登记但本页没有入口** ——
- *    **不放按钮，也不放点了没反应的禁用占位**（[docs/17 §3.4] 只要求"添加路由"这一条链路）。
+ *    另发 `model_list` / `channel_list`（只在向导打开时才查），提交走 `policy_upsert`；
+ *    删除走 `policy_delete`。其余写命令（`policy_reorder` / `policy_set_enabled` / `policy_simulate`）
+ *    **后端已登记但本页没有入口** —— 不放按钮，也不放点了没反应的禁用占位（[docs/17 §3.4]）。
  * 2. **顺序是后端的，不是我们排的**：`policy_list` 自己按 `priority` 升序排
  *    （`src-tauri/src/commands/catalog.rs:128-135`，注释明写"UI 的拖拽顺序就是求值顺序"）。
  *    页面照它返回的顺序画，**另外单列原始 `priority` 数值** —— 不让"第几行"冒充优先级。
  * 3. **不认识的东西不猜**：通道组 / 线路 / 通道只有配置里的 id（本页没有 `group_list` /
  *    `lane_list` 的授权），就原样显示 id 并说明；选择器、故障转移触发器等枚举值
  *    只翻译已知取值，**契约外的取值原样显示**（那是后端说的话）。
+ *
+ * 删除的三条硬规则（[docs/21 §1]，单条与批量**走同一套语义**）：
+ * - **先二次确认**（共享组件 `ConfirmDelete`），确认框里写清删的是哪一个（名称 + id）；
+ * - **被引用时不许假装成功**：`policy_delete` **没有 force 参数** → `cascadeAvailable={false}`，
+ *   只把后端原文（含 TA 码）摆出来，**不放**"强行删除"按钮（那会是假按钮）；
+ * - **批量逐条汇报**：一条失败不中止其它条，逐条给标识 + 后端原文，绝不用一句
+ *   "批量删除成功"盖住部分失败。
+ *
+ * 删除入口是**页面授权**才渲染（`PoliciesBody` 的 `deletion` 可选 prop）：`PoliciesBody` 本身
+ * 仍是纯展示层，没有被授权时一行按钮都不画（正文里除了 [docs/22] 那个收走解释的问号圆圈，
+ * 一个操作按钮都没有 —— 既有断言按这条口径钉住）。
  *
  * 数据流：`useCommandQuery("policy_list", undefined, qk.policies)` → `readPolicyList()` → `<PoliciesBody>`
  */
@@ -52,10 +63,21 @@ import type {
   Policy,
   Selector,
 } from "@/shared/bindings";
-import { PageHeader, StatusDot } from "@/shared/components";
+import { PageHeader, StatusDot, ConfirmDelete, HelpTip } from "@/shared/components";
 import { formatInt } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { radius, typography } from "@/theme";
+
+/**
+ * 把同一区块的几句解释合成**一条**提示正文（[docs/22 §3]：一个区块最多一个问号）。
+ *
+ * 分隔符用换行：`aria-label` 里保留断句，读屏不会把两句话连成一坨。
+ * （同一个函数的规范实现是 `network/index.tsx` 的 `mergeHelpText`；这里**不跨页 import**
+ * 另一个页面模块 —— 那会把整个 network 页拖进本页的依赖里。）
+ */
+function mergeHelpText(...parts: readonly (string | undefined)[]): string {
+  return parts.filter((part): part is string => part !== undefined && part !== "").join("\n");
+}
 
 // ================================================================ 文案映射（显式表，不用模板拼 key）
 
@@ -286,20 +308,48 @@ function enumText(
 
 // ================================================================ 展示层（纯 props，便于测"有数据/无数据"）
 
+/**
+ * 删除授权（[docs/21 §1]）：由页面传进来。
+ *
+ * **为什么是可选 prop 而不是写死在列表里**：`PoliciesBody` 是纯展示层，它的"只读"是被一条
+ * 既有断言钉住的（有数据时正文里除了 [docs/22] 那个问号圆圈，一个操作按钮都没有）。
+ * 删除是页面级授权，没被授权时这一层就一个删除控件都不画 —— 授权与展示因此不会互相污染。
+ */
+export type PoliciesDeletionProps = {
+  /** 已勾选的策略 id。 */
+  selected: readonly string[];
+  /** 有删除在途：所有删除控件进入禁用态（**不显示假进度**）。 */
+  pending: boolean;
+  onToggle: (id: string, next: boolean) => void;
+  onToggleAll: (next: boolean) => void;
+  /** 点行内「删除」→ 由页面打开确认框（**这里不发命令**）。 */
+  onDeleteOne: (policy: PolicyView) => void;
+  /** 点「删除选中」→ 由页面打开确认框。 */
+  onDeleteSelected: () => void;
+};
+
 export type PoliciesBodyProps = {
   /** `undefined` = 还没有数据（加载中或出错）。 */
   policies: PolicyView[] | undefined;
   isLoading: boolean;
   error: unknown;
   onRetry: () => void;
+  /** `undefined` = 没有删除授权 → 表格保持只读（多一列都不加）。 */
+  deletion?: PoliciesDeletionProps;
 };
 
-export function PoliciesBody({ policies, isLoading, error, onRetry }: PoliciesBodyProps) {
+export function PoliciesBody({ policies, isLoading, error, onRetry, deletion }: PoliciesBodyProps) {
   const { t } = useTranslation();
 
   const rows = policies ?? [];
   const enabledCount = rows.filter((row) => row.enabled).length;
   const failed = error !== undefined && error !== null;
+
+  /** 能删的行：`policy_delete` 收 id，读不到 id 的行就不给可点的入口（不给假控件）。 */
+  const selectableRows = rows.filter((row) => row.id !== "");
+  const selectedIds = new Set(deletion?.selected ?? []);
+  const selectedCount = selectableRows.filter((row) => selectedIds.has(row.id)).length;
+  const allSelected = selectableRows.length > 0 && selectedCount === selectableRows.length;
 
   /** 一条条件的文案。`values` 是后端给的原样值，只做连接、不做改写。 */
   const conditionText = (condition: PolicyConditionView): string => {
@@ -380,10 +430,25 @@ export function PoliciesBody({ policies, isLoading, error, onRetry }: PoliciesBo
   return (
     <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
       {/* ① 这一页是什么、为什么是只读的 */}
-      <Paper variant="outlined" sx={{ p: 4, borderRadius: `${radius.surface}px` }}>
+      <Paper
+        variant="outlined"
+        sx={{ p: 4, borderRadius: `${radius.surface}px` }}
+        data-testid="policies-list-section"
+      >
         <Stack spacing={2}>
-          <Typography variant="h4">{t("policies.section.list")}</Typography>
-          <Caption>{t("policies.orderNote")}</Caption>
+          {/*
+            「顺序 = 后端返回的顺序」与「多个条件 AND、一个条件里的多个值 OR」都是**解释**
+            （[docs/22 §2] 的区块说明 / 成段 prose）→ 合成**一个**问号放在标题右边（§3：
+            一个区块最多一个）。命中条件那一列因此不再每一行都挂一句灰字 —— 一排问号比一排字更糟。
+            留在这里的 `policies-readonly` 是**结论**（哪些命令还没接入），一个字都不收（§2 第 1 条）。
+          */}
+          <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+            <Typography variant="h4">{t("policies.section.list")}</Typography>
+            <HelpTip
+              text={mergeHelpText(t("policies.orderNote"), t("policies.match.andHint"))}
+              testId="policies-list-section-help"
+            />
+          </Box>
           {/* 说明为什么本页没有排序 / 启停 / 模拟入口：写命令已在后端登记，但界面接入在后续一批 */}
           <Box data-testid="policies-readonly">
             <Caption>{t("policies.readonly")}</Caption>
@@ -424,9 +489,44 @@ export function PoliciesBody({ policies, isLoading, error, onRetry }: PoliciesBo
           </Stack>
         ) : (
           <Box sx={{ overflowX: "auto" }}>
+            {/* 多选与「删除选中」：只在有删除授权时出现；一条都没勾选时按钮不可用
+                （勾上就能用 —— 这不是禁用占位） */}
+            {deletion !== undefined ? (
+              <Stack
+                direction="row"
+                spacing={2}
+                alignItems="center"
+                sx={{ mb: 3, flexWrap: "wrap" }}
+              >
+                <Box data-testid="policies-selected-count">
+                  <Caption>{t("delete.selectedCount", { count: selectedCount })}</Caption>
+                </Box>
+                <Button
+                  variant="outlined"
+                  color="error"
+                  data-testid="policies-delete-selected"
+                  disabled={deletion.pending || selectedCount === 0}
+                  onClick={deletion.onDeleteSelected}
+                >
+                  {t("common.deleteSelected")}
+                </Button>
+              </Stack>
+            ) : null}
             <Table size="small" data-testid="policies-table">
               <TableHead>
                 <TableRow>
+                  {deletion !== undefined ? (
+                    <TableCell padding="checkbox">
+                      <Box data-testid="policies-select-all">
+                        <Checkbox
+                          size="small"
+                          checked={allSelected}
+                          indeterminate={selectedCount > 0 && !allSelected}
+                          onChange={(event) => deletion.onToggleAll(event.target.checked)}
+                        />
+                      </Box>
+                    </TableCell>
+                  ) : null}
                   <TableCell align="right">{t("policies.col.order")}</TableCell>
                   <TableCell>{t("policies.col.name")}</TableCell>
                   <TableCell>{t("policies.col.enabled")}</TableCell>
@@ -439,6 +539,7 @@ export function PoliciesBody({ policies, isLoading, error, onRetry }: PoliciesBo
                   <TableCell>{t("policies.col.action")}</TableCell>
                   <TableCell>{t("policies.col.selector")}</TableCell>
                   <TableCell>{t("policies.col.lane")}</TableCell>
+                  {deletion !== undefined ? <TableCell>{t("common.delete")}</TableCell> : null}
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -447,6 +548,26 @@ export function PoliciesBody({ policies, isLoading, error, onRetry }: PoliciesBo
                   const lines = actionLines(policy.action);
                   return (
                     <TableRow key={policy.id === "" ? `${policy.name}-${index}` : policy.id} data-testid="policies-row">
+                      {deletion !== undefined ? (
+                        <TableCell padding="checkbox">
+                          {policy.id === "" ? (
+                            /* 读不到 id 就没法指名要删哪一条（`policy_delete` 收 id）→ 画 —，不画假入口 */
+                            <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                              {DASH}
+                            </Typography>
+                          ) : (
+                            <Box data-testid="policies-select">
+                              <Checkbox
+                                size="small"
+                                checked={selectedIds.has(policy.id)}
+                                onChange={(event) =>
+                                  deletion.onToggle(policy.id, event.target.checked)
+                                }
+                              />
+                            </Box>
+                          )}
+                        </TableCell>
+                      ) : null}
                       {/* 顺序 = 后端返回的次序；优先级是配置里的原始数值（两者分开显示） */}
                       <TableCell
                         align="right"
@@ -480,6 +601,9 @@ export function PoliciesBody({ policies, isLoading, error, onRetry }: PoliciesBo
                         {formatInt(policy.priority)}
                       </TableCell>
                       <TableCell sx={{ minWidth: 240 }}>
+                        {/* 这一格里放的全是**这一行的事实**（列出来的条件 / 恒真 / 不约束）——
+                            它们是状态与数值，留在版面上（[docs/22 §2] 第 1/5 条）；
+                            「多个条件 AND、一个条件里的多个值 OR」那句**规则说明**收进了这一块标题右边的问号。 */}
                         <Stack spacing={1} data-testid={`policies-match-${index}`}>
                           {policy.conditions.length === 0 ? (
                             <Typography variant="body1">
@@ -501,7 +625,6 @@ export function PoliciesBody({ policies, isLoading, error, onRetry }: PoliciesBo
                           {policy.alwaysMatch ? (
                             <Typography variant="body1">{t("policies.match.always")}</Typography>
                           ) : null}
-                          <Caption>{t("policies.match.andHint")}</Caption>
                         </Stack>
                       </TableCell>
                       <TableCell sx={{ minWidth: 260 }}>
@@ -543,6 +666,25 @@ export function PoliciesBody({ policies, isLoading, error, onRetry }: PoliciesBo
                           ? t("policies.action.laneNone")
                           : policy.action.lane}
                       </TableCell>
+                      {deletion !== undefined ? (
+                        <TableCell>
+                          {policy.id === "" ? (
+                            <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                              {DASH}
+                            </Typography>
+                          ) : (
+                            <Button
+                              size="small"
+                              color="error"
+                              data-testid="policies-delete"
+                              disabled={deletion.pending}
+                              onClick={() => deletion.onDeleteOne(policy)}
+                            >
+                              {t("common.delete")}
+                            </Button>
+                          )}
+                        </TableCell>
+                      ) : null}
                     </TableRow>
                   );
                 })}
@@ -1233,12 +1375,130 @@ export function PoliciesAddDialog({ open, onClose }: PoliciesAddDialogProps): Re
   );
 }
 
+// ================================================================ 删除（[docs/21 §1]）
+
+/** 一条删除的结果。**逐条如实汇报**：成功说名称，失败说标识 + 后端原文。 */
+export type DeleteOutcome = {
+  /** 该条的身份（策略 id）—— 失败时的"标识"就是它。 */
+  key: string;
+  /** 名称 + id（原样，不改写用户数据）。 */
+  label: string;
+  ok: boolean;
+  /** 失败时的后端原文（含 TA 码）。 */
+  error?: string;
+};
+
+/** 一次删除操作的汇报。`batch` = 批量（要额外给"成功 N 条 / 失败 M 条"的一行）。 */
+export type DeleteReport = { batch: boolean; items: DeleteOutcome[] };
+
+/** 名称 + id：确认框与结果区都用它写清"删的是哪一个"。 */
+function policyLabel(policy: PolicyView): string {
+  return policy.name === "" ? policy.id : `${policy.name}（${policy.id}）`;
+}
+
+/**
+ * 删除结果区。**失败逐条给标识 + 后端原文**；批量再补一行"成功 N 条，失败 M 条" ——
+ * 绝不用一句"批量删除成功"盖住部分失败。
+ */
+function DeleteReportBox({ report }: { report: DeleteReport }): ReactElement {
+  const { t } = useTranslation();
+  const failed = report.items.filter((item) => !item.ok);
+  return (
+    <Box sx={{ px: 8, pb: 8 }} data-testid="policies-delete-result">
+      <Stack spacing={1}>
+        {report.batch ? (
+          <Typography variant="body1" data-testid="policies-delete-result-summary">
+            {t("delete.result.summary", { ok: report.items.length - failed.length, failed: failed.length })}
+          </Typography>
+        ) : null}
+        {report.items.map((item) => (
+          <Typography
+            key={item.key}
+            variant="body1"
+            data-testid={`policies-delete-result-${item.key}`}
+            sx={{ color: item.ok ? "text.primary" : "error.main", overflowWrap: "anywhere" }}
+          >
+            {item.ok
+              ? t("delete.result.ok", { name: item.label })
+              : `${item.label} · ${t("delete.result.failed", { message: item.error ?? "" })}`}
+          </Typography>
+        ))}
+      </Stack>
+    </Box>
+  );
+}
+
 // ================================================================ 数据层
 
 export default function PoliciesPage(): ReactElement {
   const { t } = useTranslation();
+  const qc = useQueryClient();
   const policies = useCommandQuery("policy_list", undefined, qk.policies);
   const [addOpen, setAddOpen] = useState(false);
+
+  const rows = useMemo(
+    () => (policies.data === undefined ? undefined : readPolicyList(policies.data)),
+    [policies.data],
+  );
+
+  // ---- 删除状态：单条与批量共用同一个确认组件、同一套失败展示
+  const [selected, setSelected] = useState<string[]>([]);
+  /** 正在确认的单条；`null` = 没有。 */
+  const [target, setTarget] = useState<PolicyView | null>(null);
+  /** 批量确认（与单条共用 `ConfirmDelete`：一次确认 → 逐条调用）。 */
+  const [batchOpen, setBatchOpen] = useState(false);
+  /** 后端原文（被引用时）。有它就展示；`policy_delete` 没有 force → 不给级联按钮。 */
+  const [errorText, setErrorText] = useState<string | undefined>(undefined);
+  const [report, setReport] = useState<DeleteReport | null>(null);
+  const remove = useCommandMutation("policy_delete");
+
+  const allRows = rows ?? [];
+  /** 真正要删的行：读不到 id 的行不进删除流程。 */
+  const targets = allRows.filter((row) => row.id !== "" && selected.includes(row.id));
+
+  const onDeleteOne = async (policy: PolicyView): Promise<void> => {
+    // 结果区只描述**最近一次**删除操作（上一次的结论不该混在这次里）
+    setReport(null);
+    try {
+      await remove.mutateAsync({ id: policy.id });
+      setReport({
+        batch: false,
+        items: [{ key: policy.id, label: policyLabel(policy), ok: true }],
+      });
+      setSelected((prev) => prev.filter((id) => id !== policy.id));
+      setTarget(null);
+      setErrorText(undefined);
+      await qc.invalidateQueries({ queryKey: qk.policies });
+    } catch (err) {
+      // **不假装成功**：后端原文（含 TA 码）留在确认框里，对话框保持打开让用户看见
+      setErrorText(errorMessage(err));
+    }
+  };
+
+  const onDeleteSelected = async (): Promise<void> => {
+    setReport(null);
+    const items: DeleteOutcome[] = [];
+    // 逐条调用：**一条失败不中止其它条**（[docs/21 §1.2]）
+    for (const policy of targets) {
+      try {
+        await remove.mutateAsync({ id: policy.id });
+        items.push({ key: policy.id, label: policyLabel(policy), ok: true });
+      } catch (err) {
+        items.push({
+          key: policy.id,
+          label: policyLabel(policy),
+          ok: false,
+          error: errorMessage(err),
+        });
+      }
+    }
+    setReport({ batch: true, items });
+    setBatchOpen(false);
+    setErrorText(undefined);
+    // 成功的已经不在列表里了 → 只让**失败的那些**保持选中（它们还在，可以直接重试）
+    setSelected(items.filter((item) => !item.ok).map((item) => item.key));
+    await qc.invalidateQueries({ queryKey: qk.policies });
+  };
 
   return (
     <>
@@ -1262,12 +1522,55 @@ export default function PoliciesPage(): ReactElement {
         }
       />
       <PoliciesBody
-        policies={policies.data === undefined ? undefined : readPolicyList(policies.data)}
+        policies={rows}
         isLoading={policies.isPending}
         error={policies.error ?? undefined}
         onRetry={() => void policies.refetch()}
+        deletion={{
+          selected,
+          pending: remove.isPending,
+          onToggle: (id, next) =>
+            setSelected((prev) => (next ? [...prev.filter((x) => x !== id), id] : prev.filter((x) => x !== id))),
+          onToggleAll: (next) =>
+            setSelected(next ? allRows.filter((row) => row.id !== "").map((row) => row.id) : []),
+          // 单条与批量都**只打开确认框**：命令在确认之后才发
+          onDeleteOne: (policy) => {
+            setErrorText(undefined);
+            setTarget(policy);
+          },
+          onDeleteSelected: () => {
+            setErrorText(undefined);
+            setBatchOpen(true);
+          },
+        }}
       />
+      {report !== null ? <DeleteReportBox report={report} /> : null}
       <PoliciesAddDialog open={addOpen} onClose={() => setAddOpen(false)} />
+      <ConfirmDelete
+        open={target !== null || batchOpen}
+        testIdPrefix="policies"
+        title={t("delete.title.policy")}
+        // 确认框里写清删的是哪一个：单条 = 名称 + id；批量 = 选中数 + 逐条标识
+        targetLabel={
+          target !== null
+            ? policyLabel(target)
+            : `${t("delete.selectedCount", { count: targets.length })} · ${targets.map(policyLabel).join("、")}`
+        }
+        cascadeAvailable={false}
+        pending={remove.isPending}
+        errorText={errorText}
+        onConfirm={() => {
+          if (target !== null) void onDeleteOne(target);
+          else void onDeleteSelected();
+        }}
+        // `policy_delete` 没有 force 语义 → `cascadeAvailable={false}` 时这个回调**永远不会被触发**
+        onConfirmCascade={() => {}}
+        onCancel={() => {
+          setTarget(null);
+          setBatchOpen(false);
+          setErrorText(undefined);
+        }}
+      />
     </>
   );
 }
