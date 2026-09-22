@@ -406,7 +406,12 @@ pub async fn set_file_watch_mode(
         enabled,
         "文件监听模式已写进配置，但**监听器本身尚未实现**：该开关只在下次启动时被读取"
     );
-    Ok(ApplyResult { applied: true, restart_required: true, kernel_reload: false })
+    Ok(ApplyResult {
+        applied: true,
+        restart_required: true,
+        kernel_reload: false,
+        channels_created: 0,
+    })
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1075,7 +1080,12 @@ pub async fn apply_onboarding(
         secrets = to_store.len(),
         "首启向导：配置与密钥已写入并回读确认（明文只进密钥仓库）"
     );
-    Ok(ApplyResult { applied: true, restart_required: false, kernel_reload: false })
+    Ok(ApplyResult {
+        applied: true,
+        restart_required: false,
+        kernel_reload: false,
+        channels_created: 0,
+    })
 }
 
 #[tauri::command(rename_all = "snake_case")]

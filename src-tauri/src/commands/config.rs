@@ -22,6 +22,12 @@ pub struct ApplyResult {
     pub applied: bool,
     pub restart_required: bool,
     pub kernel_reload: bool,
+    /// 本次调用**真新建**的通道数（[docs/20 §1.1]）。
+    ///
+    /// 只有 `model_apply_import` 会给出非 0 值：它不只是往模型目录塞一行，还要把模型
+    /// **接到**这个服务商上（建 `ch-<provider>-<credential>-<model>` 这条线）。
+    /// 其余命令如实填 0 —— 它们不改通道集合。
+    pub channels_created: u32,
 }
 
 /// 校验实现来自 ta-core（P1 的 `TaConfigValidator`：JSON Schema + 引用完整性）。
@@ -56,7 +62,12 @@ pub async fn config_apply(state: State<'_, AppState>, doc: ConfigDoc) -> IpcResu
     state.config.save(&doc).await?;
     state.config.snapshot(&doc, "apply").await?;
     state.set_doc(doc);
-    Ok(ApplyResult { applied: true, restart_required: false, kernel_reload: false })
+    Ok(ApplyResult {
+        applied: true,
+        restart_required: false,
+        kernel_reload: false,
+        channels_created: 0,
+    })
 }
 
 /// 导出 YAML。`with_secrets=false` 时把明文 `local_key` 打码
@@ -141,5 +152,10 @@ pub async fn config_rollback(
     let id = ta_store::SnapshotId(snapshot_id);
     let doc = state.config.rollback(&id).await?;
     state.set_doc(doc);
-    Ok(ApplyResult { applied: true, restart_required: false, kernel_reload: false })
+    Ok(ApplyResult {
+        applied: true,
+        restart_required: false,
+        kernel_reload: false,
+        channels_created: 0,
+    })
 }
