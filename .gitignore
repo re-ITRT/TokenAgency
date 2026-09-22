@@ -1,5 +1,8 @@
 # Rust
 /target
+# 每个 Rust 写者一个独立 target 目录（并发编译时共用 /target 会互相抢锁把双方卡死，
+# 本项目踩过；所以 e5/e3 各用 target-e5 / target-e3）。它们都是本地产物，绝不入库。
+/target-*/
 **/*.rs.bk
 
 # Node
