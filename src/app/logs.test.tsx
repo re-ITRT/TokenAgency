@@ -13,12 +13,16 @@
  *
  * 另外钉住 C4 的可视化：同一 request_id 的尝试链按顺序画出来、网关判定的 TA 码来自
  * 尝试链的 `reason`、header_diff 的三种状态（未知 / 无差异 / 有差异）各不相同。
+ *
+ * 4. **导出（log_export）不许自作多情**：路径没有默认值（没有任何后端命令上报目录，
+ *    不许硬编 AppData），空着就禁用按钮；落盘路径以**后端回执**为准（目录会被后端解析成
+ *    `tokenagency-diagnostic-<时间戳>.zip`）；没有回执就只说"已请求、不能确认落盘"。
  */
 
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import LogsPage, { LogsBody, type LogsBodyProps } from "@/pages/logs";
 import {
@@ -43,13 +47,31 @@ import {
 import { TracePanel } from "@/pages/logs/TracePanel";
 import type { StorageStats, TraceDetail, TraceRow } from "@/shared/bindings";
 import { formatBytes } from "@/shared/format";
+import { TokenAgencyError, registerMock } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
 import { i18n } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
 
+/** `log_export` 收到过的参数（证据：发的是当前生效条件 + 用户填的路径）。 */
+let exportCalls: Array<Record<string, unknown>> = [];
+/** `log_export` 的返回（回执对象 / null 两形态都要能显示）。 */
+let exportResult: unknown = null;
+let exportError: Error | null = null;
+
 beforeAll(async () => {
   await i18n.changeLanguage("zh-CN");
   registerBaselineMocks();
+});
+
+beforeEach(() => {
+  exportCalls = [];
+  exportResult = null;
+  exportError = null;
+  registerMock("log_export", (args) => {
+    exportCalls.push({ ...(args as Record<string, unknown>) });
+    if (exportError !== null) throw exportError;
+    return exportResult;
+  });
 });
 
 afterEach(() => {
@@ -142,6 +164,15 @@ function makeProps(overrides: Partial<LogsBodyProps> = {}): LogsBodyProps {
       recordedMode: undefined,
       onClear: () => {},
       clearing: false,
+    },
+    export: {
+      path: "",
+      onPathChange: () => {},
+      appliedSummary: "近 7 天 · 不限级别 · 不检索",
+      onRun: () => {},
+      running: false,
+      outcome: undefined,
+      error: undefined,
     },
     expanded: { requestId: null, onToggle: () => {}, renderTrace: () => null },
     ...overrides,
@@ -536,6 +567,112 @@ describe("有数据：两种后端形状的行都渲染出来", () => {
   });
 });
 
+// ================================================================ ⑤′ 导出诊断包（log_export）
+
+/**
+ * 导出是真入口，所以这里钉三件最容易作假的事：
+ *
+ * 1. **路径没有默认值**：注册表里没有任何命令上报日志/数据目录，所以输入框必须是空的、
+ *    空着时按钮禁用 —— 前端不许硬编一个 AppData 路径（那是在编造"后端会写到哪"）。
+ * 2. **落盘路径以回执为准**：后端会把**目录**解析成 `tokenagency-diagnostic-<时间戳>.zip`，
+ *    所以入参根本不是落点。有了回执就显示回执里的 `path`/`bytes`。
+ * 3. **没有回执就只说"已请求"**：这条是**防御分支**（`log_export` 的契约已经是
+ *    `LogExportReceipt { path, bytes }`，真机上正常都会回执）—— 但只要后端回了空 path
+ *    或退回 void 形态，就绝不许把"我们发过请求"说成"已经导出成功"。
+ */
+describe("[task-23 B] 导出诊断包：路径不是前端编的，落盘以后端回执为准", () => {
+  async function typeExportPath(path: string): Promise<void> {
+    const box = await screen.findByTestId("logs-export-path");
+    fireEvent.change(within(box).getByRole("textbox"), { target: { value: path } });
+  }
+
+  it("路径空着：输入框就是空的（没有编出来的默认值），按钮禁用，点了也不发请求", async () => {
+    renderPage();
+
+    const box = await screen.findByTestId("logs-export-path");
+    const input = within(box).getByRole("textbox") as HTMLInputElement;
+    expect(input.value).toBe("");
+
+    const run = screen.getByTestId("logs-export-run") as HTMLButtonElement;
+    expect(run.disabled).toBe(true);
+    fireEvent.click(run);
+    expect(exportCalls).toEqual([]);
+    expect(screen.queryByTestId("logs-export-written")).toBeNull();
+    expect(screen.queryByTestId("logs-export-requested")).toBeNull();
+  });
+
+  it("后端回执：显示回执里的落盘路径与字节数，而不是自己填的那个目录（真机上的常见路径）", async () => {
+    exportResult = { path: "D:\\out\\tokenagency-diagnostic-1770000000000.zip", bytes: 4096 };
+    renderPage();
+    await typeExportPath("D:\\out");
+
+    fireEvent.click(screen.getByTestId("logs-export-run"));
+    await waitFor(() => expect(exportCalls.length).toBe(1));
+    expect(exportCalls[0]).toEqual({ query: expect.anything(), path: "D:\\out" });
+
+    const written = await screen.findByTestId("logs-export-written");
+    expect(written.getAttribute("data-path")).toBe(
+      "D:\\out\\tokenagency-diagnostic-1770000000000.zip",
+    );
+    expect(written.getAttribute("data-bytes")).toBe("4096");
+    expect(written.textContent).toContain("tokenagency-diagnostic-1770000000000.zip");
+    expect(written.textContent).toContain("4,096");
+    expect(screen.queryByTestId("logs-export-requested")).toBeNull();
+  });
+
+  it("没有回执（防御分支：后端返回空 path，或退回老 void 形态）：只说「已请求」，并明说不能确认落盘", async () => {
+    exportResult = null;
+    renderPage();
+    await typeExportPath("D:\\out");
+
+    fireEvent.click(screen.getByTestId("logs-export-run"));
+
+    const requested = await screen.findByTestId("logs-export-requested");
+    expect(requested.getAttribute("data-path")).toBe("D:\\out");
+    expect(requested.textContent).toMatch(/不能确认/);
+    expect(screen.queryByTestId("logs-export-written")).toBeNull();
+    // 整页不许出现"已写出"（那是只有回执才配说的话）
+    expect(document.body.textContent).not.toMatch(/已写出/);
+  });
+
+  it("导出失败：原样显示错误码（诊断包命中敏感串时后端就是中止导出）", async () => {
+    exportError = new TokenAgencyError({
+      code: "TA-8001",
+      message: "诊断包导出被拒绝（测试夹具）",
+    });
+    renderPage();
+    await typeExportPath("D:\\out");
+
+    fireEvent.click(screen.getByTestId("logs-export-run"));
+
+    const err = await screen.findByTestId("logs-export-error");
+    expect(err.textContent).toMatch(/\[TA-8001\]/);
+    expect(err.textContent).toMatch(/诊断包导出被拒绝/);
+    expect(screen.queryByTestId("logs-export-written")).toBeNull();
+    expect(screen.queryByTestId("logs-export-requested")).toBeNull();
+  });
+
+  it("导出用的是**当前生效条件**：草稿里填了但没点查询 → 不进 query、也不进说明", async () => {
+    renderPage();
+    await typeExportPath("D:\\out");
+
+    // 草稿：填了请求 ID，但**没有**点「查询」
+    fireEvent.change(screen.getByLabelText("请求 ID"), {
+      target: { value: "req_draft_should_not_be_used" },
+    });
+
+    fireEvent.click(screen.getByTestId("logs-export-run"));
+    await waitFor(() => expect(exportCalls.length).toBe(1));
+
+    const query = exportCalls[0]!["query"] as Record<string, unknown>;
+    expect(query["search"]).toBeUndefined();
+    expect(screen.getByTestId("logs-export-path").parentElement?.textContent ?? "").not.toContain(
+      "req_draft_should_not_be_used",
+    );
+    expect(document.body.textContent).not.toContain("req_draft_should_not_be_used");
+  });
+});
+
 // ================================================================ ⑥ 轨迹面板（C4）
 
 type PanelProps = Parameters<typeof TracePanel>[0];
@@ -645,7 +782,14 @@ describe("文案里不留未替换的占位符", () => {
 
 // ================================================================ ⑨ 日志导出：两种后端形态都要如实显示
 
-describe("[task-23] log_export 的返回形态：A1（回执路径）与现状（void）都要能如实显示", () => {
+/**
+ * 这一段测的是**纯函数** `exportOutcome` 本身（UI 接线在上面 ⑤′ 那一段）。
+ *
+ * 契约现在是 `LogExportReceipt { path, bytes }`（c9264cb，void → 回执），所以真机上
+ * 正常都会走 `written`；`requested` 是**防御分支**：后端退回 void 形态、或回执里没有
+ * 非空 path 时，绝不能拿我们自己传进去的路径冒充"后端确认落盘"。
+ */
+describe("[task-23] log_export 的返回形态：回执路径与防御的 void 形态都要能如实显示", () => {
   it("后端回执了 { path, bytes } → written，用**后端给的**路径与字节数", () => {
     const out = exportOutcome(
       { path: "C:\\Users\\me\\AppData\\Local\\TokenAgency\\logs\\export-1.csv", bytes: 2048 },
@@ -657,7 +801,7 @@ describe("[task-23] log_export 的返回形态：A1（回执路径）与现状�
     expect(out.kind === "written" ? out.bytes : undefined).toBe(2048);
   });
 
-  it("后端仍返回 void（现状）→ requested，只声称「已请求」，不声称已写入", () => {
+  it("后端退回 void 形态（防御分支）→ requested，只声称「已请求」，不声称已写入", () => {
     for (const result of [undefined, null, {}, []]) {
       const out = exportOutcome(result, "C:\\logs\\export.csv");
       expect(out.kind, `result=${JSON.stringify(result)}`).toBe("requested");

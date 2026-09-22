@@ -77,6 +77,17 @@ let checkUpdateCalls = 0;
 let updateResult: UpdateInfo | null = null;
 let updateError: Error | null = null;
 
+/** `config_set_file_watch_mode` 收到的参数（证据：真的写了这份配置）。 */
+let fileWatchCalls: Array<Record<string, unknown>> = [];
+/** 写文件监听开关的返回（后端恒定回 restart_required=true，这里可换成别的来验"不猜"）。 */
+let fileWatchResult = { applied: true, restart_required: true, kernel_reload: false };
+let fileWatchError: Error | null = null;
+/**
+ * `config_get` 现在返回的文档。**只有写成功后才会变** ——
+ * 用来验"开关跟的是配置真值，不是本地状态"（写了以后重读必须看得见）。
+ */
+let configNow: ConfigDoc | undefined = undefined;
+
 const EXPORTED_YAML = "version: 1\ngateway:\n  listen: 127.0.0.1:8787\n";
 
 beforeAll(async () => {
@@ -98,12 +109,16 @@ beforeEach(() => {
   checkUpdateCalls = 0;
   updateResult = null;
   updateError = null;
+  fileWatchCalls = [];
+  fileWatchResult = { applied: true, restart_required: true, kernel_reload: false };
+  fileWatchError = null;
+  configNow = undefined;
 
   registerMock("config_get", () => {
     if (configFails) {
       throw new TokenAgencyError({ code: "TA-5001", message: "配置读取失败（测试夹具）" });
     }
-    return baseDoc;
+    return configNow ?? baseDoc;
   });
   registerMock("config_validate", () => validateResult);
   registerMock("config_apply", (args) => {
@@ -141,6 +156,21 @@ beforeEach(() => {
     checkUpdateCalls += 1;
     if (updateError !== null) throw updateError;
     return updateResult;
+  });
+  // 文件监听模式：写的是配置；后端恒定回 restart_required=true（监听器本身还没实现）
+  registerMock("config_set_file_watch_mode", (args) => {
+    const write = args as { enabled: boolean; path?: string };
+    fileWatchCalls.push({ ...write });
+    if (fileWatchError !== null) throw fileWatchError;
+    // **只有 applied=true 才算写进去了**：写进去后 config_get 应当回读出新值
+    if (fileWatchResult.applied) {
+      const doc = configNow ?? baseDoc;
+      configNow = {
+        ...doc,
+        system_integration: { ...doc.system_integration, file_watch_mode: write.enabled },
+      };
+    }
+    return fileWatchResult;
   });
   // 最近一条日志行（"记录时的模式"是可读的证据；当前模式没有读取接口）
   registerMock("log_query", () => ({
@@ -343,21 +373,104 @@ describe("[09 §1.2 E1–E5] 开机自启动：开关绑系统事实，漂移可
 // ================================================================ ③ 还没接的命令不画按钮
 
 describe("还没接的命令一律不画按钮，但留一行说明", () => {
-  it("日志导出：没有导出按钮，只有点名 log_export 的说明", async () => {
+  it("日志导出：本页没有导出按钮（导出在日志页），只有一行点名 log_export 的指向说明", async () => {
     renderPage();
     await waitForConfig();
     expect(screen.queryByTestId("settings-log-export")).toBeNull();
     expect(screen.getByTestId("settings-no-log-export").textContent).toMatch(/log_export/);
   });
+});
 
-  it("文件监听模式：没有开关，只有点名 config_set_file_watch_mode 的说明", async () => {
+// ================================================================ ③″ 文件监听模式：写配置、只可能"需要重启"
+
+describe("[配置] 文件监听模式：真写配置，结论只可能「需要重启」", () => {
+  it("开关绑的是配置真值（config_get 读回来的 file_watch_mode），不是本地临时状态", async () => {
     renderPage();
     await waitForConfig();
+
+    const expected = String(baseDoc.system_integration.file_watch_mode === true);
+    const configRow = await screen.findByTestId("settings-file-watch-config");
+    expect(configRow.getAttribute("data-value")).toBe(expected);
+
+    const box = screen.getByTestId("settings-file-watch-switch");
+    const toggle = within(box).getByRole("switch") as HTMLInputElement;
+    expect(toggle.checked).toBe(baseDoc.system_integration.file_watch_mode === true);
+    // 还没点过：不许显示任何结果
+    expect(screen.queryByTestId("settings-file-watch-result")).toBeNull();
+  });
+
+  it("拨开关真的调 config_set_file_watch_mode（参数是 enabled），并且只说「需要重启」", async () => {
+    renderPage();
+    await waitForConfig();
+
+    const box = await screen.findByTestId("settings-file-watch-switch");
+    fireEvent.click(within(box).getByRole("switch"));
+
+    await waitFor(() => expect(fileWatchCalls.length).toBe(1));
+    // 契约参数名是 snake_case 的 enabled（path 是可选的，配置里没有就不发）
+    expect(Object.keys(fileWatchCalls[0]!).sort()).toEqual(["enabled"]);
+    expect(fileWatchCalls[0]).toEqual({ enabled: true });
+
+    const result = await screen.findByTestId("settings-file-watch-result");
+    expect(result.getAttribute("data-applied")).toBe("true");
+    expect(result.getAttribute("data-restart-required")).toBe("true");
+    expect(result.textContent).toMatch(/需要重启/);
+    // **硬边界**：监听器本身还没实现 → 整节任何地方都不许说"已生效/正在监听"
     const tray = screen.getByTestId("settings-section-tray");
-    expect(within(tray).queryAllByRole("switch")).toEqual([]);
-    expect(within(tray).getByTestId("settings-file-watch-blocked").textContent).toMatch(
-      /config_set_file_watch_mode/,
+    expect(tray.textContent).not.toMatch(/已生效/);
+    expect(tray.textContent).not.toMatch(/正在监听/);
+  });
+
+  it("写成功之后：开关与「配置里的值」都跟着**重读到的配置**走（不是本地状态）", async () => {
+    renderPage();
+    await waitForConfig();
+
+    const box = await screen.findByTestId("settings-file-watch-switch");
+    expect((within(box).getByRole("switch") as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(within(box).getByRole("switch"));
+    await waitFor(() => expect(fileWatchCalls.length).toBe(1));
+
+    // 库里已经是 true 了 → 重读之后开关必须变 true、值行也要变
+    await waitFor(() =>
+      expect(screen.getByTestId("settings-file-watch-config").getAttribute("data-value")).toBe(
+        "true",
+      ),
     );
+    expect(
+      (
+        within(screen.getByTestId("settings-file-watch-switch")).getByRole(
+          "switch",
+        ) as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+  });
+
+  it("后端回 applied=false：如实说没有写入，不说「已写入」", async () => {
+    fileWatchResult = { applied: false, restart_required: false, kernel_reload: false };
+    renderPage();
+    await waitForConfig();
+
+    const box = await screen.findByTestId("settings-file-watch-switch");
+    fireEvent.click(within(box).getByRole("switch"));
+
+    const result = await screen.findByTestId("settings-file-watch-result");
+    expect(result.getAttribute("data-applied")).toBe("false");
+    expect(result.textContent).toMatch(/没有写入/);
+    expect(result.textContent).not.toMatch(/已写入/);
+  });
+
+  it("写失败：原样显示错误码（唯一格式化出口 errorMessage）", async () => {
+    fileWatchError = new TokenAgencyError({ code: "TA-7001", message: "写配置失败（测试夹具）" });
+    renderPage();
+    await waitForConfig();
+
+    const box = await screen.findByTestId("settings-file-watch-switch");
+    fireEvent.click(within(box).getByRole("switch"));
+
+    const err = await screen.findByTestId("settings-file-watch-error");
+    expect(err.textContent).toMatch(/\[TA-7001\]/);
+    expect(screen.queryByTestId("settings-file-watch-result")).toBeNull();
   });
 });
 

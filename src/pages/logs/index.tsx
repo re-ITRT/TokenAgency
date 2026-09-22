@@ -4,8 +4,9 @@
  * 三条硬纪律（这一页最容易违反，所以写在最上面）：
  *
  * 1. **只用已注册的命令**：`log_query` / `log_get_trace` / `log_set_mode` / `log_set_retention`
- *    / `log_storage_stats` / `log_clear` / `app_open_dir`。
- *    不做导出（`log_export` 尚未实现）——**也没有禁用占位**。
+ *    / `log_storage_stats` / `log_clear` / `app_open_dir` / `log_export`。
+ *    导出是**真入口**（不是禁用占位）：路径由用户填 —— 后端**没有**任何命令上报日志/数据目录，
+ *    所以界面**不硬编** AppData、也不显示一个编出来的默认路径；落盘路径以**后端回执**为准。
  * 2. **不许假筛选**：只有按下「查询」后进入 `applied` 的条件才会进 query key，
  *    结果区常驻显示"当前条件"，用户看得见实际生效的是什么。
  *    后端只接受**一个**检索串，所以「请求 ID」与「错误码」在 UI 上互斥（与后端同一规则）。
@@ -59,7 +60,14 @@ import {
   useCommandMutation,
   useCommandQuery,
 } from "@/shared/api";
-import type { ClearMode, LogMode, Retention, TraceDetail, TraceRow } from "@/shared/bindings";
+import type {
+  ClearMode,
+  CommandArgs,
+  LogMode,
+  Retention,
+  TraceDetail,
+  TraceRow,
+} from "@/shared/bindings";
 import {
   outcomeDisplay,
   PageHeader,
@@ -85,6 +93,8 @@ import {
   RANGE_PRESETS,
   RETENTIONS,
   SEARCH_SCAN_ROWS,
+  buildLogQuery,
+  exportOutcome,
   filterFingerprint,
   filterSummary,
   logQueryArgs,
@@ -95,6 +105,7 @@ import {
   readStorageStats,
   readTraceDetail,
   searchTerm,
+  type ExportOutcome,
   type Level,
   type LogsFilter,
   type LogRowView,
@@ -269,9 +280,35 @@ export type LogsLogProps = {
   clearing: boolean;
 };
 
+/**
+ * 导出诊断包（`log_export`）。
+ *
+ * **路径为什么必须由用户填**：注册表里**没有**任何命令上报日志/数据目录
+ * （`log_storage_stats` 只有条数与字节，`app_open_dir` 只打开窗口不返回路径），
+ * 所以这里没有"默认值"可拿 —— 前端**不许**硬编 `%APPDATA%` 那类路径（那是在编造"后端会写到哪"）。
+ * 空路径时按钮禁用，用户至少要知道路径是自己给的。
+ *
+ * **落盘路径以回执为准**：后端会把**目录**解析成 `tokenagency-diagnostic-<时间戳>.zip`
+ * （`src-tauri/src/commands/settings_ext.rs` 的 `resolve_export_target`），
+ * 所以"入参"根本不是"落点"；显示走 `exportOutcome(result, requestedPath)` 两条分支。
+ */
+export type LogsExportProps = {
+  /** 用户填的导出路径（空 = 还没填）。 */
+  path: string;
+  onPathChange: (next: string) => void;
+  /** 导出用的是**当前生效条件**（`applied`）的摘要 —— 由页面渲染好，纯函数不懂 i18n。 */
+  appliedSummary: string;
+  onRun: () => void;
+  running: boolean;
+  /** 归一化后的结果（`exportOutcome`）；`undefined` = 还没点过/正在重试。 */
+  outcome: ExportOutcome | undefined;
+  error: Error | undefined;
+};
+
 export type LogsBodyProps = {
   query: LogsQueryProps;
   log: LogsLogProps;
+  export: LogsExportProps;
   expanded: {
     requestId: string | null;
     onToggle: (requestId: string) => void;
@@ -279,7 +316,7 @@ export type LogsBodyProps = {
   };
 };
 
-export function LogsBody({ query, log, expanded }: LogsBodyProps) {
+export function LogsBody({ query, log, export: exportProps, expanded }: LogsBodyProps) {
   const { t } = useTranslation();
   const [clearOpen, setClearOpen] = useState(false);
   const [clearMode, setClearMode] = useState<ClearMode>("all");
@@ -723,6 +760,67 @@ export function LogsBody({ query, log, expanded }: LogsBodyProps) {
               {t("logs.clear.button")}
             </Button>
           </Box>
+
+          {/* 导出诊断包（log_export）：真入口。路径由用户填（后端没有任何目录可上报），
+              落盘路径以**后端回执**为准 —— 没回执就只说"已请求"，不说"已导出成功"。 */}
+          <Stack spacing={2}>
+            <Typography variant="h4">{t("logs.export.title")}</Typography>
+            <Caption>{t("logs.export.query", { summary: exportProps.appliedSummary })}</Caption>
+            <Box data-testid="logs-export-path">
+              <TextField
+                fullWidth
+                label={t("logs.export.path")}
+                placeholder={t("logs.export.path.placeholder")}
+                value={exportProps.path}
+                onChange={(event) => exportProps.onPathChange(event.target.value)}
+              />
+            </Box>
+            <Caption>{t("logs.export.path.hint")}</Caption>
+            <Box>
+              <Button
+                data-testid="logs-export-run"
+                variant="outlined"
+                disabled={exportProps.path.trim() === "" || exportProps.running}
+                onClick={exportProps.onRun}
+              >
+                {exportProps.running ? t("logs.export.running") : t("logs.export.run")}
+              </Button>
+            </Box>
+            {exportProps.error !== undefined ? (
+              <Typography
+                variant="body1"
+                data-testid="logs-export-error"
+                sx={{ color: "error.main" }}
+              >
+                {t("logs.export.error", { message: errorMessage(exportProps.error) })}
+              </Typography>
+            ) : exportProps.outcome === undefined ? null : exportProps.outcome.kind === "written" ? (
+              <Typography
+                variant="body1"
+                data-testid="logs-export-written"
+                data-path={exportProps.outcome.path}
+                data-bytes={
+                  exportProps.outcome.bytes === undefined ? "" : String(exportProps.outcome.bytes)
+                }
+              >
+                {exportProps.outcome.bytes === undefined
+                  ? t("logs.export.writtenNoBytes", { path: exportProps.outcome.path })
+                  : t("logs.export.written", {
+                      path: exportProps.outcome.path,
+                      bytes: formatInt(exportProps.outcome.bytes),
+                    })}
+              </Typography>
+            ) : (
+              <Typography
+                variant="body1"
+                data-testid="logs-export-requested"
+                data-path={exportProps.outcome.path}
+                sx={{ color: "warning.main" }}
+              >
+                {t("logs.export.requested", { path: exportProps.outcome.path })}
+              </Typography>
+            )}
+          </Stack>
         </Stack>
 
         <Dialog open={clearOpen} onClose={() => setClearOpen(false)}>
@@ -801,6 +899,10 @@ export default function LogsPage() {
   const [savedMode, setSavedMode] = useState<LogMode | undefined>(undefined);
   const [retention, setRetention] = useState<Retention | undefined>(undefined);
   const [savedRetention, setSavedRetention] = useState<Retention | undefined>(undefined);
+  /** 导出路径：**没有默认值**（后端不上报目录），空着时按钮禁用。 */
+  const [exportPath, setExportPath] = useState("");
+  /** 归一化后的导出结果；`undefined` = 还没点过。 */
+  const [exportResult, setExportResult] = useState<ExportOutcome | undefined>(undefined);
 
   const fingerprint = filterFingerprint(applied);
 
@@ -827,6 +929,7 @@ export default function LogsPage() {
   const saveRetention = useCommandMutation("log_set_retention");
   const clearLogs = useCommandMutation("log_clear");
   const openDir = useCommandMutation("app_open_dir");
+  const runExport = useCommandMutation("log_export");
 
   const refreshAll = () => {
     void page.refetch();
@@ -966,6 +1069,22 @@ export default function LogsPage() {
 
   const recorded = newestRecordedMode(views);
 
+  /**
+   * 导出：用的是**当前生效条件**（`applied`）—— 与列表看到的是同一份筛选，不另算一个。
+   * 落盘路径以**后端回执**为准（`exportOutcome` 两形态兼容）：后端把目录解析成
+   * `tokenagency-diagnostic-<时间戳>.zip`，所以入参不是落点。
+   */
+  const onExport = () => {
+    const path = exportPath.trim();
+    if (path === "") return;
+    setExportResult(undefined);
+    const query = buildLogQuery(applied) as unknown as CommandArgs<"log_export">["query"];
+    runExport.mutate(
+      { query, path },
+      { onSuccess: (result) => setExportResult(exportOutcome(result, path)) },
+    );
+  };
+
   return (
     <>
       <PageHeader
@@ -1027,6 +1146,22 @@ export default function LogsPage() {
               : { mode: recorded, tsMs: views.find((v) => v.mode !== undefined)?.tsMs },
           onClear,
           clearing: clearLogs.isPending,
+        }}
+        export={{
+          path: exportPath,
+          onPathChange: setExportPath,
+          appliedSummary: filterSummary(applied, {
+            preset: t(RANGE_LABEL[applied.preset]),
+            levelLabel: t("logs.filter.level"),
+            levelValue: applied.levels.map((level) => t(LEVEL_LABEL[level])).join(", "),
+            requestId: t("logs.filter.requestId"),
+            errorCode: t("logs.filter.errorCode"),
+            none: t("logs.result.appliedNone"),
+          }),
+          onRun: onExport,
+          running: runExport.isPending,
+          outcome: exportResult,
+          error: runExport.error ?? undefined,
         }}
         expanded={{
           requestId: expandedId,
