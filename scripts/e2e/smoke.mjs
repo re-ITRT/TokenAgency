@@ -2082,36 +2082,53 @@ async function step18(wd) {
   }
 }
 
+/**
+ * **step12：网络代理默认开启（默认直连），不再有"启用"这个动作** —— [docs/19 §2.2]。
+ *
+ * 上一轮的做法（未配置时**什么都不渲染**、只给一个 `network-optional` 选装入口）被用户明确推翻：
+ * 「网络代理默认开启，反正默认直连，也不用"启动"了」。所以本步骤的断言与上一版**正好相反**：
+ * - **必须**常显：`network-subscriptions` / `network-lanes` / 内核路径都要在（没有配置时给诚实空态）；
+ * - **不许**再存在 `network-optional` / `network-optional-enable`（那是被推翻的旧语义）；
+ * - 未配内核路径时顶部状态是「出口 · 直连」——不是"未启用"，也不是错误态。
+ *
+ * 用例前提：这一步必须在**还没配置任何网络**时跑（主流程里排在 step2/step3 之前）。
+ */
 async function step12(wd) {
   const evidence = [];
-  // 用例前提：这一步必须在**还没配置任何网络**时跑（干净 scratch），否则语义不成立。
-  // 放在 step2/step3（会通过向导写入订阅）之前跑，见主流程里的顺序注释。
   const page = await gotoPage(wd, "#/network");
   if (page === null) {
     record("step12", "FAIL", "/network 页面没渲染出来", evidence);
     return;
   }
   const ids = await wd.probeTestIds();
-  evidence.push(`/network 命中 data-testid: ${ids.slice(0, 30).join(", ")}`);
+  evidence.push(`/network 命中 data-testid: ${ids.slice(0, 34).join(", ")}`);
   const dump = dumpScratchDb("step12");
   const kinds = configEntityKinds(dump);
-  evidence.push(`config kind 计数: ${JSON.stringify(kinds)}`);
-  const forBidden = [
-    "network-subscriptions",
-    "network-subscriptions-table",
-    "network-lanes",
-    "network-lanes-write",
-    "network-assignments-resolved",
-  ].filter((t) => ids.includes(t));
-  const hasEntry = ids.includes("network-optional");
-  evidence.push(`未配置时不该出现的 testid（实际出现）: ${forBidden.join(", ") || "（无）"}`);
-  evidence.push(`是否出现「网络代理（可选，未启用）」入口 network-optional: ${hasEntry}`);
-  if (forBidden.length === 0 && hasEntry) {
-    record("step12", "PASS", "网络未配置时：不渲染任何网络区块，只给一个选装入口（用户硬要求）", evidence);
-  } else if (forBidden.length > 0) {
-    record("step12", "FAIL", `未配置却渲染了网络区块：${forBidden.join(", ")}`, evidence);
+  evidence.push(`config kind 计数: ${JSON.stringify(kinds)}（空库 = 真·未配置）`);
+
+  // 旧语义的两个 testid 必须消失
+  const legacy = ["network-optional", "network-optional-enable"].filter((t) => ids.includes(t));
+  evidence.push(`被推翻的旧选装 testid（必须为空）: ${legacy.join(", ") || "（无）"}`);
+
+  // 常显：三块都要在（每一块自己给诚实空态）
+  const mustShow = ["network-subscriptions", "network-lanes"].filter((t) => !ids.includes(t));
+  evidence.push(`必须常显却缺失的区块: ${mustShow.join(", ") || "（无）"}`);
+
+  // 顶部出口状态：未配内核路径 → 直连
+  const text = await wd.pageText();
+  const showsDirect = /直连|Direct/.test(text);
+  const showsDisabled = /未启用|not enabled/i.test(text);
+  evidence.push(`页面上出现「直连」= ${showsDirect}；出现「未启用」= ${showsDisabled}`);
+  evidence.push(`页面文本前 200 字: ${JSON.stringify(text.replace(/\s+/g, " ").slice(0, 200))}`);
+
+  if (legacy.length > 0) {
+    record("step12", "FAIL", `旧选装语义仍在页面上：${legacy.join(", ")}（用户已推翻：网络代理默认开启）`, evidence);
+  } else if (mustShow.length > 0) {
+    record("step12", "FAIL", `网络区块没有常显：缺 ${mustShow.join(", ")}`, evidence);
+  } else if (!showsDirect || showsDisabled) {
+    record("step12", "FAIL", `未配内核路径时应当是「出口 · 直连」，实际 showsDirect=${showsDirect} showsDisabled=${showsDisabled}`, evidence);
   } else {
-    record("step12", "FAIL", "未配置时既没有网络区块、也没有 network-optional 入口（用户会找不到启用方式）", evidence);
+    record("step12", "PASS", "网络代理默认开启：区块常显（空配置给诚实空态）、出口显示「直连」、旧选装入口已消失", evidence);
   }
 }
 
