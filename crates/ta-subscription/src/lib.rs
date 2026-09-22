@@ -12,6 +12,7 @@ pub mod detect;
 pub mod fetch;
 pub mod parse;
 pub mod sync;
+pub mod traffic;
 pub mod validate;
 pub mod version;
 
@@ -22,6 +23,8 @@ use serde::{Deserialize, Serialize};
 
 use ta_core::domain::Subscription;
 use ta_core::error::Result;
+
+pub use traffic::SubscriptionTraffic;
 
 /// 默认 UA：很多机场按 `User-Agent` 返回不同格式（clash / surge / v2ray），默认伪装 Clash 客户端。
 pub const DEFAULT_USER_AGENT: &str = "clash-verge/v2.0.0";
@@ -105,6 +108,12 @@ pub struct FetchOutcome {
     pub raw: Vec<u8>,
     pub format: DetectedFormat,
     pub userinfo: Option<SubUserinfo>,
+    /// `subscription-userinfo` → 流量 / 到期（[`traffic`]）。
+    ///
+    /// ★ **头不存在 = `None`**，与"头在但字段一个都认不出"（`Some` + 全 `None`）是两件事：
+    /// 前者是"这次没给"，后者是"给了但我们读不懂" —— UI 对这两种情况的说法可以不同。
+    /// 字段级语义见 [`SubscriptionTraffic`]：**未知一律 `None`，绝不用 0 冒充**。
+    pub traffic: Option<SubscriptionTraffic>,
     pub suggested_interval_s: Option<u64>,
     pub nodes: Vec<NodeMeta>,
     pub groups: Vec<GroupMeta>,

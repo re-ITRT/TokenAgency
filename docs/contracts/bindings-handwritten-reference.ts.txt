@@ -735,11 +735,27 @@ export type SubscriptionView = {
   error?: string | null;
 };
 
+/** 订阅响应头 `subscription-userinfo` 给的流量信息；**未知一律 null**（docs/18 §1.2）。 */
+export type SubscriptionTraffic = {
+  upload_bytes: number | null;
+  download_bytes: number | null;
+  total_bytes: number | null;
+  expire_at_s: number | null;
+  fetched_at_ms: number;
+};
+
+/** `subscription_traffic` 的一行；`traffic: null` = 从未成功刷新过。 */
+export type SubscriptionTrafficRow = {
+  id: SubscriptionId;
+  traffic: SubscriptionTraffic | null;
+};
+
 export type RefreshResult = {
   ok: boolean;
   node_count: number;
   group_count: number;
   error?: string | null;
+  traffic?: SubscriptionTraffic | null;
 };
 
 export type NodeView = {
@@ -1097,6 +1113,7 @@ export type CommandMap = {
   subscription_nodes: { args: { id: SubscriptionId; group?: string }; result: NodeView[] };
   subscription_rollback: { args: { id: SubscriptionId; version_index: number }; result: void };
   subscription_rules_raw: { args: { id: SubscriptionId }; result: string | null };
+  subscription_traffic: { args: undefined; result: SubscriptionTrafficRow[] };
 
   // ---- kernel
   kernel_status: { args: undefined; result: KernelStatus };

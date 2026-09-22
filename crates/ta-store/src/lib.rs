@@ -6,13 +6,15 @@
 //! - [`config_store`] 一行一实体的 JSON 配置真源 + 快照/回滚；
 //! - [`usage_store`] 账本：单事务写入 + 任意维度查询 + 看板 + CSV；
 //! - [`trace_store`] 请求日志：zstd 压缩 BLOB、脱敏、双限清理（retention + max_rows/max_size）；
-//! - [`sticky_store`] / [`health_store`] 会话粘性、健康样本、密钥元数据。
+//! - [`sticky_store`] / [`health_store`] 会话粘性、健康样本、密钥元数据；
+//! - [`subscription_traffic`] 订阅的"上次已知流量与更新时间"（docs/18 §1.2）。
 
 pub mod config_store;
 pub mod health_store;
 pub mod migrations;
 pub mod quota_backend;
 pub mod sticky_store;
+pub mod subscription_traffic;
 pub mod timebucket;
 pub mod trace_store;
 pub mod usage_store;
@@ -25,6 +27,9 @@ pub use health_store::{
 };
 pub use quota_backend::SqliteQuotaBackend;
 pub use sticky_store::{SqliteStickyStore, StickyEntry, StickyStore};
+pub use subscription_traffic::{
+    SqliteSubscriptionTrafficStore, SubscriptionTraffic, SubscriptionTrafficRow,
+};
 pub use timebucket::TimeBucket;
 pub use trace_store::{
     ClearMode, LogPage, LogQuery, SqliteTraceStore, StorageStats, TraceAttempt, TraceDetail,

@@ -75,7 +75,9 @@ use ta_core::types::{ChannelId, LaneId, ModelId, SubscriptionId};
 use ta_kernel::config_gen::{lane_target, provider_key, MhConfigGen};
 use ta_kernel::ports::{FilePortStore, PortAllocator, RangePortAllocator};
 use ta_kernel::{KernelConfigGen, KernelController, KernelState, PortMap, ProvidersSnapshot};
-use ta_store::ConfigStore;
+use ta_store::{
+    ConfigStore, SqliteSubscriptionTrafficStore, SubscriptionTraffic, SubscriptionTrafficRow,
+};
 use ta_subscription::fetch::HttpSubscriptionFetcher;
 use ta_subscription::sync::SubscriptionSync;
 use ta_subscription::validate::DefaultSubscriptionValidator;
@@ -123,6 +125,13 @@ pub struct RefreshResult {
     pub group_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// 本次刷新拿到的流量与更新时间（`docs/18 §1.2`）。**没给头就是 `None`**。
+    ///
+    /// ★ 只在刷新**一份**订阅时才有值：多份订阅的字节数**不能相加**（那是假数据），
+    /// 那种情况下它是 `None`，逐份的数字走只读命令 `subscription_traffic` 读"上次已知"。
+    /// 没到期而跳过刷新时，这里放的是**上次已知**（本次没打机场，不该显示成"没有数据"）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traffic: Option<SubscriptionTraffic>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -413,6 +422,32 @@ fn find_subscription(doc: &ConfigDoc, id: &SubscriptionId) -> IpcResult<Subscrip
         .ok_or_else(|| not_found("订阅", id.as_str()))
 }
 
+// ================================================================ 订阅流量（docs/18 §1）
+
+/// 流量快照的读写口（`subscription` 表的 5 个可空列）。
+///
+/// 每次从 `AppState::db` 现构造：`SqlitePool` 的 clone 是 Arc 级的，代价可忽略；
+/// 也因此不必往 `AppState` 里加字段（那个文件不在本次改动面上）。
+fn traffic_store(state: &AppState) -> SqliteSubscriptionTrafficStore {
+    SqliteSubscriptionTrafficStore::new(state.db.clone())
+}
+
+/// 解析层的流量 → IPC 线上形状。
+///
+/// 为什么需要这一次转换：`ta-subscription`（下载/解析）与 `ta-store`（持久化 + DTO）
+/// 互不依赖（[11 §1.1]：不跨 crate 用别人的具体类型），而 **DTO 的唯一真相源是 Store**
+/// （见 `src-tauri/Cargo.toml` 里"Store 是唯一真相源，不另写一份 DTO"）。
+/// 两个类型字段一一对应，**只在这一处转换** —— 少一个字段就编不过，漂移不了。
+fn to_ipc_traffic(t: &ta_subscription::traffic::SubscriptionTraffic) -> SubscriptionTraffic {
+    SubscriptionTraffic {
+        upload_bytes: t.upload_bytes,
+        download_bytes: t.download_bytes,
+        total_bytes: t.total_bytes,
+        expire_at_s: t.expire_at_s,
+        fetched_at_ms: t.fetched_at_ms,
+    }
+}
+
 // ================================================================ 错误助手
 
 /// "你要改的东西不存在" —— 必须报错，**不能静默成功**。
@@ -494,6 +529,8 @@ struct Refreshed {
     node_count: u32,
     group_count: u32,
     error: Option<String>,
+    /// 本次拿到（或"上次已知"）的流量；单份订阅才有意义。
+    traffic: Option<SubscriptionTraffic>,
 }
 
 /// 刷新一份订阅：fetch -> 坏更新拦截 -> 记版本 -> （内核在跑就）让它重拉 provider。
@@ -504,11 +541,16 @@ async fn refresh_one(state: &AppState, sub: &Subscription, force: bool) -> IpcRe
         if let Some((meta, outcome)) = keeper.latest_accepted(&sub.id).map_err(IpcError::from)? {
             let due_at = meta.fetched_at_ms + (sub.interval_s.max(1) as i64) * 1_000;
             if due_at > state.clock.now_ms() {
+                // 这次没打机场 —— 但界面上的"已用/总量"不该因此变成"没有数据"：
+                // 给它**上次已知**（库里那份）。
+                let traffic =
+                    traffic_store(state).get(sub.id.as_str()).await.map_err(IpcError::from)?;
                 return Ok(Refreshed {
                     ok: true,
                     node_count: outcome.node_count() as u32,
                     group_count: outcome.group_count() as u32,
                     error: None,
+                    traffic,
                 });
             }
         }
@@ -524,6 +566,9 @@ async fn refresh_one(state: &AppState, sub: &Subscription, force: bool) -> IpcRe
         Some(o) => (o.node_count() as u32, o.group_count() as u32),
         None => (0, 0),
     };
+    // 流量跟着**已采纳的那一版**走：`ok = false` 时 `effective` 是上一版（`traffic = None`），
+    // 所以我们不会拿一次坏更新的头去覆盖"上次已知"。
+    let traffic = outcome.effective.as_ref().and_then(|o| o.traffic.as_ref()).map(to_ipc_traffic);
 
     tracing::info!(
         sub_id = %sub.id,
@@ -532,8 +577,21 @@ async fn refresh_one(state: &AppState, sub: &Subscription, force: bool) -> IpcRe
         group_count,
         recorded_version = ?outcome.recorded_version,
         effective_version = ?outcome.effective_version,
+        traffic_known = traffic.is_some(),
         "订阅刷新完成"
     );
+
+    // ★ 每次**成功刷新**写"上次已知"（docs/18 §1.2）。
+    //   头缺失（`None`）时**不动**库里的旧值：机场偶尔不给头，不该把已知的数字擦掉。
+    //   写失败不改判刷新本身（订阅已经生效了），但必须如实说出来 —— 否则界面会显示
+    //   过期数字而没人知道为什么。
+    if ok {
+        if let Some(t) = &traffic {
+            if let Err(e) = traffic_store(state).record(sub.id.as_str(), t).await {
+                error = Some(scrub(&format!("订阅已更新，但流量快照没写进库：{e}")));
+            }
+        }
+    }
 
     // 采纳了新内容 -> 内核的 proxy-provider 也该立刻重拉（内核自己也有 interval，
     // 这里只是不让用户等它）。内核没跑就跳过，别造一个假的失败。
@@ -548,7 +606,7 @@ async fn refresh_one(state: &AppState, sub: &Subscription, force: bool) -> IpcRe
         }
     }
 
-    Ok(Refreshed { ok, node_count, group_count, error })
+    Ok(Refreshed { ok, node_count, group_count, error, traffic })
 }
 
 /// 刷新一份或全部启用的订阅。
@@ -570,6 +628,7 @@ pub async fn refresh_subscriptions(
             node_count: 0,
             group_count: 0,
             error: Some("没有启用的订阅，未做任何刷新".to_string()),
+            traffic: None,
         });
     }
 
@@ -577,12 +636,17 @@ pub async fn refresh_subscriptions(
     let mut ok = true;
     let mut node_count = 0u32;
     let mut group_count = 0u32;
+    let mut traffic: Option<SubscriptionTraffic> = None;
     let mut errors: Vec<String> = Vec::new();
     for sub in &targets {
         let r = refresh_one(state, sub, force).await?;
         ok &= r.ok;
         node_count = node_count.saturating_add(r.node_count);
         group_count = group_count.saturating_add(r.group_count);
+        // 只有一份订阅时 `traffic` 才代表"这份订阅的"数字；多份不能相加（假数据）。
+        if single {
+            traffic = r.traffic;
+        }
         if let Some(e) = r.error {
             // 单份订阅：原文回给 UI；多份：带上 id 才分得清是哪一份。
             errors.push(if single { e } else { format!("{}：{e}", sub.id) });
@@ -593,6 +657,7 @@ pub async fn refresh_subscriptions(
         node_count,
         group_count,
         error: if errors.is_empty() { None } else { Some(errors.join("；")) },
+        traffic,
     })
 }
 
@@ -748,6 +813,45 @@ pub async fn subscription_rules_raw(
     id: SubscriptionId,
 ) -> IpcResult<Option<String>> {
     rules_raw_of_subscription(&state, &id).await
+}
+
+/// `subscription_traffic`：每份订阅的"上次已知流量与更新时间"（只读，docs/18 §1.2 的 (a)）。
+///
+/// 返回 `{ id, traffic }[]`，**以配置里的订阅清单为准**（不是表里的行 —— 表里可能有
+/// 已删订阅的残留行）；`traffic: null` = 这份订阅从未成功刷新过（界面上是"尚未获取"）。
+///
+/// 为什么另开一条只读命令，而不是把 `traffic` 塞进 `SubscriptionView`（docs/18 §1.2 给了
+/// 两个选项，(a) 是推荐的）：`Subscription` 是**配置实体**，流量是**运行期观测值**。
+/// 混在一起之后，"改配置"的写路径会顺手把观测值一起改写/清掉，而且 `subscription_upsert`
+/// 的返回值会带上一个它根本没碰过的字段。
+pub async fn traffic_of_subscriptions(state: &AppState) -> IpcResult<Vec<SubscriptionTrafficRow>> {
+    let doc = state.doc();
+    let ids: Vec<String> = doc.proxy_subscriptions.iter().map(|s| s.id.to_string()).collect();
+    drop(doc);
+
+    let known: BTreeMap<String, SubscriptionTraffic> = traffic_store(state)
+        .list()
+        .await
+        .map_err(IpcError::from)?
+        .into_iter()
+        .filter_map(|row| {
+            let SubscriptionTrafficRow { id, traffic } = row;
+            traffic.map(|t| (id, t))
+        })
+        .collect();
+
+    Ok(ids
+        .into_iter()
+        .map(|id| SubscriptionTrafficRow { traffic: known.get(&id).cloned(), id })
+        .collect())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+#[specta::specta]
+pub async fn subscription_traffic(
+    state: State<'_, AppState>,
+) -> IpcResult<Vec<SubscriptionTrafficRow>> {
+    traffic_of_subscriptions(&state).await
 }
 
 /// `subscription_rollback`：把某个**已采纳**的版本重新立为生效版本。
@@ -1568,8 +1672,17 @@ mod tests {
 
     // ------------------------------------------------------------ 本地 HTTP 假机场
 
+    /// 一次脚本化的响应：`(响应体, 额外的真实响应头行)`。
+    ///
+    /// 起别名不是为了短，是因为 `Arc<Mutex<Vec<(String, Vec<String>)>>>` 会被
+    /// clippy 的 `type_complexity` 拦下（门禁带 `-D warnings`）。
+    type ScriptedResponse = (String, Vec<String>);
+
     /// 极小的本地 HTTP/1.1 服务：按顺序回放脚本化的响应体（第 n 次请求用第 n 个，
     /// 用完之后一直用最后一个）。**这是真 HTTP**：真 reqwest、真解析、真版本存储。
+    ///
+    /// 每次响应还能带一组**真实响应头**（订阅流量那类用例需要它：
+    /// `subscription-userinfo` 只有真经过 HTTP 才谈得上"读到了"）。
     struct FakeAirport {
         addr: String,
         hits: Arc<AtomicUsize>,
@@ -1578,12 +1691,23 @@ mod tests {
 
     impl FakeAirport {
         fn start(bodies: Vec<String>) -> Self {
+            Self::scripted(bodies.into_iter().map(|b| (b, Vec::new())).collect())
+        }
+
+        /// 每一次响应都带同一组头（`"Name: value"` 的原文行）。
+        fn with_headers(bodies: Vec<String>, headers: &[&str]) -> Self {
+            let headers: Vec<String> = headers.iter().map(|h| (*h).to_string()).collect();
+            Self::scripted(bodies.into_iter().map(|b| (b, headers.clone())).collect())
+        }
+
+        /// 逐次脚本：第 n 次响应 = 第 n 组（体, 头）。
+        fn scripted(scripts: Vec<ScriptedResponse>) -> Self {
             let listener = TcpListener::bind(("127.0.0.1", 0)).expect("绑定本地端口");
             listener.set_nonblocking(true).expect("非阻塞");
             let addr = format!("http://{}", listener.local_addr().expect("本地地址"));
             let hits = Arc::new(AtomicUsize::new(0));
             let shutdown = Arc::new(AtomicBool::new(false));
-            let bodies = Arc::new(Mutex::new(bodies));
+            let scripts = Arc::new(Mutex::new(scripts));
             let h = hits.clone();
             let sd = shutdown.clone();
             std::thread::spawn(move || loop {
@@ -1591,7 +1715,7 @@ mod tests {
                     return;
                 }
                 match listener.accept() {
-                    Ok((stream, _)) => serve_one(stream, &bodies, &h),
+                    Ok((stream, _)) => serve_one(stream, &scripts, &h),
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));
                     }
@@ -1616,7 +1740,11 @@ mod tests {
         }
     }
 
-    fn serve_one(mut stream: TcpStream, bodies: &Arc<Mutex<Vec<String>>>, hits: &Arc<AtomicUsize>) {
+    fn serve_one(
+        mut stream: TcpStream,
+        scripts: &Arc<Mutex<Vec<ScriptedResponse>>>,
+        hits: &Arc<AtomicUsize>,
+    ) {
         let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
         let mut buf = Vec::new();
         let mut chunk = [0u8; 1024];
@@ -1634,18 +1762,19 @@ mod tests {
             }
         }
         let n = hits.fetch_add(1, Ordering::SeqCst);
-        let body = {
-            let list = bodies.lock().unwrap_or_else(|e| e.into_inner());
-            if list.is_empty() {
-                String::new()
-            } else {
-                list[n.min(list.len() - 1)].clone()
-            }
+        let (body, headers) = {
+            let list = scripts.lock().unwrap_or_else(|e| e.into_inner());
+            list.get(n.min(list.len().saturating_sub(1))).cloned().unwrap_or_default()
         };
-        let head = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/yaml; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        let mut head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/yaml; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n",
             body.len()
         );
+        for h in &headers {
+            head.push_str(h);
+            head.push_str("\r\n");
+        }
+        head.push_str("\r\n");
         let _ = stream.write_all(head.as_bytes());
         let _ = stream.write_all(body.as_bytes());
         let _ = stream.flush();
@@ -2110,6 +2239,125 @@ mod tests {
         let err =
             rollback_subscription(&state, &id, rejected as u32).await.expect_err("坏版本不许回滚");
         assert!(err.message.contains("被拒绝"), "{}", err.message);
+    }
+
+    // ------------------------------------------------------------ 订阅流量与更新时间
+
+    /// 用户原话里那一行（docs/18 §1）：更新时间 + 已用/总量。
+    /// 这里用的字节数就是真实量级（130 GiB 套餐 / 已用约 92.9 GB）。
+    const USERINFO: &str =
+        "Subscription-Userinfo: upload=123456789; download=98765432100; total=139586437120; expire=1893456000";
+
+    #[tokio::test]
+    async fn refresh_returns_traffic_and_persists_the_last_known() {
+        let airport = FakeAirport::with_headers(vec![yaml_with(5, 2, false)], &[USERINFO]);
+        let state = seeded("sub-traffic", &airport.url("/sub")).await;
+
+        // ① 从未刷新过：`traffic: null`（**不是**"有对象但字段全是 0/null"）
+        let before = traffic_of_subscriptions(&state).await.expect("读流量");
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].id, "sub-a");
+        assert!(before[0].traffic.is_none(), "从未成功刷新过必须是 None");
+
+        // ② 真刷新（真 HTTP + 真响应头），返回值里带回流量
+        let r = refresh_subscriptions(&state, Some(SubscriptionId::new("sub-a")), true)
+            .await
+            .expect("刷新");
+        assert!(r.ok, "{:?}", r.error);
+        let t = r.traffic.expect("成功刷新要带回流量");
+        assert_eq!(t.upload_bytes, Some(123_456_789));
+        assert_eq!(t.download_bytes, Some(98_765_432_100));
+        assert_eq!(t.total_bytes, Some(139_586_437_120));
+        assert_eq!(t.expire_at_s, Some(1_893_456_000));
+        assert!(t.fetched_at_ms > 0, "更新时间必须是个真时刻");
+
+        // ③ ★ 不看返回值：从库里读回来（"上次已知"落库了）
+        let after = traffic_of_subscriptions(&state).await.expect("读流量");
+        assert_eq!(after[0].id, "sub-a");
+        let stored = after[0].traffic.as_ref().expect("落库了就该读得到");
+        assert_eq!(stored.download_bytes, Some(98_765_432_100));
+        assert_eq!(stored.total_bytes, Some(139_586_437_120));
+        assert_eq!(stored.expire_at_s, Some(1_893_456_000));
+        assert_eq!(stored.upload_bytes, Some(123_456_789));
+
+        // ④ 混着来：第二份订阅没刷过 → 同一个返回里它是 null，第一份不受影响
+        upsert_subscription(&state, sub_cfg("sub-b", "https://b.example/sub")).await.unwrap();
+        let mixed = traffic_of_subscriptions(&state).await.expect("读流量");
+        assert_eq!(mixed.len(), 2, "以**配置里的订阅清单**为准");
+        assert!(mixed.iter().find(|r| r.id == "sub-b").unwrap().traffic.is_none());
+        assert!(mixed.iter().find(|r| r.id == "sub-a").unwrap().traffic.is_some());
+    }
+
+    #[tokio::test]
+    async fn rejected_update_or_missing_header_keeps_the_last_known_traffic() {
+        // 第 1 次：好内容 + 头；第 2 次：HTML（被坏更新拦截）；第 3 次：好内容但**没有头**
+        let airport = FakeAirport::scripted(vec![
+            (yaml_with(5, 1, false), vec![USERINFO.to_string()]),
+            (
+                "<!DOCTYPE html><html><body>502 Bad Gateway</body></html>".to_string(),
+                vec![USERINFO.to_string()],
+            ),
+            (yaml_with(5, 1, false), vec![]),
+        ]);
+        let state = seeded("sub-traffic-keep", &airport.url("/sub")).await;
+        let id = SubscriptionId::new("sub-a");
+
+        refresh_subscriptions(&state, Some(id.clone()), true).await.expect("首次");
+        let first = traffic_of_subscriptions(&state).await.unwrap();
+        let known = first[0].traffic.clone().expect("第一次就记下了");
+
+        // 坏更新（HTML）：本次没采纳 —— 表里仍是上次已知值（不许被清掉）
+        let bad = refresh_subscriptions(&state, Some(id.clone()), true).await.expect("第二次");
+        assert!(!bad.ok, "HTML 必须被拒：{:?}", bad.error);
+        let after_bad = traffic_of_subscriptions(&state).await.unwrap();
+        assert_eq!(after_bad[0].traffic.as_ref(), Some(&known), "坏更新不该动流量快照");
+
+        // 机场不再给头：本次 traffic 是 null（"这次没给"），但"上次已知"要留着
+        let no_header =
+            refresh_subscriptions(&state, Some(id.clone()), true).await.expect("第三次");
+        assert!(no_header.ok, "{:?}", no_header.error);
+        assert!(no_header.traffic.is_none(), "没给头 → 本次就是 null");
+        let after = traffic_of_subscriptions(&state).await.unwrap();
+        assert_eq!(after[0].traffic.as_ref(), Some(&known), "没给头不许拿 NULL 覆盖『上次已知』");
+    }
+
+    /// 一次刷多份订阅时**不编造**聚合流量（不同机场的字节数不能相加）：
+    /// `traffic` 为 null，逐份的数字请走 `subscription_traffic`。
+    #[tokio::test]
+    async fn refresh_all_does_not_invent_an_aggregate_traffic() {
+        let airport = FakeAirport::with_headers(vec![yaml_with(4, 1, false)], &[USERINFO]);
+        let state = seeded("sub-traffic-all", &airport.url("/sub")).await;
+        upsert_subscription(&state, sub_cfg("sub-b", &airport.url("/sub2"))).await.unwrap();
+
+        let r = refresh_subscriptions(&state, None, true).await.expect("刷全部");
+        assert!(r.ok, "{:?}", r.error);
+        assert!(r.traffic.is_none(), "多份订阅没有可加的聚合流量");
+        assert_eq!(r.node_count, 8, "两份各 4 个节点");
+
+        // 但两份各自的"上次已知"都落库了
+        let per_sub = traffic_of_subscriptions(&state).await.unwrap();
+        assert_eq!(per_sub.len(), 2);
+        assert!(per_sub.iter().all(|r| r.traffic.is_some()), "{per_sub:?}");
+        assert_eq!(per_sub[0].traffic.as_ref().unwrap().total_bytes, Some(139_586_437_120));
+    }
+
+    /// 没到期就不重拉（force=false）：这次没有请求，`traffic` 是**上次已知**（不是 null）。
+    #[tokio::test]
+    async fn skipped_refresh_returns_the_last_known_traffic() {
+        let airport = FakeAirport::with_headers(vec![yaml_with(3, 1, false)], &[USERINFO]);
+        let state = seeded("sub-traffic-skip", &airport.url("/sub")).await;
+        let id = SubscriptionId::new("sub-a");
+
+        refresh_subscriptions(&state, Some(id.clone()), true).await.expect("首次");
+        assert_eq!(airport.hits(), 1);
+        let again = refresh_subscriptions(&state, Some(id.clone()), false).await.expect("再刷");
+        assert!(again.ok);
+        assert_eq!(airport.hits(), 1, "没到期不该再打机场");
+        assert_eq!(
+            again.traffic.as_ref().and_then(|t| t.total_bytes),
+            Some(139_586_437_120),
+            "没重拉时显示的是『上次已知』"
+        );
     }
 
     // ------------------------------------------------------------ lane 命令

@@ -181,6 +181,7 @@ mod tests {
             raw,
             format,
             userinfo: None,
+            traffic: None,
             suggested_interval_s: None,
             nodes: extracted.nodes,
             groups: extracted.groups,
@@ -204,6 +205,7 @@ mod tests {
             raw: b"proxies: []\n".to_vec(),
             format,
             userinfo: None,
+            traffic: None,
             suggested_interval_s: None,
             nodes: nodes(node_count),
             groups: (0..group_count)

@@ -61,9 +61,10 @@ const ARCHIVE: &str = "docs/contracts/bindings-handwritten-reference.ts.txt";
 /// 都得留下显式修改痕迹的那道闸。
 ///
 /// 校准史：105 → **108**（主管裁决补进 `channel_list`，以及 E3 已实现的
-/// `log_query_capabilities` / `quota_limit_gaps`；归档件已由主管同步）。
+/// `log_query_capabilities` / `quota_limit_gaps`；归档件已由主管同步）
+/// → **109**（task-36 新增 `subscription_traffic`：订阅流量与更新时间，docs/18 §1.2）。
 /// 校准依据是守卫自己的输出、不是目测：`归档件里解析出 108 条命令，期望 105 条` → 改这里。
-const ARCHIVE_TOTAL: usize = 108;
+const ARCHIVE_TOTAL: usize = 109;
 
 // ---------------------------------------------------------------- 解析（纯字符串 → 集合）
 

@@ -116,6 +116,19 @@ mod tests {
         for c in ["hard_exhausted", "invalid", "currency", "used_ratio"] {
             assert!(quota_cols.contains(&c.to_string()), "quota_state 缺少列 {c}");
         }
-        assert_eq!(v, 2, "迁移只增不改：最新版本号应为 2");
+        // 0003 加的列必须在（订阅流量与更新时间，docs/18 §1.2）。
+        // 全部**可空**：从未成功刷新过的订阅这几列就是 NULL —— UI 要能区分
+        // "没数据"和"数据是 0"，所以这里连"列必须允许 NULL"一起钉死。
+        let sub_cols: Vec<(String, i64)> =
+            sqlx::query_as("SELECT name, \"notnull\" FROM pragma_table_info('subscription')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        for c in ["upload_bytes", "download_bytes", "total_bytes", "expire_at_s", "traffic_at_ms"] {
+            let found = sub_cols.iter().find(|(n, _)| n == c);
+            let (_, notnull) = found.unwrap_or_else(|| panic!("subscription 缺少列 {c}"));
+            assert_eq!(*notnull, 0, "{c} 必须可空（未知 = NULL，不用 0 冒充）");
+        }
+        assert_eq!(v, 3, "迁移只增不改：最新版本号应为 3（0001 / 0002 / 0003）");
     }
 }

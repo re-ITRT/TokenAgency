@@ -74,12 +74,17 @@ impl StoredVersion {
 
     /// 用存下来的原文重建 [`FetchOutcome`]（节点/分组重新提取，不保证与当初逐字节一致，
     /// 但同一份原文 + 同一个提取器 => 同一结果）。
+    ///
+    /// ★ `traffic` 是 `None`：版本留档**不带**流量（`docs/18 §1.2` 明确把"上次已知流量"
+    /// 交给 `subscription` 表）。回滚只改"生效的内容"，不该把流量一起改写 ——
+    /// 那会让"更新时间"看起来像是这次回滚取到的。
     pub fn to_outcome(&self) -> FetchOutcome {
         let extracted = crate::parse::extract(&self.raw, self.meta.format);
         FetchOutcome {
             raw: self.raw.clone(),
             format: self.meta.format,
             userinfo: self.userinfo.clone(),
+            traffic: None,
             suggested_interval_s: self.suggested_interval_s,
             nodes: extracted.nodes,
             groups: extracted.groups,
@@ -466,6 +471,7 @@ mod tests {
             raw,
             format,
             userinfo: None,
+            traffic: None,
             suggested_interval_s: None,
             nodes: extracted.nodes,
             groups: extracted.groups,

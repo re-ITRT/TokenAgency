@@ -185,6 +185,7 @@ mod tests {
             raw,
             format,
             userinfo: None,
+            traffic: None,
             suggested_interval_s: None,
             nodes: extracted.nodes,
             groups: extracted.groups,

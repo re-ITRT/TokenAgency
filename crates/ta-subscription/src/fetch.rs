@@ -24,6 +24,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use backon::{BackoffBuilder, ExponentialBuilder};
+use ta_core::clock::{Clock, SystemClock};
 use ta_core::domain::{Subscription, SubscriptionFormat};
 use ta_core::error::{Result, TaError};
 
@@ -134,6 +135,10 @@ pub struct HttpSubscriptionFetcher {
     client: reqwest::Client,
     opts: FetchOptions,
     sleeper: Arc<dyn Sleep>,
+    /// "这一次拿到的时刻"的来源（`SubscriptionTraffic.fetched_at_ms`）。
+    /// 与 [`VersionKeeper`](crate::version::VersionKeeper) 同一条思路：默认系统时钟，
+    /// 测试注入固定时钟，这样断言能钉死具体数值而不是"大概在某个区间里"。
+    clock: Arc<dyn Clock>,
 }
 
 impl std::fmt::Debug for HttpSubscriptionFetcher {
@@ -154,12 +159,18 @@ impl HttpSubscriptionFetcher {
 
     pub fn with_options(opts: FetchOptions) -> Result<Self> {
         let client = Self::build_client(&opts)?;
-        Ok(Self { client, opts, sleeper: Arc::new(TokioSleep) })
+        Ok(Self { client, opts, sleeper: Arc::new(TokioSleep), clock: Arc::new(SystemClock) })
     }
 
     /// 注入退避睡眠（测试/自定义调度）
     pub fn with_sleeper(mut self, sleeper: Arc<dyn Sleep>) -> Self {
         self.sleeper = sleeper;
+        self
+    }
+
+    /// 注入时钟（`SubscriptionTraffic.fetched_at_ms` 的来源；测试用固定时钟）
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
         self
     }
 
@@ -290,7 +301,8 @@ impl SubscriptionFetcher for HttpSubscriptionFetcher {
         let mut last: Option<AttemptError> = None;
         for attempt in 1..=attempts {
             match self.attempt(s).await {
-                Ok(response) => return Ok(build_outcome(s, response)),
+                // 时刻在**拿到响应之后**取：它就是这一份流量数据的"更新时间"。
+                Ok(response) => return Ok(build_outcome(s, response, self.clock.now_ms())),
                 Err(e) if !e.is_transient() => {
                     tracing::warn!(sub_id = %s.id, error = %e, "订阅下载失败（不可重试），保留上版");
                     return Err(fetch_error(&s.id, &e));
@@ -322,8 +334,11 @@ fn fetch_error(id: &ta_core::types::SubscriptionId, e: &AttemptError) -> TaError
     TaError::Internal(format!("订阅 {id} 下载失败：{e}"))
 }
 
-/// 响应 → [`FetchOutcome`]（纯函数，便于单测）
-fn build_outcome(sub: &Subscription, response: RawResponse) -> FetchOutcome {
+/// 响应 → [`FetchOutcome`]（纯函数，便于单测）。
+///
+/// `now_ms` = 拿到这份响应的时刻（[`HttpSubscriptionFetcher::with_clock`] 注入），
+/// 它会被原样带进 [`SubscriptionTraffic::fetched_at_ms`]。
+fn build_outcome(sub: &Subscription, response: RawResponse, now_ms: i64) -> FetchOutcome {
     let filename_hint = response
         .headers
         .get(reqwest::header::CONTENT_DISPOSITION)
@@ -362,6 +377,13 @@ fn build_outcome(sub: &Subscription, response: RawResponse) -> FetchOutcome {
             .get("subscription-userinfo")
             .and_then(|v| v.to_str().ok())
             .and_then(parse::parse_userinfo),
+        // ★ 头存在 → `Some`（字段按 docs/18 的规则逐个判 null）；头不存在 → `None`。
+        //   两种情况在 UI 上说法不同，所以这里**不能**把"没给头"也变成 Some(全 None)。
+        traffic: response
+            .headers
+            .get("subscription-userinfo")
+            .and_then(|v| v.to_str().ok())
+            .map(|raw| crate::traffic::parse_traffic(raw, now_ms)),
         suggested_interval_s: response
             .headers
             .get("profile-update-interval")
@@ -467,10 +489,34 @@ mod tests {
         }
     }
 
+    /// "这一次拿到的时刻"：固定值。用固定时钟而不是系统时钟，断言才能钉在**具体数**上。
+    const NOW_MS: i64 = 1_700_000_000_000;
+
     fn fetcher(opts: FetchOptions) -> (HttpSubscriptionFetcher, Arc<RecordingSleep>) {
         let sleeper = Arc::new(RecordingSleep::default());
-        let f = HttpSubscriptionFetcher::with_options(opts).unwrap().with_sleeper(sleeper.clone());
+        let f = HttpSubscriptionFetcher::with_options(opts)
+            .unwrap()
+            .with_sleeper(sleeper.clone())
+            .with_clock(Arc::new(ta_core::clock::FixedClock::new(NOW_MS)));
         (f, sleeper)
+    }
+
+    /// 本地**真 HTTP** 服务：真端口、真 TCP、真响应头、真 reqwest 解析。
+    ///
+    /// ★ 流量解析的测试必须走这条路（而不是手写字符串调用 `parse_traffic`）：
+    /// 手写字符串只能证明"函数与断言自洽"，证明不了**响应头真的被读到了**
+    /// （`reqwest` 的头名大小写、`to_str()` 失败、拿错了头……都在那一步）。
+    async fn server_with_userinfo(header: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Subscription-Userinfo", header)
+                    .set_body_string(YAML),
+            )
+            .mount(&server)
+            .await;
+        server
     }
 
     /// 第 n 次请求才成功（前 n-1 次给 status）
@@ -689,6 +735,98 @@ mod tests {
         assert!(out.userinfo.is_none());
         assert!(out.suggested_interval_s.is_none());
         assert_eq!(out.node_count(), 0);
+    }
+
+    // ------------------------------------------------------------ 订阅流量（真响应头）
+
+    /// 有头：四个字段都按字节 / Unix 秒读出来，并带上"这一次拿到的时刻"。
+    ///
+    /// 数字取自用户看到的那个真实场景的量级（130GB 套餐 / 已用 ~92.9GB）。
+    #[tokio::test]
+    async fn traffic_is_read_from_real_response_headers() {
+        let server = server_with_userinfo(
+            "upload=123456789; download=98765432100; total=139586437120; expire=1893456000",
+        )
+        .await;
+        let (f, _) = fetcher(fast_opts());
+        let out = f.fetch(&sub_for(&server.uri())).await.unwrap();
+
+        let t = out.traffic.expect("响应头在，traffic 必须是 Some");
+        assert_eq!(t.upload_bytes, Some(123_456_789));
+        assert_eq!(t.download_bytes, Some(98_765_432_100));
+        assert_eq!(t.total_bytes, Some(139_586_437_120), "130 GB = 139586437120 字节");
+        assert_eq!(t.expire_at_s, Some(1_893_456_000), "expire 是 Unix 秒，原样读");
+        assert_eq!(t.fetched_at_ms, NOW_MS, "fetched_at_ms 来自注入的时钟");
+        assert_eq!(t.used_bytes(), Some(98_888_888_889), "已用 = upload + download");
+        // 同一份响应里 userinfo（版本留档用的旧口径）也要在
+        assert!(out.userinfo.is_some(), "旧口径的 userinfo 不能被这次改动弄丢");
+    }
+
+    /// 无头：`None` —— 与"给了但读不懂"（`Some` + 全 `None`）**必须能区分**。
+    #[tokio::test]
+    async fn absent_traffic_header_is_none_not_all_null() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(YAML))
+            .mount(&server)
+            .await;
+        let (f, _) = fetcher(fast_opts());
+        let out = f.fetch(&sub_for(&server.uri())).await.unwrap();
+        assert!(out.traffic.is_none(), "没给头 = None（不是 Some(全 null)）");
+    }
+
+    /// 给了头但只认得出一个字段 —— 其余**必须是 null，不是 0**。
+    #[tokio::test]
+    async fn traffic_missing_fields_are_null() {
+        let server = server_with_userinfo("upload=1024; total=107374182400").await;
+        let (f, _) = fetcher(fast_opts());
+        let out = f.fetch(&sub_for(&server.uri())).await.unwrap();
+
+        let t = out.traffic.expect("头在");
+        assert_eq!(t.upload_bytes, Some(1024));
+        assert_eq!(t.download_bytes, None, "缺失字段不许冒充 0");
+        assert_eq!(t.total_bytes, Some(107_374_182_400));
+        assert_eq!(t.expire_at_s, None, "缺失字段不许冒充 0");
+        assert_eq!(t.used_bytes(), None, "upload/download 任一缺失就不算已用");
+    }
+
+    /// 非法值 / `total=0` / `expire=0`：对应的字段一律 null；但同一头里的合法字段要留住。
+    #[tokio::test]
+    async fn traffic_invalid_values_and_zero_total_expire_are_null() {
+        let server = server_with_userinfo("upload=abc; download=2048; total=0; expire=0").await;
+        let (f, _) = fetcher(fast_opts());
+        let out = f.fetch(&sub_for(&server.uri())).await.unwrap();
+
+        let t = out.traffic.expect("头在");
+        assert_eq!(t.upload_bytes, None, "非数字 → null");
+        assert_eq!(t.download_bytes, Some(2048), "同一头里的合法字段不受影响");
+        assert_eq!(t.total_bytes, None, "total=0 = 不限量/未声明 → null");
+        assert_eq!(t.expire_at_s, None, "expire=0 = 不适用 → null");
+        assert_eq!(t.fetched_at_ms, NOW_MS);
+    }
+
+    /// 头在、但一个字段都认不出：`Some` + 全 null（仍然是"这次取到了"，只是读不懂）。
+    #[tokio::test]
+    async fn traffic_garbage_header_is_present_but_all_unknown() {
+        let server = server_with_userinfo("hello world").await;
+        let (f, _) = fetcher(fast_opts());
+        let out = f.fetch(&sub_for(&server.uri())).await.unwrap();
+        let t = out.traffic.expect("头在 = Some");
+        assert!(t.is_all_unknown(), "{t:?}");
+        assert_eq!(t.fetched_at_ms, NOW_MS, "读不懂内容也要留下更新时间");
+    }
+
+    /// `upload=0` / `download=0` 是**真实观测值**（真的一个字节都没用），不许变成 null。
+    #[tokio::test]
+    async fn traffic_zero_upload_download_stay_known_zero() {
+        let server =
+            server_with_userinfo("upload=0; download=0; total=100; expire=1893456000").await;
+        let (f, _) = fetcher(fast_opts());
+        let out = f.fetch(&sub_for(&server.uri())).await.unwrap();
+        let t = out.traffic.expect("头在");
+        assert_eq!(t.upload_bytes, Some(0));
+        assert_eq!(t.download_bytes, Some(0));
+        assert_eq!(t.used_bytes(), Some(0));
     }
 
     // ------------------------------------------------------------ 重试边界

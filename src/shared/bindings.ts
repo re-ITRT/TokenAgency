@@ -785,11 +785,48 @@ export type SubscriptionView = {
   error?: string | null;
 };
 
+/**
+ * 订阅服务商在响应头 `subscription-userinfo` 里给的流量信息（docs/18 §1.2）。
+ *
+ * 注意：**未知一律 `null`，绝不用 0 冒充**：
+ * - 字段缺失 / 非数字 → `null`；
+ * - `total_bytes` 的 `0` = 不限量 / 未声明 → `null`（不是"总量为零"）；
+ * - `expire_at_s` 的 `0` = 不适用 → `null`；
+ * - 而 `upload_bytes` / `download_bytes` 的 `0` 是**真实观测值**（真没用过），保留 `0`。
+ *
+ * `expire_at_s` 是 **Unix 秒**（不是毫秒）；`fetched_at_ms` 是 Unix 毫秒 —— 界面上的
+ * 「更新时间」用它（前端按本地时区格式化；总量与百分比的口径见 docs/18 §1.3，不自己发明）。
+ *
+ * 头**不存在**时整个对象是 `null`（"这次没给"）；头在但字段都读不懂时是
+ * `{ …, fetched_at_ms }` 且各字段 `null`（"给了但读不懂"）—— 两者不是一回事。
+ */
+export type SubscriptionTraffic = {
+  upload_bytes: number | null;
+  download_bytes: number | null;
+  total_bytes: number | null;
+  expire_at_s: number | null;
+  fetched_at_ms: number;
+};
+
+/** `subscription_traffic` 的一行；`traffic: null` = 这份订阅**从未成功刷新过**。 */
+export type SubscriptionTrafficRow = {
+  id: SubscriptionId;
+  traffic: SubscriptionTraffic | null;
+};
+
 export type RefreshResult = {
   ok: boolean;
   node_count: number;
   group_count: number;
   error?: string | null;
+  /**
+   * 本次刷新拿到的流量（**没给头就没有这个字段** → 按 `null` 处理）。
+   *
+   * 只有刷新**单份**订阅时才有值：多份订阅的字节数不能相加，那种情况下没有这个字段，
+   * 逐份的数字请用 `subscription_traffic` 读"上次已知"。
+   * 没到期而跳过刷新时，这里回的是**上次已知**（本次没打机场，不该显示成"没有数据"）。
+   */
+  traffic?: SubscriptionTraffic | null;
 };
 
 export type NodeView = {
@@ -1193,6 +1230,7 @@ export type CommandMap = {
   subscription_nodes: { args: { id: SubscriptionId; group?: string }; result: NodeView[] };
   subscription_rollback: { args: { id: SubscriptionId; version_index: number }; result: void };
   subscription_rules_raw: { args: { id: SubscriptionId }; result: string | null };
+  subscription_traffic: { args: undefined; result: SubscriptionTrafficRow[] };
 
   // ---- kernel
   kernel_status: { args: undefined; result: KernelStatus };

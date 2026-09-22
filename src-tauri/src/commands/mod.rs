@@ -236,6 +236,8 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             net::subscription_groups,
             net::subscription_rules_raw,
             net::subscription_rollback,
+            // 只读：每份订阅的"上次已知流量与更新时间"（docs/18 §1.2 的 (a)）
+            net::subscription_traffic,
             net::lane_upsert,
             net::lane_delete,
             net::lane_set_node,
