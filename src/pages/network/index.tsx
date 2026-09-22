@@ -74,7 +74,9 @@ import {
   laneMissingField,
   laneNameOf,
   lanePayload,
+  networkScope,
   parseOptionalCount,
+  readKernelPath,
   readLane,
   readSubscription,
   subscriptionDraftComplete,
@@ -202,6 +204,49 @@ export function Unreadable({ testId }: { testId?: string }) {
 export function MissingCommandNote({ messageKey }: { messageKey: I18nKey }) {
   const { t } = useTranslation();
   return <Caption>{t(messageKey)}</Caption>;
+}
+
+// ================================================================ ⓪ 选装入口（未配置时**唯一**的一块，[18 §2.2]）
+
+/**
+ * 「网络代理」是**选装功能**：内核路径 / 订阅 / 线路三者都没有 = 用户没在用这块功能。
+ *
+ * 这时这一页**只渲染这一个块** —— 不画空表、不画"暂无数据"、不画禁用控件：
+ * 一个没用过代理的人不该看到一屋子空壳（用户原话：「如果用户没有配置就不显示」）。
+ * 启用入口指向首启向导 `/onboarding`：内核路径与第一条订阅都在那一步里配。
+ */
+export function OptionalNetworkBlock() {
+  const { t } = useTranslation();
+  return (
+    <SectionPaper
+      title={t("network.optional.title")}
+      description={t("network.optional.hint")}
+      testId="network-optional"
+    >
+      {/* MUI 控件不吃 `data-testid`（要取到真正的按钮得再往下一层）→ 外层普通元素包住它 */}
+      <Box data-testid="network-optional-enable">
+        <Button variant="outlined" component={Link} to="/onboarding">
+          {t("network.optional.enable")}
+        </Button>
+      </Box>
+    </SectionPaper>
+  );
+}
+
+/**
+ * 「这一块还没配」的**写入入口**（不是空表、不是"暂无数据"）。
+ *
+ * 什么时候用：功能**已经在用**（三项里有任一项非空），但这一项还是空的 ——
+ * 例如配了内核路径、还没加订阅，或者有订阅、还没建线路（首启向导只写内核路径与订阅，
+ * 第一条线路只能在 `/network` 建）。这时把那块的空表藏掉，但**写入控件必须还在**，
+ * 否则用户永远建不出第一条（"未涉及的区块不渲染空表"不等于"把入口也一起藏了"）。
+ */
+function SetupPaper({ testId, children }: { testId: string; children: ReactNode }) {
+  return (
+    <Paper variant="outlined" sx={{ p: 4, borderRadius: `${radius.surface}px` }} data-testid={testId}>
+      {children}
+    </Paper>
+  );
 }
 
 const TABLE_WRAP_SX = { overflowX: "auto" } as const;
@@ -1276,6 +1321,11 @@ function LanesSection({
 
 export type NetworkBodyProps = {
   status: AppStatus | undefined;
+  /**
+   * `net.kernel.path`（来自 `config_get`）。
+   * `undefined` = **还没读到** —— 与"读到了、但为空（用户没配内核路径）"不是一回事（[18 §2.1]）。
+   */
+  kernelPath: string | undefined;
   subscriptions: SubscriptionRow[] | undefined;
   subscriptionsLoading: boolean;
   subscriptionsError: unknown;
@@ -1285,8 +1335,18 @@ export type NetworkBodyProps = {
   onRetry: () => void;
 };
 
+/**
+ * 网络概览的展示层（纯 props，便于测"已配置 / 未配置 / 读不到"三种状态）。
+ *
+ * **选装功能的门控在这里**（判定只在 `model.networkScope` 一处，见 [18 §2]）：
+ * - `off`（三项都读到且都空）→ 只渲染 `network-optional`：标题 + 一句说明 + 启用入口；
+ * - `unknown`（任一项还没读到）→ 照旧渲染各区块自己的"加载中 / 未读取"（**不**断言"没配置"）；
+ * - `on` → 只渲染对应区块（内核路径 → 内核块；订阅 → 订阅区块；线路 → 线路区块），
+ *   没配置的那一项**不画空表**，但保留它的写入入口（`SetupPaper`），否则建不出第一条。
+ */
 export function NetworkBody({
   status,
+  kernelPath,
   subscriptions,
   subscriptionsLoading,
   subscriptionsError,
@@ -1295,17 +1355,46 @@ export function NetworkBody({
   lanesError,
   onRetry,
 }: NetworkBodyProps) {
+  const scope = networkScope({
+    kernelPath,
+    subscriptionCount: subscriptions?.length,
+    laneCount: lanes?.length,
+  });
+
+  if (scope.state === "off") {
+    return (
+      <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+        <OptionalNetworkBlock />
+      </Box>
+    );
+  }
+
+  // `unknown` 时按"还没读到"照旧渲染：每个区块自己说"加载中 / 未读取"，不在这里替它们下结论
+  const unresolved = scope.state === "unknown";
+
   return (
     <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
       <ZeroSideEffectNotice />
-      <CurrentExit status={status} lanes={lanes ?? []} />
-      <SubscriptionsSection
-        rows={subscriptions}
-        isLoading={subscriptionsLoading}
-        error={subscriptionsError}
-        onRetry={onRetry}
-      />
-      <LanesSection rows={lanes} isLoading={lanesLoading} error={lanesError} onRetry={onRetry} />
+      {unresolved || scope.kernel ? <CurrentExit status={status} lanes={lanes ?? []} /> : null}
+      {unresolved || scope.subscriptions ? (
+        <SubscriptionsSection
+          rows={subscriptions}
+          isLoading={subscriptionsLoading}
+          error={subscriptionsError}
+          onRetry={onRetry}
+        />
+      ) : (
+        <SetupPaper testId="network-subscriptions-setup">
+          <SubscriptionWriteForm />
+        </SetupPaper>
+      )}
+      {unresolved || scope.lanes ? (
+        <LanesSection rows={lanes} isLoading={lanesLoading} error={lanesError} onRetry={onRetry} />
+      ) : (
+        <SetupPaper testId="network-lanes-setup">
+          <LaneWriteForm />
+        </SetupPaper>
+      )}
     </Box>
   );
 }
@@ -1318,11 +1407,15 @@ export default function NetworkPage() {
   const status = useAppStatus({ refetchInterval: 30_000 });
   const subscriptions = useCommandQuery("subscription_list", undefined, qk.subscriptions);
   const lanes = useCommandQuery("lane_list", undefined, qk.lanes);
+  // 「未配置」判定要用 `net.kernel.path`（[18 §2.1]）：它只在 `config_get` 里，
+  // 而 `config_get` 是**原子快照**（与分配页共用同一份缓存，`config:changed` 事件会失效它）。
+  const config = useCommandQuery("config_get", undefined, qk.config);
 
   const refresh = () => {
     void status.refetch();
     void subscriptions.refetch();
     void lanes.refetch();
+    void config.refetch();
   };
 
   return (
@@ -1347,6 +1440,7 @@ export default function NetworkPage() {
       />
       <NetworkBody
         status={status.data}
+        kernelPath={config.data === undefined ? undefined : readKernelPath(config.data)}
         subscriptions={
           subscriptions.data === undefined
             ? undefined

@@ -35,7 +35,9 @@ import {
   MASKED,
   laneKindLabel,
   maskSubscriptionUrl,
+  networkScope,
   readAssignments,
+  readKernelPath,
   readLane,
   readSubscription,
   type LaneRow,
@@ -236,6 +238,8 @@ function renderBody(node: React.ReactElement) {
 function networkProps(over: Partial<NetworkBodyProps> = {}): NetworkBodyProps {
   return {
     status: undefined,
+    // `undefined` = `config_get` 还没读到 —— 与"读到了、但用户没配内核路径"不是一回事
+    kernelPath: undefined,
     subscriptions: undefined,
     subscriptionsLoading: false,
     subscriptionsError: undefined,
@@ -1409,5 +1413,185 @@ describe("⑬ /network/assignments：显示后端算的五级链路，而不是�
     expect(
       (await screen.findByTestId("network-assignments-reverse-lookup-error")).textContent,
     ).toContain("TA-1004");
+  });
+});
+
+// ================================================================ ⑭ /network 是**选装**：没配置就不显示（[18 §2]）
+//
+// 用户原话：「我们的网络代理模块也需要设置，**如果用户没有配置就不显示**，token 网络代理是一个**选装功能**」。
+//
+// 「未配置」的**唯一口径**（[18 §2.1]）：`net.kernel.path` 为空 **且** 订阅列表为空 **且** 线路列表为空。
+// 三者都空 = 用户没在用这块功能 —— 于是这一页**一个网络区块都不渲染**：没有空表、没有"暂无数据"、
+// 没有禁用控件，只有一个选装入口（否则用户找不到启用方式）。
+//
+// 这一组的重点是**反向断言**：未配置时那些 testid **不存在**。"不显示"的验收标准是
+// "页面上没有这些东西"，不是"它们被 CSS 藏起来了"（`queryByTestId` 对两者都能分辨）。
+
+/** 未配置：三项都读到了，且都是空的（`config_get` 给出 `path: null` → 空字符串）。 */
+function unconfiguredProps(over: Partial<NetworkBodyProps> = {}): NetworkBodyProps {
+  return networkProps({ kernelPath: "", subscriptions: [], lanes: [], ...over });
+}
+
+/** 未配置时**不该存在**的 testid：订阅表/线路表/内核块/空状态/写表单，一个都不许有。 */
+const FORBIDDEN_WHEN_UNCONFIGURED = [
+  "network-subscriptions",
+  "network-subscriptions-table",
+  "network-subscriptions-empty",
+  "network-subscriptions-write",
+  "network-subscriptions-setup",
+  "network-lanes",
+  "network-lanes-table",
+  "network-lanes-empty",
+  "network-lanes-write",
+  "network-lanes-setup",
+  "network-current-exit",
+];
+
+describe("⑭ /network 是选装：三项都没配置时，页面上只有选装入口", () => {
+  // 整页用例会覆盖 mock（config_get / subscription_list / lane_list）—— 每条用例前先回到基准场景
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("只渲染一个块 network-optional：标题 + 一句说明 + 一个启用入口", () => {
+    renderPage(<NetworkBody {...unconfiguredProps()} />);
+    const block = screen.getByTestId("network-optional");
+    expect(block.textContent).toContain("网络代理（可选，未启用）");
+    // 说明必须说清"这是选装"，而不是把它写成故障
+    expect(block.textContent).toContain("选装");
+    // 启用入口是**真控件**（可点、不 disabled），并把用户带去配内核路径 / 第一条订阅的地方
+    const entry = within(screen.getByTestId("network-optional-enable")).getByRole("link");
+    expect(entry.textContent).toContain("去配置");
+    expect(entry.getAttribute("href")).toBe("/onboarding");
+    expect(entry.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("反向断言：订阅表 / 线路表 / 内核块 / 空状态 / 写表单**一个都不存在**", () => {
+    renderPage(<NetworkBody {...unconfiguredProps()} />);
+    for (const testid of FORBIDDEN_WHEN_UNCONFIGURED) {
+      expect(screen.queryByTestId(testid), `未配置时不该出现 ${testid}`).toBeNull();
+    }
+    // "一个'暂无数据'"也不要：这些诚实空状态的文案同样不该出现
+    const text = document.body.textContent ?? "";
+    expect(text).not.toContain("配置里还没有订阅");
+    expect(text).not.toContain("配置里还没有线路");
+    // "只渲染**一个**块"：零副作用声明也属于网络区块，未启用时不占版面
+    expect(screen.queryByTestId("network-zero-side-effect")).toBeNull();
+  });
+
+  it("空字符串 / 纯空白的内核路径都算「没配」（不把空格当成已配置）", () => {
+    expect(networkScope({ kernelPath: "", subscriptionCount: 0, laneCount: 0 }).state).toBe("off");
+    expect(networkScope({ kernelPath: "   ", subscriptionCount: 0, laneCount: 0 }).state).toBe("off");
+  });
+
+  it("三项里任一项还没读到 → 不敢说「未配置」（不冒充已配置，也不画选装块）", () => {
+    // `undefined` = 还没读到（`config_get` / `subscription_list` / `lane_list` 任一没回来）
+    expect(networkScope({ kernelPath: undefined, subscriptionCount: 0, laneCount: 0 }).state).toBe(
+      "unknown",
+    );
+    expect(networkScope({ kernelPath: "", subscriptionCount: undefined, laneCount: 0 }).state).toBe(
+      "unknown",
+    );
+    expect(networkScope({ kernelPath: "", subscriptionCount: 0, laneCount: undefined }).state).toBe(
+      "unknown",
+    );
+    // 界面上：读不到内核路径时照旧显示各区块自己的"加载中 / 未读取"，而不是断言"没配置"
+    renderPage(<NetworkBody {...networkProps({ subscriptions: [], lanes: [] })} />);
+    expect(screen.queryByTestId("network-optional")).toBeNull();
+  });
+
+  it("三项各自的非空都能单独开启这一个区块（内核路径 / 订阅 / 线路三选一）", () => {
+    expect(networkScope({ kernelPath: "C:/mihomo", subscriptionCount: 0, laneCount: 0 })).toEqual({
+      state: "on",
+      kernel: true,
+      subscriptions: false,
+      lanes: false,
+    });
+    expect(networkScope({ kernelPath: "", subscriptionCount: 1, laneCount: 0 })).toEqual({
+      state: "on",
+      kernel: false,
+      subscriptions: true,
+      lanes: false,
+    });
+    expect(networkScope({ kernelPath: "", subscriptionCount: 0, laneCount: 1 })).toEqual({
+      state: "on",
+      kernel: false,
+      subscriptions: false,
+      lanes: true,
+    });
+  });
+
+  it("readKernelPath：整份配置没读到 → undefined；读到了但没填 → 空字符串（两件事不混）", () => {
+    // 没读到（`config_get` 还没回来）—— 不是"用户没配"
+    expect(readKernelPath(undefined)).toBeUndefined();
+    expect(readKernelPath({})).toBeUndefined();
+    // 读到了：null / 缺键 / 空串都 = 用户没填
+    expect(readKernelPath({ net: { kernel: { path: null } } })).toBe("");
+    expect(readKernelPath({ net: { kernel: {} } })).toBe("");
+    expect(readKernelPath({ net: {} })).toBe("");
+    // 纯空白原样返回（读取层**不改写**后端给的值）；"算不算没配"由 `networkScope` 判定（上面那条）
+    expect(readKernelPath({ net: { kernel: { path: "  " } } })).toBe("  ");
+    // 真配置了就给原文（不做任何改写）
+    expect(readKernelPath({ net: { kernel: { path: "C:/mihomo/mihomo.exe" } } })).toBe(
+      "C:/mihomo/mihomo.exe",
+    );
+  });
+
+  it("只配了内核路径：渲染内核块，但不给订阅 / 线路画空表、也不给空状态", () => {
+    renderPage(
+      <NetworkBody
+        {...networkProps({ kernelPath: "C:/mihomo/mihomo.exe", subscriptions: [], lanes: [] })}
+      />,
+    );
+    expect(screen.getByTestId("network-current-exit")).toBeTruthy();
+    for (const testid of [
+      "network-subscriptions",
+      "network-lanes",
+      "network-subscriptions-empty",
+      "network-lanes-empty",
+    ]) {
+      expect(screen.queryByTestId(testid), `没配置的区块不该画空表：${testid}`).toBeNull();
+    }
+    // 但**建第一条**的入口必须还在（藏在空表里的写控件等于把路堵死）：
+    // 首启向导只写内核路径与订阅，第一条线路只能在 `/network` 建。
+    expect(screen.getByTestId("network-subscriptions-setup")).toBeTruthy();
+    expect(screen.getByTestId("network-lanes-setup")).toBeTruthy();
+    expect(screen.getByTestId("network-subscriptions-add-id")).toBeTruthy();
+    expect(screen.getByTestId("network-lanes-add-id")).toBeTruthy();
+  });
+
+  it("只配了订阅：订阅区块连表带写表单都在；线路仍是写入入口，而不是空表", () => {
+    renderPage(
+      <NetworkBody
+        {...networkProps({ kernelPath: "", subscriptions: [readSubscription(contractSubscription())], lanes: [] })}
+      />,
+    );
+    expect(screen.getByTestId("network-subscriptions-table")).toBeTruthy();
+    expect(screen.queryByTestId("network-lanes")).toBeNull();
+    expect(screen.queryByTestId("network-lanes-empty")).toBeNull();
+    // 没线路时**仍要能建第一条线路**：写入控件不是"空表"，不违反"不画空表"
+    expect(screen.getByTestId("network-lanes-setup")).toBeTruthy();
+    expect(screen.getByTestId("network-lanes-add-id")).toBeTruthy();
+    // 反过来：已经有订阅了，就不该再出现"建第一条订阅"的兜底块
+    expect(screen.queryByTestId("network-subscriptions-setup")).toBeNull();
+  });
+
+  it("整页：mock 基准场景（有订阅 + 有线路）不显示选装入口", async () => {
+    renderPage(<NetworkPage />);
+    expect(await screen.findByTestId("network-subscriptions-table")).toBeTruthy();
+    expect(await screen.findByTestId("network-lanes-table")).toBeTruthy();
+    expect(screen.queryByTestId("network-optional")).toBeNull();
+  });
+
+  it("整页：config_get + subscription_list + lane_list 三项都空 → 整页只剩 network-optional", async () => {
+    registerMock("config_get", () => ({ net: { kernel: { path: null } } }) as never);
+    registerMock("subscription_list", () => []);
+    registerMock("lane_list", () => []);
+
+    renderPage(<NetworkPage />);
+    expect(await screen.findByTestId("network-optional")).toBeTruthy();
+    for (const testid of FORBIDDEN_WHEN_UNCONFIGURED) {
+      expect(screen.queryByTestId(testid), `未配置时不该出现 ${testid}`).toBeNull();
+    }
   });
 });
