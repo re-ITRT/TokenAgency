@@ -505,11 +505,18 @@ mod tests {
     struct Reply {
         status: u16,
         body: String,
+        delay_ms: u64,
     }
 
     impl Reply {
         fn json(status: u16, body: impl Into<String>) -> Self {
-            Self { status, body: body.into() }
+            Self { status, body: body.into(), delay_ms: 0 }
+        }
+
+        /// 故意慢答：用来证明 `latency_ms` 是**真测出来的**，不是编的 0。
+        fn delayed(mut self, ms: u64) -> Self {
+            self.delay_ms = ms;
+            self
         }
     }
 
@@ -567,6 +574,9 @@ mod tests {
                     .expect("队列锁")
                     .pop_front()
                     .unwrap_or(Reply::json(500, "{}"));
+                if reply.delay_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(reply.delay_ms)).await;
+                }
                 let head = format!(
                     "HTTP/1.1 {} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                     reply.status,
@@ -638,7 +648,9 @@ mod tests {
     /// 2xx + 形状正确 → `ok=true, probe="models"`，且**延迟是真测出来的**（不是编的 0）。
     #[tokio::test]
     async fn provider_test_reports_models_ok_and_sends_the_credential_header() {
-        let upstream = spawn_upstream(vec![Reply::json(200, models_body(&["m-1"]))]).await;
+        // 上游故意慢答 120ms：`latency_ms` 必须反映它（probe.rs 的单调时钟测的是 TTFB）
+        let upstream =
+            spawn_upstream(vec![Reply::json(200, models_body(&["m-1"])).delayed(120)]).await;
         let state =
             fixture("test-ok", config_with(&upstream.base_url(), serde_json::json!({}))).await;
 
@@ -648,6 +660,11 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert_eq!(result.status, 200);
         assert_eq!(result.probe, "models");
+        assert!(
+            result.latency_ms >= 100,
+            "真延迟 120ms，报出来 {}ms 说明这个数是编的",
+            result.latency_ms
+        );
         assert!(result.note.is_none(), "通了就不该编一个 note：{:?}", result.note);
 
         let head = upstream.seen()[0].clone();
