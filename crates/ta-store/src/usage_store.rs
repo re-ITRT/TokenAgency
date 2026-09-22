@@ -107,13 +107,45 @@ impl GroupDim {
 ///
 /// specta 类型由下方**手写 `impl Type`** 提供：线上形态是一个普通字符串
 /// （`"requests"` / `"input_cached"` / …），derive 会生成与线上不符的变体联合类型。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// **serde 同样是手写的**（下方 `impl Serialize/Deserialize`），理由与 specta 一样：
+/// derive 出来的是 Pascal（`"Requests"` / `{"Tokens":"input_cached"}`），
+/// 而契约（[docs/10 §2.2]）与前端发的是 snake_case 字符串 ——
+/// 真机上 `usage_query` / `usage_export_csv` 因此报 `unknown variant 'requests'`
+/// （`/dashboard` 不吃 metrics 才躲过）。线上形态只有一种，就是 [`Metric::key`]。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Metric {
     Requests,
     Cost,
     CacheHitRate,
     AvgLatency,
     Tokens(TokenKind),
+}
+
+/// 线上形态 = [`Metric::key`]（snake_case 字符串，TokenKind 走 `as_key()`）。
+///
+/// **不能用 derive / rename_all 代替**：`Tokens(TokenKind)` 那一支无论怎么 rename
+/// 都会带上枚举的外部标记（`{"Tokens":…}` 或 `{"tokens":…}`），而契约要求它
+/// 直接就是 TokenKind 的字符串形态（`"input_cached"`）。
+impl serde::Serialize for Metric {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.key())
+    }
+}
+
+/// 从 key 反解。**只认一种形态**：Pascal 不再被接受 ——
+/// 两种形态并存比"只支持错的那种"更坏，前端会永远不知道该发哪个。
+impl<'de> serde::Deserialize<'de> for Metric {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Metric::parse(&s))
+    }
 }
 
 /// 手写 specta 类型：线上形态是字符串（见 `Metric` 的注释）。
@@ -1793,5 +1825,88 @@ mod tests {
             assert_eq!(Metric::parse(s).key(), s);
         }
         assert_eq!(Metric::parse("brand_new_kind").key(), "brand_new_kind");
+    }
+
+    // ---------------------------------------------------------------- 线上形态（task-24）
+
+    /// ★ `Metric` 的**线上形态必须是 snake_case 字符串**。
+    ///
+    /// 依据 [docs/10 §2.2]（`metrics: ("requests"|"cost"|…|TokenKind)[]`）与本文件
+    /// `Metric` 上方那段注释。derive 出来的形态是 Pascal（`"Requests"`），
+    /// 真机上 `usage_query` / `usage_export_csv` 就是因为这个直接报
+    /// `unknown variant 'requests'` —— `/dashboard` 不吃 metrics 才躲过。
+    #[test]
+    fn metric_online_form_is_snake_case_not_pascal() {
+        // 序列化：走 key()，不是变体名
+        assert_eq!(json!(Metric::Requests), json!("requests"));
+        assert_eq!(json!(Metric::Cost), json!("cost"));
+        assert_eq!(json!(Metric::CacheHitRate), json!("cache_hit_rate"));
+        assert_eq!(json!(Metric::AvgLatency), json!("avg_latency"));
+        // `Tokens(TokenKind)` 要落到 TokenKind 自己的字符串形态 ——
+        // **不是** {"Tokens":…}，也不是 {"tokens":…}（外部标记两种都不对）
+        assert_eq!(json!(Metric::Tokens(TokenKind::InputCached)), json!("input_cached"));
+
+        // 反序列化：前端按契约发的 snake_case 必须能解出来
+        assert_eq!(serde_json::from_value::<Metric>(json!("requests")).unwrap(), Metric::Requests);
+        assert_eq!(serde_json::from_value::<Metric>(json!("cost")).unwrap(), Metric::Cost);
+        assert_eq!(
+            serde_json::from_value::<Metric>(json!("cache_hit_rate")).unwrap(),
+            Metric::CacheHitRate
+        );
+        assert_eq!(
+            serde_json::from_value::<Metric>(json!("avg_latency")).unwrap(),
+            Metric::AvgLatency
+        );
+        assert_eq!(
+            serde_json::from_value::<Metric>(json!("input_cached")).unwrap(),
+            Metric::Tokens(TokenKind::InputCached)
+        );
+        // 开放集合：没见过的 key 也要能收（不报错）
+        assert_eq!(
+            serde_json::from_value::<Metric>(json!("brand_new_kind")).unwrap(),
+            Metric::Tokens(TokenKind::from_key("brand_new_kind"))
+        );
+
+        // 开放集合的直接后果：**任何字符串都是合法的 TokenKind 键**，
+        // 所以 "Requests" 会被当成一个**新的 token 类型**，而不是 `Metric::Requests`。
+        // 这不是缺陷（契约的 TokenKind 本来就是开放集合），但它说明
+        // "Pascal 不再等于内置指标"这件事必须钉住 —— 否则前端发 Pascal
+        // 会静默变成"查询一个叫 Requests 的 token 类型"，拿回一堆 0。
+        assert_ne!(
+            serde_json::from_value::<Metric>(json!("Requests")).unwrap(),
+            Metric::Requests,
+            "Pascal 形态绝不能落到内置指标上"
+        );
+    }
+
+    /// 端到端入参路径：`usage_query` / `usage_export_csv` 收到的就是 `UsageQuery`。
+    ///
+    /// 这里**不从零拼 JSON**：`range` 的形态是另一个任务的范围（它现在是
+    /// 外部标记的变体名，曾漂移成 `{"preset":…}`）。从 `UsageQuery::default()`
+    /// 出发、只替换 `metrics`，就能只测 metric 这一件事、不被 range 的形态牵着走。
+    #[test]
+    fn usage_query_accepts_contract_shaped_metrics() {
+        // 默认 `UsageQuery` 的 metrics 是**空的**，所以显式给一份真实查询
+        let q = UsageQuery {
+            metrics: vec![Metric::Requests, Metric::Cost, Metric::Tokens(TokenKind::InputCached)],
+            ..Default::default()
+        };
+        let mut v = serde_json::to_value(&q).expect("查询可序列化");
+
+        // 序列化出来的**必须**是 snake_case 字符串；`Tokens(..)` 不能带外部标记
+        let as_text = v["metrics"].to_string();
+        assert!(as_text.contains("requests"), "线上形态必须是 snake_case：{as_text}");
+        assert!(as_text.contains("input_cached"), "TokenKind 要用自己的字符串形态：{as_text}");
+        assert!(!as_text.contains("Requests"), "不该出现 Pascal：{as_text}");
+        assert!(!as_text.contains("Tokens"), "Tokens 那支不该带枚举标记：{as_text}");
+
+        // 再按前端实际会发的契约形态反序列化回来
+        v["metrics"] = json!(["requests", "cost", "input_cached"]);
+        let back: UsageQuery = serde_json::from_value(v)
+            .expect("契约形态的 metrics 必须能解出来（这就是真机上的失败点）");
+        assert_eq!(
+            back.metrics,
+            vec![Metric::Requests, Metric::Cost, Metric::Tokens(TokenKind::InputCached)]
+        );
     }
 }
