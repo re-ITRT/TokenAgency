@@ -1382,8 +1382,8 @@ async function step3(wd, fixture) {
   const filled = await fillFormHeuristic(wd, {
     id: "ta-e2e-sub",
     name: "TA E2E 订阅",
-    url: fixtureUrl,
-    base_url: fixtureUrl,
+    url: fixture.url,
+    base_url: fixture.url,
   });
   evidence.push(`新增入口: ${add.how}`);
   evidence.push(`填写的字段: ${JSON.stringify(filled)}`);

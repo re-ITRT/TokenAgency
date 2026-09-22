@@ -1026,7 +1026,7 @@ pub async fn apply_onboarding(
         }
         let hint = mask_secret(value);
         if let Err(e) = state.secret_meta.upsert(name, &hint, now_ms()).await {
-            tracing::warn!(error = %e, "密钥元数据登记失败（密钥本身已写入）");
+            tracing::warn!(code = e.code(), error = %e, "密钥元数据登记失败（密钥本身已写入）");
         }
     }
 
@@ -1289,7 +1289,7 @@ pub async fn migrate_secrets(
         let hint =
             mask_by_location.get(&m.location).cloned().unwrap_or_else(|| "已迁移".to_string());
         if let Err(e) = state.secret_meta.upsert(&m.name, &hint, now_ms()).await {
-            tracing::warn!(error = %e, "密钥元数据登记失败（密钥本身已写入）");
+            tracing::warn!(code = e.code(), error = %e, "密钥元数据登记失败（密钥本身已写入）");
         }
     }
 
