@@ -11,15 +11,21 @@
  *    连接配置字段没返回时明说"后端没返回这一列"，不排一排空占位。
  * 3. **错误带 `TA-xxxx` 且不吞**：读服务商失败、读凭据失败都要各自显示出来 ——
  *    凭据读失败只该让"凭据数"变未知，不该把整张表打成错误。
- * 4. **没接线的能力不放按钮**：`provider_test` / `provider_upsert` / `provider_delete` 都还没注册
- *    （见 `commandSurface.guard.test.ts`），所以这里断言页面上**没有**任何测试/编辑按钮。
+ * 4. **没接线的能力不放按钮**：`provider_test` / `provider_echo` 都还没注册
+ *    （见 `src-tauri/src/commands/mod.rs` 的 `collect_commands!`，`commandSurface.guard.test.ts`
+ *    机械检查），所以这里断言页面上**没有**测试/编辑/删除按钮。
+ * 5. **两个添加向导（[docs/17 §3.1]）是真入口**：`provider_upsert` / `credential_upsert` /
+ *    `credential_set_secret` 都已在注册表里，所以「添加服务商」「添加密钥」必须是能真填、
+ *    真发命令、成功后回显**后端返回值**的向导 —— 不是禁用占位、也不是本地假保存。
+ *    断言在 ⑥⑦ 两节：控件存在 → 真输入 → 真的调了命令 → 入参 snake_case 且形状正确 →
+ *    成功后显示后端真值；校验分支断言**一次请求都不发**。
  */
 
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ProvidersPage, { ProvidersBody, type ProvidersBodyProps } from "@/pages/providers";
 import ProviderDetailPage, {
@@ -29,7 +35,7 @@ import ProviderDetailPage, {
 import { mountOf, readCredential, readProvider } from "@/pages/providers/model";
 import { knownPages, resolvePage } from "@/app/pageRegistry";
 import { routeByKey } from "@/app/routes";
-import { TokenAgencyError } from "@/shared/api";
+import { TokenAgencyError, registerMock } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
 import { i18n } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
@@ -383,7 +389,7 @@ describe("[07 §3.1] 列表页：空 / 加载 / 错误 / 有数据", () => {
     expect(screen.getByTestId("providers-table")).toBeTruthy();
   });
 
-  it("点名称进入详情；没有测试/编辑按钮（那些命令还没注册）", () => {
+  it("点名称进入详情；列表行上没有测试/编辑/删除按钮（本轮只接「添加」入口）", () => {
     const onOpen = vi.fn();
     renderList({ rows: [readProvider(viewProvider())], onOpen });
 
@@ -543,5 +549,423 @@ describe("两条路由都解析到真页面，不再走占位壳", () => {
       expect(route, `路由表里应有 ${key}`).toBeDefined();
       expect(resolvePage(route!.pages), `${route!.path} 应解析到真页面`).toBeDefined();
     }
+  });
+});
+
+// ================================================================ ⑥⑦ [docs/17 §3.1] 两个添加向导
+
+/**
+ * 记录每次调用入参的 mock：返回 `result`，同时把入参留下来
+ * （与 `channels.test.tsx` ⑨ 同一手法）。
+ */
+function recordingMock(result: unknown): {
+  calls: Record<string, unknown>[];
+  handler: (args?: Record<string, unknown>) => unknown;
+} {
+  const calls: Record<string, unknown>[] = [];
+  return {
+    calls,
+    handler: (args) => {
+      calls.push(args ?? {});
+      return result;
+    },
+  };
+}
+
+/**
+ * 输入框取值：MUI 的 `TextField` / `Select` **不吃 `data-testid`**（TS2353），
+ * 所以 testid 挂在外层元素上 —— 真机 E2E 用 `[data-testid="X"] input` 命中，
+ * 这里用**同一个选择器**，测试与 E2E 不会各认一套。
+ */
+function inputOf(testId: string): HTMLInputElement {
+  const input = screen.getByTestId(testId).querySelector("input");
+  if (input === null) throw new Error(`[data-testid="${testId}"] 里没有 input`);
+  return input;
+}
+
+/** 打真字（`fireEvent.change` 走 React 的 onChange，不是塞 state）。 */
+function typeInto(testId: string, value: string): void {
+  fireEvent.change(inputOf(testId), { target: { value } });
+}
+
+/** 打开一个 MUI 下拉并点中某一项。 */
+async function chooseOption(testId: string, name: RegExp | string): Promise<void> {
+  fireEvent.mouseDown(within(screen.getByTestId(testId)).getByRole("combobox"));
+  fireEvent.click(await screen.findByRole("option", { name }));
+}
+
+/** 本轮向导该有的控件（[docs/17 §3.1]）。**不许改名**：真机 E2E 按它们驱动。 */
+const PROVIDER_WIZARD_CONTROLS = [
+  "providers-add-id",
+  "providers-add-name",
+  "providers-add-protocol",
+  "providers-add-baseUrl",
+  "providers-add-authScheme",
+  "providers-add-authHeader",
+  "providers-add-authPrefix",
+  "providers-add-submit",
+] as const;
+
+const CREDENTIAL_WIZARD_CONTROLS = [
+  "credentials-add-id",
+  "credentials-add-label",
+  "credentials-add-provider",
+  "credentials-add-secret",
+  "credentials-add-quotaLimit",
+  "credentials-add-currency",
+  "credentials-add-window",
+  "credentials-add-submit",
+] as const;
+
+describe("[docs/17 §3.1] 添加服务商：真控件 → 真的调 provider_upsert → 显示后端真值", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("页头有「添加服务商」；打开后控件一个不少，且都是能真交互的控件", async () => {
+    renderAt("/providers");
+
+    fireEvent.click(await screen.findByTestId("providers-add-open"));
+    for (const id of PROVIDER_WIZARD_CONTROLS) {
+      expect(screen.getByTestId(id), `缺控件 ${id}`).toBeTruthy();
+    }
+    expect(inputOf("providers-add-id").tagName).toBe("INPUT");
+    expect(inputOf("providers-add-name").tagName).toBe("INPUT");
+    expect(inputOf("providers-add-baseUrl").tagName).toBe("INPUT");
+    // 协议与鉴权方式是下拉（协议清单来自 PROTOCOLS，不是前端另编一份）
+    expect(within(screen.getByTestId("providers-add-protocol")).getByRole("combobox")).toBeTruthy();
+    expect(within(screen.getByTestId("providers-add-authScheme")).getByRole("combobox")).toBeTruthy();
+    fireEvent.mouseDown(within(screen.getByTestId("providers-add-protocol")).getByRole("combobox"));
+    expect(await screen.findByRole("option", { name: "Anthropic" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Gemini" })).toBeTruthy();
+  });
+
+  it("填完真提交 → provider_upsert({provider})：snake_case、只带用户真给的字段；回显后端返回值", async () => {
+    let listCalls = 0;
+    registerMock("provider_list", () => {
+      listCalls += 1;
+      return [viewProvider()];
+    });
+    // 后端返回的**与提交的完全不同**：只有"显示的是后端真值"，下面的断言才会过
+    const upsert = recordingMock({
+      id: "p-backend",
+      name: "后端改名了",
+      protocol: "gemini",
+      base_url: "https://backend.example/v1",
+      auth: { scheme: "bearer", header: null, prefix: null },
+      headers: {},
+      on_header_conflict: "keep_client",
+      passthrough: { header_mode: null, body: null },
+      timeout: { connect_s: 10, read_s: 120, total_s: null },
+      tls: { insecure: false, extra_ca_pem: null, min_version: null },
+      lane: null,
+      model_prefix: null,
+      enabled: true,
+    });
+    registerMock("provider_upsert", upsert.handler);
+
+    renderAt("/providers");
+    fireEvent.click(await screen.findByTestId("providers-add-open"));
+    typeInto("providers-add-id", "my-gw");
+    typeInto("providers-add-name", "我的网关");
+    await chooseOption("providers-add-protocol", "Anthropic");
+    typeInto("providers-add-baseUrl", "https://gw.example.com/v1");
+    await chooseOption("providers-add-authScheme", "自定义头");
+    typeInto("providers-add-authHeader", "x-api-key");
+    typeInto("providers-add-authPrefix", "Bearer ");
+    fireEvent.click(screen.getByTestId("providers-add-submit"));
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    const args = upsert.calls[0]!;
+    // 命令入参只有一个 `provider`（契约：`provider_upsert: { args: { provider: ProviderInput } }`）
+    expect(Object.keys(args)).toEqual(["provider"]);
+    const p = args["provider"] as Record<string, unknown>;
+    expect(p["id"]).toBe("my-gw");
+    expect(p["name"]).toBe("我的网关");
+    expect(p["protocol"]).toBe("anthropic");
+    expect(p["base_url"]).toBe("https://gw.example.com/v1");
+    expect(p["auth"]).toEqual({ scheme: "header", header: "x-api-key", prefix: "Bearer " });
+
+    // 全部键都是 snake_case（与真机命令层守卫同一口径）
+    for (const key of Object.keys(p)) expect(key).toMatch(/^[a-z][a-z0-9_]*$/);
+    // 用户没填的字段**不替后端编**：这些在 Rust 侧都有 #[serde(default)]
+    for (const absent of [
+      "headers",
+      "on_header_conflict",
+      "passthrough",
+      "timeout",
+      "tls",
+      "enabled",
+      "lane",
+      "model_prefix",
+    ]) {
+      expect(absent in p, `${absent} 有 Rust serde(default)，前端不许替后端硬编`).toBe(false);
+    }
+    // 没有 API Key 输入框：载荷里也不许出现任何明文密钥字段
+    expect("api_key" in p).toBe(false);
+
+    // 回显的是**后端返回的那个 Provider**（名字/协议/地址都不是我们提交的）
+    const saved = await screen.findByTestId("providers-add-result");
+    expect(saved.textContent).toContain("p-backend");
+    expect(saved.textContent).toContain("后端改名了");
+    expect(saved.textContent).toContain("https://backend.example/v1");
+
+    // 成功后失效重取（列表真的刷新了，不是本地塞一行）
+    await waitFor(() => expect(listCalls).toBeGreaterThan(1));
+  });
+
+  it("鉴权细节一个都没填 → 载荷里连 `auth` 都不出现（交给 Rust 的 serde(default)）", async () => {
+    const upsert = recordingMock({ id: "p-x", name: "x", protocol: "openai", base_url: "https://x.example" });
+    registerMock("provider_upsert", upsert.handler);
+
+    renderAt("/providers");
+    fireEvent.click(await screen.findByTestId("providers-add-open"));
+    typeInto("providers-add-id", "my-gw");
+    typeInto("providers-add-name", "我的网关");
+    typeInto("providers-add-baseUrl", "https://gw.example.com/v1");
+    fireEvent.click(screen.getByTestId("providers-add-submit"));
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    const p = upsert.calls[0]!["provider"] as Record<string, unknown>;
+    expect("auth" in p).toBe(false);
+  });
+
+  it("本地校验不过就**一次都不发**：必填 / id 形状 / 与现有 id 重复 / base_url", async () => {
+    const upsert = recordingMock({});
+    registerMock("provider_upsert", upsert.handler);
+
+    renderAt("/providers");
+    fireEvent.click(await screen.findByTestId("providers-add-open"));
+
+    // ① 全空 → 必填
+    fireEvent.click(screen.getByTestId("providers-add-submit"));
+    expect((await screen.findByTestId("providers-add-issues")).textContent).toContain("必填");
+    expect(upsert.calls).toHaveLength(0);
+
+    // ② id 形状（只许小写字母/数字/短横线）
+    typeInto("providers-add-id", "Bad_Id");
+    typeInto("providers-add-name", "网关");
+    typeInto("providers-add-baseUrl", "https://gw.example.com/v1");
+    fireEvent.click(screen.getByTestId("providers-add-submit"));
+    expect(screen.getByTestId("providers-add-issues").textContent).toContain(
+      "id 只能用小写字母、数字与短横线",
+    );
+    expect(upsert.calls).toHaveLength(0);
+
+    // ③ 与 provider_list 里已有的 id 重复
+    typeInto("providers-add-id", "p-bytedance");
+    fireEvent.click(screen.getByTestId("providers-add-submit"));
+    expect(screen.getByTestId("providers-add-issues").textContent).toContain("已存在同 id 的条目");
+    expect(upsert.calls).toHaveLength(0);
+
+    // ④ base_url 不是 http(s)://
+    typeInto("providers-add-id", "my-gw");
+    typeInto("providers-add-baseUrl", "ftp://gw.example.com");
+    fireEvent.click(screen.getByTestId("providers-add-submit"));
+    expect(screen.getByTestId("providers-add-issues").textContent).toContain(
+      "必须是 http:// 或 https:// 开头的完整地址",
+    );
+    expect(upsert.calls).toHaveLength(0);
+  });
+
+  it("后端拒绝时原样显示 TA 码与字段路径（不吞错、不改写成一句「保存失败」）", async () => {
+    registerMock("provider_upsert", () => {
+      throw new TokenAgencyError({
+        code: "TA-5003",
+        message: "providers[0].base_url 不是合法 URL",
+      });
+    });
+
+    renderAt("/providers");
+    fireEvent.click(await screen.findByTestId("providers-add-open"));
+    typeInto("providers-add-id", "my-gw");
+    typeInto("providers-add-name", "我的网关");
+    typeInto("providers-add-baseUrl", "https://gw.example.com/v1");
+    fireEvent.click(screen.getByTestId("providers-add-submit"));
+
+    const error = await screen.findByTestId("providers-add-error");
+    expect(error.textContent).toContain("TA-5003");
+    expect(error.textContent).toContain("providers[0].base_url");
+    expect(screen.queryByTestId("providers-add-result")).toBeNull();
+  });
+});
+
+describe("[docs/17 §3.1] 添加密钥：明文只进密钥仓库，界面永不回显", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("页头有「添加密钥」；打开后控件一个不少，secret 是 password", async () => {
+    renderAt("/providers");
+
+    fireEvent.click(await screen.findByTestId("credentials-add-open"));
+    for (const id of CREDENTIAL_WIZARD_CONTROLS) {
+      expect(screen.getByTestId(id), `缺控件 ${id}`).toBeTruthy();
+    }
+    expect(inputOf("credentials-add-id").tagName).toBe("INPUT");
+    expect(inputOf("credentials-add-secret").type).toBe("password");
+    // 服务商是下拉，选项来自 provider_list
+    fireEvent.mouseDown(within(screen.getByTestId("credentials-add-provider")).getByRole("combobox"));
+    expect(await screen.findByRole("option", { name: "字节方舟" })).toBeTruthy();
+  });
+
+  it("填完真提交 → 先 credential_upsert（secret 只是引用、载荷里没有明文）→ 再 credential_set_secret", async () => {
+    const SECRET = "sk-live-plaintext-canary-123456"; // ta-allow-fake-secret —— 假的金丝雀值：它出现在这里，正是为了证明它不会出现在载荷 / 错误 / 页面上
+    let listCalls = 0;
+    registerMock("credential_list", () => {
+      listCalls += 1;
+      return [];
+    });
+    const upsert = recordingMock({
+      id: "c-backend",
+      provider: "p-bytedance",
+      label: "后端标签",
+      secret: "${secret:c-backend}",
+      quota: {
+        metric: "cost",
+        limit: 12,
+        currency: "CNY",
+        window: "month",
+        reset_day: 1,
+        soft_limit: 0.8,
+        hard_limit: 0.98,
+        reserve: 0,
+      },
+      guard: { max_rpm: null, max_concurrency: null, max_input_tokens: null, on_exceed: "wait" },
+      tags: [],
+      enabled: true,
+    });
+    const setSecret = recordingMock(undefined);
+    /** 两个命令的**真实调用顺序**（"先 upsert 再写密钥"是规格里的硬要求）。 */
+    const order: string[] = [];
+    registerMock("credential_upsert", (args) => {
+      order.push("upsert");
+      return upsert.handler(args);
+    });
+    registerMock("credential_set_secret", (args) => {
+      order.push("set_secret");
+      return setSecret.handler(args);
+    });
+
+    renderAt("/providers");
+    fireEvent.click(await screen.findByTestId("credentials-add-open"));
+    typeInto("credentials-add-id", "my-key");
+    typeInto("credentials-add-label", "我的套餐");
+    await chooseOption("credentials-add-provider", "字节方舟");
+    typeInto("credentials-add-secret", SECRET);
+    typeInto("credentials-add-quotaLimit", "12");
+    typeInto("credentials-add-currency", "CNY");
+    fireEvent.click(screen.getByTestId("credentials-add-submit"));
+
+    await waitFor(() => expect(setSecret.calls).toHaveLength(1));
+
+    // ① credential_upsert 的载荷：secret 是 `${secret:<条目名>}` 引用，明文一个字节都不在里面
+    const upArgs = upsert.calls[0]!;
+    expect(Object.keys(upArgs)).toEqual(["credential"]);
+    expect(JSON.stringify(upArgs)).not.toContain(SECRET);
+    const cred = upArgs["credential"] as Record<string, unknown>;
+    expect(cred["id"]).toBe("my-key");
+    expect(cred["provider"]).toBe("p-bytedance");
+    expect(cred["label"]).toBe("我的套餐");
+    expect(cred["secret"]).toBe("${secret:my-key}");
+    expect(cred["quota"]).toEqual({ limit: 12, currency: "CNY", window: "month" });
+    for (const key of Object.keys(cred)) expect(key).toMatch(/^[a-z][a-z0-9_]*$/);
+    // guard / tags / enabled / lane 在 Rust 侧都有 serde(default) —— 前端不替后端编
+    for (const absent of ["guard", "tags", "enabled", "lane"]) {
+      expect(absent in cred, `${absent} 有 Rust serde(default)`).toBe(false);
+    }
+
+    // ② 顺序：先建凭据（拿到后端 id），再把明文写进密钥仓库
+    expect(order).toEqual(["upsert", "set_secret"]);
+    expect(setSecret.calls[0]).toEqual({ id: "c-backend", plaintext: SECRET });
+
+    // ③ 成功后就地清空输入框：明文不留在一个还开着的对话框里
+    expect(inputOf("credentials-add-secret").value).toBe("");
+    expect(inputOf("credentials-add-id").value).toBe("");
+
+    // ④ 回显后端返回值 + 重取列表
+    const saved = await screen.findByTestId("credentials-add-result");
+    expect(saved.textContent).toContain("c-backend");
+    expect(saved.textContent).toContain("后端标签");
+    await waitFor(() => expect(listCalls).toBeGreaterThan(1));
+  });
+
+  it("没填 secret：只 credential_upsert，**不碰密钥仓库**", async () => {
+    const upsert = recordingMock({ id: "c-backend", provider: "p-bytedance", label: "x", secret: "${secret:c-backend}" });
+    const setSecret = recordingMock(undefined);
+    registerMock("credential_upsert", upsert.handler);
+    registerMock("credential_set_secret", setSecret.handler);
+
+    renderAt("/providers");
+    fireEvent.click(await screen.findByTestId("credentials-add-open"));
+    typeInto("credentials-add-id", "my-key");
+    typeInto("credentials-add-label", "我的套餐");
+    await chooseOption("credentials-add-provider", "字节方舟");
+    fireEvent.click(screen.getByTestId("credentials-add-submit"));
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    expect(setSecret.calls).toHaveLength(0);
+    // 空 secret 也不许把明文（空串以外的东西）塞进载荷
+    const cred = upsert.calls[0]!["credential"] as Record<string, unknown>;
+    expect(cred["secret"]).toBe("${secret:my-key}");
+  });
+
+  it("本地校验不过一次都不发：必填 / id 形状 / 与现有凭据 id 重复", async () => {
+    const upsert = recordingMock({});
+    const setSecret = recordingMock(undefined);
+    registerMock("credential_upsert", upsert.handler);
+    registerMock("credential_set_secret", setSecret.handler);
+
+    renderAt("/providers");
+    fireEvent.click(await screen.findByTestId("credentials-add-open"));
+
+    fireEvent.click(screen.getByTestId("credentials-add-submit"));
+    expect((await screen.findByTestId("credentials-add-issues")).textContent).toContain("必填");
+    expect(upsert.calls).toHaveLength(0);
+
+    typeInto("credentials-add-id", "Bad_Id");
+    typeInto("credentials-add-label", "套餐");
+    await chooseOption("credentials-add-provider", "字节方舟");
+    fireEvent.click(screen.getByTestId("credentials-add-submit"));
+    expect(screen.getByTestId("credentials-add-issues").textContent).toContain(
+      "id 只能用小写字母、数字与短横线",
+    );
+    expect(upsert.calls).toHaveLength(0);
+
+    // 与 credential_list 里已有的 id 重复
+    typeInto("credentials-add-id", "c-bytedance");
+    fireEvent.click(screen.getByTestId("credentials-add-submit"));
+    expect(screen.getByTestId("credentials-add-issues").textContent).toContain("已存在同 id 的条目");
+    expect(upsert.calls).toHaveLength(0);
+    expect(setSecret.calls).toHaveLength(0);
+  });
+
+  it("写密钥失败：原样显示 TA 码，且页面上**任何地方**都没有明文", async () => {
+    const SECRET = "sk-leak-canary-987654321"; // ta-allow-fake-secret —— 同上：假值，用来断言"页面上任何地方都没有明文"
+    registerMock("credential_upsert", () => ({
+      id: "c-backend",
+      provider: "p-bytedance",
+      label: "我的套餐",
+      secret: "${secret:c-backend}",
+    }));
+    registerMock("credential_set_secret", () => {
+      throw new TokenAgencyError({ code: "TA-6001", message: "密钥仓库不可用（钥匙串被锁）" });
+    });
+
+    renderAt("/providers");
+    fireEvent.click(await screen.findByTestId("credentials-add-open"));
+    typeInto("credentials-add-id", "my-key");
+    typeInto("credentials-add-label", "我的套餐");
+    await chooseOption("credentials-add-provider", "字节方舟");
+    typeInto("credentials-add-secret", SECRET);
+    fireEvent.click(screen.getByTestId("credentials-add-submit"));
+
+    const error = await screen.findByTestId("credentials-add-error");
+    expect(error.textContent).toContain("TA-6001");
+    expect(error.textContent).toContain("钥匙串被锁");
+    // 明文不进日志、不进错误消息 —— 页面上任何渲染出来的文本都不含它
+    expect(document.body.textContent ?? "").not.toContain(SECRET);
+    // 失败时**不清空**输入框：用户还要重试
+    expect(inputOf("credentials-add-secret").value).toBe(SECRET);
   });
 });
