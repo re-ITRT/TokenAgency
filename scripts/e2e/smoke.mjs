@@ -966,6 +966,11 @@ function configIds(dump, kind) {
   return (dump.config ?? []).filter((r) => r.kind === kind).map((r) => String(r.entity_id));
 }
 
+/**
+ * **step8：「高级添加」那条单步对话框仍然可用**（docs/19 §1 的裁决：新两步向导挂在
+ * `providers-add-open` 上，原样的单步对话框改挂 `providers-add-advanced-open` —— 保留能力、不删控件）。
+ * 真正的主流程（两步向导）由 step2 覆盖。
+ */
 async function step8(wd) {
   const evidence = [];
   const page = await gotoPage(wd, "#/providers");
@@ -975,18 +980,18 @@ async function step8(wd) {
   }
   const ids = await wd.probeTestIds();
   evidence.push(`/providers 命中 data-testid: ${ids.slice(0, 30).join(", ")}`);
-  if (!ids.includes("providers-add-open")) {
-    record("step8", "SKIP", "界面缺入口：providers-add-open 不存在（添加服务商向导还没接）", evidence);
+  if (!ids.includes("providers-add-advanced-open")) {
+    record("step8", "FAIL", "界面缺入口：providers-add-advanced-open 不存在（高级添加被删了？原先的能力不该丢）", evidence);
     return;
   }
-  if (!(await wdClickTid(wd, "providers-add-open", evidence))) {
-    record("step8", "FAIL", "点不开「添加服务商」", evidence);
+  if (!(await wdClickTid(wd, "providers-add-advanced-open", evidence))) {
+    record("step8", "FAIL", "点不开「高级添加」", evidence);
     return;
   }
   await shot(wd, "step8-form-opened");
   const pid = "ta-e2e-p-add";
   await wdFillByTid(wd, "providers-add-id", pid, evidence);
-  await wdFillByTid(wd, "providers-add-name", "TA E2E 服务商（向导）", evidence);
+  await wdFillByTid(wd, "providers-add-name", "TA E2E 服务商（高级）", evidence);
   await wdFillByTid(wd, "providers-add-baseUrl", "http://127.0.0.1:1/v1", evidence);
   await shot(wd, "step8-form-filled");
   await wdClickTid(wd, "providers-add-submit", evidence);
@@ -996,7 +1001,7 @@ async function step8(wd) {
   evidence.push(`config kind 计数: ${JSON.stringify(configEntityKinds(dump))}`);
   const landed = configIds(dump, "provider").includes(pid);
   const inList = (await wd.pageText()).includes(pid);
-  if (landed && inList) record("step8", "PASS", "服务商经真界面（/providers 向导）新增，列表与 config 表都出现", evidence);
+  if (landed && inList) record("step8", "PASS", "「高级添加」仍可用：单步对话框新增服务商并落库", evidence);
   else record("step8", "FAIL", `新增后不一致：列表=${inList} 落库=${landed}`, evidence);
 }
 
@@ -2650,34 +2655,105 @@ async function step2(wd, fixture) {
     return;
   }
 
-  // ---- ① 添加服务商：走 /providers 页头那个专用入口（真输入 → 真提交 → 后端返回值回显 + 落库）----
+  // ---- ① 添加服务商：走 /providers 页头的**两步向导**（[docs/19 §1]）----
+  // 第 71 轮用户要的就是这个：显示名称(不重复) → 协议 → URL → key → 测试连接(非必填) → 下一步 → 添加模型。
   const pid = "ta-e2e-provider";
+  const pname = "TA E2E 供应商";
   if (!(await wdClickTid(wd, "providers-add-open", evidence))) {
     record("step2", "FAIL", "点不开「添加服务商」", evidence);
     return;
   }
-  await shot(wd, "step2-form-opened");
-  await wdFillByTid(wd, "providers-add-id", pid, evidence);
-  await wdFillByTid(wd, "providers-add-name", "TA E2E 供应商", evidence);
-  await wdFillByTid(wd, "providers-add-baseUrl", "http://127.0.0.1:9/v1", evidence);
-  await shot(wd, "step2-form-filled");
-  await wdClickTid(wd, "providers-add-submit", evidence);
-  await sleep(1500);
-  await shot(wd, "step2-after-submit");
-  const providerResult = await wd.textOf('[data-testid="providers-add-result"]');
-  evidence.push(`providers-add-result: ${JSON.stringify((providerResult ?? "").replace(/\s+/g, " ").trim())}`);
-  const providerError = await wd.textOf('[data-testid="providers-add-error"]');
-  if (providerError !== null) evidence.push(`providers-add-error: ${JSON.stringify(providerError)}`);
+  await shot(wd, "step2-wizard-step1");
+  const step1 = await wd.probeTestIds();
+  const wantStep1 = ["provider-wizard-step1", "pw-name", "pw-protocol", "pw-baseUrl", "pw-key", "pw-test", "pw-proxy", "pw-next"];
+  evidence.push(`步骤 1 缺的 testid: ${JSON.stringify(wantStep1.filter((t) => !step1.includes(t)))}`);
+  await wdFillByTid(wd, "pw-name", pname, evidence);
+  // 协议保留默认（openai，与 fixture 一致）
+  await wdFillByTid(wd, "pw-baseUrl", fixture.baseUrl, evidence);
+  await wdFillByTid(wd, "pw-key", "sk-ta-e2e-secret", evidence);
+  await shot(wd, "step2-wizard-step1-filled");
 
-  const dump1 = dumpScratchDb("step2-provider");
-  evidence.push(`db(config 表) kind 计数: ${JSON.stringify(configEntityKinds(dump1))}`);
-  const providerInDb = configIds(dump1, "provider").includes(pid);
-  const providerInUi = (providerResult ?? "").includes(pid);
-  evidence.push(`服务商: 落库=${providerInDb} 后端回显=${providerInUi}`);
+  // 「测试连接」：真调 provider_test，成功要显示真实延迟（非必填，但按钮必须真做事）
+  await wdClickTid(wd, "pw-test", evidence);
+  await sleep(2500);
+  const testResult = await wd.textOf('[data-testid="pw-test-result"]');
+  const testText = (testResult ?? "").replace(/\s+/g, " ").trim();
+  evidence.push(`pw-test-result: ${JSON.stringify(testText)}`);
+  const testShowsLatency = /ms|毫秒/.test(testText) && !/TA-\d/.test(testText);
 
-  // 关掉服务商对话框再开密钥对话框：两个 MUI Dialog 叠着会让后者点不动（同一个根因放大成假失败）。
+  // 再验一档用户会遇到的真实情况：**上游没有 /models 端点**（404）不能被说成"连接失败"
+  const noModels = await runProviderWizardProbeOnNoModelsEndpoint(wd, fixture, evidence);
+
+  // 下一步 → 真落库（provider + credential + secret）
+  await wdClickTid(wd, "pw-next", evidence);
+  await sleep(2000);
+  await shot(wd, "step2-wizard-step2");
+  const step2Tids = await wd.probeTestIds();
+  const notice = await wd.textOf('[data-testid="pw-saved-notice"]');
+  evidence.push(`pw-saved-notice: ${JSON.stringify((notice ?? "").replace(/\s+/g, " ").trim())}`);
+  evidence.push(`步骤 2 命中: ${step2Tids.filter((t) => t.startsWith("pw-")).join(", ")}`);
+  const dumpAfterNext = dumpScratchDb("step2-step2");
+  evidence.push(`db(config) kind 计数: ${JSON.stringify(configEntityKinds(dumpAfterNext))}`);
+  const providerInDb = configIds(dumpAfterNext, "provider").includes(pid);
+  evidence.push(`步骤 1 落库: provider ${pid} = ${providerInDb}`);
+
+  // 第 2 步：一键扫描（真调 model_import_from_provider）→ 全选 → 添加选中（真调 model_apply_import）
+  let scanRows = 0;
+  let addedModels = false;
+  if (step2Tids.includes("pw-scan")) {
+    await wdClickTid(wd, "pw-scan", evidence);
+    await sleep(3000);
+    await shot(wd, "step2-wizard-scanned");
+    scanRows = await wd.exec(`return document.querySelectorAll('[data-testid="pw-scan-row"]').length;`);
+    const scanEmpty = await wd.textOf('[data-testid="pw-scan-empty"]');
+    const scanError = await wd.textOf('[data-testid="pw-scan-error"]');
+    evidence.push(`扫描结果行数 = ${scanRows}；scan-empty=${JSON.stringify(scanEmpty)}；scan-error=${JSON.stringify(scanError)}`);
+    if (scanRows > 0) {
+      const selectAll = (await wd.probeTestIds()).includes("pw-scan-select-all");
+      if (selectAll) await wdClickTid(wd, "pw-scan-select-all", evidence);
+      await wdClickTid(wd, "pw-scan-add", evidence);
+      await sleep(2500);
+      await shot(wd, "step2-wizard-added");
+      const dumpModels = dumpScratchDb("step2-models");
+      const modelIds = configIds(dumpModels, "model");
+      evidence.push(`添加后 config(kind=model) = ${JSON.stringify(modelIds)}`);
+      addedModels = modelIds.some((id) => id.startsWith("ta-e2e-scan-"));
+    }
+  } else {
+    evidence.push("步骤 2 没有 pw-scan（扫描入口不存在）");
+  }
+
+  // 只读信息面板：hover 提示必须是「查看模型信息」，面板里**不许有可写控件**（唯一例外是同一行的 lane）
+  const infoProbe = await wd.exec(`
+    const btn = document.querySelector('[data-testid="pw-model-info"]');
+    const out = { hasInfoBtn: btn !== null, title: btn ? (btn.getAttribute('title') || '') : null, panel: null, writables: null };
+    if (btn) { btn.click(); }
+    return out;
+  `);
+  await sleep(600);
+  const panelProbe = await wd.exec(`
+    const panel = document.querySelector('[data-testid="pw-model-info-panel"]');
+    if (panel === null) return { panel: false };
+    const w = [...panel.querySelectorAll('input,select,textarea,[contenteditable="true"]')];
+    return { panel: true, writables: w.length, tags: w.slice(0, 5).map((e) => e.tagName.toLowerCase()) };
+  `);
+  evidence.push(`信息面板: ${JSON.stringify(infoProbe)} · 面板内可写控件: ${JSON.stringify(panelProbe)}`);
   await wd.closeDialog();
   await sleep(400);
+
+  // 名称去重：现在库里已经有这个名字了，再开一次向导填同名 → 本地必须拦下
+  await wdClickTid(wd, "providers-add-open", evidence);
+  await sleep(500);
+  await wdFillByTid(wd, "pw-name", pname, evidence);
+  await sleep(400);
+  const dupIssues = await wd.textOf('[data-testid="pw-step1-issues"]');
+  evidence.push(`重名校验 pw-step1-issues: ${JSON.stringify((dupIssues ?? "").replace(/\s+/g, " ").trim())}`);
+  const dupBlocked = dupIssues !== null && dupIssues.trim().length > 0;
+  await wd.closeDialog();
+  await sleep(400);
+
+  const providerInUi = providerInDb && (await wd.pageText()).includes(pname);
+  evidence.push(`服务商: 落库=${providerInDb} 列表出现=${providerInUi}`);
 
   // ---- ② 添加密钥：明文只进密钥仓库；成功后显示的是**后端返回的那个 Credential** ----
   const cid = "ta-e2e-cred";
@@ -2691,7 +2767,7 @@ async function step2(wd, fixture) {
     await shot(wd, "step2-credential-form-opened");
     await wdFillByTid(wd, "credentials-add-id", cid, evidence);
     await wdFillByTid(wd, "credentials-add-label", "TA E2E 密钥", evidence);
-    await wdPickOption(wd, "credentials-add-provider", evidence, /ta-e2e-provider|TA E2E 供应商/i);
+    await wdPickOption(wd, "credentials-add-provider", evidence, /TA E2E 供应商/i);
     await wdFillByTid(wd, "credentials-add-secret", "sk-ta-e2e-secret", evidence);
     await shot(wd, "step2-credential-form-filled");
     await wdClickTid(wd, "credentials-add-submit", evidence);
@@ -2712,17 +2788,58 @@ async function step2(wd, fixture) {
     await wd.closeDialog();
   }
 
-  const ok = providerInDb && providerInUi && credentialInDb && credentialInUi;
+  const ok =
+    providerInDb &&
+    providerInUi &&
+    credentialInDb &&
+    credentialInUi &&
+    testShowsLatency &&
+    noModels.ok &&
+    scanRows > 0 &&
+    addedModels &&
+    dupBlocked;
   if (ok) {
-    record("step2", "PASS", "服务商与密钥都经真界面（/providers 两个向导）新增：后端回显 + config 表都出现", evidence);
+    record(
+      "step2",
+      "PASS",
+      `服务商两步向导：名称去重拦下重名 · 测试连接显示真实延迟 · 上游无 /models 端点如实说明 · 下一步落库 · 扫描 ${scanRows} 条并成功添加 · 密钥向导落库`,
+      evidence,
+    );
   } else {
     record(
       "step2",
       "FAIL",
-      `新增后不一致：服务商(回显=${providerInUi} 落库=${providerInDb}) 密钥(回显=${credentialInUi} 落库=${credentialInDb})`,
+      `两步向导没走通：落库=${providerInDb} 列表=${providerInUi} 密钥(回显=${credentialInUi} 落库=${credentialInDb}) ` +
+        `测试连接显示延迟=${testShowsLatency} 无端点档=${noModels.ok} 扫描行数=${scanRows} 已添加模型=${addedModels} 重名拦下=${dupBlocked}`,
       evidence,
     );
   }
+}
+
+/**
+ * 「上游没有 /models 端点」那一档（[docs/19 §1.1]）：建第二个服务商，baseUrl 指向 fixture 的
+ * `/notfound/v1`（恒 404），点「测试连接」→ 结果区必须说"上游没有 /models 端点"，
+ * **不许**渲染成"连接失败"（那会把一个正常的上游说成坏的）。
+ */
+async function runProviderWizardProbeOnNoModelsEndpoint(wd, fixture, evidence) {
+  const name = "TA E2E 无端点";
+  // 先关掉当前向导（上面那条已经填过一轮），用干净的一轮重开
+  await wd.closeDialog();
+  await sleep(400);
+  if (!(await wdClickTid(wd, "providers-add-open", evidence))) return { ok: false, text: null };
+  await wdFillByTid(wd, "pw-name", name, evidence);
+  await wdFillByTid(wd, "pw-baseUrl", fixture.noModelsBaseUrl, evidence);
+  await wdFillByTid(wd, "pw-key", "sk-ta-e2e-secret", evidence);
+  await wdClickTid(wd, "pw-test", evidence);
+  await sleep(2500);
+  const raw = await wd.textOf('[data-testid="pw-test-result"]');
+  const text = (raw ?? "").replace(/\s+/g, " ").trim();
+  evidence.push(`【无 /models 端点档】pw-test-result: ${JSON.stringify(text)}`);
+  await shot(wd, "step2-wizard-no-models-endpoint");
+  await wd.closeDialog();
+  await sleep(400);
+  const ok = text.length > 0 && !/连接失败|无法连接|网络错误/.test(text);
+  return { ok, text };
 }
 
 /** 在任意形态的表单里按字段名启发式填值（id/name/protocol/base_url）。 */
