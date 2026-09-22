@@ -3,13 +3,13 @@
  * `pages: ["channels", "channels/index"]` —— 本文件是**文件夹形式**（与 `logs/index.tsx`、
  * `providers/index.tsx` 一致）。纯逻辑与整形在 `./model.ts`，那一层是单测的主要对象。
  *
- * 这一页本轮**只做读**（列表 + 按服务商分组）：
- * - 命令面只用已注册的六条：`channel_list` / `provider_list` / `credential_list` / `lane_list` /
- *   `group_list` / `quota_limit_gaps`（`src-tauri/src/commands/mod.rs` 的 `collect_commands!`）。
- * - **矩阵视图（批量配置）依赖 `channel_matrix`，它还没注册** -> 这一块只说明现状：
- *   没有批量改线路 / 批量启停的入口，**也不放禁用占位**。同理
- *   `channel_upsert` / `channel_set_enabled` / `channel_bulk_assign_lane` / `channel_set_tags`
- *   / `channel_delete` 都没注册 -> 空状态里直接说明"新建入口还没有接线"。
+ * 这一页本轮**只做读**（列表 + 按服务商分组），取数只用 `channel_list` / `provider_list` /
+ * `credential_list` / `lane_list` / `group_list` / `quota_limit_gaps`。
+ * 写命令（`channel_upsert` / `channel_set_enabled` / `channel_bulk_assign_lane` / `channel_set_tags`
+ * / `channel_delete`）**已在后端登记**（以 `src-tauri/src/commands/mod.rs` 的 `collect_commands!`
+ * 为准，`src/app/commandSurface.guard.test.ts` 机械检查），**但本页的新建/启停入口尚未接入**：
+ * 后续一批接上；在那之前空状态里说明"新建入口还没有接线"，**不放禁用占位**。
+ * （矩阵视图依赖 `channel_matrix`，同样以后续批次为准。）
  *
  * 三条诚实纪律（与 `./model.ts` 的文件头一致）：
  * 1. **线路继承只认读得到的层级**：通道级 > 凭据级，再往上显示「继承」并说明原因；

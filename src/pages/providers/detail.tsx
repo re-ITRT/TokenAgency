@@ -6,9 +6,9 @@
  *
  * 1. **只调用已注册的命令**：`provider_list`（取这一行，理由见 `model.ts` 文件头）、
  *    `credential_list`（挂载的凭据）、`lane_list`（把 `lane` id 换成线路名）。
- *    [07 §3.2] 的第三个 Tab「测试」要用 `provider_test` / `provider_echo` ——
- *    **这两条尚未注册**（`src-tauri/src/commands/mod.rs` 的 `collect_commands!`），
- *    所以这里既不画那个 Tab，也**不放禁用占位**。
+ *    [07 §3.2] 的第三个 Tab「测试」要用 `provider_test` / `provider_echo`：
+ *    **本页当前不画那个 Tab**（不放禁用占位），它们的注册状态以 `collect_commands!` 为准
+ *    —— `src/app/commandSurface.guard.test.ts` 会机械检查这一条。
  * 2. **后端没返回的字段不填坑**：契约说 `provider_list` 返回 `ProviderView`，
  *    Rust 实际返回完整的 `Provider` —— 两边字段不同。拿到视图形状（没有 `auth`/`timeout`/
  *    `tls`/`headers`）时**明说"连接配置没返回"**，而不是排一排空的占位值。
