@@ -35,7 +35,6 @@ import {
   MASKED,
   laneKindLabel,
   maskSubscriptionUrl,
-  networkScope,
   readAssignments,
   readKernelPath,
   readLane,
@@ -273,10 +272,18 @@ function assignmentsProps(over: Partial<AssignmentsBodyProps> = {}): Assignments
  * 而 `Link` 依赖 Router context（真实应用里由 `AppShell` 提供）。
  */
 function renderPage(node: React.ReactElement) {
+  return renderPageAt("/", node);
+}
+
+/**
+ * 同 `renderPage`，但可以指定初始 URL —— 返回条（`network-return-banner`）是靠
+ * `?from=provider-wizard` 这个**真实 URL** 触发的，不测 URL 就等于没测。
+ */
+function renderPageAt(path: string, node: React.ReactElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[path]}>
         <ThemeProvider theme={buildTheme("dark")}>{node}</ThemeProvider>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -336,6 +343,10 @@ const CONFIG_WRITES_ALLOWED = new Set([
   "lane_upsert",
   "lane_delete",
   "lane_set_node",
+  // 逐节点测速（[19 §2.4]：要么真用，要么不放）。它**不改任何配置**，只是让内核去探一次延迟；
+  // 没有装配内核时后端返回错误，页面**原样显示**（不是"点了没反应"，也不是禁用占位）。
+  // 与"系统/内核写命令"不同类：它不启停进程、不改系统网络、不写配置。
+  "lane_test",
 ]);
 
 /**
@@ -360,7 +371,6 @@ const OTHER_CONFIG_WRITES = new Set([
   "group_delete",
   "group_set_sticky",
   "group_release_sticky",
-  "lane_test",
   "model_upsert",
   "model_delete",
   "model_apply_import",
@@ -417,6 +427,7 @@ const DIRECTLY_REFERENCED = [
   "lane_pick_options",
   "lane_reverse_lookup",
   "lane_set_node",
+  "lane_test",
   "lane_upsert",
   "subscription_delete",
   "subscription_groups",
@@ -763,9 +774,9 @@ describe("/network：有数据 / 空 / 错误三种状态都说实话", () => {
     const table = within(screen.getByTestId("network-subscriptions-table"));
     expect(table.getAllByText("未读取").length).toBeGreaterThanOrEqual(2);
     expect(table.queryByText("0")).toBeNull();
-    expect(screen.getByTestId("network-subscriptions-hint").textContent).toContain(
-      "subscription_nodes",
-    );
+    // 过期说明随实现落地一起作废：解析接口早就接上了（`LaneWriteForm` 真的在调它们），
+    // hint 里不许再说"本页尚未接入"
+    expect(screen.getByTestId("network-subscriptions-hint").textContent).not.toContain("尚未接入");
   });
 
   it("线路表：类型用文字、健康用圆点+文字、用户数据里的组名原样呈现", () => {
@@ -886,11 +897,11 @@ describe("/network/nodes：只有拿得到的证据才画", () => {
     expect(declared.getByText(USER_GROUP)).toBeTruthy();
   });
 
-  it("说明完整节点清单为什么缺席（点名缺失的后端接口），不伪造节点", () => {
+  it("反向断言：过期说明（「本页尚未接入 subscription_nodes」）整块作废", () => {
     renderBody(<NodesBody {...nodesProps({ lanes: [readLane(rustLane())] })} />);
-    const missing = screen.getByTestId("network-nodes-missing");
-    expect(missing.textContent).toContain("subscription_nodes");
-    expect(missing.textContent).toContain("不伪造节点");
+    // 老的那一块「为什么这里没有完整的节点清单」随实现落地一起消失 —— 现在真的在调那条命令
+    expect(screen.queryByTestId("network-nodes-missing")).toBeNull();
+    expect(document.body.textContent ?? "").not.toContain("尚未接入");
   });
 
   it("读失败：带 TA 码 + 重试", () => {
@@ -980,7 +991,10 @@ describe("整页在 mock 基准场景下可用（不依赖 Rust/Tauri）", () =>
 
   it("/network/nodes 渲染页头 + 来自 lane_list 的健康样本", async () => {
     renderPage(<NodesPage />);
-    expect((await screen.findByText("节点列表")).tagName).toBe("H1");
+    // 页头标题与「节点清单」区块标题同名 → 按 **H1** 取（`getByText` 会同时命中两个）
+    expect(
+      (await screen.findByRole("heading", { level: 1, name: "节点列表" })).tagName,
+    ).toBe("H1");
     expect(await screen.findByTestId("network-nodes-samples")).toBeTruthy();
   });
 
@@ -1423,109 +1437,108 @@ describe("⑬ /network/assignments：显示后端算的五级链路，而不是�
   });
 });
 
-// ================================================================ ⑭ /network 是**选装**：没配置就不显示（[18 §2]）
+// ================================================================ ⑭ /network 常显：没有"启用网络代理"这个动作（[19 §2.2]）
 //
-// 用户原话：「我们的网络代理模块也需要设置，**如果用户没有配置就不显示**，token 网络代理是一个**选装功能**」。
+// 用户原话（[19] 引）：「网络代理默认开启，反正默认直连，也不用"启动"了」。
+// 上一轮的"三项都空 → 只渲染一个选装入口"（`network-optional` / `network-optional-enable`）**被明确推翻**：
+// 这一页现在**永远**渲染出口 / 订阅 / 线路，没有配置时每一块给**诚实的空态** ——
+// 但页面上**没有任何"启用网络代理"的动作**（直连本来就是可用状态）。
 //
-// 「未配置」的**唯一口径**（[18 §2.1]）：`net.kernel.path` 为空 **且** 订阅列表为空 **且** 线路列表为空。
-// 三者都空 = 用户没在用这块功能 —— 于是这一页**一个网络区块都不渲染**：没有空表、没有"暂无数据"、
-// 没有禁用控件，只有一个选装入口（否则用户找不到启用方式）。
-//
-// 这一组的重点是**反向断言**：未配置时那些 testid **不存在**。"不显示"的验收标准是
-// "页面上没有这些东西"，不是"它们被 CSS 藏起来了"（`queryByTestId` 对两者都能分辨）。
+// 这一组的重点仍是**反向断言**：作废的那两个 testid **不许再存在**。
+// "不显示"的验收标准是"页面上没有这些东西"，不是"它们被 CSS 藏起来了"（`queryByTestId` 对两者都能分辨）。
 
 /** 未配置：三项都读到了，且都是空的（`config_get` 给出 `path: null` → 空字符串）。 */
 function unconfiguredProps(over: Partial<NetworkBodyProps> = {}): NetworkBodyProps {
   return networkProps({ kernelPath: "", subscriptions: [], lanes: [], ...over });
 }
 
-/** 未配置时**不该存在**的 testid：订阅表/线路表/内核块/空状态/写表单，一个都不许有。 */
-const FORBIDDEN_WHEN_UNCONFIGURED = [
-  "network-subscriptions",
-  "network-subscriptions-table",
-  "network-subscriptions-empty",
-  "network-subscriptions-write",
-  "network-subscriptions-setup",
-  "network-lanes",
-  "network-lanes-table",
-  "network-lanes-empty",
-  "network-lanes-write",
-  "network-lanes-setup",
-  "network-current-exit",
-];
+/** 上一轮的选装入口：**作废**（[19 §2.2]），一个都不许再出现。 */
+const RETIRED_OPTIONAL_TESTIDS = ["network-optional", "network-optional-enable"];
 
-describe("⑭ /network 是选装：三项都没配置时，页面上只有选装入口", () => {
+/** 反向断言：作废的选装块不存在，也不许换个名字留着"启用网络代理"这个动作。 */
+function expectNoOptionalBlock(): void {
+  for (const testid of RETIRED_OPTIONAL_TESTIDS) {
+    expect(screen.queryByTestId(testid), `作废的选装入口不该再出现：${testid}`).toBeNull();
+  }
+  expect(document.body.textContent ?? "").not.toContain("启用网络代理");
+}
+
+describe("⑭ /network 常显：空配置下每块给诚实空态，且没有「启用」这个动作", () => {
   // 整页用例会覆盖 mock（config_get / subscription_list / lane_list）—— 每条用例前先回到基准场景
   beforeEach(() => {
     registerBaselineMocks();
   });
 
-  it("只渲染一个块 network-optional：标题 + 一句说明 + 一个启用入口", () => {
+  it("反向断言：network-optional / network-optional-enable 一个都不存在", () => {
     renderPage(<NetworkBody {...unconfiguredProps()} />);
-    const block = screen.getByTestId("network-optional");
-    expect(block.textContent).toContain("网络代理（可选，未启用）");
-    // 说明必须说清"这是选装"，而不是把它写成故障
-    expect(block.textContent).toContain("选装");
-    // 启用入口是**真控件**（可点、不 disabled），并把用户带去配内核路径 / 第一条订阅的地方
-    const entry = within(screen.getByTestId("network-optional-enable")).getByRole("link");
-    expect(entry.textContent).toContain("去配置");
-    expect(entry.getAttribute("href")).toBe("/onboarding");
-    expect(entry.hasAttribute("disabled")).toBe(false);
+    expectNoOptionalBlock();
   });
 
-  it("反向断言：订阅表 / 线路表 / 内核块 / 空状态 / 写表单**一个都不存在**", () => {
+  it("空配置：出口 / 订阅 / 线路三块都在，各自给诚实的空态（不是一张白纸）", () => {
     renderPage(<NetworkBody {...unconfiguredProps()} />);
-    for (const testid of FORBIDDEN_WHEN_UNCONFIGURED) {
-      expect(screen.queryByTestId(testid), `未配置时不该出现 ${testid}`).toBeNull();
-    }
-    // "一个'暂无数据'"也不要：这些诚实空状态的文案同样不该出现
-    const text = document.body.textContent ?? "";
-    expect(text).not.toContain("配置里还没有订阅");
-    expect(text).not.toContain("配置里还没有线路");
-    // "只渲染**一个**块"：零副作用声明也属于网络区块，未启用时不占版面
-    expect(screen.queryByTestId("network-zero-side-effect")).toBeNull();
+    expect(screen.getByTestId("network-current-exit")).toBeTruthy();
+    expect(screen.getByTestId("network-subscriptions")).toBeTruthy();
+    expect(screen.getByTestId("network-subscriptions-empty")).toBeTruthy();
+    expect(screen.getByTestId("network-lanes")).toBeTruthy();
+    expect(screen.getByTestId("network-lanes-empty")).toBeTruthy();
+    // 零副作用承诺常驻（它不是"选装"，是这一页的承诺）
+    expect(screen.getByTestId("network-zero-side-effect")).toBeTruthy();
+  });
+
+  it("空配置下写入入口仍在（否则第一条订阅 / 线路永远建不出来）", () => {
+    renderPage(<NetworkBody {...unconfiguredProps()} />);
+    expect(screen.getByTestId("network-subscriptions-add-id")).toBeTruthy();
+    expect(screen.getByTestId("network-lanes-add-id")).toBeTruthy();
+    // 上一轮的"兜底 setup 块"随常显一起作废：区块自己就在，不需要替代品
+    expect(screen.queryByTestId("network-subscriptions-setup")).toBeNull();
+    expect(screen.queryByTestId("network-lanes-setup")).toBeNull();
+  });
+
+  it("没配内核路径 → 出口显示「出口 · 直连」+「还没设置内核路径」，不是错误态、不点红点", () => {
+    renderPage(<NetworkBody {...unconfiguredProps()} />);
+    const exit = within(screen.getByTestId("network-current-exit"));
+    expect(exit.getByTestId("network-direct-label").textContent).toContain("出口");
+    expect(exit.getByTestId("network-direct-label").textContent).toContain("直连");
+    expect(exit.getByTestId("network-kernel-not-configured").textContent).toContain(
+      "还没设置内核路径",
+    );
+    // "不点红点"是可机械检查的：未配内核路径时**根本没有**内核状态灯
+    expect(exit.queryByTestId("network-kernel-state-dot")).toBeNull();
+  });
+
+  it("配了内核路径 → 恢复内核状态灯与全局默认线路（直连标签不再出现）", () => {
+    renderPage(
+      <NetworkBody
+        {...networkProps({ kernelPath: "C:/mihomo/mihomo.exe", subscriptions: [], lanes: [] })}
+      />,
+    );
+    const exit = within(screen.getByTestId("network-current-exit"));
+    expect(exit.queryByTestId("network-direct-label")).toBeNull();
+    expect(exit.queryByTestId("network-kernel-not-configured")).toBeNull();
+    expect(exit.getByTestId("network-kernel-state-dot")).toBeTruthy();
+    // 内核路径本身也画出来（读到了什么就显示什么）
+    expect(exit.getByTestId("network-kernel-path-value").textContent).toContain(
+      "C:/mihomo/mihomo.exe",
+    );
+    // 三块照常渲染：内核路径不再是"是否显示网络区块"的开关
+    expect(screen.getByTestId("network-subscriptions-empty")).toBeTruthy();
+    expect(screen.getByTestId("network-lanes-empty")).toBeTruthy();
   });
 
   it("空字符串 / 纯空白的内核路径都算「没配」（不把空格当成已配置）", () => {
-    expect(networkScope({ kernelPath: "", subscriptionCount: 0, laneCount: 0 }).state).toBe("off");
-    expect(networkScope({ kernelPath: "   ", subscriptionCount: 0, laneCount: 0 }).state).toBe("off");
+    renderPage(
+      <NetworkBody {...networkProps({ kernelPath: "   ", subscriptions: [], lanes: [] })} />,
+    );
+    expect(
+      within(screen.getByTestId("network-current-exit")).getByTestId("network-direct-label"),
+    ).toBeTruthy();
   });
 
-  it("三项里任一项还没读到 → 不敢说「未配置」（不冒充已配置，也不画选装块）", () => {
-    // `undefined` = 还没读到（`config_get` / `subscription_list` / `lane_list` 任一没回来）
-    expect(networkScope({ kernelPath: undefined, subscriptionCount: 0, laneCount: 0 }).state).toBe(
-      "unknown",
-    );
-    expect(networkScope({ kernelPath: "", subscriptionCount: undefined, laneCount: 0 }).state).toBe(
-      "unknown",
-    );
-    expect(networkScope({ kernelPath: "", subscriptionCount: 0, laneCount: undefined }).state).toBe(
-      "unknown",
-    );
-    // 界面上：读不到内核路径时照旧显示各区块自己的"加载中 / 未读取"，而不是断言"没配置"
+  it("内核路径还没读到（undefined）→ 出口显示「未读取」，不冒充「直连」", () => {
+    // `undefined` = `config_get` 还没回来：那是"不知道"，不是"用户没配"
     renderPage(<NetworkBody {...networkProps({ subscriptions: [], lanes: [] })} />);
-    expect(screen.queryByTestId("network-optional")).toBeNull();
-  });
-
-  it("三项各自的非空都能单独开启这一个区块（内核路径 / 订阅 / 线路三选一）", () => {
-    expect(networkScope({ kernelPath: "C:/mihomo", subscriptionCount: 0, laneCount: 0 })).toEqual({
-      state: "on",
-      kernel: true,
-      subscriptions: false,
-      lanes: false,
-    });
-    expect(networkScope({ kernelPath: "", subscriptionCount: 1, laneCount: 0 })).toEqual({
-      state: "on",
-      kernel: false,
-      subscriptions: true,
-      lanes: false,
-    });
-    expect(networkScope({ kernelPath: "", subscriptionCount: 0, laneCount: 1 })).toEqual({
-      state: "on",
-      kernel: false,
-      subscriptions: false,
-      lanes: true,
-    });
+    expect(screen.queryByTestId("network-direct-label")).toBeNull();
+    expect(screen.getByTestId("network-current-exit").textContent).toContain("未读取");
   });
 
   it("readKernelPath：整份配置没读到 → undefined；读到了但没填 → 空字符串（两件事不混）", () => {
@@ -1536,7 +1549,7 @@ describe("⑭ /network 是选装：三项都没配置时，页面上只有选装
     expect(readKernelPath({ net: { kernel: { path: null } } })).toBe("");
     expect(readKernelPath({ net: { kernel: {} } })).toBe("");
     expect(readKernelPath({ net: {} })).toBe("");
-    // 纯空白原样返回（读取层**不改写**后端给的值）；"算不算没配"由 `networkScope` 判定（上面那条）
+    // 纯空白原样返回（读取层**不改写**后端给的值）；"算不算没配"由 `NetworkBody` 一处判定（上面那条）
     expect(readKernelPath({ net: { kernel: { path: "  " } } })).toBe("  ");
     // 真配置了就给原文（不做任何改写）
     expect(readKernelPath({ net: { kernel: { path: "C:/mihomo/mihomo.exe" } } })).toBe(
@@ -1544,42 +1557,34 @@ describe("⑭ /network 是选装：三项都没配置时，页面上只有选装
     );
   });
 
-  it("只配了内核路径：渲染内核块，但不给订阅 / 线路画空表、也不给空状态", () => {
+  it("只配了内核路径：三块照常渲染（内核路径不再是「是否显示网络区块」的开关）", () => {
     renderPage(
       <NetworkBody
         {...networkProps({ kernelPath: "C:/mihomo/mihomo.exe", subscriptions: [], lanes: [] })}
       />,
     );
     expect(screen.getByTestId("network-current-exit")).toBeTruthy();
-    for (const testid of [
-      "network-subscriptions",
-      "network-lanes",
-      "network-subscriptions-empty",
-      "network-lanes-empty",
-    ]) {
-      expect(screen.queryByTestId(testid), `没配置的区块不该画空表：${testid}`).toBeNull();
-    }
-    // 但**建第一条**的入口必须还在（藏在空表里的写控件等于把路堵死）：
-    // 首启向导只写内核路径与订阅，第一条线路只能在 `/network` 建。
-    expect(screen.getByTestId("network-subscriptions-setup")).toBeTruthy();
-    expect(screen.getByTestId("network-lanes-setup")).toBeTruthy();
+    // 空配置的两块给的是**诚实空态**，不是"藏起来"
+    expect(screen.getByTestId("network-subscriptions-empty")).toBeTruthy();
+    expect(screen.getByTestId("network-lanes-empty")).toBeTruthy();
+    // 建第一条的入口必须还在，且不再需要上一轮的"兜底 setup 块"
     expect(screen.getByTestId("network-subscriptions-add-id")).toBeTruthy();
     expect(screen.getByTestId("network-lanes-add-id")).toBeTruthy();
+    expect(screen.queryByTestId("network-subscriptions-setup")).toBeNull();
+    expect(screen.queryByTestId("network-lanes-setup")).toBeNull();
   });
 
-  it("只配了订阅：订阅区块连表带写表单都在；线路仍是写入入口，而不是空表", () => {
+  it("只配了订阅：订阅表连表带写表单都在；线路给空态 + 写入入口", () => {
     renderPage(
       <NetworkBody
         {...networkProps({ kernelPath: "", subscriptions: [readSubscription(contractSubscription())], lanes: [] })}
       />,
     );
     expect(screen.getByTestId("network-subscriptions-table")).toBeTruthy();
-    expect(screen.queryByTestId("network-lanes")).toBeNull();
-    expect(screen.queryByTestId("network-lanes-empty")).toBeNull();
-    // 没线路时**仍要能建第一条线路**：写入控件不是"空表"，不违反"不画空表"
-    expect(screen.getByTestId("network-lanes-setup")).toBeTruthy();
+    expect(screen.getByTestId("network-lanes-empty")).toBeTruthy();
+    // 没线路时**仍要能建第一条线路**
     expect(screen.getByTestId("network-lanes-add-id")).toBeTruthy();
-    // 反过来：已经有订阅了，就不该再出现"建第一条订阅"的兜底块
+    expect(screen.queryByTestId("network-lanes-setup")).toBeNull();
     expect(screen.queryByTestId("network-subscriptions-setup")).toBeNull();
   });
 
@@ -1587,19 +1592,21 @@ describe("⑭ /network 是选装：三项都没配置时，页面上只有选装
     renderPage(<NetworkPage />);
     expect(await screen.findByTestId("network-subscriptions-table")).toBeTruthy();
     expect(await screen.findByTestId("network-lanes-table")).toBeTruthy();
-    expect(screen.queryByTestId("network-optional")).toBeNull();
+    expectNoOptionalBlock();
   });
 
-  it("整页：config_get + subscription_list + lane_list 三项都空 → 整页只剩 network-optional", async () => {
+  it("整页：config_get + subscription_list + lane_list 三项都空 → 常显 + 空态，且没有选装入口", async () => {
     registerMock("config_get", () => ({ net: { kernel: { path: null } } }) as never);
     registerMock("subscription_list", () => []);
     registerMock("lane_list", () => []);
 
     renderPage(<NetworkPage />);
-    expect(await screen.findByTestId("network-optional")).toBeTruthy();
-    for (const testid of FORBIDDEN_WHEN_UNCONFIGURED) {
-      expect(screen.queryByTestId(testid), `未配置时不该出现 ${testid}`).toBeNull();
-    }
+    expect(await screen.findByTestId("network-subscriptions-empty")).toBeTruthy();
+    expect(screen.getByTestId("network-lanes-empty")).toBeTruthy();
+    expect(
+      within(screen.getByTestId("network-current-exit")).getByTestId("network-direct-label"),
+    ).toBeTruthy();
+    expectNoOptionalBlock();
   });
 });
 
@@ -1871,5 +1878,230 @@ describe("⑮b 读流量：契约的三态（没这一行 / null / 有值）与�
     });
     if (s.kind !== "known") throw new Error("应当是 known");
     expect(s.usedPct).toBe(33);
+  });
+});
+
+// ================================================================ ⑯ 返回条：服务商向导 → /network → 回来（[19 §1.4]）
+//
+// 服务商两步向导的「让我先设置网络代理」把用户送到 `#/network?from=provider-wizard`，
+// 所以 /network 必须给一条**能回去的路**（否则用户配完代理就找不到刚才填了一半的表单）。
+// 触发条件是**真实 URL**（不是某个全局开关）：只有 `from=provider-wizard` 才显示。
+
+describe("⑯ /network 返回条：从服务商向导过来时才有，且真的回得去", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("?from=provider-wizard → 顶部返回条 + 返回按钮（真控件、指向 /providers）", async () => {
+    renderPageAt("/network?from=provider-wizard", <NetworkPage />);
+
+    const banner = await screen.findByTestId("network-return-banner");
+    expect(banner.textContent).toContain("正在为服务商配置网络代理");
+
+    const back = within(screen.getByTestId("network-return-btn")).getByRole("link");
+    expect(back.textContent).toContain("返回向导");
+    expect(back.getAttribute("href")).toBe("/providers");
+    expect(back.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("反向断言：没有这个查询参数时不出现返回条", async () => {
+    renderPageAt("/network", <NetworkPage />);
+    await screen.findByTestId("network-subscriptions-table");
+    expect(screen.queryByTestId("network-return-banner")).toBeNull();
+    expect(screen.queryByTestId("network-return-btn")).toBeNull();
+  });
+
+  it("反向断言：别的 from 取值不算（不是随便什么链接进来都弹返回条）", async () => {
+    renderPageAt("/network?from=somewhere-else", <NetworkPage />);
+    await screen.findByTestId("network-subscriptions-table");
+    expect(screen.queryByTestId("network-return-banner")).toBeNull();
+  });
+});
+
+// ================================================================ ⑰ /network/nodes 节点清单：接真命令（[19 §2.3]）
+//
+// 用户原话：「我添加了 clash 订阅，刷新了，进去也是为什么这里没有完整的节点列表」+「没有节点啊」。
+// 事实（已核实）：`subscription_nodes` 后端**已注册已实现**（`src-tauri/src/commands/net.rs:780`），
+// 上一版页面里那句"本页尚未接入"是**过期说明**。所以这一组钉四件事：
+//
+// 1. **不带 `group`** 调 `subscription_nodes({ id })`：后端带 `group` 会**直接报错**
+//    （`net.rs:765-773`：解析层不保留组成员关系）；前端不许自己解析、不许伪造节点；
+// 2. **硬前置先判**：`last_update_ms == null && error == null` = 这份订阅还没解析过 ——
+//    这时 `latest_outcome` 返回的是**错误**（不是空数组），所以**这一轮根本不发命令**，
+//    只给 `nodes-empty`（"还没解析过"那一档）+ `nodes-refresh` 引导；
+// 3. 空态**必须分两档**（还没解析过 / 该订阅下确实没有节点），文案不同；
+// 4. `nodes-refresh` 真调 `subscription_refresh`，**然后**才重取 `subscription_nodes`。
+
+describe("⑰ /network/nodes 节点清单：真调 subscription_nodes，不自己解析、不伪造", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("已解析的订阅：调 subscription_nodes({ id })（**不带 group**），逐行列出后端给的节点", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    const nodes = recordingMock([
+      { name: "东京-03", type: "vmess", group: USER_GROUP, latency_ms: 82, ok: true },
+      { name: "大阪-01", type: "trojan", latency_ms: 96, ok: true },
+    ]);
+    registerMock("subscription_nodes", nodes.handler);
+
+    renderPage(<NodesPage />);
+
+    expect(await screen.findByTestId("nodes-list")).toBeTruthy();
+    await waitFor(() => expect(nodes.calls).toHaveLength(1));
+    // 入参只有 id：带 group 会被后端拒绝（宁可不做筛选，也不放一个点了会报错的控件）
+    expect(nodes.calls[0]).toEqual({ id: "sub-jp" });
+
+    const rows = screen.getAllByTestId("nodes-row");
+    expect(rows.length).toBe(2);
+    expect(rows[0]?.textContent).toContain("东京-03");
+    expect(rows[0]?.textContent).toContain("vmess");
+    expect(rows[1]?.textContent).toContain("大阪-01");
+    // 用户数据原样（订阅里的组名带 emoji：一个字符都不改）
+    expect(rows[0]?.textContent).toContain(USER_GROUP);
+  });
+
+  it("只有一个订阅时选择器也显示（不隐藏）", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_nodes", () => []);
+
+    renderPage(<NodesPage />);
+
+    await waitFor(() => expect(screen.getAllByTestId("nodes-subscription").length).toBe(1));
+    expect(within(screen.getByTestId("nodes-subscription")).getByRole("combobox")).toBeTruthy();
+  });
+
+  it("多个订阅：换一个订阅就用新 id 重新取节点", async () => {
+    const first = contractSubscription();
+    const inner = first["subscription"] as Record<string, unknown>;
+    registerMock("subscription_list", () => [
+      first,
+      contractSubscription({ subscription: { ...inner, id: "sub-hk", name: "机场B" } }),
+    ]);
+    const nodes = recordingMock([{ name: "香港-01", type: "ss", latency_ms: 40, ok: true }]);
+    registerMock("subscription_nodes", nodes.handler);
+
+    renderPage(<NodesPage />);
+
+    await screen.findByTestId("nodes-list");
+    await waitFor(() => expect(nodes.calls).toHaveLength(1));
+    await chooseOption("nodes-subscription", "机场B");
+    await waitFor(() => expect(nodes.calls.some((call) => call["id"] === "sub-hk")).toBe(true));
+  });
+
+  it("还没解析过（last_update_ms 为 null）→ 先判前置：这一轮**不发** subscription_nodes", async () => {
+    registerMock("subscription_list", () => [rustSubscription()]);
+    const nodes = recordingMock([]);
+    registerMock("subscription_nodes", nodes.handler);
+
+    renderPage(<NodesPage />);
+
+    const empty = await screen.findByTestId("nodes-empty");
+    expect(empty.textContent).toContain("还没有解析结果");
+    // 前置不满足时后端会**报错**（不是返回空数组），所以命令必须在判断之后才发
+    expect(nodes.calls).toHaveLength(0);
+    // 引导：给一个真的会调 subscription_refresh 的刷新按钮
+    expect(screen.getByTestId("nodes-refresh")).toBeTruthy();
+  });
+
+  it("解析过但没有节点：nodes-empty 换第二档文案（不写「还没解析过」）", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_nodes", () => []);
+
+    renderPage(<NodesPage />);
+
+    const empty = await screen.findByTestId("nodes-empty");
+    expect(empty.textContent).toContain("这个分组下没有节点");
+    expect(empty.textContent).not.toContain("还没有解析结果");
+  });
+
+  it("后端真失败：nodes-error 原样显示后端原文（含 TA 码），不吞、不改写", async () => {
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_nodes", () => {
+      throw new TokenAgencyError({
+        code: "TA-4001",
+        message: "订阅 sub-jp 还没有已采纳的版本（先用 subscription_refresh 拉一次）",
+      });
+    });
+
+    renderPage(<NodesPage />);
+
+    const error = await screen.findByTestId("nodes-error");
+    expect(error.textContent).toContain("TA-4001");
+    expect(error.textContent).toContain("还没有已采纳的版本（先用 subscription_refresh 拉一次）");
+  });
+
+  it("nodes-refresh：真调 subscription_refresh({ id, force: true })，再重取 subscription_nodes", async () => {
+    let nodeCalls = 0;
+    registerMock("subscription_list", () => [contractSubscription()]);
+    registerMock("subscription_nodes", () => {
+      nodeCalls += 1;
+      return [{ name: "东京-03", type: "vmess", ok: true }];
+    });
+    const refresh = recordingMock({ ok: true, node_count: 12, group_count: 4 });
+    registerMock("subscription_refresh", refresh.handler);
+
+    renderPage(<NodesPage />);
+
+    await screen.findByTestId("nodes-list");
+    await waitFor(() => expect(nodeCalls).toBe(1));
+
+    fireEvent.click(screen.getByTestId("nodes-refresh"));
+
+    await waitFor(() => expect(refresh.calls).toHaveLength(1));
+    expect(refresh.calls[0]).toEqual({ id: "sub-jp", force: true });
+    // 刷新之后**再**取一次节点清单（顺序：先刷新，后取清单）
+    await waitFor(() => expect(nodeCalls).toBeGreaterThan(1));
+    expect((await screen.findByTestId("nodes-refresh-result")).textContent).toContain("12");
+  });
+});
+
+// ================================================================ ⑱ 线路测速：lane_test 真用（[19 §2.4]）
+//
+// 「要么真用，要么不放」：这里选了**真用**。没有装配内核时后端返回错误，
+// 页面**原样显示**（含 TA 码）—— 不吞、不假装成功、也不放禁用占位。
+
+describe("⑱ /network 线路表：lane_test 真调，结果原样显示", () => {
+  beforeEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("每行一个 network-lanes-test：调 lane_test({ id })，逐节点延迟列在 network-lanes-test-result", async () => {
+    registerMock("lane_list", () => [rustLane()]);
+    const test = recordingMock([
+      { node: "东京-03", latency_ms: 82, ok: true },
+      { node: "大阪-01", latency_ms: null, ok: false },
+    ]);
+    registerMock("lane_test", test.handler);
+
+    renderPage(<NetworkPage />);
+
+    const button = (await screen.findAllByTestId("network-lanes-test"))[0]!;
+    expect(button.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(button);
+
+    await waitFor(() => expect(test.calls).toHaveLength(1));
+    // 入参只有 id（`node` 是后端可选的，前端不替用户挑节点）
+    expect(test.calls[0]).toEqual({ id: "lane-jp" });
+
+    const result = await screen.findByTestId("network-lanes-test-result");
+    expect(result.textContent).toContain("东京-03");
+    expect(result.textContent).toContain("82ms");
+    expect(result.textContent).toContain("大阪-01");
+  });
+
+  it("内核未装配：后端错误原样显示（含 TA 码），不吞也不装成功", async () => {
+    registerMock("lane_list", () => [rustLane()]);
+    registerMock("lane_test", () => {
+      throw new TokenAgencyError({ code: "TA-4001", message: "没有装配内核，无法测速" });
+    });
+
+    renderPage(<NetworkPage />);
+
+    fireEvent.click((await screen.findAllByTestId("network-lanes-test"))[0]!);
+
+    const result = await screen.findByTestId("network-lanes-test-result");
+    expect(result.textContent).toContain("TA-4001");
+    expect(result.textContent).toContain("没有装配内核，无法测速");
   });
 });

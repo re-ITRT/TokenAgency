@@ -85,62 +85,28 @@ function pickArr(row: Row, key: string): unknown[] | undefined {
 /** 数值缺失一律画"—"（**不画 0**：0 是"确实是 0"，缺失是"不知道"）。 */
 export const DASH = "—";
 
-// ================================================================ 网络代理是不是**在用**（选装功能，[18 §2]）
+// ================================================================ 网络代理是不是**在用**
 
 /**
- * 「未启用」的**唯一口径**（[18 §2.1]，Rust 与界面共用同一句话）：
+ * `net.kernel.path` 的读取（[18 §2.1]，[19 §2.2]）。
  *
- * ```
- * 未启用 = net.kernel.path 为空 且 订阅列表为空 且 线路（lane）列表为空
- * ```
- *
- * 三项都没有 = 用户没在用这块功能 —— 界面上**一个网络区块都不渲染**（[18 §2.2]）。
- * 反过来，任一项非空就渲染对应区块：内核路径 → 内核/出口块；订阅 → 订阅区块；线路 → 线路区块。
- *
- * `undefined` 一律表示**还没读到**（`config_get` / `subscription_list` / `lane_list` 还没回来），
- * 与"读到了、但用户没配"（空字符串 / 0 条）严格区分：读不到时**不敢**断言"未配置" ——
- * 那会把一次失败的读取说成用户的配置事实（本页最忌讳的"拿不确定冒充确定"）。
+ * **注**：上一版这里还有一个 `networkScope()`，用"内核路径 / 订阅 / 线路三项是否都空"来决定
+ * `/network` 要不要整页隐藏（[18 §2.2] 的"选装入口"）。那个口径**已被 [19 §2.2] 取代**：
+ * 网络代理默认开启（默认直连），这一页**永远渲染**各区块，没有"启用网络代理"这个动作。
+ * 所以那个函数连同它的类型一起删掉了 —— 留一个不再决定任何事情的"门控"只会让下一个人读错。
  */
-export type NetworkPresence = {
-  /** `net.kernel.path`；`undefined` = 整份配置还没读到。 */
-  kernelPath: string | undefined;
-  /** 订阅条数；`undefined` = 列表还没读到。 */
-  subscriptionCount: number | undefined;
-  /** 线路条数；`undefined` = 列表还没读到。 */
-  laneCount: number | undefined;
-};
-
-/** `unknown` = 至少一项还没读到；`off` = 三项都读到且都空；`on` = 哪几项非空。 */
-export type NetworkScope =
-  | { state: "unknown" }
-  | { state: "off" }
-  | { state: "on"; kernel: boolean; subscriptions: boolean; lanes: boolean };
-
 /**
  * 从 `config_get` 的整份配置里读 `net.kernel.path`（**不改写后端给的值**）。
  *
  * - 返回 `undefined` = **整份配置还没读到**（不是"用户没配"）；
  * - 返回 `""` = 读到了，但用户没填（`null` / 缺键 / 空串）；
- * - 纯空白原样返回 —— "算不算没配"由 `networkScope` 判定（`trim()` 只在那里做一次）。
+ * - 纯空白原样返回 —— "算不算没配"由界面在一处判定（`trim()` 只在那里做一次）。
  */
 export function readKernelPath(doc: unknown): string | undefined {
   const d = asRow(doc);
   if (Object.keys(d).length === 0) return undefined;
   const kernel = asRow(asRow(d["net"])["kernel"]);
   return pickStr(kernel, "path") ?? "";
-}
-
-/** 三项事实 → 这一页该渲染什么（判定只在这一处，页面不去各自解释一遍）。 */
-export function networkScope(presence: NetworkPresence): NetworkScope {
-  const { kernelPath, subscriptionCount, laneCount } = presence;
-  if (kernelPath === undefined || subscriptionCount === undefined || laneCount === undefined) {
-    return { state: "unknown" };
-  }
-  const kernel = kernelPath.trim() !== "";
-  const subscriptions = subscriptionCount > 0;
-  const lanes = laneCount > 0;
-  if (!kernel && !subscriptions && !lanes) return { state: "off" };
-  return { state: "on", kernel, subscriptions, lanes };
 }
 
 // ================================================================ 文案映射（显式表，不用模板拼 key）

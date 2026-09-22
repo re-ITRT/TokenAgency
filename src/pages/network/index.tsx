@@ -1,23 +1,27 @@
 /**
- * 网络页（[04 §5–§8]、[12 §6 F4]）—— `/network` 概览，**以及三个网络视图共用的展示件**。
+ * 网络页（[04 §5–§8]、[12 §6 F4]、[19 §2]）—— `/network` 概览，**以及三个网络视图共用的展示件**。
  *
- * ## 两条硬纪律
+ * ## 三条硬纪律
  *
  * 1. **I2：系统网络零副作用。** 这一页（含节点列表与线路分配）**不碰系统网络**：
  *    没有"改系统代理 / DNS / 路由 / 网卡 / 开机自启"的路径或按钮，也没有启停网关或内核的按钮。
  *    页面调用的命令是一条可机械检查的白名单（见 `src/app/network.test.tsx` 的命令面守卫）：
  *    只读的 `app_status` / `subscription_list` / `lane_list` / `config_get`，
  *    外加**只管订阅与线路这两个配置实体**的写命令（`subscription_*` / `lane_upsert` /
- *    `lane_delete` / `lane_set_node`）—— 后者改的是 TokenAgency 自己的配置与内核运行态，
- *    系统网络配置一个字段都不动。守卫对"系统/内核/托盘写命令"仍然零容忍。
+ *    `lane_delete` / `lane_set_node`）与**不改配置**的逐节点测速 `lane_test`
+ *    —— 后者改的是 TokenAgency 自己的配置与内核运行态，系统网络配置一个字段都不动。
+ *    守卫对"系统/内核/托盘写命令"仍然零容忍。
  * 2. **不猜。** 读不到的字段显示「未读取」，配置里确实是空的显示空状态，两者**不是一回事**；
  *    写操作**只显示后端返回的对象**（不拼一句"保存成功"），失败原样显示 TA 码。
  *    需要但尚未注册的后端接口如实点名，而不是编一份看起来完整的节点清单
  *    （见 `model.ts` 文件头「一」的三态区分）。
+ * 3. **常显（[19 §2.2]，取代 [18 §2.2] 的"选装入口"）。** 网络代理**默认开启、默认直连**：
+ *    这一页永远渲染出口 / 订阅 / 线路，没配置时给诚实的空态 —— 页面上**没有"启用网络代理"这个动作**。
+ *    未配内核路径时出口显示「出口 · 直连」（`network.directLabel`），不是错误态、不点红点。
  *
  * ## 写界面与读界面为什么在同一页
  *
- * 订阅与线路是"看一眼、改一下、再看一眼"的闭环：列表里的每一行都带刷新 / 删除，
+ * 订阅与线路是"看一眼、改一下、再看一眼"的闭环：列表里的每一行都带刷新 / 删除 / 测速，
  * 表单就在列表下面。**只读的五级链路解析**（后端算的最终生效线路）放在 `/network/assignments`，
  * 因为"删 lane 之前先看谁在引用它"是另一个操作流。
  * 写操作走 `useCommandMutation` + `invalidateQueries`：**不用本地状态伪造一行结果**。
@@ -51,13 +55,13 @@ import {
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { errorMessage, qk, useAppStatus, useCommandMutation, useCommandQuery } from "@/shared/api";
 import type { AppStatus } from "@/shared/bindings";
 import { KernelStateDot, PageHeader, StatusDot } from "@/shared/components";
 import { formatBytes, formatDuration, formatLatency, formatLocalTime } from "@/shared/format";
-import { useTranslation, type I18nKey } from "@/shared/i18n";
+import { useTranslation } from "@/shared/i18n";
 import { radius, typography } from "@/theme";
 
 import {
@@ -74,7 +78,6 @@ import {
   laneMissingField,
   laneNameOf,
   lanePayload,
-  networkScope,
   parseOptionalCount,
   readKernelPath,
   readLane,
@@ -196,58 +199,36 @@ export function Unreadable({ testId }: { testId?: string }) {
   );
 }
 
-/**
- * 「后端这个接口还没注册」的统一说明。
- *
- * 文案（含命令名）**只从 i18n 取**，页面源码里不出现命令名字面量 —— 这不是洁癖：
- * `src/app/network.test.tsx` 的命令面守卫会扫页面源码里的命令名，而"我在文案里提一句
- * 某个还没注册的命令"和"我真的去调它"在源码上是同一种字面量。把命令名收进 i18n
- * 之后，"页面调用的命令集合 == 只读白名单"这条断言才是有意义的。
- */
-export function MissingCommandNote({ messageKey }: { messageKey: I18nKey }) {
-  const { t } = useTranslation();
-  return <Caption>{t(messageKey)}</Caption>;
-}
+// 上一版这里有一个 `MissingCommandNote`（"后端这个接口还没注册"的统一说明）与一个
+// `OptionalNetworkBlock`（未配置时唯一的"启用网络代理"入口）。两者都随 [19 §2] 作废：
+// - 节点清单 / 订阅解析 / 逐节点测速三条命令**都已接入**，那些"本页尚未接入"的说明是**过期说明**；
+// - 网络代理默认开启（默认直连），页面上**没有"启用网络代理"这个动作**。
+// 于是这一页不再有任何"这条命令还没注册"的占位文案 —— 真缺接口时再按需加回来。
 
-// ================================================================ ⓪ 选装入口（未配置时**唯一**的一块，[18 §2.2]）
+// ================================================================ ⓪ 从服务商向导返回（[19 §1.4]）
+//
+// 服务商两步向导的「让我先设置网络代理」把用户送到 `#/network?from=provider-wizard`，
+// 于是这一页顶部要给一条**回得去**的路：文案说清"正在为服务商配置网络代理"，
+// 按钮回 `/providers`（向导的草稿存在页面级 store 里，回去还在）。
+// 触发条件只看 URL 参数：不是"任何从别处进来的链接都弹一条返回条"。
 
-/**
- * 「网络代理」是**选装功能**：内核路径 / 订阅 / 线路三者都没有 = 用户没在用这块功能。
- *
- * 这时这一页**只渲染这一个块** —— 不画空表、不画"暂无数据"、不画禁用控件：
- * 一个没用过代理的人不该看到一屋子空壳（用户原话：「如果用户没有配置就不显示」）。
- * 启用入口指向首启向导 `/onboarding`：内核路径与第一条订阅都在那一步里配。
- */
-export function OptionalNetworkBlock() {
+export function ProviderReturnBanner() {
   const { t } = useTranslation();
   return (
-    <SectionPaper
-      title={t("network.optional.title")}
-      description={t("network.optional.hint")}
-      testId="network-optional"
+    <Paper
+      variant="outlined"
+      data-testid="network-return-banner"
+      sx={{ p: 4, borderRadius: `${radius.surface}px` }}
     >
-      {/* MUI 控件不吃 `data-testid`（要取到真正的按钮得再往下一层）→ 外层普通元素包住它 */}
-      <Box data-testid="network-optional-enable">
-        <Button variant="outlined" component={Link} to="/onboarding">
-          {t("network.optional.enable")}
-        </Button>
-      </Box>
-    </SectionPaper>
-  );
-}
-
-/**
- * 「这一块还没配」的**写入入口**（不是空表、不是"暂无数据"）。
- *
- * 什么时候用：功能**已经在用**（三项里有任一项非空），但这一项还是空的 ——
- * 例如配了内核路径、还没加订阅，或者有订阅、还没建线路（首启向导只写内核路径与订阅，
- * 第一条线路只能在 `/network` 建）。这时把那块的空表藏掉，但**写入控件必须还在**，
- * 否则用户永远建不出第一条（"未涉及的区块不渲染空表"不等于"把入口也一起藏了"）。
- */
-function SetupPaper({ testId, children }: { testId: string; children: ReactNode }) {
-  return (
-    <Paper variant="outlined" sx={{ p: 4, borderRadius: `${radius.surface}px` }} data-testid={testId}>
-      {children}
+      <Stack direction="row" spacing={3} alignItems="center" sx={{ flexWrap: "wrap" }}>
+        <Typography variant="body1">{t("network.returnBanner")}</Typography>
+        {/* MUI 控件不吃 `data-testid`（要取到真正的按钮得再往下一层）→ 外层普通元素包住它 */}
+        <Box data-testid="network-return-btn">
+          <Button variant="outlined" component={Link} to="/providers">
+            {t("network.returnBtn")}
+          </Button>
+        </Box>
+      </Stack>
     </Paper>
   );
 }
@@ -267,12 +248,27 @@ function ExitRow({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function CurrentExit({ status, lanes }: { status: AppStatus | undefined; lanes: readonly LaneRow[] }) {
+function CurrentExit({
+  status,
+  lanes,
+  kernelPath,
+}: {
+  status: AppStatus | undefined;
+  lanes: readonly LaneRow[];
+  /** `net.kernel.path`：`undefined` = 还没读到；`""` = 读到了、用户没配（[19 §2.2]）。 */
+  kernelPath: string | undefined;
+}) {
   const { t } = useTranslation();
   const gateway = status?.gateway;
   // 只有后端给了 id 才显示出口；能给名字就给名字，给不了解析就原样显示 id（不猜一个线路名）
   const laneId = status?.default_lane_id ?? undefined;
   const laneName = laneId === undefined ? undefined : laneNameOf(laneId, lanes);
+
+  // 「未配内核路径」= **读到了**配置、且 `net.kernel.path` 是空的（[19 §2.2]）。
+  // 这时出口就是**直连** —— 不是错误态、也不是"未启用"（网络代理默认开启，默认直连）。
+  // `undefined`（还没读到）不算：那是"不知道"，不能冒充"直连"。
+  const kernelNotConfigured = kernelPath !== undefined && kernelPath.trim() === "";
+  const kernelPathValue = kernelPath === undefined ? undefined : kernelPath.trim();
 
   return (
     <SectionPaper
@@ -281,6 +277,13 @@ function CurrentExit({ status, lanes }: { status: AppStatus | undefined; lanes: 
       testId="network-current-exit"
     >
       <Stack spacing={2}>
+        {kernelNotConfigured ? (
+          // 「出口 · 直连」：用户看得懂的一句话，不是错误提示
+          <Typography variant="body1" data-testid="network-direct-label">
+            {`${t("status.exit")} · ${t("network.directLabel")}`}
+          </Typography>
+        ) : null}
+
         <ExitRow label={t("network.currentExit.gateway")}>
           {gateway === undefined ? (
             <Unreadable />
@@ -293,11 +296,34 @@ function CurrentExit({ status, lanes }: { status: AppStatus | undefined; lanes: 
         </ExitRow>
 
         <ExitRow label={t("network.currentExit.kernel")}>
-          <KernelStateDot state={status?.kernel.state} />
+          {kernelNotConfigured ? (
+            // **不点红点**：没有内核路径只说明"走直连"，不是故障
+            <Typography variant="body1" data-testid="network-kernel-not-configured" sx={{ color: "text.secondary" }}>
+              {t("network.kernel.notConfigured")}
+            </Typography>
+          ) : (
+            <>
+              <Box component="span" data-testid="network-kernel-state-dot">
+                <KernelStateDot state={status?.kernel.state} />
+              </Box>
+              {kernelPathValue === undefined || kernelPathValue === "" ? null : (
+                <Typography
+                  variant="caption"
+                  component="span"
+                  data-testid="network-kernel-path-value"
+                  sx={{ color: "text.secondary", fontFamily: typography.fontMono, overflowWrap: "anywhere" }}
+                >
+                  {kernelPathValue}
+                </Typography>
+              )}
+            </>
+          )}
         </ExitRow>
 
         <ExitRow label={t("network.currentExit.defaultLane")}>
-          {laneId === undefined ? (
+          {kernelNotConfigured ? (
+            <Typography variant="body1">{t("network.directLabel")}</Typography>
+          ) : laneId === undefined ? (
             <Unreadable />
           ) : (
             <Typography variant="body1">{laneName ?? laneId}</Typography>
@@ -696,7 +722,9 @@ function SubscriptionsSection({
       hintTestId="network-subscriptions-hint"
       hint={
         <Stack spacing={1}>
-          <Caption>{t("network.subscriptions.countHint")}</Caption>
+          {/* 「节点数 / 组数从哪来」那一句（`network.subscriptions.countHint`）已作废：
+              它写着"本页尚未接入 subscription_nodes / subscription_groups"，而这两条命令
+              这一页真的在调（见 `LaneWriteForm`）；/network/nodes 上更是直接列出了节点清单（[19 §2.3]）。 */}
           <Caption>{t("network.subscriptions.urlHint")}</Caption>
           <Caption>{t("network.subscriptions.healthHint")}</Caption>
           <Caption>{t("network.subscriptions.row.refreshHint")}</Caption>
@@ -1175,12 +1203,13 @@ function LanesSection({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  // 行级写操作：删除（配置实体）与钉住节点（**只改内核运行态**，不改配置）。
+  // 行级写操作：删除（配置实体）、钉住节点（**只改内核运行态**，不改配置）、逐节点测速（[19 §2.4]）。
   const removeOne = useCommandMutation("lane_delete");
   const setNode = useCommandMutation("lane_set_node");
+  const testLane = useCommandMutation("lane_test");
   const [nodeDrafts, setNodeDrafts] = useState<Record<string, string>>({});
   const [rowError, setRowError] = useState<string | undefined>(undefined);
-  const busy = removeOne.isPending || setNode.isPending;
+  const busy = removeOne.isPending || setNode.isPending || testLane.isPending;
 
   const onDelete = (id: string) => {
     setRowError(undefined);
@@ -1216,6 +1245,15 @@ function LanesSection({
 
   const deletedId = removeOne.isSuccess ? removeOne.variables?.id : undefined;
   const pinned = setNode.isSuccess ? setNode.variables : undefined;
+  // 测速结果**原样显示后端的话**：成功就逐节点列延迟，失败就显示后端原文（含 TA 码）。
+  const tested = testLane.variables?.id;
+  const testFailed = testLane.error !== null && testLane.error !== undefined;
+
+  const onTest = (id: string) => {
+    setRowError(undefined);
+    testLane.reset();
+    testLane.mutate({ id });
+  };
 
   return (
     <SectionPaper
@@ -1228,7 +1266,8 @@ function LanesSection({
           <Caption>{t("network.lanes.channelCountHint")}</Caption>
           <Caption>{t("network.lanes.sampleHint")}</Caption>
           <Caption>{t("network.lanes.row.setNodeHint")}</Caption>
-          <MissingCommandNote messageKey="network.missingCommands.lanes" />
+          {/* 测速的口径（[19 §2.4]）：**没有装配内核时后端会如实报错**，这里也如实显示 */}
+          <Caption>{t("network.lanes.testHint")}</Caption>
         </Stack>
       }
       testId="network-lanes"
@@ -1335,6 +1374,15 @@ function LanesSection({
                         <Button
                           size="small"
                           variant="outlined"
+                          data-testid="network-lanes-test"
+                          disabled={busy}
+                          onClick={() => onTest(row.id)}
+                        >
+                          {t("network.lanes.test")}
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
                           data-testid="network-lanes-delete"
                           disabled={busy}
                           onClick={() => onDelete(row.id)}
@@ -1364,6 +1412,29 @@ function LanesSection({
         </Typography>
       )}
 
+      {/* 逐节点测速：成功逐行列延迟；失败（例如没装配内核）**原样显示后端原文** */}
+      {tested === undefined ? null : (
+        <Typography
+          variant="body1"
+          data-testid="network-lanes-test-result"
+          sx={{ overflowWrap: "anywhere", color: testFailed ? "error.main" : "text.primary" }}
+        >
+          {testFailed
+            ? `${t("network.lanes.test")} ${tested}：${errorMessage(testLane.error)}`
+            : `${t("network.lanes.test")} ${tested}：${
+                testLane.data === undefined || testLane.data.length === 0
+                  ? DASH
+                  : testLane.data
+                      .map((row) =>
+                        row.latency_ms === null || row.latency_ms === undefined
+                          ? row.node
+                          : `${row.node} ${formatLatency(row.latency_ms)}`,
+                      )
+                      .join(" · ")
+              }`}
+        </Typography>
+      )}
+
       <FormNotice testId="network-lanes-row-error" message={rowError} />
       <WriteError testId="network-lanes-row-error" error={setNode.error ?? removeOne.error} />
 
@@ -1381,6 +1452,7 @@ export type NetworkBodyProps = {
   /**
    * `net.kernel.path`（来自 `config_get`）。
    * `undefined` = **还没读到** —— 与"读到了、但为空（用户没配内核路径）"不是一回事（[18 §2.1]）。
+   * 空值时出口显示「出口 · 直连」，**不是**错误态（[19 §2.2]）。
    */
   kernelPath: string | undefined;
   subscriptions: SubscriptionRow[] | undefined;
@@ -1392,16 +1464,21 @@ export type NetworkBodyProps = {
   lanesLoading: boolean;
   lanesError: unknown;
   onRetry: () => void;
+  /**
+   * 是否显示「从服务商向导返回」的返回条（[19 §1.4]）。
+   *
+   * 由**数据层**从真实 URL 的 `?from=provider-wizard` 读出来传进来（`NetworkBody` 是纯 props 展示层，
+   * 不自己解 URL —— 那样展示层的单测就都得包一层 Router）。
+   */
+  showProviderReturn?: boolean;
 };
 
 /**
- * 网络概览的展示层（纯 props，便于测"已配置 / 未配置 / 读不到"三种状态）。
+ * 网络概览的展示层（纯 props，便于测"有数据 / 空 / 读不到"三种状态）。
  *
- * **选装功能的门控在这里**（判定只在 `model.networkScope` 一处，见 [18 §2]）：
- * - `off`（三项都读到且都空）→ 只渲染 `network-optional`：标题 + 一句说明 + 启用入口；
- * - `unknown`（任一项还没读到）→ 照旧渲染各区块自己的"加载中 / 未读取"（**不**断言"没配置"）；
- * - `on` → 只渲染对应区块（内核路径 → 内核块；订阅 → 订阅区块；线路 → 线路区块），
- *   没配置的那一项**不画空表**，但保留它的写入入口（`SetupPaper`），否则建不出第一条。
+ * **[19 §2.2] 之后这里没有任何"门控"**：网络代理默认开启（默认直连），所以这一页
+ * **永远**渲染出口 / 订阅 / 线路三块 —— 没配置时每块给**诚实的空态**（不是空表、不是白纸），
+ * 但页面上**没有"启用网络代理"这个动作**（上一版的 `network-optional` 已作废）。
  */
 export function NetworkBody({
   status,
@@ -1414,48 +1491,21 @@ export function NetworkBody({
   lanesLoading,
   lanesError,
   onRetry,
+  showProviderReturn = false,
 }: NetworkBodyProps) {
-  const scope = networkScope({
-    kernelPath,
-    subscriptionCount: subscriptions?.length,
-    laneCount: lanes?.length,
-  });
-
-  if (scope.state === "off") {
-    return (
-      <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-        <OptionalNetworkBlock />
-      </Box>
-    );
-  }
-
-  // `unknown` 时按"还没读到"照旧渲染：每个区块自己说"加载中 / 未读取"，不在这里替它们下结论
-  const unresolved = scope.state === "unknown";
-
   return (
     <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+      {showProviderReturn ? <ProviderReturnBanner /> : null}
       <ZeroSideEffectNotice />
-      {unresolved || scope.kernel ? <CurrentExit status={status} lanes={lanes ?? []} /> : null}
-      {unresolved || scope.subscriptions ? (
-        <SubscriptionsSection
-          rows={subscriptions}
-          isLoading={subscriptionsLoading}
-          error={subscriptionsError}
-          trafficError={trafficError}
-          onRetry={onRetry}
-        />
-      ) : (
-        <SetupPaper testId="network-subscriptions-setup">
-          <SubscriptionWriteForm />
-        </SetupPaper>
-      )}
-      {unresolved || scope.lanes ? (
-        <LanesSection rows={lanes} isLoading={lanesLoading} error={lanesError} onRetry={onRetry} />
-      ) : (
-        <SetupPaper testId="network-lanes-setup">
-          <LaneWriteForm />
-        </SetupPaper>
-      )}
+      <CurrentExit status={status} lanes={lanes ?? []} kernelPath={kernelPath} />
+      <SubscriptionsSection
+        rows={subscriptions}
+        isLoading={subscriptionsLoading}
+        error={subscriptionsError}
+        trafficError={trafficError}
+        onRetry={onRetry}
+      />
+      <LanesSection rows={lanes} isLoading={lanesLoading} error={lanesError} onRetry={onRetry} />
     </Box>
   );
 }
@@ -1464,11 +1514,15 @@ export function NetworkBody({
 
 export default function NetworkPage() {
   const { t } = useTranslation();
+  // 返回条的触发条件是**真实 URL**（[19 §1.4]）：服务商向导里的「让我先设置网络代理」
+  // 跳到 `#/network?from=provider-wizard`，这里据此给一条回得去的路。
+  const [searchParams] = useSearchParams();
+  const showProviderReturn = searchParams.get("from") === "provider-wizard";
   // `app_status` 的唯一取数入口（与状态条共用同一份缓存）
   const status = useAppStatus({ refetchInterval: 30_000 });
   const subscriptions = useCommandQuery("subscription_list", undefined, qk.subscriptions);
   const lanes = useCommandQuery("lane_list", undefined, qk.lanes);
-  // 「未配置」判定要用 `net.kernel.path`（[18 §2.1]）：它只在 `config_get` 里，
+  // 出口的「直连 / 线路名」判定要用 `net.kernel.path`（[19 §2.2]）：它只在 `config_get` 里，
   // 而 `config_get` 是**原子快照**（与分配页共用同一份缓存，`config:changed` 事件会失效它）。
   const config = useCommandQuery("config_get", undefined, qk.config);
   // 订阅流量是**运行时观测值**（配置实体里没有它，[18 §1.2]）：单独一条只读命令读"上次已知"。
@@ -1529,6 +1583,7 @@ export default function NetworkPage() {
         lanesLoading={lanes.isPending}
         lanesError={lanes.error ?? undefined}
         onRetry={refresh}
+        showProviderReturn={showProviderReturn}
       />
     </>
   );
