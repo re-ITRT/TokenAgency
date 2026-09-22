@@ -888,7 +888,21 @@ async function step1(wd) {
     await shot(wd, "step1-fail");
     // ★ 诊断（**不改判定**）：显式再导航一次，区分两种根因 ——
     //   「页面本身坏」（再导航也出不来） vs 「启动时初始路由没渲染」（再导航立刻出来）。
+    //   首页是**懒加载路由**，所以这次导航期间的脚本错误能被下面这个收集器抓到
+    //   （若是 chunk 加载失败，会看到 "Failed to fetch dynamically imported module"）。
     //   只写进证据，不把 FAIL 变成 PASS。
+    await wd
+      .exec(`
+      window.__taErrors = [];
+      window.addEventListener("error", (e) => {
+        window.__taErrors.push("error: " + (e && (e.message || e.type)) + (e && e.filename ? " @" + e.filename : ""));
+      });
+      window.addEventListener("unhandledrejection", (e) => {
+        window.__taErrors.push("reject: " + String((e && e.reason && (e.reason.message || e.reason)) || e));
+      });
+      return true;
+    `)
+      .catch(() => {});
     await wd.exec('window.location.hash = "#/dashboard"; return true;').catch(() => {});
     const retryFirstScreen = await wd.waitFor('[data-testid="page-header"]', 10000);
     evidence.push(
@@ -897,6 +911,27 @@ async function step1(wd) {
         : "诊断：★ 显式再导航 #/dashboard 后立刻渲染出来 → 指向「启动时初始路由没渲染」，不是页面坏",
     );
     await shot(wd, "step1-after-renav");
+    // ★ 更硬的现场证据：完整正文、testid 数量、有没有错误边界/加载失败的痕迹、
+    //   以及 WebView 里能拿到的脚本错误（app 自己收集的，如果它收集了）。
+    const diag = await wd
+      .exec(`
+      const body = document.body ? document.body.innerText : "";
+      const root = document.querySelector("#root") || document.body;
+      const ids = [...document.querySelectorAll("[data-testid]")].map((e) => e.getAttribute("data-testid"));
+      return {
+        hash: window.location.hash,
+        bodyLen: body.length,
+        bodyHead: body.slice(0, 900),
+        rootHtmlLen: root ? root.innerHTML.length : -1,
+        testidCount: ids.length,
+        testids: ids.slice(0, 30),
+        errorBoundary: /出错了|Something broke|error\\.title|重试/.test(body),
+        collectingLoader: /加载|Loading|\\.\\.\\./.test(body.slice(0, 200)),
+        collectedErrors: (window.__taErrors || []).slice(0, 8),
+      };
+    `)
+      .catch(() => null);
+    evidence.push(`现场诊断: ${JSON.stringify(diag)}`);
     record("step1", "FAIL", "窗口起来了但首页没渲染出 page-header", evidence);
     return;
   }
