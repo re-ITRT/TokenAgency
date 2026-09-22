@@ -579,6 +579,217 @@ function dbFingerprint(dump) {
     .slice(0, 16);
 }
 
+// ================================================================ 第 61 轮：四个添加向导（真机）
+//
+// 用户的原话：「我仍然没有看到添加服务商、添加提供商、模型、路由策略的地方，用户在软件里面不能添加这些」。
+// 这四步就是去真窗口里把「添加」走一遍，并按固定 testid 驱动（契约见 docs/17）。
+// 约定与其它步骤一致：**入口不存在就是 SKIP，绝不用替代路径凑 PASS**；每一步都查 `config` 表确认真的落库。
+
+/** 按 testid 填字段：内部 input/textarea 优先，取不到再退回容器本身；填不进去只记录、不中断。 */
+async function wdFillByTid(wd, tid, value, evidence) {
+  const inner = await wd.findElement(`[data-testid="${tid}"] input,[data-testid="${tid}"] textarea`);
+  const el = inner ?? (await wd.findElement(`[data-testid="${tid}"]`));
+  if (el === null) {
+    evidence.push(`缺控件 ${tid}`);
+    return false;
+  }
+  try {
+    await wd.fill(el, value);
+    return true;
+  } catch (err) {
+    evidence.push(`控件 ${tid} 填不进去：${String(err.message ?? err).slice(0, 140)}`);
+    return false;
+  }
+}
+
+async function wdClickTid(wd, tid, evidence) {
+  const el = await wd.findElement(`[data-testid="${tid}"]`);
+  if (el === null) {
+    evidence.push(`缺控件 ${tid}`);
+    return false;
+  }
+  try {
+    await wd.click(el);
+    return true;
+  } catch (err) {
+    evidence.push(`控件 ${tid} 点不动：${String(err.message ?? err).slice(0, 140)}`);
+    return false;
+  }
+}
+
+/** MUI Select：点开控件，挑一个选项（默认第一项；给了 prefer 就按文案挑）。 */
+async function wdPickOption(wd, tid, evidence, prefer) {
+  if (!(await wdClickTid(wd, tid, evidence))) return false;
+  await sleep(300);
+  const opt =
+    prefer === undefined
+      ? await wd.waitFor('li[role="option"]', 3000)
+      : (await wd.findByText('li[role="option"]', prefer)) ?? (await wd.waitFor('li[role="option"]', 3000));
+  if (opt === null) {
+    evidence.push(`${tid} 点开后没有可选项`);
+    return false;
+  }
+  await wd.click(opt).catch(() => {});
+  return true;
+}
+
+/** `config` 表里某个 kind 的实体 id 列表。 */
+function configIds(dump, kind) {
+  return (dump.config ?? []).filter((r) => r.kind === kind).map((r) => String(r.entity_id));
+}
+
+async function step8(wd) {
+  const evidence = [];
+  const page = await gotoPage(wd, "#/providers");
+  if (page === null) {
+    record("step8", "FAIL", "/providers 页面没渲染出来", evidence);
+    return;
+  }
+  const ids = await wd.probeTestIds();
+  evidence.push(`/providers 命中 data-testid: ${ids.slice(0, 30).join(", ")}`);
+  if (!ids.includes("providers-add-open")) {
+    record("step8", "SKIP", "界面缺入口：providers-add-open 不存在（添加服务商向导还没接）", evidence);
+    return;
+  }
+  if (!(await wdClickTid(wd, "providers-add-open", evidence))) {
+    record("step8", "FAIL", "点不开「添加服务商」", evidence);
+    return;
+  }
+  await shot(wd, "step8-form-opened");
+  const pid = "ta-e2e-p-add";
+  await wdFillByTid(wd, "providers-add-id", pid, evidence);
+  await wdFillByTid(wd, "providers-add-name", "TA E2E 服务商（向导）", evidence);
+  await wdFillByTid(wd, "providers-add-baseUrl", "http://127.0.0.1:1/v1", evidence);
+  await shot(wd, "step8-form-filled");
+  await wdClickTid(wd, "providers-add-submit", evidence);
+  await sleep(1500);
+  await shot(wd, "step8-after-submit");
+  const dump = dumpScratchDb("step8");
+  evidence.push(`config kind 计数: ${JSON.stringify(configEntityKinds(dump))}`);
+  const landed = configIds(dump, "provider").includes(pid);
+  const inList = (await wd.pageText()).includes(pid);
+  if (landed && inList) record("step8", "PASS", "服务商经真界面（/providers 向导）新增，列表与 config 表都出现", evidence);
+  else record("step8", "FAIL", `新增后不一致：列表=${inList} 落库=${landed}`, evidence);
+}
+
+async function step9(wd) {
+  const evidence = [];
+  const page = await gotoPage(wd, "#/models");
+  if (page === null) {
+    record("step9", "FAIL", "/models 页面没渲染出来", evidence);
+    return;
+  }
+  const ids = await wd.probeTestIds();
+  evidence.push(`/models 命中 data-testid: ${ids.slice(0, 30).join(", ")}`);
+  if (!ids.includes("models-add-open")) {
+    record("step9", "SKIP", "界面缺入口：models-add-open 不存在（添加模型向导还没接）", evidence);
+    return;
+  }
+  if (!(await wdClickTid(wd, "models-add-open", evidence))) {
+    record("step9", "FAIL", "点不开「添加模型」", evidence);
+    return;
+  }
+  await shot(wd, "step9-form-opened");
+  const mid = "ta-e2e-m-add";
+  await wdFillByTid(wd, "models-add-id", mid, evidence);
+  await wdFillByTid(wd, "models-add-aliases", `${mid}-alias`, evidence);
+  await shot(wd, "step9-form-filled");
+  await wdClickTid(wd, "models-add-submit", evidence);
+  await sleep(1500);
+  await shot(wd, "step9-after-submit");
+  const dump = dumpScratchDb("step9");
+  evidence.push(`config kind 计数: ${JSON.stringify(configEntityKinds(dump))}`);
+  const landed = configIds(dump, "model").includes(mid);
+  const inList = (await wd.pageText()).includes(mid);
+  if (landed && inList) record("step9", "PASS", "模型经真界面（/models 向导）新增，列表与 config 表都出现", evidence);
+  else record("step9", "FAIL", `新增后不一致：列表=${inList} 落库=${landed}`, evidence);
+}
+
+async function step10(wd) {
+  const evidence = [];
+  const page = await gotoPage(wd, "#/channels");
+  if (page === null) {
+    record("step10", "FAIL", "/channels 页面没渲染出来", evidence);
+    return;
+  }
+  const ids = await wd.probeTestIds();
+  evidence.push(`/channels 命中 data-testid: ${ids.slice(0, 35).join(", ")}`);
+  if (!ids.includes("channels-add-open")) {
+    record("step10", "SKIP", "界面缺入口：channels-add-open 不存在（线路添加向导还没接）", evidence);
+    return;
+  }
+  if (!(await wdClickTid(wd, "channels-add-open", evidence))) {
+    record("step10", "FAIL", "点不开「添加线路」", evidence);
+    return;
+  }
+  await shot(wd, "step10-form-opened");
+  // 服务商 / 凭据 / 模型 / 网络 是下拉：挑一个（优先挑 E2E 自己造的那些）
+  await wdPickOption(wd, "channels-add-provider", evidence, /ta-e2e|TA E2E|p1/i);
+  await wdPickOption(wd, "channels-add-credential", evidence);
+  await wdPickOption(wd, "channels-add-model", evidence, /ta-e2e-m-add/i);
+  await wdFillByTid(wd, "channels-add-upstreamModel", "ta-e2e-m-add", evidence);
+  await wdPickOption(wd, "channels-add-lane", evidence, /直连|direct/i);
+  await wdFillByTid(wd, "channels-add-priority", "10", evidence);
+  await wdFillByTid(wd, "channels-add-weight", "1", evidence);
+  await shot(wd, "step10-form-filled");
+  await wdClickTid(wd, "channels-add-submit", evidence);
+  await sleep(1500);
+  await shot(wd, "step10-after-submit");
+  const dump = dumpScratchDb("step10");
+  evidence.push(`config kind 计数: ${JSON.stringify(configEntityKinds(dump))}`);
+  const channels = (dump.config ?? []).filter((r) => r.kind === "channel");
+  evidence.push(`config(kind=channel): ${JSON.stringify(channels).slice(0, 700)}`);
+  const landed = channels.length > 0;
+  if (landed) record("step10", "PASS", `线路经真界面（/channels 向导）新增并落库（${channels.length} 条）`, evidence);
+  else record("step10", "FAIL", "点了保存但 config 表里没有 channel", evidence);
+}
+
+async function step11(wd) {
+  const evidence = [];
+  const page = await gotoPage(wd, "#/policies");
+  if (page === null) {
+    record("step11", "FAIL", "/policies 页面没渲染出来", evidence);
+    return;
+  }
+  const ids = await wd.probeTestIds();
+  evidence.push(`/policies 命中 data-testid: ${ids.slice(0, 35).join(", ")}`);
+  if (!ids.includes("policies-add-open")) {
+    record("step11", "SKIP", "界面缺入口：policies-add-open 不存在（路由添加向导还没接）", evidence);
+    return;
+  }
+  if (!(await wdClickTid(wd, "policies-add-open", evidence))) {
+    record("step11", "FAIL", "点不开「添加路由」", evidence);
+    return;
+  }
+  await shot(wd, "step11-form-opened");
+  await wdPickOption(wd, "policies-add-model", evidence, /ta-e2e-m-add/i);
+  await sleep(500);
+  // 多选线路：点第一个可选项（能力一致时保存应当成功；不一致时界面应当禁用提交并给出差异）
+  await wdPickOption(wd, "policies-add-channels", evidence);
+  await sleep(500);
+  const mismatchText = await wd.pageText();
+  const mismatchShown = /能力不一致|capabilities differ/i.test(mismatchText);
+  evidence.push(`是否显示能力不一致提示: ${mismatchShown}`);
+  await shot(wd, "step11-form-filled");
+  const disabled = await wd.exec(`
+    const b = document.querySelector('[data-testid="policies-add-submit"]');
+    return b ? { found: true, disabled: b.disabled === true || b.getAttribute("aria-disabled") === "true" } : { found: false };
+  `);
+  evidence.push(`提交按钮: ${JSON.stringify(disabled)}`);
+  if (disabled && disabled.found && disabled.disabled === true && mismatchShown) {
+    record("step11", "PASS", "能力不一致时界面禁用提交并显示差异（用户硬规则）", evidence);
+    return;
+  }
+  await wdClickTid(wd, "policies-add-submit", evidence);
+  await sleep(1500);
+  const dump = dumpScratchDb("step11");
+  evidence.push(`config kind 计数: ${JSON.stringify(configEntityKinds(dump))}`);
+  const policies = (dump.config ?? []).filter((r) => r.kind === "policy");
+  const landed = policies.length > 0;
+  if (landed) record("step11", "PASS", `路由经真界面（/policies 向导）新增并落库（${policies.length} 条）`, evidence);
+  else record("step11", "FAIL", "点了保存但 config 表里没有 policy", evidence);
+}
+
 // ================================================================ 主流程
 
 function parseArgs(argv) {
@@ -788,6 +999,12 @@ async function main() {
 
     // ============================================================ step6 真写落库
     if (want("step6")) await step6(wd);
+
+    // ============================================================ 第 61 轮：四个添加向导（服务商/模型/线路/路由）
+    if (want("step8")) await step8(wd);
+    if (want("step9")) await step9(wd);
+    if (want("step10")) await step10(wd);
+    if (want("step11")) await step11(wd);
 
     // ============================================================ 收尾：再查一次隔离
     await stepIsolationAfter(wd);
