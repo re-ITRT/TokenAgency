@@ -5,7 +5,7 @@
  *
  * [04 §8.1] 的线路继承是五级：`policy.use_lane` → `channel.lane` → `credential.lane`
  * → `provider.lane` → `net.default_lane` → 兜底 `direct`。**最终生效线路的解析归后端**
- * （`lane_assignments` / `lane_reverse_lookup`，两者都尚未注册）。
+ * （`lane_assignments` / `lane_reverse_lookup`，两者都后端已可用、本页尚未接入）。
  *
  * 所以这一页**不自己算一个"最终生效线路"**：那是把后端的判定在前端复刻一遍，
  * 必然产生两个真相源，而且漂了不会报错。它只做两件**不需要解析**的事：

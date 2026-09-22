@@ -718,7 +718,7 @@ export const en: Record<I18nKey, string> = {
   "network.missingCommands.lanes":
     "Subscription parsing (node count / group count / groups) needs the backend commands subscription_nodes and subscription_groups; neither is registered yet.",
   "network.missingCommands.nodes":
-    "A node list needs the subscription-parsing command subscription_nodes (optionally filtered by group), which is not registered yet; so this page does not parse the subscription itself and does not invent nodes.",
+    "A node list needs the subscription-parsing command subscription_nodes (optionally filtered by group), which is available in the backend but not wired into this page yet; so this page does not parse the subscription itself and does not invent nodes.",
   "network.gotoNodes": "Node list",
   "network.gotoAssignments": "Lane assignments",
   "network.backToOverview": "Back to network",
@@ -736,7 +736,7 @@ export const en: Record<I18nKey, string> = {
     "Subscription sources and the filter / health-check parameters they declare (config facts).",
   "network.subscriptions.empty": "No subscriptions in the config yet (proxy_subscriptions is empty).",
   "network.subscriptions.countHint":
-    "Node and group counts come from subscription parsing (subscription_nodes / subscription_groups, not registered yet) → when the backend does not provide them they show “Not read”, never 0.",
+    "Node and group counts come from subscription parsing (subscription_nodes / subscription_groups, available in the backend but not wired into this page yet) → when the backend does not provide them they show “Not read”, never 0.",
   "network.subscriptions.urlHint":
     "Secret query parameters in the URL are masked: this page neither copies nor sends the subscription token anywhere.",
   "network.subscriptions.healthHint":
@@ -802,7 +802,7 @@ export const en: Record<I18nKey, string> = {
   "network.nodes.samples.empty":
     "No lane carries a health sample: sampling and speed tests belong to the kernel/backend — this page neither probes on its own nor makes up a latency number.",
   "network.nodes.samples.noProbe":
-    "Speed testing belongs to the kernel (lane_test is not registered): this page starts no probe and does not touch the system network along the way.",
+    "Speed testing belongs to the kernel (lane_test is available in the backend but not wired into this page): this page starts no probe and does not touch the system network along the way.",
   "network.nodes.samples.col.lane": "Lane",
   "network.nodes.samples.col.kind": "Kind",
   "network.nodes.samples.col.node": "Node",
@@ -825,7 +825,7 @@ export const en: Record<I18nKey, string> = {
   "network.nodes.declared.col.subscription": "Subscription",
   "network.nodes.missing.title": "Why the full node list is missing here",
   "network.nodes.missing.body":
-    "A node list needs the subscription-parsing command subscription_nodes (optionally filtered by group), which is not registered in the backend yet; this page does not parse the subscription itself and does not invent nodes. What can already be read is the health samples and declared sources above.",
+    "A node list needs the subscription-parsing command subscription_nodes (optionally filtered by group), which is available in the backend but not wired into this page in the backend yet; this page does not parse the subscription itself and does not invent nodes. What can already be read is the health samples and declared sources above.",
   "network.nodes.missing.testHint":
     "lane_test (kernel speed test) is missing too: no rushing to probe by ourselves, and no button that does nothing when clicked.",
 
@@ -836,7 +836,7 @@ export const en: Record<I18nKey, string> = {
     "Precedence: policy use_lane → channel lane → credential lane → provider lane → global default → direct.",
   "network.assignments.noResolve.title": "This page does not compute an “effective lane”",
   "network.assignments.noResolve.body":
-    "Resolving that inheritance chain is the backend's job (lane_assignments is not registered yet). Computing it again in the frontend would create two sources of truth, and drift would not raise any error — so only what each level explicitly says is listed here.",
+    "Resolving that inheritance chain is the backend's job (lane_assignments is available in the backend but not wired into this page yet). Computing it again in the frontend would create two sources of truth, and drift would not raise any error — so only what each level explicitly says is listed here.",
   "network.assignments.notSet": "Not set (inherits from the level above)",
   "network.assignments.unread.title": "config_get did not return this data ({{field}})",
   "network.assignments.unread.body":
@@ -880,7 +880,7 @@ export const en: Record<I18nKey, string> = {
 
   "network.assignments.reverse.title": "Who explicitly references this lane (inverse index)",
   "network.assignments.reverse.hint":
-    "Only references explicitly written in the config are counted (channels / plans / providers / policies). This is not the same as “what actually goes through this lane”: inherited users need lane_reverse_lookup (not registered yet) to be counted correctly.",
+    "Only references explicitly written in the config are counted (channels / plans / providers / policies). This is not the same as “what actually goes through this lane”: inherited users need lane_reverse_lookup (available in the backend but not wired into this page yet) to be counted correctly.",
   "network.assignments.reverse.noneHint":
     "A lane with no explicit reference still appears in the table (marked “No explicit reference”) — hiding it would make users think it is in use.",
   "network.assignments.reverse.empty": "No lanes in the config, so nothing to index.",
@@ -899,7 +899,7 @@ export const en: Record<I18nKey, string> = {
   "policies.orderNote":
     "Order = the order policy_list returns (the backend itself sorts ascending by priority, see src-tauri/src/commands/catalog.rs). The “Priority” column is the raw configured number — order and priority are two different things.",
   "policies.readonly":
-    "This page is read-only: reordering (policy_reorder), the enabled toggle (policy_set_enabled) and the simulator (policy_simulate) are not registered in the backend yet, so there are no buttons here and no disabled placeholders that do nothing when clicked.",
+    "This page is read-only: reordering (policy_reorder), the enabled toggle (policy_set_enabled) and the simulator (policy_simulate) are available in the backend but not wired into this page in the backend yet, so there are no buttons here and no disabled placeholders that do nothing when clicked.",
   "policies.count": "{{total}} policies, {{enabled}} enabled",
   "policies.col.order": "Order",
   "policies.col.name": "Name",
@@ -1139,7 +1139,7 @@ export const en: Record<I18nKey, string> = {
     "The numbers come from the channel and credential lists; a dimension that cannot be read shows —, never 0.",
   "channels.matrix.title": "Matrix view (bulk editing)",
   "channels.matrix.absent":
-    "The matrix needs the backend command channel_matrix, which is not registered yet, so this page only offers the list view grouped by provider: there is no bulk lane change and no bulk enable/disable, and no button that does nothing when clicked.",
+    "The matrix needs the backend command channel_matrix, which is available in the backend but not wired into this page yet, so this page only offers the list view grouped by provider: there is no bulk lane change and no bulk enable/disable, and no button that does nothing when clicked.",
   "channels.limitGaps.title": "Credentials without a usable cap",
   "channels.limitGaps.hint":
     "“Switch when exhausted” presupposes a configured cap; both the decision and the wording come from the backend and are not rewritten here.",

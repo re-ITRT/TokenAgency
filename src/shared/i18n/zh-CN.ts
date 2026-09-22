@@ -677,9 +677,9 @@ export const zhCN = {
     "本页（含节点列表与线路分配）只读取配置与后端健康样本：不设置系统代理、不写 DNS、不改路由表、不动网卡，也不改开机自启。不变量 I2 要求启停前后系统网络状态逐字段一致。",
   "network.unreadable": "未读取",
   "network.missingCommands.lanes":
-    "订阅解析结果（节点数 / 组数 / 分组）需要后端命令 subscription_nodes 与 subscription_groups，两者均尚未注册。",
+    "订阅解析结果（节点数 / 组数 / 分组）需要后端命令 subscription_nodes 与 subscription_groups，两者均后端已可用、本页尚未接入。",
   "network.missingCommands.nodes":
-    "节点清单需要订阅解析命令 subscription_nodes（可按组筛选），它尚未注册；因此这里不自己解析订阅内容，也不伪造节点。",
+    "节点清单需要订阅解析命令 subscription_nodes（可按组筛选），它后端已可用、本页尚未接入；因此这里不自己解析订阅内容，也不伪造节点。",
   "network.gotoNodes": "节点列表",
   "network.gotoAssignments": "线路分配",
   "network.backToOverview": "返回网络",
@@ -696,7 +696,7 @@ export const zhCN = {
   "network.subscriptions.description": "订阅源与它声明的过滤 / 健康检查参数（配置事实）。",
   "network.subscriptions.empty": "配置里还没有订阅（proxy_subscriptions 为空）。",
   "network.subscriptions.countHint":
-    "节点数与组数来自订阅解析结果（subscription_nodes / subscription_groups，尚未注册）→ 后端没给就是「未读取」，不会显示成 0。",
+    "节点数与组数来自订阅解析结果（subscription_nodes / subscription_groups，后端已可用、本页尚未接入）→ 后端没给就是「未读取」，不会显示成 0。",
   "network.subscriptions.urlHint":
     "地址里的密钥类查询参数已遮蔽显示：本页不复制、不外发订阅 token。",
   "network.subscriptions.healthHint":
@@ -762,7 +762,7 @@ export const zhCN = {
   "network.nodes.samples.empty":
     "没有任何线路带健康样本：采样与测速都由内核/后端负责，本页不自己探测，也不编一个延迟数字。",
   "network.nodes.samples.noProbe":
-    "测速归内核（lane_test 尚未注册）：本页不发起任何探测，也不会顺带改系统网络。",
+    "测速归内核（lane_test 后端已可用、本页尚未接入）：本页不发起任何探测，也不会顺带改系统网络。",
   "network.nodes.samples.col.lane": "线路",
   "network.nodes.samples.col.kind": "类型",
   "network.nodes.samples.col.node": "节点",
@@ -785,7 +785,7 @@ export const zhCN = {
   "network.nodes.declared.col.subscription": "订阅",
   "network.nodes.missing.title": "为什么这里没有完整的节点列表",
   "network.nodes.missing.body":
-    "节点清单需要订阅解析接口 subscription_nodes（可按组筛选），后端尚未注册；本页不自己解析订阅内容，也不伪造节点。已经能读到的是上面的健康样本与声明的来源。",
+    "节点清单需要订阅解析接口 subscription_nodes（可按组筛选），后端后端已可用、本页尚未接入；本页不自己解析订阅内容，也不伪造节点。已经能读到的是上面的健康样本与声明的来源。",
   "network.nodes.missing.testHint":
     "同样缺 lane_test（内核测速）：不急着自己测一遍，也不放一个点了没反应的按钮。",
 
@@ -796,7 +796,7 @@ export const zhCN = {
     "优先顺序：策略级 use_lane → 通道级 lane → 套餐级 lane → 服务商级 lane → 全局默认 → 直连。",
   "network.assignments.noResolve.title": "本页不自己算「最终生效线路」",
   "network.assignments.noResolve.body":
-    "解析这条继承链是后端的职责（lane_assignments 尚未注册）。前端再算一遍就会有两个真相源，而且漂了不会报错 —— 所以这里只列出每一级显式写了什么。",
+    "解析这条继承链是后端的职责（lane_assignments 后端已可用、本页尚未接入）。前端再算一遍就会有两个真相源，而且漂了不会报错 —— 所以这里只列出每一级显式写了什么。",
   "network.assignments.notSet": "未指定（继承上一级）",
   "network.assignments.unread.title": "config_get 没有给出这段数据（{{field}}）",
   "network.assignments.unread.body": "所以这里显示「未读取」，不把它当成「配置里是空的」。",
@@ -839,7 +839,7 @@ export const zhCN = {
 
   "network.assignments.reverse.title": "谁显式引用了这条线（倒排）",
   "network.assignments.reverse.hint":
-    "只统计配置里显式写出来的引用（通道 / 套餐 / 服务商 / 策略）。它不等于「实际走了这条线」的东西：继承下来的使用者要等 lane_reverse_lookup（尚未注册）才算得准。",
+    "只统计配置里显式写出来的引用（通道 / 套餐 / 服务商 / 策略）。它不等于「实际走了这条线」的东西：继承下来的使用者要等 lane_reverse_lookup（后端已可用、本页尚未接入）才算得准。",
   "network.assignments.reverse.noneHint":
     "一条线路没有任何显式引用时也会出现在表里（标出「没有显式引用」）—— 藏起来会让用户以为它正在被使用。",
   "network.assignments.reverse.empty": "配置里没有线路，所以没有可倒排的对象。",
@@ -857,7 +857,7 @@ export const zhCN = {
   "policies.orderNote":
     "顺序 = 后端 policy_list 返回的顺序（后端自己按 priority 升序排，见 src-tauri/src/commands/catalog.rs）。右边的「优先级」是配置里的原始数值 —— 顺序与优先级是两件事。",
   "policies.readonly":
-    "本页只读：排序（policy_reorder）、启用开关（policy_set_enabled）与模拟器（policy_simulate）在后端尚未注册，所以这里不放按钮，也不放点了没反应的禁用占位。",
+    "本页只读：排序（policy_reorder）、启用开关（policy_set_enabled）与模拟器（policy_simulate）在后端后端已可用、本页尚未接入，所以这里不放按钮，也不放点了没反应的禁用占位。",
   "policies.count": "共 {{total}} 条策略，启用 {{enabled}} 条",
   "policies.col.order": "顺序",
   "policies.col.name": "名称",
@@ -1079,7 +1079,7 @@ export const zhCN = {
   "channels.summary.hint": "数字来自通道清单与凭据清单；读不到的那一维显示「—」，不显示 0。",
   "channels.matrix.title": "矩阵视图（批量配置）",
   "channels.matrix.absent":
-    "矩阵依赖后端命令 channel_matrix，它还没有注册，所以本页只做按服务商分组的列表视图：没有批量改线路、批量启停的入口，也不放点了没反应的按钮。",
+    "矩阵依赖后端命令 channel_matrix，它还后端已可用、本页尚未接入，所以本页只做按服务商分组的列表视图：没有批量改线路、批量启停的入口，也不放点了没反应的按钮。",
   "channels.limitGaps.title": "未配可用额度的凭据",
   "channels.limitGaps.hint":
     "「用完自动切」以配了额度为前提；判定与文案都来自后端，本页一个字都不改写。",

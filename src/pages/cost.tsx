@@ -5,7 +5,7 @@
  *
  * 1. **只用已注册的命令**：`usage_dashboard` / `usage_query` / `usage_token_kinds` /
  *    `usage_export_csv` / `usage_request_stream_snapshot` / `pricing_unpriced_models` / `app_open_dir`。
- *    定价的写命令（`pricing_upsert`）**尚未注册 → 不放按钮，也不放禁用占位**。
+ *    定价的写命令（`pricing_upsert`）**后端已可用、本页尚未接入 → 不放按钮，也不放禁用占位**。
  * 2. **估算不许冒充上游上报**（[11 §6] 铁律 4）：`UsageSource`（upstream / upstream_partial /
  *    estimated）只写在写入路径的 `UsageRecord` 上（`crates/ta-core/src/types.rs:282`），
  *    而**查询与看板的返回结构都没有带它**（`UsageRow` 只有 `dims`/`values`；`DashboardData`

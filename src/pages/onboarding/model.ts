@@ -1,6 +1,9 @@
 /**
- * 首启向导（[05 §2.4] / [12 §6 F4]）的纯逻辑 —— **这一页的后端还没到**，
- * 所以模型层承担的正是"没有后端也要能做的那些判定"：
+ * 首启向导（[05 §2.4] / [12 §6 F4]）的纯逻辑。
+ *
+ * 后端三条命令（`onboarding_detect` / `onboarding_apply` / `onboarding_test_all`）**都已注册**，
+ * 页面真的调用它们（见 `index.tsx`）；本文件承担的是"调用之外的判定"，它们不该塞进组件里，
+ * 也不该和后端校验互相替代：
  *
  * 1. **本地校验按行给出行号级的问题**（`validateProviders` / `validateSubscriptions`）：
  *    哪些行缺标识、标识撞了、接口地址不是 http(s)、密钥是空的。这些判定**不需要网络**，
@@ -9,12 +12,9 @@
  *    提交契约 `OnboardingInput.providers[]` 每个条目只带**一个** `secret`
  *    （`shared/bindings.ts` 的 `OnboardingInput`），所以"一行三个 key"必须变成三个条目，
  *    否则生成出来的配置只会留下最后一个 key —— 这是这一页最容易静默丢掉用户输入的地方。
- * 3. **将要测试的组合由输入推导**（`testMatrix`）：`onboarding_test_all` 未注册，
- *    所以这里**不能**给出任何测试结果；能给出的只有"接入后会测哪些组合"。
+ * 3. **将要测试的组合由输入推导**（`testMatrix`）：真实结果只来自 `onboarding_test_all`
+ *    （页面上由"开始测试"按钮触发），这里推导的是"会测哪些组合"，**不是**测试结果；
  *    没有线路候选时给空矩阵，**不编线路**。
- *
- * 未注册的命令（`onboarding_detect` / `onboarding_apply` / `onboarding_test_all`）
- * 在这个文件里**没有任何类型、没有调用、也没有"降级实现"**：向导只做它能诚实做到的事。
  */
 
 import type { ApplyResult, ConfigDoc, OnboardingInput, Protocol } from "@/shared/bindings";
