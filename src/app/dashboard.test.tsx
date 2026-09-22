@@ -182,4 +182,30 @@ describe("[07 §1] 看板：诚实优先", () => {
     expect((await screen.findByText("概览")).tagName).toBe("H1");
     expect(screen.queryByTestId("page-placeholder")).toBeNull();
   });
+
+  /**
+   * 注意：真机缺陷的回归（2026-09-22 release 包）：**没有策略、没有线路**时首页不许崩。
+   *
+   * Rust 的 `StatusBar.policy` / `.lane` 是 `Option` + `skip_serializing_if = "Option::is_none"`，
+   * **没有就整个字段不出现**（新装用户的配置就是这样）。首页曾直接读
+   * `data.status_bar.lane.name` → `Cannot read properties of undefined (reading 'name')`
+   * → 被 ErrorBoundary 接住、整页显示「出错了」（真机 E2E 的 step1 就是它）。
+   *
+   * 这个夹具**故意只给 gateway**：本文件此前所有夹具都带着 policy/lane，
+   * 所以这条路径一直没被测到 —— 缺陷就是这么溜过去的。
+   */
+  it("没有策略、没有线路时：出口与策略两行给兜底文案，不抛异常", () => {
+    const data = makeData();
+    const noPolicyNoLane = {
+      ...data,
+      status_bar: { gateway: "running" as const },
+    } as unknown as DashboardData;
+
+    renderBody({ status: KERNEL_READY_STATUS, data: noPolicyNoLane });
+
+    // 兜底文案与 StatusBar 组件同一口径（既有 i18n 键），而不是空白或 undefined
+    expect(screen.getByText("未选策略")).toBeTruthy();
+    expect(screen.getByText("直连")).toBeTruthy();
+    expect((document.body.textContent ?? "").split("undefined")).toHaveLength(1);
+  });
 });

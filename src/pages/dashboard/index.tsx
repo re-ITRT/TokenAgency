@@ -89,6 +89,28 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
   const gatewayRunning = status?.gateway === "running";
   const code = errorCode(error);
 
+  // 注意：出口一行必须能在**没有线路**时渲染。Rust 的 `StatusBar.lane` / `.policy` 是
+  // `Option` + `skip_serializing_if = "Option::is_none"` —— 没有就**整个字段不出现**；
+  // 而这里曾直接读 `data.status_bar.lane.name`，于是"策略/线路为空"的配置（新装就是）
+  // 会让首页抛 `Cannot read properties of undefined (reading 'name')`，
+  // 被 ErrorBoundary 接住、整页显示"出错了"（真机 release 包上实测抓到过）。
+  // 同一应用里的 StatusBar 组件早就写对了（`?? t("status.policy.none")`），首页漏了。
+  const lane = data?.status_bar.lane ?? null;
+  const laneLine =
+    lane === null
+      ? t("status.node.none")
+      : [
+          lane.name,
+          lane.node !== undefined && lane.node !== null
+            ? t("status.exit.node", { node: lane.node })
+            : null,
+          lane.latency_ms !== undefined && lane.latency_ms !== null
+            ? `${lane.latency_ms}ms`
+            : null,
+        ]
+          .filter((x) => x !== null)
+          .join(" · ");
+
   return (
     <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
       {/* ① 可用性：现在能不能用（[07 §1.2] ①）。缺数据一律"未知"。 */}
@@ -130,14 +152,7 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
               <StatusDot status="off" label={t("common.unknown")} />
             ) : (
               <Typography variant="body1" sx={{ color: "text.primary" }}>
-                {data.status_bar.lane.name}
-                {data.status_bar.lane.node !== undefined && data.status_bar.lane.node !== null
-                  ? ` · ${t("status.exit.node", { node: data.status_bar.lane.node })}`
-                  : ""}
-                {data.status_bar.lane.latency_ms !== undefined &&
-                data.status_bar.lane.latency_ms !== null
-                  ? ` · ${data.status_bar.lane.latency_ms}ms`
-                  : ""}
+                {laneLine}
               </Typography>
             )}
           </ReadinessRow>
@@ -147,7 +162,7 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
               <StatusDot status="off" label={t("common.unknown")} />
             ) : (
               <Typography variant="body1" sx={{ color: "text.primary" }}>
-                {data.status_bar.policy.name}
+                {data.status_bar.policy?.name ?? t("status.policy.none")}
               </Typography>
             )}
           </ReadinessRow>

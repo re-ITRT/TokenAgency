@@ -825,8 +825,16 @@ export type Num = { value: number; prev?: number };
 export type DashboardData = {
   status_bar: {
     gateway: "running" | "paused";
-    policy: { id: PolicyId; name: string };
-    lane: { id: LaneId; name: string; node?: string | null; latency_ms?: number | null };
+    /**
+     * 注意：**可选**：Rust 的 `StatusBar.policy` / `.lane` 是 `Option<…>` 且带
+     * `skip_serializing_if = "Option::is_none"` —— 没有策略/线路时**整个字段不出现**
+     * （crates/ta-store/src/usage_store.rs 的 `StatusBar`）。
+     * 早期手写版把这两个字段声明成必填，于是 tsc 放过了 `status_bar.policy.name`，
+     * 真机 release 包上首页因 `Cannot read properties of undefined (reading 'name')`
+     * 被 ErrorBoundary 接住、整页显示"出错了"（2026-09-22 真机 E2E 抓到）。
+     */
+    policy?: { id: PolicyId; name: string } | null;
+    lane?: { id: LaneId; name: string; node?: string | null; latency_ms?: number | null } | null;
   };
   cards: {
     requests: Num;
