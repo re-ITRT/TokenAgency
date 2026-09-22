@@ -130,6 +130,44 @@ pub const LOCAL_CONTEXT: &[&str] = &[
     "phase",
     "controller",
     "lane_count",
+    // ---- 第 15 轮登记：命令层写命令（entity/net/settings_ext）的计数与前后值 ----
+    //
+    // 这些字段是**那一行日志自己的上下文**（这次改了/删了几条、写之前与写之后各是什么），
+    // 不是关联键，所以按 §5.6 登记而不是塞进 §5.1–§5.4。登记本身就是这道手续的意义：
+    // 新增字段是一次**有意识的决定**，不是随手敲一个名字。
+    // 注意：与契约同义的简写**没有**在这里登记，而是改用了 §5.2/§5.4 的名字
+    // （`lane` → `lane_id`、`policy` → `policy_id`、`state` → `status`）。
+    "hint",
+    "group_id",
+    "released",
+    "added",
+    "total",
+    "what",
+    "provider_key",
+    "accepted",
+    "node_count",
+    "group_count",
+    "recorded_version",
+    "effective_version",
+    "from_version",
+    "count",
+    "sections",
+    "policy_id",
+    "enabled",
+    "before_actual",
+    "before_drifted",
+    "after_actual",
+    "kernel_found",
+    "existing_config",
+    "suggested",
+    "providers",
+    "subscriptions",
+    "secrets",
+    "credentials",
+    "lanes",
+    "rows",
+    "migrated",
+    "skipped",
 ];
 
 /// 是不是 §5 约定的字段名。

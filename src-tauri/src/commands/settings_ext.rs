@@ -1524,7 +1524,7 @@ pub async fn set_emergency(state: &AppState, mode: EmergencyMode) -> IpcResult<(
                 gate.resume();
             }
             tracing::info!(
-                lane = %direct.as_str(),
+                lane_id = %direct.as_str(),
                 "紧急开关：全部直连（默认出口已切到直连线路；显式指定 use_lane 的策略仍会覆盖它）"
             );
         }
@@ -1602,7 +1602,7 @@ pub async fn set_active_policy(state: &AppState, policy_id: &str) -> IpcResult<(
             "切换策略后回读不一致：生效的是 {got:?}，期望 {policy_id}"
         ))));
     }
-    tracing::info!(policy = policy_id, "托盘：当前生效策略已切换（配置已回读确认）");
+    tracing::info!(policy_id = policy_id, "托盘：当前生效策略已切换（配置已回读确认）");
     Ok(())
 }
 
@@ -1638,7 +1638,7 @@ pub async fn set_global_lane(state: &AppState, lane_id: &str) -> IpcResult<()> {
             after.net.default_lane.as_ref().map(|l| l.as_str())
         ))));
     }
-    tracing::info!(lane = lane_id, "托盘：全局默认出口已切换（配置已回读确认）");
+    tracing::info!(lane_id = lane_id, "托盘：全局默认出口已切换（配置已回读确认）");
     Ok(())
 }
 

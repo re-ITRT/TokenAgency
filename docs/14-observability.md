@@ -239,6 +239,25 @@ tracing::warn!(error = %e, "订阅下载失败")
 | `phase` | 启动编排阶段（`app:boot` 的收敛过程，值见 `BootPhase::as_str`） |
 | `controller` | 内核 REST 控制器地址（mihomo 的 `external-controller`；**只记地址，密钥另有字段**） |
 | `lane_count` | lane 端口数量。**计数一律带 `_count` 后缀** —— `lanes` 会被读成"列表"，而它其实是数字 |
+| `hint` | 脱敏后的提示串（例如密钥条目的掩码预览；**绝不放明文**） |
+| `group_id` | 策略组的 id（§5.2 未列组这一类；有 ID 就用 ID，别写组名） |
+| `released` | 是否已释放粘性绑定（布尔） |
+| `added` / `total` | 本次新增条数与总数（导入/批量写） |
+| `count` | 条数 |
+| `sections` | 被处理的配置节数 |
+| `policy_id` | 策略 id（§5.2 未列策略这一类；有 ID 就用 ID，别写策略名） |
+| `rows` | 数据库返回行数 |
+| `what` | "正在处理什么"的短标签（例如探测目标类型） |
+| `provider_key` | 内核 provider 的键名（内核侧概念，不是 §5.2 的 `provider_id`） |
+| `accepted` | 订阅更新是否被采纳（布尔） |
+| `node_count` / `group_count` | 节点数 / 组数（**计数带 `_count` 后缀**） |
+| `recorded_version` / `effective_version` / `from_version` | 订阅版本号：本次记录的 / 当前生效的 / 回滚前的 |
+| `enabled` | 某开关的目标状态（布尔；**不要**用它表达"运行中"） |
+| `before_actual` / `before_drifted` / `after_actual` | 修自启动这类操作前后的**系统事实**与漂移位（前后值成对出现） |
+| `kernel_found` / `existing_config` | 首启探测结果：是否找到内核、是否已有配置（布尔） |
+| `suggested` | 首启探测给出的建议条数 |
+| `providers` / `subscriptions` / `credentials` / `lanes` / `secrets` | 写入/迁移的**条数**（历史遗留的复数命名，含义是数字；**新字段请用 `_count`**） |
+| `migrated` / `skipped` | 迁移条数与跳过条数 |
 
 > **第 11 轮驳回的两个名字（写在这里，避免以后重复讨论）**：
 > - **`detail`** —— 自由文本不该开字段。它和 message 的职责重复，一旦开了就会变成

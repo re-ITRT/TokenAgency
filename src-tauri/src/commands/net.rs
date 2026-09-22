@@ -1264,7 +1264,7 @@ pub async fn reload_kernel_config(state: &AppState) -> IpcResult<KernelStatusVie
     let kernel = state.kernel_slot().ok_or_else(kernel_missing)?;
     sync_kernel_source(state)?;
     let status = kernel.apply().await.map_err(IpcError::from)?;
-    tracing::info!(state = ?status.state, "内核配置已重新加载");
+    tracing::info!(status = ?status.state, "内核配置已重新加载");
     Ok(status_view(status))
 }
 
