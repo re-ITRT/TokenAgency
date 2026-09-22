@@ -11,6 +11,9 @@
 /// 契约在 `domain/mod.rs`（冻结）；行为在 `domain::behavior`（可扩展）。
 pub mod behavior;
 
+/// [docs/17 §2]「能力一致才可路由」的纯判定层（比较 + 按 model 分组求差异）。
+pub mod capabilities;
+
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;

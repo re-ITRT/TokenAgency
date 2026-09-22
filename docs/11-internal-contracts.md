@@ -399,6 +399,7 @@ subscription / subscription_version
 | TA-2004 | `tokenagency_all_channels_exhausted` | 402 | 全部候选额度耗尽 | 否 |
 | TA-2005 | `tokenagency_all_channels_failed` | 502 | 全部候选失败 | 是（客户端层面） |
 | TA-2006 | `tokenagency_capability_loss` | 415 | 跨协议转换会丢内容（拒绝转发） | 否 |
+| TA-2007 | `tokenagency_capability_mismatch` | 400 | 同一条路由下、同一个 `model` 的多条线路**能力声明不一致**（写入时拒绝；`details` 带逐字段差异，[17 §2](17-add-flows-and-capability-routing.md)） | 否 |
 | TA-3001 | `tokenagency_kernel_not_ready` | 503 | 内核未就绪且无 direct 通道 | 是 |
 | TA-3002 | `tokenagency_lane_unavailable` | 503 | 该 lane 无可用节点 | 是 |
 | TA-3003 | `tokenagency_stream_broken` | — | 已输出后上游断连（仅记 trace） | 否 |

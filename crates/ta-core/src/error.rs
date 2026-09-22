@@ -5,6 +5,8 @@
 
 use thiserror::Error;
 
+use crate::domain::capabilities::CapabilityMismatchDetail;
+
 pub type Result<T, E = TaError> = std::result::Result<T, E>;
 
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -33,6 +35,16 @@ pub enum TaError {
     AllChannelsFailed { message: String },
     #[error("跨协议转换会丢失内容，已拒绝转发：{0}")]
     CapabilityLoss(String),
+    /// **同一条路由下的多条线路，上游能力声明不一致**（[docs/17 §2]）。
+    ///
+    /// 这不是"暂时没路由"（那是 2003），而是**配置本身矛盾**：把请求路由到能力不同的
+    /// 上游会出现"有时有 vision、有时报错"这种不可预期行为，所以必须在**写入时**拒绝。
+    ///
+    /// 取 TA-2007：家族上紧贴 TA-2006 `capability_loss`（同为"能力"语义）且未占用；
+    /// 400（客户端配置错误）+ **不可重试**（重试一百次配置也不会变一致）。
+    /// `details` 带结构化逐字段差异（哪个模型、哪几条线路、每个字段各自是什么值）。
+    #[error("线路能力不一致，不能路由到一起：{detail}")]
+    CapabilityMismatch { detail: CapabilityMismatchDetail },
 
     // ---- 网络层 ----
     #[error("内核未就绪，且没有可用的直连通道")]
@@ -97,6 +109,7 @@ impl TaError {
             AllChannelsExhausted => "TA-2004",
             AllChannelsFailed { .. } => "TA-2005",
             CapabilityLoss(_) => "TA-2006",
+            CapabilityMismatch { .. } => "TA-2007",
             KernelNotReady => "TA-3001",
             LaneUnavailable { .. } => "TA-3002",
             StreamBroken => "TA-3003",
@@ -123,6 +136,7 @@ impl TaError {
             AllChannelsExhausted => "tokenagency_all_channels_exhausted",
             AllChannelsFailed { .. } => "tokenagency_all_channels_failed",
             CapabilityLoss(_) => "tokenagency_capability_loss",
+            CapabilityMismatch { .. } => "tokenagency_capability_mismatch",
             KernelNotReady => "tokenagency_kernel_not_ready",
             LaneUnavailable { .. } => "tokenagency_lane_unavailable",
             StreamBroken => "tokenagency_stream_broken",
@@ -140,7 +154,7 @@ impl TaError {
             Unauthorized => 401,
             RateLimited => 429,
             BodyTooLarge { .. } => 413,
-            MalformedRequest(_) | NoRoute => 400,
+            MalformedRequest(_) | NoRoute | CapabilityMismatch { .. } => 400,
             ModelNotFound(_) => 404,
             NoViableChannel { .. } | CapabilityLoss(_) => 415,
             AllChannelsExhausted => 402,
@@ -161,6 +175,21 @@ impl TaError {
             RateLimited | AllChannelsFailed { .. } | KernelNotReady | LaneUnavailable { .. }
         )
     }
+
+    /// 这个错误要带出去的**结构化 details**（[10 §2.2] 的 `IpcError.details`）。
+    ///
+    /// 唯一真相源在 `TaError` 自己这里，命令层只负责把它塞进 `IpcError`：
+    /// * `ConfigInvalid` → 字段路径数组；
+    /// * `CapabilityMismatch` → **逐字段差异**（模型 / 线路 id / 每个字段各自的值）——
+    ///   路由向导与策略页把这份 JSON 直接显示出来，所以它必须"能读懂"，不能只有一句
+    ///   "能力不一致"。
+    pub fn details_json(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::ConfigInvalid { errors } => serde_json::to_value(errors).ok(),
+            Self::CapabilityMismatch { detail } => serde_json::to_value(detail).ok(),
+            _ => None,
+        }
+    }
 }
 
 impl From<std::io::Error> for TaError {
@@ -171,5 +200,63 @@ impl From<std::io::Error> for TaError {
 impl From<serde_json::Error> for TaError {
     fn from(e: serde_json::Error) -> Self {
         TaError::MalformedRequest(format!("json: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::capabilities::{CapabilityFieldDiff, CapabilityValue};
+
+    fn mismatch() -> TaError {
+        TaError::CapabilityMismatch {
+            detail: CapabilityMismatchDetail {
+                model: "deepseek-v4.1flash".to_string(),
+                channels: vec!["ch-a".to_string(), "ch-b".to_string()],
+                fields: vec![CapabilityFieldDiff {
+                    field: "vision".to_string(),
+                    values: vec![
+                        CapabilityValue { channel: "ch-a".to_string(), value: "true".to_string() },
+                        CapabilityValue { channel: "ch-b".to_string(), value: "false".to_string() },
+                    ],
+                }],
+            },
+        }
+    }
+
+    /// [docs/11 §5] 那一行的**全部四列**都要对（code / type / HTTP / 可重试）。
+    #[test]
+    fn capability_mismatch_row_matches_the_error_table() {
+        let err = mismatch();
+        assert_eq!(err.code(), "TA-2007");
+        assert_eq!(err.type_str(), "tokenagency_capability_mismatch");
+        assert_eq!(err.http_status(), 400);
+        assert!(!err.retryable(), "配置矛盾重试一百次也不会变一致 → 不可重试");
+    }
+
+    #[test]
+    fn capability_mismatch_details_are_structured_and_readable() {
+        let err = mismatch();
+        let details = err.details_json().expect("必须有 details");
+        let text = details.to_string();
+
+        // 路由向导要能直接展示：模型、线路 id、字段名、各自的值，一个都不能少
+        assert!(text.contains("deepseek-v4.1flash"), "{text}");
+        assert!(text.contains("ch-a") && text.contains("ch-b"), "{text}");
+        assert!(text.contains("vision"), "{text}");
+        assert!(
+            text.contains("\"value\":\"true\"") && text.contains("\"value\":\"false\""),
+            "{text}"
+        );
+
+        // 人话摘要里也要带上模型与字段（只显示 message 的地方不至于只有一句"不一致"）
+        let msg = err.to_string();
+        assert!(msg.contains("deepseek-v4.1flash") && msg.contains("vision"), "{msg}");
+    }
+
+    #[test]
+    fn only_the_two_structured_variants_carry_details() {
+        assert!(TaError::Unauthorized.details_json().is_none());
+        assert!(TaError::Internal("x".into()).details_json().is_none());
     }
 }
