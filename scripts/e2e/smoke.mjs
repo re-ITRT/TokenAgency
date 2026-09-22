@@ -3106,6 +3106,7 @@ async function step2(wd, fixture) {
       addedRowsVisible = addedProbe?.rows ?? 0;
       addedLaneTexts = (addedProbe?.lanes ?? []).map((l) => l.lane);
       const laneRows = configEntities(dumpModels, "lane");
+      const directLaneId = laneRows.find((l) => l.json?.kind === "direct")?.entityId ?? null;
       const newChannels = configEntities(dumpModels, "channel").filter((c) =>
         c.entityId.startsWith(`ch-${realProviderId}`),
       );
@@ -3118,17 +3119,29 @@ async function step2(wd, fixture) {
         `添加后的「已添加的模型」: pw-model-row=${addedRowsVisible} 行；每行的网络代理文案=${JSON.stringify(addedLaneTexts)}；` +
           `行内文本=${JSON.stringify((addedProbe?.lanes ?? []).map((l) => l.text))}`,
       );
-      evidence.push(`库里真建出来的通道: ${JSON.stringify(laneNames)}`);
+      const laneVals = newChannels.map((c) => c.json?.lane ?? null);
+      evidence.push(
+        `库里真建出来的通道: ${JSON.stringify(laneNames)}；配置里的直连 lane id=${JSON.stringify(directLaneId)}` +
+          `（空库时没有 lane 实体可指向，这一步在 step4/step10 建出线路后才谈得上"写直连 id"）`,
+      );
       addedRowsOk =
         addedRowsVisible > 0 &&
         (addedProbe?.lanes ?? []).length === addedRowsVisible &&
         (addedProbe?.lanes ?? []).every(
           (l) => l.hasLane === true && typeof l.lane === "string" && l.lane.includes("直连"),
         );
+      // 「默认直连」的两种**都合规**的形态（[docs/20 §1.2] 第 3 步）：
+      //   · 配置里有直连 lane → 通道必须**显式**写它（这就是"导入那一刻就写进配置"）；
+      //   · 空配置（一条 lane 都没有，没有合法 id 可写）→ 回落到 `null`（继承，链路末端仍是直连，
+      //     界面上照样显示「直连」）。**不允许**的是"有直连 lane 却不写"。
+      const lanesAllConcrete = laneVals.every((v) => typeof v === "string" && v !== "");
+      const lanesAllInherited = laneVals.every((v) => v === null);
       addedRoutedOk =
         newChannels.length >= addedRowsVisible &&
-        newChannels.every((c) => typeof c.json?.lane === "string" && c.json.lane !== "") &&
-        new Set(newChannels.map((c) => c.json?.lane)).size <= 1;
+        laneVals.length === newChannels.length &&
+        (directLaneId === null
+          ? lanesAllInherited
+          : lanesAllConcrete && laneVals.every((v) => v === directLaneId));
     }
   } else {
     evidence.push("步骤 2 没有 pw-scan（扫描入口不存在）");
