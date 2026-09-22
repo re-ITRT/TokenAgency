@@ -397,6 +397,7 @@ impl ChannelConfig {
             tags: Vec::new(),
             target_override: None,
             enabled: true,
+            capabilities: ChannelCapabilities::default(),
             extra: Map::new(),
         }
     }

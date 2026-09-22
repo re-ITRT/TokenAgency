@@ -256,6 +256,36 @@ type AutostartState = {
 | `channel_bulk_assign_lane` | `channel_ids: string[], lane_id: string` | `ApplyResult` |
 | `channel_set_tags` | `channel_ids: string[], add: string[], remove: string[]` | `ApplyResult` |
 
+#### `Channel` 的形状（[17 §2]）
+
+```ts
+type Channel = {
+  id: string; model: string; provider: string; credential: string;
+  lane?: string | null; upstream_model: string; transform: Transform;
+  priority: number; weight: number; tags: string[];
+  target_override?: string | null; enabled: boolean;
+  capabilities?: ChannelCapabilities;   // 写时可省（Rust 侧 #[serde(default)]）
+};
+
+/** 上游能力声明。**两条线路只有在这些字段完全一致时才允许被同一条路由指向**。 */
+type ChannelCapabilities = {
+  vision: boolean;               // 支持图片输入
+  tools: boolean;                // 支持函数调用 / 工具
+  reasoning: boolean;            // 支持推理 / 思考内容
+  context_tokens: number;        // 上下文窗口（token）
+  max_output_tokens: number | null;  // 单次最大输出；null = 未声明
+  modalities: string[];          // 如 ["text","image"]；比较时先排序去重
+};
+```
+
+- Rust 侧 `ChannelConfig.capabilities` 是 `#[serde(default)]`：**省略 = 用默认能力**
+  （全 false、`context_tokens` 0、`max_output_tokens` null、`modalities` `["text"]`）——
+  老配置不写也能继续用，这就是"契约与线上一致"的口径。
+- 后端发出来的对象**永远带全部 6 个字段**；前端写 `channel_upsert` 时可以整个省略这个键。
+- 比较规则与强制校验见 [17 §2]：逐字段相等、`modalities` 排序去重后比、
+  `max_output_tokens` 的 `null` 只等于 `null`；不一致时后端返回 `TA-2007`
+  （`tokenagency_capability_mismatch`，400，不可重试，`details` 带逐字段差异）。
+
 ### group / 通道组
 
 | 命令 | 入参 | 返回 |
