@@ -1243,8 +1243,6 @@ export const zhCN = {
   "channels.loading": "读取通道…",
   "channels.empty.title": "配置里还没有通道",
   "channels.empty.what": "一条通道 = 一个逻辑模型 x 一个服务商 x 一份凭据（可选指定线路）。",
-  "channels.empty.create":
-    "新增或编辑通道的入口在本版本还没有接线，所以这里没有「新建」按钮（等后端命令落地后再补）。",
   "channels.col.status": "状态",
   "channels.col.channel": "通道",
   "channels.col.model": "逻辑模型",
@@ -1364,6 +1362,8 @@ export const zhCN = {
   "network.sub.traffic.percent": "{{pct}}%",
   "network.sub.traffic.none": "尚未获取流量信息（订阅服务商没有返回 subscription-userinfo）",
   "network.sub.traffic.expire": "到期：{{date}}",
+  "wizard.invalidNumber": "必须是数字（可留空）",
+  "channels.add.noCredentials": "这个服务商还没有凭据 —— 先去「服务商 / 密钥」加一条",
 } as const;
 
 /** 全部 i18n key。新增 key 必须同时补 `en.ts`。 */

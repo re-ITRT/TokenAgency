@@ -1317,8 +1317,6 @@ export const en: Record<I18nKey, string> = {
   "channels.empty.title": "No channel in the config yet",
   "channels.empty.what":
     "A channel is one logical model x one provider x one credential (with an optional lane).",
-  "channels.empty.create":
-    "Creating or editing a channel is not wired up in this version, so there is no “New” button here (it will come once the backend commands land).",
   "channels.col.status": "Status",
   "channels.col.channel": "Channel",
   "channels.col.model": "Logical model",
@@ -1440,4 +1438,6 @@ export const en: Record<I18nKey, string> = {
   "network.sub.traffic.percent": "{{pct}}%",
   "network.sub.traffic.none": "No traffic info yet (the provider did not return subscription-userinfo)",
   "network.sub.traffic.expire": "Expires: {{date}}",
+  "wizard.invalidNumber": "Must be a number (may be left empty)",
+  "channels.add.noCredentials": "This provider has no credential yet — add one under Providers / Keys",
 };
