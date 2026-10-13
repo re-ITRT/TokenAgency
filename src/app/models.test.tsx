@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 /**
- * 模型目录页（[07 §4] / [docs/28]）的验收。重点和看板/日志两份一样是**诚实**，外加关系翻转后
+ * 模型目录页（[07 §4] /）的验收。重点和看板/日志两份一样是**诚实**，外加关系翻转后
  * 这一页特有的四件事：
  *
- * 1. **关系的真源在模型侧**（[docs/28 §2]）："这个模型用哪几条线路"读的是 `Model.lines`，
+ * 1. **关系的真源在模型侧**："这个模型用哪几条线路"读的是 `Model.lines`，
  *    再拿 id 去 `channel_list` 里查；`Channel.models` 那个反向派生值**不参与判定**
  *    （两个真相源必漂，漂了不报错）。名字（服务商 / 网络代理）只在 `provider_list` /
  *    `lane_list` 里查得到时才显示，查不到就只留 id —— **不猜一个名字**。
- * 2. **模型是"分配"出来的**（[docs/28 §3]）：添加向导必须先选**至少一条线路**，零条时
+ * 2. **模型是"分配"出来的**：添加向导必须先选**至少一条线路**，零条时
  *    **一次命令都不发**；这一页**没有**任何"给模型选网络代理"的控件，载荷里也没有 `default_lane`。
  * 3. **只读的模型信息面板**（`models-info-open` → `models-info-panel`）：给"点进去看"用，
  *    面板里一个可编辑控件都没有（没有代理选择器、没有保存按钮）。
@@ -39,7 +39,7 @@ import {
   type ModelDraft,
   type ModelRowView,
 } from "@/pages/models/model";
-// [docs/51] 定价对话框与它的下标比对（价格配置在模型页）
+// 定价对话框与它的下标比对（价格配置在模型页）
 import { checkIndexStillOurs } from "@/pages/models/PricingDialog";
 import type { Channel, LaneView, Model, ModelView, PriceEntry, ProviderView } from "@/shared/bindings";
 import { registerBaselineMocks, registerMock, qk, TokenAgencyError } from "@/shared/api";
@@ -48,7 +48,7 @@ import { buildTheme } from "@/theme";
 
 const MODEL_ID = "deepseek-v4.1flash";
 
-/** 线路（原「通道」）id。**一个模型用哪几条线路由 `Model.lines` 说了算**（[docs/28 §2]）。 */
+/** 线路（原「通道」）id。**一个模型用哪几条线路由 `Model.lines` 说了算**。 */
 const LINE_BYTEDANCE = "ch-bytedance";
 const LINE_COMMANDCODE = "ch-commandcode";
 const LINE_OTHER = "ch-other-model";
@@ -144,7 +144,7 @@ function modelView(overrides: Partial<ModelView> = {}): ModelView {
     },
     channel_count: 2,
     upstream_names: [MODEL_ID, `${MODEL_ID}-2026`],
-    // [docs/46 §304] 对外暴露的信息由后端算好；测试里给一份**声明过**的默认值，
+    // 对外暴露的信息由后端算好；测试里给一份**声明过**的默认值，
     // 需要"未声明"的用例自己覆盖成 null / false / []。
     public_info: {
       context_window: 262144,
@@ -182,11 +182,11 @@ function rowOf(id: string, order: number | undefined): ModelRowView {
     group: undefined,
     order,
     expose: true,
-    // [docs/48 §5] 这一行只用来测排序，开关给"开着"（最小合法值）
+    // 这一行只用来测排序，开关给"开着"（最小合法值）
     enabled: true,
     reportedLines: 0,
     upstreamNames: [],
-    // [docs/46 §304] 这一行只用来测排序，对外信息给一份"什么都没声明"的最小值
+    // 这一行只用来测排序，对外信息给一份"什么都没声明"的最小值
     publicInfo: {
       context_window: null,
       max_output_tokens: null,
@@ -199,7 +199,7 @@ function rowOf(id: string, order: number | undefined): ModelRowView {
     priced: true,
     costHint: undefined,
     lines: [],
-    // [docs/28 §1] 行视图现在带一份**原始模型**（编辑时"以原始记录为底"灌草稿用）
+    // 行视图现在带一份**原始模型**（编辑时"以原始记录为底"灌草稿用）
     raw: { id, aliases: [], display: { order: order ?? 0 }, expose: true, enabled: true, lines: [] },
     missingLines: [],
   };
@@ -250,7 +250,7 @@ function renderPage() {
 // ================================================================ ① 纯逻辑：读模型行
 
 describe("读模型行：关系的真源是 Model.lines，显示名来自线路清单", () => {
-  it("[docs/28 §2] 用的线路只认 `Model.lines`：`Channel.models` 那个反向派生值**不参与判定**", () => {
+  it(" 用的线路只认 `Model.lines`：`Channel.models` 那个反向派生值**不参与判定**", () => {
     // 一条**反向说"我在服务这个模型"**、但模型自己没点它的线路
     const reverseOnly = line({
       id: "ch-reverse-only",
@@ -315,7 +315,7 @@ describe("读模型行：关系的真源是 Model.lines，显示名来自线路�
     expect(row.lines[0]?.laneName).toBeUndefined();
   });
 
-  it("[docs/28 §2] 契约点名、通道清单里没有的线路如实记进 missingLines（悬空引用，不悄悄丢）", () => {
+  it(" 契约点名、通道清单里没有的线路如实记进 missingLines（悬空引用，不悄悄丢）", () => {
     const row = readModelRows(
       [
         modelView({
@@ -427,7 +427,7 @@ describe("读模型行：关系的真源是 Model.lines，显示名来自线路�
 
     expect(cands.map((c) => c.lineId)).toEqual([LINE_BYTEDANCE, LINE_OTHER, LINE_COMMANDCODE]);
     expect(cands[0]?.providerName).toBe("aaa");
-    // 一条线路可以服务多个模型：候选清单**不排除**任何一条（[docs/28 §2]）
+    // 一条线路可以服务多个模型：候选清单**不排除**任何一条
     expect(cands).toHaveLength(3);
   });
 
@@ -563,7 +563,7 @@ describe("空 / 错误 / 加载：都不许拿假数据填坑", () => {
     });
 
     const note = screen.getByTestId("models-lines-error");
-    // 红线：后端原文与 TA 码原样显示（[docs/22 §2 第 2 条]）
+    // 红线：后端原文与 TA 码原样显示
     expect(note.textContent).toContain("TA-9001");
     // 缺数据时不许给"没有线路"这种在缺数据时是谎话的结论，也不许画一个 0 条
     expect(screen.queryByTestId("models-lines-none")).toBeNull();
@@ -608,7 +608,7 @@ describe("有数据：清单、未定价、口径不一致", () => {
     expect(within(first).getByText("未定价")).toBeTruthy();
   });
 
-  it("[docs/28 §2] 每行给出**条数 + 逐条线路**：`上游模型（服务商 · 网络代理）`，不是一串 id", () => {
+  it(" 每行给出**条数 + 逐条线路**：`上游模型（服务商 · 网络代理）`，不是一串 id", () => {
     renderBody({ rows, unpricedIds: [] });
 
     const first = screen.getAllByTestId("models-row")[0]!;
@@ -710,7 +710,7 @@ describe("有数据：清单、未定价、口径不一致", () => {
     expect(screen.getByTestId("models-lines-count")).toBeTruthy();
   });
 
-  it("[docs/28 §2] 契约点名而清单里没有的线路：行里点出那个 id（悬空引用不吞）", () => {
+  it(" 契约点名而清单里没有的线路：行里点出那个 id（悬空引用不吞）", () => {
     renderBody({
       rows: readModelRows(
         [modelView({ model: { ...modelView().model, lines: [LINE_BYTEDANCE, "ch-gone"] } })],
@@ -754,9 +754,9 @@ describe("有数据：清单、未定价、口径不一致", () => {
   });
 });
 
-// ================================================================ ⑤ [docs/28 §3] 只读模型信息面板
+// ================================================================ ⑤ 只读模型信息面板
 
-describe("[docs/28 §3] 只读模型信息面板：点进去看这个模型到底是怎么组成的", () => {
+describe(" 只读模型信息面板：点进去看这个模型到底是怎么组成的", () => {
   beforeEach(() => {
     registerBaselineMocks();
     registerMock("channel_list", () => channelsFixture());
@@ -810,11 +810,11 @@ describe("[docs/28 §3] 只读模型信息面板：点进去看这个模型到�
         `只读面板里不该有 ${role}`,
       ).toHaveLength(0);
     }
-    // 也没有任何"模型侧的网络代理控件"（[docs/28 §1.2]：代理是线路的属性）
+    // 也没有任何"模型侧的网络代理控件"（：代理是线路的属性）
     expect(within(panel).queryAllByTestId(/lane|proxy/)).toHaveLength(0);
   });
 
-  // ---------------------------------------------------------------- [docs/46 §304] 对外暴露的信息
+  // ---------------------------------------------------------------- 对外暴露的信息
 
   it("对外暴露的信息：上下文窗口 / 最大输出 / 能力 / 模态 / 对外标识**照后端给的值显示**", async () => {
     registerMock("model_list", () => [modelView()]);
@@ -907,16 +907,16 @@ describe("文案里不留未替换的占位符", () => {
   });
 });
 
-// ================================================================ ⑧ 添加模型向导（[docs/28 §3]）
+// ================================================================ ⑧ 添加模型向导
 //
-// 契约是 [docs/28 §3] + [docs/17 §3.2]：
+// 契约是 +：
 //   `models-add-open` → `models-add-id` / `-aliases`（逗号分隔）/ `-group` / `-order` / `-expose`
 //   **`models-add-lines`（≥1 条线路，勾选框）** → `models-add-submit` →
 //   `model_upsert({ model })`（**含 `lines`**），**成功后回显后端返回值**。
 // 真机 E2E（`scripts/e2e/smoke.mjs` 的 step9）就是按这串 testid 驱动的，所以这一组钉五件事：
 //
 // 1. **入口与控件真的在页面上** —— 只渲染 `ModelsBody`（纯展示件）的单测看不见写入口；
-// 2. **零条线路 = 一次请求都不发**（[docs/28 §2]：模型没有线路就永远路由不到任何地方）；
+// 2. **零条线路 = 一次请求都不发**（：模型没有线路就永远路由不到任何地方）；
 // 3. 选了线路后提交**真的调用了 `model_upsert`**，入参形状 = `{ model: { id, aliases,
 //    display: { group, order }, expose, lines } }`，键全在契约的 casing 里，且**没有 `default_lane`**；
 // 4. 成功区显示的是**后端返回的那个 Model**（mock 故意返回与提交完全不同的 id / expose），
@@ -927,7 +927,7 @@ describe("文案里不留未替换的占位符", () => {
 // ESM 命名导出绑定只读）—— 这里用 `registerMock("model_upsert", 记录入参的 handler)`，
 // 命令名拼错或根本没发请求都会立刻红。
 
-/** 本轮向导该有的控件（顺序 = [docs/28 §3] + [docs/17 §3.2] 的行文顺序）。**不许改名**：真机 E2E 按它们驱动。 */
+/** 本轮向导该有的控件（顺序 = + 的行文顺序）。**不许改名**：真机 E2E 按它们驱动。 */
 const WIZARD_CONTROLS = ["models-add-id", "models-add-lines", "models-add-submit"] as const;
 
 /** 收起状态下看不到的「高级（可选）」：分组 / 排序 / 对外暴露 —— 展开后才出现在页面上。 */
@@ -1012,7 +1012,7 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
   });
 
   /**
-   * [docs/28 §1.6]（用户第 86 轮）「模型目录给模型选择线路的时候也要这一套逻辑」：
+   *（用户第 86 轮）「模型目录给模型选择线路的时候也要这一套逻辑」：
    * **按服务商分组、可展开收起、只列已经打开（`enabled`）的线路**。
    *
    * 为什么"已经选中的"例外：用户可能正是来改一个用着关闭线路的模型 —— 把它藏起来，
@@ -1099,7 +1099,7 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
     expect(picker.textContent).toContain("日本");
   });
 
-  it("[docs/28 §2] 一条线路都没选：本地预检挡下、**一次命令都不发**，并给出 inline issue", async () => {
+  it(" 一条线路都没选：本地预检挡下、**一次命令都不发**，并给出 inline issue", async () => {
     registerMock("model_list", () => []);
     const upsert = recordingMock(savedModel());
     registerMock("model_upsert", upsert.handler);
@@ -1125,7 +1125,7 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
     expect(screen.queryByTestId("models-add-issue-lines")).toBeNull();
   });
 
-  it("[docs/28 §1] 「编辑」已有模型：灌进全部字段、可加线路，载荷一个字段都不丢", async () => {
+  it(" 「编辑」已有模型：灌进全部字段、可加线路，载荷一个字段都不丢", async () => {
     // 已有一个模型：只有一条线路 —— 但用户刚在服务商页**新建了第二条线路**，现在要把它加上
     const existing: Model = {
       id: "deepseek-v4.1flash",
@@ -1204,7 +1204,7 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
     expect(Object.keys(args)).toEqual(["model"]);
     const draft = args["model"] as Record<string, unknown>;
 
-    // [docs/48 §5] 载荷里多一个 `enabled`：新建时默认**开着**（开关只用于"暂时下线已有模型"）。
+    // 载荷里多一个 `enabled`：新建时默认**开着**（开关只用于"暂时下线已有模型"）。
     expect(Object.keys(draft).sort()).toEqual([
       "aliases",
       "display",
@@ -1220,7 +1220,7 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
     expect(draft["enabled"]).toBe(true);
     // **关系就在这里建立**：发出去的就是选中的线路 id，一条不多、一条不少、顺序就是勾选顺序
     expect(draft["lines"]).toEqual([LINE_COMMANDCODE, LINE_BYTEDANCE]);
-    // 没有"给模型挑网络代理"这回事（[docs/28 §1.2]）：载荷里不出现 default_lane
+    // 没有"给模型挑网络代理"这回事：载荷里不出现 default_lane
     expect("default_lane" in draft).toBe(false);
 
     const display = draft["display"] as Record<string, unknown>;
@@ -1248,7 +1248,7 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
     invalidate.mockRestore();
   });
 
-  it("这一页没有「给模型选网络代理」的控件（[docs/28 §1.2]）：向导里没有下拉/代理选项", async () => {
+  it("这一页没有「给模型选网络代理」的控件：向导里没有下拉/代理选项", async () => {
     renderPage();
     fireEvent.click(await screen.findByTestId("models-add-open"));
 
@@ -1262,7 +1262,7 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
     }
   });
 
-  it("[docs/28 §3] channel_list 读不到：如实说（后端原文 + TA 码）并挡住提交 —— 绝不静默给空清单", async () => {
+  it(" channel_list 读不到：如实说（后端原文 + TA 码）并挡住提交 —— 绝不静默给空清单", async () => {
     registerMock("channel_list", () => {
       throw new TokenAgencyError({ code: "TA-9001", message: "未注册 mock：channel_list" });
     });
@@ -1318,7 +1318,7 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
     expect((await screen.findByTestId("models-add-issue-id")).textContent).toContain("已经存在");
     expect(upsert.calls).toHaveLength(0);
 
-    // ② id 形状非法（[docs/17 §3.2]：字母/数字开头，只含字母数字 . _ -）—— `models.add.issue.id.shape`
+    // ② id 形状非法（：字母/数字开头，只含字母数字 . _ -）—— `models.add.issue.id.shape`
     fillByTestId("models-add-id", "-bad-id");
     fireEvent.click(screen.getByTestId("models-add-submit"));
     expect(screen.getByTestId("models-add-issue-id").textContent).toContain("只能由字母/数字开头");
@@ -1362,7 +1362,7 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
     expect(validateModelDraft(draft({ id: "ok-model", order: "", lines: oneLine }), [])).toEqual([
       { field: "order", reason: "notInteger" },
     ]);
-    // [docs/28 §2]：至少一条线路是**硬规则**（与上面几条同档，不是警告）
+    //：至少一条线路是**硬规则**（与上面几条同档，不是警告）
     expect(validateModelDraft(draft({ id: "ok-model" }), [])).toEqual([
       { field: "lines", reason: "required" },
     ]);
@@ -1377,7 +1377,7 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
       group: "   ",
       order: "7",
       expose: false,
-      // [docs/48 §5] 草稿里带着开关：`model_upsert` 是整条覆盖写，
+      // 草稿里带着开关：`model_upsert` 是整条覆盖写，
       // 编辑别名时漏掉它就会把用户**关掉的**模型悄悄打开 —— 所以它必须随草稿往返。
       enabled: false,
       lines: [LINE_BYTEDANCE, LINE_BYTEDANCE, "", LINE_COMMANDCODE],
@@ -1391,7 +1391,7 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
       enabled: false,
       lines: [LINE_BYTEDANCE, LINE_COMMANDCODE],
     });
-    // [docs/28 §1.2]：模型侧没有"网络代理"这个字段的入口
+    //：模型侧没有"网络代理"这个字段的入口
     expect("default_lane" in model).toBe(false);
   });
 
@@ -1417,10 +1417,10 @@ describe("⑧ /models 添加模型向导：先分配线路 → 真的调 model_u
   });
 });
 
-// ================================================================ ⑨ [docs/21 §1] 删除模型
+// ================================================================ ⑨ 删除模型
 //
 // 与 `providers.test.tsx` ⑨ 同一套语义：先确认 → `force=false` → 被引用时**原样显示后端原文**
-// 且**没有级联按钮**（[docs/27 §1.2]：删模型永不动线路）→ 成功后结果区如实写"已删除 X"
+// 且**没有级联按钮**（：删模型永不动线路）→ 成功后结果区如实写"已删除 X"
 // → 批量**逐条**调、逐条汇报。这一节全部走整页（`renderPage`），因为"点了到底发什么载荷"
 // 只在数据层看得见。
 
@@ -1436,7 +1436,7 @@ function selectBoxAt(testId: string, index: number): HTMLInputElement {
   return input as HTMLInputElement;
 }
 
-describe("[docs/21 §1] 模型删除：先确认、再 force=false、被引用也不级联、批量逐条", () => {
+describe(" 模型删除：先确认、再 force=false、被引用也不级联、批量逐条", () => {
   beforeEach(() => {
     registerBaselineMocks();
     // 基准 mock 的 model_list 还没有 lines 列 → 删除这一节要真的线路（连带清单算得出来）
@@ -1485,7 +1485,7 @@ describe("[docs/21 §1] 模型删除：先确认、再 force=false、被引用�
     invalidate.mockRestore();
   });
 
-  it("[docs/27 §1.2] 被引用：原样显示后端原文（含 TA 码），**没有级联按钮**（删模型永不动线路）", async () => {
+  it(" 被引用：原样显示后端原文（含 TA 码），**没有级联按钮**（删模型永不动线路）", async () => {
     registerMock("model_delete", () => {
       throw new TokenAgencyError({
         code: "TA-5002",
@@ -1505,7 +1505,7 @@ describe("[docs/21 §1] 模型删除：先确认、再 force=false、被引用�
     expect(screen.queryByTestId("models-delete-result")).toBeNull();
   });
 
-  it("[docs/27 §1.2] 永远只发 force=false：不存在「再确认一次就把线路一起删了」这条路", async () => {
+  it(" 永远只发 force=false：不存在「再确认一次就把线路一起删了」这条路", async () => {
     const calls: Record<string, unknown>[] = [];
     registerMock("model_delete", (args) => {
       calls.push(args ?? {});
@@ -1526,7 +1526,7 @@ describe("[docs/21 §1] 模型删除：先确认、再 force=false、被引用�
     expect(calls.every((c) => c["force"] === false)).toBe(true);
   });
 
-  it("[docs/27 §1.2] 「会连带影响」清单如实写「线路不会被删」，不谎称会一起删", async () => {
+  it(" 「会连带影响」清单如实写「线路不会被删」，不谎称会一起删", async () => {
     renderPage();
     fireEvent.click((await screen.findAllByTestId("models-delete"))[0]!);
     const listed = screen.getByTestId("models-delete-consequences").textContent ?? "";
@@ -1583,20 +1583,20 @@ describe("[docs/21 §1] 模型删除：先确认、再 force=false、被引用�
   });
 });
 
-// ================================================================ ⑩ [docs/22] 长解释收进问号圆圈
+// ================================================================ ⑩ 长解释收进问号圆圈
 
 /**
- * [docs/22]（用户第 74 轮：「简介好长，好多字……做成一个问号加一个圆圈」）的验收。
+ *（用户第 74 轮：「简介好长，好多字……做成一个问号加一个圆圈」）的验收。
  *
  * 两条：解释**收走了**（`?` 存在、`aria-label` 是全文、正文不再内联）、
- * 红线**没被收走**（空态 / 数值 / 后端原文 / 连带清单，[docs/22 §2]）。
+ * 红线**没被收走**（空态 / 数值 / 后端原文 / 连带清单）。
  *
  * 特别注意这一页有两个"看着像解释、其实不能收"的东西，这一节把它们钉住：
  * `models.priced.unknownHint`（每一行"定价为什么是未知"的状态说明）与
  * `models.mismatch.hint`（口径不一致时给的那句裁决说明）—— 后者被既有用例断言在
  * `models-mismatch` 元素**内部**，收走就等于把结论挪出它所属的那一块。
  */
-describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", () => {
+describe(" 长解释收进问号圆圈，红线一律留在版面上", () => {
   /** 取某个 `?` 的 `aria-label`（= 提示正文全文）。 */
   function helpLabel(testId: string): string {
     const label = screen.getByTestId(testId).getAttribute("aria-label");
@@ -1713,9 +1713,9 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
   });
 });
 
-// ================================================================ ⑪ [docs/26 §2] 一级界面省略
+// ================================================================ ⑪ 一级界面省略
 
-describe("[docs/26 §2] 模型标识 / 上游名：省略后全文仍在 DOM", () => {
+describe(" 模型标识 / 上游名：省略后全文仍在 DOM", () => {
   it("两个长值都整段留在 DOM 里；没溢出时一个提示都不挂，也不占 Tab 站", () => {
     const longId = `${MODEL_ID}-2026-07-18-preview-upstream`;
     const upstream = `${longId}-a`;
@@ -1749,9 +1749,9 @@ describe("[docs/26 §2] 模型标识 / 上游名：省略后全文仍在 DOM", (
   });
 });
 
-// ================================================================ ⑨ [docs/48 §5] 两个开关
+// ================================================================ ⑨ 两个开关
 
-describe("[docs/48 §5] 模型开关与线路开关", () => {
+describe(" 模型开关与线路开关", () => {
   /**
    * MUI `Switch`：`data-testid` 在外层，真正的 `input` 在它里面。
    *
@@ -1860,7 +1860,7 @@ describe("[docs/48 §5] 模型开关与线路开关", () => {
     expect(screen.queryByTestId("models-row")).toBeNull();
   });
 });
-// ================================================================ [docs/51] 定价入口（模型页）
+// ================================================================ 定价入口（模型页）
 
 /**
  * 用户第 318 轮：*"我是希望用户为每一个对外模型定价，来算自己大概花了多少"* +
@@ -1871,7 +1871,7 @@ describe("[docs/48 §5] 模型开关与线路开关", () => {
  * 2. 发出去的载荷 `match` 里**只有 model** —— 这是本轮修正的核心；
  * 3. **清除定价**仍守"下标安全"那条纪律（删之前确认那一格还是这个模型）。
  */
-describe("[docs/51] 定价：为**这个模型**定价（入口在模型页，成本中心只显示）", () => {
+describe(" 定价：为**这个模型**定价（入口在模型页，成本中心只显示）", () => {
   /**
    * 整页渲染（`renderPage`）要先有**行**，否则那一行上的定价入口根本不存在。
    * 这里只造"目录里有这个模型"，价格状态由 `pricing_list` / `pricing_unpriced_models` 决定。
@@ -2004,7 +2004,7 @@ describe("[docs/51] 定价：为**这个模型**定价（入口在模型页，�
   });
 });
 
-describe("[docs/51] 清除定价的下标比对（纯逻辑）", () => {
+describe(" 清除定价的下标比对（纯逻辑）", () => {
   const ours = {
     match: { model: "m-1", provider: null, credential: null },
     rates: { input: 1 },

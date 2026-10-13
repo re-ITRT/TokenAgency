@@ -4,7 +4,7 @@
  *
  * 在那之前，这份手写版是 F2/F3/F4 的唯一类型契约。它**逐字段对齐**
  * `crates/ta-core/src/domain/mod.rs` + `src/types.rs`（前者的作者与后者一致），
- * 以及 `docs/10-interface-spec.md` §2.2 的命令签名 / §2.4 的 DTO。
+ * 以及  的命令签名 / §2.4 的 DTO。
  *
  * 对齐规则（生成后也必须成立）：
  * - 字段名 = Rust 字段名（本项目 config 结构体**没有** `rename_all`，所以是 snake_case）；
@@ -103,7 +103,7 @@ export type LaneKind =
   | "direct"
   | "subscription_auto"
   /**
-   * **遗留（第 321 轮取消的概念，[docs/54]）**：用订阅里自带的组。
+   * **遗留（第 321 轮取消的概念）**：用订阅里自带的组。
    *
    * 它**还在这个联合类型里**，因为契约必须逐字对齐 Rust 的 `LaneKind`，而那个 variant
    * 不能删 —— 迁移跑在**已经反序列化完**的文档上，删了会让老配置在 `config.load()`
@@ -121,9 +121,9 @@ export type AuthScheme = "bearer" | "header" | "query" | "none";
 export type HeaderConflict = "keep_client" | "override";
 export type OnExceed = "wait" | "next_candidate";
 /**
- * 选路策略。**现在只有一种**（[docs/48]）。
+ * 选路策略。**现在只有一种**。
  *
- * 为什么收敛到一种：`docs/47` 查清"各家额度耗尽返回什么"之后确认**分码也分不干净**
+ * 为什么收敛到一种： 查清"各家额度耗尽返回什么"之后确认**分码也分不干净**
  * （同一家 429 既表限流也表额度耗尽、有的家把额度耗尽藏在 400 里），于是
  * "引擎自动挑线路"这条路放弃，改成**用户用开关手动调度 + 引擎只做平均**。
  *
@@ -180,17 +180,17 @@ export type GatewayConfig = {
   local_key?: string | null;
   max_body_mb: number;
   debug_headers: boolean;
-  /** [docs/28 §4] **已删除的死开关**：不再有"要不要对外暴露模型能力标签"这回事（标签本来就是从我们记录的信息派生的）。老配置里带这个键仍然能解析（落进 `extra`）。 */
+  /** **已删除的死开关**：不再有"要不要对外暴露模型能力标签"这回事（标签本来就是从我们记录的信息派生的）。老配置里带这个键仍然能解析（落进 `extra`）。 */
   fallback_provider?: ProviderId | null;
   passthrough: PassthroughConfig;
   retry: RetryConfig;
   metering: MeteringConfig;
-  /** [docs/59] 下游 API 家族开关（勾选式）。 */
+  /** 下游 API 家族开关（勾选式）。 */
   downstream: DownstreamConfig;
 };
 
 /**
- * [docs/59] 下游对外提供哪几种 API 家族 —— 每个一批的**勾选式开关**。
+ * 下游对外提供哪几种 API 家族 —— 每个一批的**勾选式开关**。
  *
  * 用户第 326 轮的需求 2："可以在设置页面选择我们下游是统一成 OPENAI 的两种还是
  * Anthropic 的"，补一句"是打开关闭形式，按需求勾选"。所以这是**三个独立的开关**，
@@ -286,11 +286,11 @@ export type Lane = {
   name: string;
   kind: LaneKind;
   subscription?: SubscriptionId | null;
-  /** **遗留（[docs/54]）**：`kind: subscription_group` 时订阅里自带的组名。理由见 `LaneKind`。 */ // ta-allow-emoji —— 这是用户数据示例（[15 §2.2]），不是我们产生的文本
+  /** **遗留**：`kind: subscription_group` 时订阅里自带的组名。理由见 `LaneKind`。 */ // ta-allow-emoji —— 这是用户数据示例（[15 §2.2]），不是我们产生的文本
   group?: string | null;
   /**
    * 组策略。**「自动选择」必须是 `select`** —— `url-test` 会按自己的 interval 周期性重选，
-   * 出口 IP 自己就变了，粘性不成立（[docs/54] §1）。
+   * 出口 IP 自己就变了，粘性不成立（§1）。
    */
   group_type?: GroupType | null;
   /** `kind: subscription_node` 时的固定节点名。 */
@@ -399,7 +399,7 @@ export type Model = {
   display: DisplayConfig;
   expose: boolean;
   /**
-   * **模型级总开关**（[docs/48 §5]）。
+   * **模型级总开关**。
    *
    * `false` = **彻底停用**：`GET /v1/models` 不再列出它，调用它直接按"模型不存在"拒绝。
    * 关掉**不删除**任何东西 —— 这正是这个字段的意义：想暂时下线一个模型时不用删了再建。
@@ -409,20 +409,20 @@ export type Model = {
    */
   enabled: boolean;
   /**
-   * **这个模型要用哪几条线路**（[docs/28 §2]）—— 关系的唯一真源，由模型侧持有。
+   * **这个模型要用哪几条线路**—— 关系的唯一真源，由模型侧持有。
    *
    * 线路归服务商（在服务商详情页里创建/编辑），模型只负责"用"：一条线路可以服务多个模型，
-   * 一个模型由多条线路构成。**至少一条**（[docs/28 §2]：零条线路的模型对外可调用却必然失败）。
+   * 一个模型由多条线路构成。**至少一条**（：零条线路的模型对外可调用却必然失败）。
    *
    * 删除只往一个方向传：删模型不动线路；删线路会从所有模型的这个列表里摘掉它，
-   * 摘完一条都不剩的模型会被自动删除（[docs/27 §1.2]）。
+   * 摘完一条都不剩的模型会被自动删除。
    */
   lines: ChannelId[];
   /**
-   * 这个模型**默认走哪条线路**（[docs/19 §1.5]）。
+   * 这个模型**默认走哪条线路**。
    *
    * 省略 / null = 直连（与 `net.default_lane` 链一致）。
-   * 注意：**没有"给模型挑网络代理"这回事**（[docs/28 §1.1]）—— 代理是**线路**的属性，
+   * 注意：**没有"给模型挑网络代理"这回事**—— 代理是**线路**的属性，
    * 只在服务商详情页的「编辑线路」里改；这个字段只表达"这个模型的线路默认继承哪条代理"。
    */
   default_lane?: LaneId | null;
@@ -438,7 +438,7 @@ export type Transform = {
 };
 
 /**
- * 上游能力声明（[docs/17 §2]，对应 Rust `ta_core::domain::ChannelCapabilities`）。
+ * 上游能力声明（对应 Rust `ta_core::domain::ChannelCapabilities`）。
  *
  * **两条线路只有在这些字段完全一致时**，才允许被同一条路由（同一个对外模型）指向。
  * 比较规则：逐字段相等；`modalities` 先排序去重再比；`max_output_tokens` 的 `null`
@@ -465,7 +465,7 @@ export type ChannelCapabilities = {
 export type Channel = {
   id: ChannelId;
   /**
-   * **过渡期遗留字段**（[docs/28 §2]）：老配置里"这条线路属于哪个模型"。
+   * **过渡期遗留字段**：老配置里"这条线路属于哪个模型"。
    *
    * 关系已经翻转到 `Model.lines`（一条线路可以服务多个模型）。后端目前仍会把它发出来
    * （老配置里就是它），但**新代码不要依赖它**：读"哪些模型在用这条线路"请看下面那个派生值。
@@ -473,12 +473,12 @@ export type Channel = {
    */
   model?: string;
   /**
-   * **哪些模型在用这条线路**（[docs/28 §2]，**只读派生值**，由后端现算）。
+   * **哪些模型在用这条线路**（**只读派生值**，由后端现算）。
    *
    * 关系的真源在 `Model.lines` 上：线路不再写"我是哪个模型的"（一条线路可以同时服务多个模型）。
    * 写命令**不接受**这个字段（要改关系请用 `model_upsert({ model: { lines } })`）。
    *
-   * **可选**：S1 阶段后端还没把它加进响应（[docs/28 §4] 的 S2 补上），
+   * **可选**：S1 阶段后端还没把它加进响应（S2 补上），
    * 所以读它的界面必须按"可能没有"处理（`channel.models ?? []`），不许当成空数组去下结论。
    */
   models?: ModelId[];
@@ -496,7 +496,7 @@ export type Channel = {
   target_override?: string | null;
   enabled: boolean;
   /**
-   * 上游能力声明（[docs/17 §2]）。Rust 侧是 `#[serde(default)] pub capabilities: ChannelCapabilities`：
+   * 上游能力声明。Rust 侧是 `#[serde(default)] pub capabilities: ChannelCapabilities`：
    *
    * - **后端发出来的对象永远带全部 6 个字段**（读 `channel.capabilities.vision` 不会 undefined）；
    * - **前端写 `channel_upsert` 时可以整个不填** —— 不填就是后端默认
@@ -554,7 +554,7 @@ export type PolicyAction = {
   require_tag?: string | null;
   exclude_tag?: string | null;
   // 这里曾有 `selector?: Selector | null`（策略级选路覆盖）。选路策略收敛为唯一一种之后
-  // （[docs/48]）它没有第二种取值，字段删除；老配置里残留的键由 Rust 侧的 `extra` 吸收，
+  // 它没有第二种取值，字段删除；老配置里残留的键由 Rust 侧的 `extra` 吸收，
   // 解析不失败（只是不再生效）。
   failover?: FailoverPolicy | null;
   on_no_candidate: NoCandidateAction;
@@ -660,7 +660,7 @@ export type ValidationReport = {
 };
 
 /**
- * `provider_lines_create_all` 的结果（[docs/28 §1.4]）。
+ * `provider_lines_create_all` 的结果。
  */
 export type LinesCreateAllResult = {
   /** 这次**真新建**了几条线路（0 = 目录里每一条都早就有线路了，一条都没写） */
@@ -674,7 +674,7 @@ export type ApplyResult = {
   restart_required: boolean;
   kernel_reload: boolean;
   /**
-   * 本次调用**真新建**的通道数（[docs/20 §1.1]）。
+   * 本次调用**真新建**的通道数。
    *
    * 为什么要有这个数：`model_apply_import` 不只是在模型目录里塞一行 —— 它要把模型**接到**这个服务商上
    * （建 `ch-<provider>-<credential>-<model>` 这条线）。界面得能如实说"接上了几条"，而不是让用户
@@ -683,7 +683,7 @@ export type ApplyResult = {
   channels_created: number;
 };
 
-/** `log_export` 的回执（docs/10 §2.2）。**path 是后端解析后的最终路径，不是入参** ——
+/** `log_export` 的回执。**path 是后端解析后的最终路径，不是入参** ——
  *  传目录进来时后端会补 `tokenagency-diagnostic-<时间戳>.zip`。 */
 export type LogExportReceipt = {
   path: string;
@@ -697,7 +697,7 @@ export type Snapshot = {
   size_bytes?: number;
 };
 
-// ================================================================ 运行态与视图（docs/10 §2.2）
+// ================================================================ 运行态与视图
 
 export type KernelState = "stopped" | "starting" | "ready" | "restarting" | "failed";
 
@@ -762,7 +762,7 @@ export type CredentialView = {
 };
 
 /**
- * 服务商模型目录里的一条（[docs/25]）：**扫描记录下来的**上游模型。
+ * 服务商模型目录里的一条：**扫描记录下来的**上游模型。
  *
  * 目录 = "这家服务商扫描到过哪些模型"的**观察记录**（存在 SQLite 里，不进配置真源）；
  * `added` = "已经接入这一家了吗"（配置里真有对应的 Model + 通道）。
@@ -794,11 +794,11 @@ export type ModelCatalogEntry = {
   /** 已接入的通道里**有启用的**（`added=false` 时为 false）。 */
   enabled: boolean;
   /**
-   * **上游原样返回的对象**（[docs/28 §4]）：这条目录行对应的 `GET {base_url}/models` 里
+   * **上游原样返回的对象**：这条目录行对应的 `GET {base_url}/models` 里
    * `data[i]` 的**完整** JSON —— 我们不改写、不补字段，键序也保持原样。
    *
    * 用它干两件事：让用户看到"上游到底声明了什么"（`owned_by` / `created` / 中转自造字段都在），
-   * 以及给能力字段提供**唯一**可核对的来源 —— [docs/28 §3] 定死了"上游没给的字段一个都不编"。
+   * 以及给能力字段提供**唯一**可核对的来源 —— 定死了"上游没给的字段一个都不编"。
    *
    * 上游那一条不是对象、或那次没记到 → `{}`（**不是**我们编出来的对象）。
    * 类型是任意 JSON：Rust 侧 `serde_json::Value` 经 `specta(type = Any)` 出来，与 `IpcError.details` 同款。
@@ -811,7 +811,7 @@ export type ProbeResult = {
   status: number;
   latency_ms: number;
   /**
-   * 这一次探测**实际发的是什么**（[docs/19 §1.1]）：
+   * 这一次探测**实际发的是什么**：
    * - `"models"`：`GET {base_url}/models`（OpenAI 兼容的模型清单端点）；
    * - `"chat"`：`POST {base_url}/chat/completions` 的最小探测（有些中转没有 `/models`）；
    * - `"none"`：一次请求都没发出去（例如线路不可用/鉴权缺失）。
@@ -839,7 +839,7 @@ export type PlaintextFinding = {
 };
 
 /**
- * 一个模型**对外暴露的**信息（[docs/46 §304]）—— 客户端在 `/v1/models` 里看到的那一份。
+ * 一个模型**对外暴露的**信息—— 客户端在 `/v1/models` 里看到的那一份。
  *
  * 后端只有**一份**聚合口径（`ConfigDoc::public_model_info`），网关与模型页信息面板都从它取，
  * 所以「查看模型信息」里显示的就是客户端拿到的那一份。
@@ -879,14 +879,14 @@ export type ImportPreview = {
 
 export type ModelPatch = Partial<Pick<Model, "expose" | "aliases" | "display">> & {
   /**
-   * 只改该模型（及其现有 channel）的网络线路；三态见 [docs/20 §1.3]：
+   * 只改该模型（及其现有 channel）的网络线路；三态见：
    * 字段缺失 = 不动；`null` = 清空（回到继承链，末端就是直连）；具体 lane id = 写该线路。
    */
   lane?: LaneId | null;
 };
 
 /**
- * 我们网关对外的**访问密钥**（[docs/19 §3]）。客户端拿它调到 `127.0.0.1:8787`。
+ * 我们网关对外的**访问密钥**。客户端拿它调到 `127.0.0.1:8787`。
  *
  * **明文不在这个类型里**（表里只存 sha256）：明文只在 `api_key_create` 的返回里出现**一次**。
  */
@@ -963,12 +963,12 @@ export type LaneView = {
 
 export type LaneTestResult = { node: string; latency_ms?: number | null; ok: boolean };
 
-// [docs/55] `LaneAssignment` / `LanePickOption` 两个类型已删除 ——
+// `LaneAssignment` / `LanePickOption` 两个类型已删除 ——
 // 它们只被 `lane_assignments` / `lane_pick_options` 用，而那条命令与那个页面都没了。
 // 「生效线路来自哪一级」这个问题本身也不再成立：现在只有服务商级一处。
 
 /**
- * [docs/28 §1.2] 线路（网络代理）下拉里的一项。
+ * 线路（网络代理）下拉里的一项。
  *
  * 为什么要有它：这个下拉是用户**唯一**能给一条线路选网络的地方。如果没有它，
  * 用户"刚加好订阅、还没建线路"时那个下拉里什么都没得选 ——
@@ -979,7 +979,7 @@ export type LaneTestResult = { node: string; latency_ms?: number | null; ok: boo
  * * `kind: "node"`：`value` 形如 `node:<订阅id>:<节点名>`，要先调
  *   `lane_ensure_for_node` 拿到线路 id（**已有等价线路就复用**），再写。
  *
- * [docs/55] 写进去的是**服务商**的 `lane`（`channel.lane` / `credential.lane` /
+ * 写进去的是**服务商**的 `lane`（`channel.lane` / `credential.lane` /
  * `policy.use_lane` 三个字段已删除）—— 每个服务商统一一个节点。
  *
  * 节点只来自**已采纳的订阅版本**：没有版本时这里一个节点都不出现（那是"还没解析"，
@@ -1006,7 +1006,7 @@ export type LaneChoiceGroup = {
  * `subscription_list` 的一行：**配置实体 + 当前生效版本的解析状态**。
  *
  * 解析状态来自版本存储（`VersionKeeper` 的元数据）：**从来没有已采纳的版本时这几个字段
- * 一并缺失**，而不是给 `0` / 空串（[docs/18 §1.2] 的"未知不给数字"）。前端把"缺失"读成
+ * 一并缺失**，而不是给 `0` / 空串（"未知不给数字"）。前端把"缺失"读成
  * `undefined`（未读取）、把"明确 null"读成 `null`（后端说没有）—— 两者不是一回事。
  */
 export type SubscriptionView = {
@@ -1016,7 +1016,7 @@ export type SubscriptionView = {
   node_count?: number;
   /** 生效版本的分组数；没有已采纳版本时**缺失**（不是 0）。 */
   group_count?: number;
-  /** 不再回填：流量与更新时间统一走 `subscription_traffic`（[docs/18 §1.2] 的口径）。 */
+  /** 不再回填：流量与更新时间统一走 `subscription_traffic`（口径）。 */
   userinfo?: { upload?: number; download?: number; total?: number; expire_ms?: number } | null;
   /** 生效版本的抓取时刻（Unix 毫秒）；没有已采纳版本时缺失。 */
   last_update_ms?: number | null;
@@ -1027,7 +1027,7 @@ export type SubscriptionView = {
 };
 
 /**
- * 订阅服务商在响应头 `subscription-userinfo` 里给的流量信息（docs/18 §1.2）。
+ * 订阅服务商在响应头 `subscription-userinfo` 里给的流量信息。
  *
  * 注意：**未知一律 `null`，绝不用 0 冒充**：
  * - 字段缺失 / 非数字 → `null`；
@@ -1036,7 +1036,7 @@ export type SubscriptionView = {
  * - 而 `upload_bytes` / `download_bytes` 的 `0` 是**真实观测值**（真没用过），保留 `0`。
  *
  * `expire_at_s` 是 **Unix 秒**（不是毫秒）；`fetched_at_ms` 是 Unix 毫秒 —— 界面上的
- * 「更新时间」用它（前端按本地时区格式化；总量与百分比的口径见 docs/18 §1.3，不自己发明）。
+ * 「更新时间」用它。
  *
  * 头**不存在**时整个对象是 `null`（"这次没给"）；头在但字段都读不懂时是
  * `{ …, fetched_at_ms }` 且各字段 `null`（"给了但读不懂"）—— 两者不是一回事。
@@ -1109,7 +1109,7 @@ export type OnboardingInput = {
   subscriptions: { id: SubscriptionId; name: string; url: string }[];
 };
 
-// ================================================================ 用量 / 成本 / 日志（docs/10 §2.4、§2）
+// ================================================================ 用量 / 成本 / 日志
 
 /**
  * 时间范围（查询用）。
@@ -1265,7 +1265,7 @@ export type TraceDetail = {
   row: TraceRow;
   attempts: TraceAttempt[];
   /**
-   * [docs/32] L6：这次请求的**按 kind token 明细**（来自用量表）。
+   * L6：这次请求的**按 kind token 明细**（来自用量表）。
    * `null`/缺省 = 用量侧没有这笔账 → 界面显示「—」，**不拿 `row.tokens` 凑分项**。
    */
   token_kinds?: Record<string, number> | null;
@@ -1292,7 +1292,7 @@ export type ResolvedPrice = {
   plan_fee?: PlanFee | null;
 };
 
-// ================================================================ 策略模拟器（docs/10 §2.2）
+// ================================================================ 策略模拟器
 
 export type SimulateInput = {
   model: string;
@@ -1303,7 +1303,7 @@ export type SimulateInput = {
   session_key?: string;
   now?: number;
   /**
-   * 各线路在时间窗内的 token 用量（[docs/48 §3]）—— 模拟"平均粘性"要用的运行态输入。
+   * 各线路在时间窗内的 token 用量—— 模拟"平均粘性"要用的运行态输入。
    *
    * 省略 = **不知道**用量（选路退化为按 `priority`）；给了就按它挑最轻的那条。
    * 键是 `ChannelId`，值是累计 token 数。
@@ -1350,7 +1350,7 @@ export type EventPayload = {
   "tray:refresh": { payload: unknown };
 };
 
-// ================================================================ 命令签名（docs/10 §2.2）
+// ================================================================ 命令签名
 
 /**
  * 命令 → (入参, 返回值)。`api/commands.ts` 与 `api/mock.ts` 都按这张表对齐，
@@ -1363,9 +1363,9 @@ export type EventPayload = {
  *
  * 已知的"有意推迟"命令（理由与解锁条件见 `src-tauri/src/commands/entity.rs` 的模块文档）：
  * **只剩 `provider_echo` 一条**（它要读上游响应体做"谁吞了字段"的逐字段回显，本轮没做）。
- * 曾与它并列推迟的三条已在 [docs/19] 的 GW-71 / DESK-71 里落地并注册：
+ * 曾与它并列推迟的三条已在 的 GW-71 / DESK-71 里落地并注册：
  * `provider_test`（测试连接）、`model_import_from_provider`（一键扫描）、`model_apply_import`（添加选中）。
- * 另：本轮新增的 `api_key_*` 五条也已注册（`docs/19 §3`）。
+ * 另：本轮新增的 `api_key_*` 五条也已注册。
  * 新增的 `api_key_*` 五条同理：先落契约，等 `src-tauri` 注册后页面才可引用。
  *
  * 机械保证：
@@ -1433,14 +1433,14 @@ export type CommandMap = {
   };
   model_bulk_update: { args: { ids: ModelId[]; patch: ModelPatch }; result: ApplyResult };
   /**
-   * 这家服务商的**模型目录**（[docs/25]）：扫描记录下来的全部上游模型。
+   * 这家服务商的**模型目录**：扫描记录下来的全部上游模型。
    *
    * 目录是"扫描到过什么"的观察记录（SQLite，不进配置）；`added` 才是"接入了没有"。
    * 界面据此画那一列勾选框 —— 勾 = 接入（`provider_model_attach`），取消 = 停用通道。
    */
   provider_model_catalog: { args: { provider_id: ProviderId }; result: ModelCatalogEntry[] };
   /**
-   * 把目录里的这一条**接到**这家服务商上（[docs/25]）：建 `Model`（若缺）+ 建启用通道。
+   * 把目录里的这一条**接到**这家服务商上：建 `Model`（若缺）+ 建启用通道。
    *
    * 只给 `upstream_model`：逻辑名从**目录行**里取（单一真源，界面没有机会传错）。
    * 目录里没有这一条 → `TA-1004`（「先扫描一次」）；已经接入过 → 幂等。
@@ -1450,7 +1450,7 @@ export type CommandMap = {
     result: ApplyResult;
   };
   /**
-   * [docs/28 §1.4] 「添加服务商就把**所有**线路建出来」：把上游目录里每条都建成线路，
+   * 「添加服务商就把**所有**线路建出来」：把上游目录里每条都建成线路，
    * **默认关闭**（`enabled: false`），之后无论向导还是详情都只用滑块控制启用/关闭。
    *
    * 幂等：已经有线路的条目**一个字节都不动**（不覆盖用户改过的 lane / enabled / 优先级）；
@@ -1469,11 +1469,11 @@ export type CommandMap = {
   channel_upsert: { args: { channel: Channel }; result: Channel };
   channel_delete: { args: { id: ChannelId }; result: void };
   channel_set_enabled: { args: { id: ChannelId; enabled: boolean }; result: void };
-  // [docs/55] `channel_bulk_assign_lane` 已删除：线路分配只剩**服务商级**一处
+  // `channel_bulk_assign_lane` 已删除：线路分配只剩**服务商级**一处
   //（用户："线路级别的分配逻辑我们已经放弃了，取而代之的，每个服务商统一一个节点"），
   // 而 `ChannelConfig.lane` 字段本身也删了 —— 这条命令已经没有可写的地方。
   /**
-   * [docs/28 §1.4] 把一批线路**一起启用或一起关闭**（列表里的"全选"）。
+   * 把一批线路**一起启用或一起关闭**（列表里的"全选"）。
    *
    * 语义就是 `channel_set_enabled` 的批量版（可逆，不删任何东西）。做成一条命令而不是前端循环：
    * 全选是**一次用户动作**，循环会让"改了 200 条"变成 200 个配置快照 + 200 次内核重载，
@@ -1507,7 +1507,7 @@ export type CommandMap = {
   lane_delete: { args: { id: LaneId }; result: void };
   lane_test: { args: { id: LaneId; node?: string }; result: LaneTestResult[] };
   lane_set_node: { args: { id: LaneId; node: string }; result: void };
-  // [docs/55] `lane_assignments` / `lane_reverse_lookup` / `lane_pick_options` 已删除。
+  // `lane_assignments` / `lane_reverse_lookup` / `lane_pick_options` 已删除。
   //
   // 它们只服务于"**线路级别的分配**"：把五级继承链（策略 → 通道 → 套餐 → 服务商 → 全局默认）
   // 算出来给界面看。用户裁决放弃那套逻辑（"取而代之的，每个服务商统一一个节点"）之后：
@@ -1516,14 +1516,14 @@ export type CommandMap = {
   //
   // 留着它们只会返回一条恒为 `provider`/`default` 的"来源"—— 那是个过期的说法，比删掉更容易误导。
   /**
-   * [docs/28 §1.2] 线路（网络代理）下拉的可选来源：**已配置线路 + 订阅节点**（按订阅分组）。
+   * 线路（网络代理）下拉的可选来源：**已配置线路 + 订阅节点**（按订阅分组）。
    * 节点那一项选中后要配合 `lane_ensure_for_node`。
    *
-   * [docs/55] 这是**唯一**给一条线路选网络的地方（原来还有个 `lane_pick_options`
+   * 这是**唯一**给一条线路选网络的地方（原来还有个 `lane_pick_options`
    * 给指派页用，随那页一起删了）。
    */
   lane_options: { args: undefined; result: LaneChoiceGroup[] };  /**
-   * [docs/28 §1.2] 让"这个订阅的这个节点"在配置里有一条线路，返回那条线路（**幂等**：
+   * 让"这个订阅的这个节点"在配置里有一条线路，返回那条线路（**幂等**：
    * 已有等价线路就复用）。节点必须真的在已采纳的订阅版本里，否则原样报错。
    */
   lane_ensure_for_node: {
@@ -1531,7 +1531,7 @@ export type CommandMap = {
     result: Lane;
   };
   /**
-   * [docs/28 §1.2] 让配置里**有一条直连线路**，返回那条线路（**幂等**：已有 `kind: direct`
+   * 让配置里**有一条直连线路**，返回那条线路（**幂等**：已有 `kind: direct`
    * 的线路就复用）。
    *
    * 为什么需要它：「直连」是网络代理里最重要的选项，而下拉里要能**明确选中**它 ——
@@ -1618,7 +1618,7 @@ export type CommandMap = {
   log_clear: { args: { mode: ClearMode }; result: void };
   log_export: { args: { query: LogQuery; path: string }; result: LogExportReceipt };
 
-  // ---- api key（[docs/19 §3]：我们网关对外的访问密钥）
+  // ---- api key（：我们网关对外的访问密钥）
   api_key_list: { args: undefined; result: ApiKeyView[] };
   api_key_create: { args: { name: string; note?: string | null }; result: ApiKeyCreated };
   api_key_set_enabled: { args: { id: string; enabled: boolean }; result: ApiKeyView };

@@ -26,12 +26,12 @@
  * 因为"删 lane 之前先看谁在引用它"是另一个操作流。
  * 写操作走 `useCommandMutation` + `invalidateQueries`：**不用本地状态伪造一行结果**。
  *
- * ## 删除（[docs/21 §1]，第 73 轮补）
+ * ## 删除（第 73 轮补）
  *
  * 订阅与线路的删除**都必须先二次确认**（共享组件 `ConfirmDelete`），且这两条命令**没有 `force` 语义**
  * → 被后端拒绝时只把原文（含 TA 码）摆出来，**不放**"强行删除"按钮（那会是假按钮）。
  * 单条与批量**共用同一个确认组件与同一套失败展示**；批量是"一次确认 → 逐条调用 → 逐条汇报"，
- * 一条失败不中止其余条，也绝不用一句"批量删除成功"盖住部分失败（[docs/21 §1.2]）。
+ * 一条失败不中止其余条，也绝不用一句"批量删除成功"盖住部分失败。
  * 删除成功后要失效的 key 见两个区块各自的 `invalidateAfterDelete`（订阅连带线路与线路下拉；
  * 线路连带通道矩阵 —— 矩阵的 key 不在 `qk.lanes` 前缀里，漏了它矩阵就会停在旧值上）。
  *
@@ -124,7 +124,7 @@ import {
 /**
  * 这里原有本页自己的 `HELP_TIP_MIN_LENGTH` / `mergeHelpText` / `collectIntoHelpTip` 三件。
  *
- * **第 319 轮删除**（[docs/52]）：同一套规则在 `settings/index.tsx` 又写了一遍，
+ * **第 319 轮删除**：同一套规则在 `settings/index.tsx` 又写了一遍，
  * 而且阈值在那处是一个**裸字面量 `12`** —— 改一处就会让两个页面的问号出现时机不一致，
  * 且没有任何测试会红。现在统一走 `@/shared/helpTip`。
  *
@@ -144,14 +144,14 @@ export { mergeHelpText };
 /**
  * 一个只读区块：标题 + 说明 + 内容。**不是一个装饰性卡片**（无阴影、无强调色）。
  *
- * 说明的去处由长度决定（[docs/22 §2]）：超过 {@link HELP_TIP_MIN_LENGTH} 个字符的收进标题右边的
+ * 说明的去处由长度决定：超过 {@link HELP_TIP_MIN_LENGTH} 个字符的收进标题右边的
  * 问号圆圈（正文进 tooltip + `aria-label`，一个字都不丢），短的留在原位。
  * **没有 `description` 时不留空行/占位**（`description` 为 `undefined` 或空串都算没有）。
  * `children` 可省：纯说明区块（把整页的边界讲清楚、没有数据要摆）收完之后就只剩标题 + 问号。
  *
  * **第 326 轮删掉了 `hint` / `hintTestId` 两个 prop**：它们把第二段解释画在标题**下面单独一行**，
  * 于是区块里出现一个**悬在工具栏上方、没有任何标签**的问号圆圈（用户真机截图里的那个孤儿 `?`，
- * 谁也不知道它在问什么）。同一个区块本来就只该有一个问号（[docs/22 §3]），
+ * 谁也不知道它在问什么）。同一个区块本来就只该有一个问号，
  * 所以现在只有一条路：把要解释的话并进 `description`（用
  * {@link mergeHelpText}），由它一处决定收进问号还是留在版面上。
  */
@@ -173,7 +173,7 @@ export function SectionPaper({
    * **保守地**误算成"版面文案"（守卫自己的注释也承认这一点）。由调用方把 `<HelpTip>` 直接写出来，
    * 守卫看到的就是事实：这几句确实只在问号里。
    *
-   * 传了 `help` 就不再按 `description` 自动生成问号（[docs/22 §3]：一个区块只有一个问号）。
+   * 传了 `help` 就不再按 `description` 自动生成问号（：一个区块只有一个问号）。
    */
   help?: ReactNode;
   testId?: string;
@@ -213,7 +213,7 @@ export function SectionPaper({
 /**
  * 这里原有本页自己的 `StatItem`。
  *
- * **第 319 轮删除**（[docs/52]）：它与 `settings` / `logs` / `models` 三份是同一样东西，
+ * **第 319 轮删除**：它与 `settings` / `logs` / `models` 三份是同一样东西，
  * 已收敛到 `@/shared/components` 的 `StatItem`。本页自己不再用它
  * （`assignments` / `nodes` 两个兄弟模块也从未 import 过它），所以直接删。
  */
@@ -499,12 +499,12 @@ const EMPTY_SUBSCRIPTION_DRAFT: SubscriptionDraft = {
   include: "",
   exclude: "",
   enabled: true,
-  // [docs/46 §E] 留空 = 不发这个字段（后端默认探测目标）；无公网环境里可填本机地址。
+  // 留空 = 不发这个字段（后端默认探测目标）；无公网环境里可填本机地址。
   healthUrl: "",
 };
 
 /**
- * [docs/57] **新建 / 编辑订阅的对话框**（用户第 324 轮：「这个界面不要常驻，应该点击添加才会有，
+ * **新建 / 编辑订阅的对话框**（用户第 324 轮：「这个界面不要常驻，应该点击添加才会有，
  * 或者说点击编辑」）。
  *
  * 为什么从"常驻表单"改成按需出现：那张表单有 11 个字段，长期占着列表下方，把只读的列表挤成
@@ -515,10 +515,10 @@ const EMPTY_SUBSCRIPTION_DRAFT: SubscriptionDraft = {
  * 1. **地址框刻意留空** —— 列表里的地址是遮蔽过的（`maskSubscriptionUrl` 是唯一出口）。
  *    把遮蔽值回填进输入框，用户一保存就会把 `token=***` 当成真地址写回配置：
  *    保存那一刻不报错、还显示"已保存"，下次刷新才全挂。所以编辑时**留空 = 不改地址**，
- *    由后端 `upsert_subscription` 保证（[docs/57]，同 `credential_set_secret` 的"留空 = 不改密钥"）。
+ *    由后端 `upsert_subscription` 保证（同 `credential_set_secret` 的"留空 = 不改密钥"）。
  * 2. **载荷以原始记录为底**（`subscriptionEditPayload`）—— `subscription_upsert` 是**整条覆盖写**。
  *    不带底稿就会把表单没有的字段重置成默认值，最要命的是 `disabled_nodes`
- *   （[docs/54] 逐节点开关）：它被清空 = 用户关掉的节点**全部被重新打开**，而界面上不会报任何错。
+ *   （逐节点开关）：它被清空 = 用户关掉的节点**全部被重新打开**，而界面上不会报任何错。
  *
  * 成功区显示的**是 `subscription_upsert` 的返回值**（经 `readSubscription` 归一并遮蔽地址），
  * 不是前端拼的一行"添加成功" —— 后者在"后端其实没存进去"时也会显示成功。
@@ -566,7 +566,7 @@ function SubscriptionWriteDialog({
     setFormError(undefined);
     upsert.reset();
     preview.reset();
-    // [docs/57] 编辑时**不要求**地址（留空 = 不改）；新建时必填。
+    // 编辑时**不要求**地址（留空 = 不改）；新建时必填。
     if (!subscriptionDraftComplete(draft, { urlRequired: !editing })) {
       setFormError(t("network.subscriptions.write.required"));
       return;
@@ -583,7 +583,7 @@ function SubscriptionWriteDialog({
         subscription:
           row === undefined
             ? subscriptionPayload(draft)
-            : // [docs/57] 编辑：以原始记录为底，只覆盖表单管的键
+            : // 编辑：以原始记录为底，只覆盖表单管的键
               subscriptionEditPayload(draft, row.base),
       },
       {
@@ -643,7 +643,7 @@ function SubscriptionWriteDialog({
         value={draft.url}
         onChange={(value) => set("url", value)}
         /*
-         * [docs/57] 编辑时地址**故意不回显**（列表里那份是遮蔽过的 `token=***`，
+         * 编辑时地址**故意不回显**（列表里那份是遮蔽过的 `token=***`，
          * 回填再保存就会把 `***` 写成真地址）。所以这里换一句提示 + 用遮蔽值当占位符：
          * 用户能看见"当前是这个（已遮蔽）"，但不填就等于不改。
          */
@@ -755,7 +755,7 @@ function SubscriptionWriteDialog({
         </Stack>
       </DialogContent>
 
-      {/* [docs/28 §1.7] **主操作放在对话框的固定按钮区**（不参与内容滚动）：
+      {/* **主操作放在对话框的固定按钮区**（不参与内容滚动）：
           长表单滚到底也能看见「保存」；「关闭」永远在，不逼用户去点遮罩。 */}
       <DialogActions>
         <Button data-testid="network-subscriptions-write-close" onClick={onClose}>
@@ -825,20 +825,20 @@ export function TrafficCell({ traffic }: { traffic: TrafficRow | null | undefine
   );
 }
 
-// ================================================================ 删除（[docs/21 §1]）
+// ================================================================ 删除
 
 /**
- * 一次删除的目标：**单条与批量共用同一个形状**（[docs/21 §1.2] 要求同一套语义）。
+ * 一次删除的目标：**单条与批量共用同一个形状**（要求同一套语义）。
  *
  * 订阅与线路这两条命令（`subscription_delete` / `lane_delete`）**都没有 `force` 语义**
- * （[docs/21 §1.1 第 3 条]）→ 被引用时只显示后端原文，**一个"强行删除"按钮都不放**（那会是假按钮）。
+ * → 被引用时只显示后端原文，**一个"强行删除"按钮都不放**（那会是假按钮）。
  */
 type DeleteTarget = {
   /** 要删的实体 id（顺序 = 勾选顺序）。 */
   readonly ids: readonly string[];
   /** 与 `ids` 一一对应的显示名（名称 + id）：确认框与结果行都用它写清"删的是哪一个"。 */
   readonly labels: readonly string[];
-  /** 批量：**一次确认** → 逐条调用（[docs/21 §1.2]）。 */
+  /** 批量：**一次确认** → 逐条调用。 */
   readonly batch: boolean;
   /** 「会连带删除 / 影响」清单：只放前端**算得出来**的事实；算不出来就是空数组（不编）。 */
   readonly consequences: readonly string[];
@@ -851,7 +851,7 @@ type DeleteOutcome = {
 };
 
 /**
- * 逐条执行删除：**一条失败不中止其余条**、失败原样记下后端原文（[docs/21 §1.2]）。
+ * 逐条执行删除：**一条失败不中止其余条**、失败原样记下后端原文。
  * 与 `pages/models/index.tsx` 的同名函数是同一套语义（这些命令都没有 force 参数）。
  */
 async function runDelete(
@@ -876,7 +876,7 @@ function entityLabel(name: string | undefined, id: string): string {
   return name === undefined || name === "" ? id : `${name}（${id}）`;
 }
 
-/** 结果区的一行：`target` 里记着显示名，所以成功项写的是**名称**而不是 id（[docs/21 §1.1 第 4 条]）。 */
+/** 结果区的一行：`target` 里记着显示名，所以成功项写的是**名称**而不是 id。 */
 function labelOf(target: DeleteTarget, id: string): string {
   const index = target.ids.indexOf(id);
   return index < 0 ? id : (target.labels[index] ?? id);
@@ -897,7 +897,7 @@ function SubscriptionsSection({
   error: unknown;
   onRetry: () => void;
   /**
-   * 「点订阅名进这条订阅的详情页」的链接地址（[docs/54]）。
+   * 「点订阅名进这条订阅的详情页」的链接地址。
    *
    * 为什么是**传进来的**而不是在这里直接写 `<Link to=…>`：`NetworkBody` 是纯 props 展示层，
    * 它的单测**不包 Router**（见 `showProviderReturn` 的同一条理由与注释）。
@@ -915,7 +915,7 @@ function SubscriptionsSection({
   const refreshOne = useCommandMutation("subscription_refresh");
   const removeOne = useCommandMutation("subscription_delete");
 
-  // ---- 删除状态（[docs/21 §1]）：单条与批量**共用**同一个确认组件、同一套失败展示
+  // ---- 删除状态：单条与批量**共用**同一个确认组件、同一套失败展示
   /** 多选（按 id 存；行 `network-subscriptions-select` / 表头 `-select-all` / 计数 `-selected-count`）。 */
   const [selectedIds, setSelectedIds] = useState<readonly string[]>([]);
   /** 确认框里那一次操作（`undefined` = 框没开）。**确认之前一条命令都不发**。 */
@@ -928,7 +928,7 @@ function SubscriptionsSection({
   const [batchRunning, setBatchRunning] = useState(false);
 
   /**
-   * [docs/57] 写表单**不再常驻**（用户第 324 轮：「这个界面不要常驻，应该点击添加才会有，
+   * 写表单**不再常驻**（用户第 324 轮：「这个界面不要常驻，应该点击添加才会有，
    * 或者说点击编辑」）：`undefined` = 关着；`{}` = 新建；`{ row }` = 编辑那一行。
    *
    * 用**按需挂载**（关着时 `null`）而不是 `open` 开关：草稿状态随卸载一起消失，
@@ -948,12 +948,12 @@ function SubscriptionsSection({
   const multiSelectable = rows !== undefined && rows.length > 1;
 
   /**
-   * 删除成功后要失效的**全部**受影响的查询（[docs/21 §1.1 第 4 条]）：
+   * 删除成功后要失效的**全部**受影响的查询：
    * `lane_list` 里每条线路都引用着某个订阅 id，删掉订阅之后线路页签 / 线路下拉的选择项都会变
    * —— 只失效订阅列表会让它们停在旧值上（那正是"看起来删了、其实界面还是旧的"）。
    */
   const invalidateAfterDelete = async (): Promise<void> => {
-    // [docs/55] `qk.lanePickOptions` 已随 `lane_pick_options` 命令删除 —— 去掉它。
+    // `qk.lanePickOptions` 已随 `lane_pick_options` 命令删除 —— 去掉它。
     for (const key of [qk.subscriptions, qk.lanes]) {
       await queryClient.invalidateQueries({ queryKey: key });
     }
@@ -961,7 +961,7 @@ function SubscriptionsSection({
 
   /**
    * 「会连带删除 / 影响」：引用了这份订阅的线路条数（来自 `lane_list`，本页本来就在读）。
-   * `lane_list` 还没读到 / 读失败 → **空数组**：算不出来就不写，绝不编一个数（[docs/21 §1.1 第 3 条]）。
+   * `lane_list` 还没读到 / 读失败 → **空数组**：算不出来就不写，绝不编一个数。
    */
   const consequencesOf = (row: SubscriptionRow): string[] => {
     if (laneRows === undefined) return [];
@@ -1034,7 +1034,7 @@ function SubscriptionsSection({
     );
   };
 
-  /** 单条删除：**先开确认框**（[docs/21 §1.1 第 2 条]），确认之后才调命令。 */
+  /** 单条删除：**先开确认框**，确认之后才调命令。 */
   const onDelete = (row: SubscriptionRow) => {
     refreshOne.reset();
     removeOne.reset();
@@ -1046,7 +1046,7 @@ function SubscriptionsSection({
     });
   };
 
-  /** 「删除选中」：一次确认 → 逐条调用（[docs/21 §1.2]）。 */
+  /** 「删除选中」：一次确认 → 逐条调用。 */
   const onDeleteSelected = () => {
     refreshOne.reset();
     removeOne.reset();
@@ -1068,7 +1068,7 @@ function SubscriptionsSection({
   return (
     <SectionPaper
       title={t("network.subscriptions.title")}
-      // 一个区块**只有这一个**问号（[docs/22 §3]）：说明 + 三句解释（地址遮蔽、健康检查的语义、
+      // 一个区块**只有这一个**问号：说明 + 三句解释（址遮蔽、健康检查的语义、
       // 刷新为什么强制重下）合成同一条提示。原来那三句挂在标题**下面单独一行**，
       // 就变成用户真机截图里那个"悬在工具栏上方、没有标签的孤儿问号"。
       description={mergeHelpText(
@@ -1082,7 +1082,7 @@ function SubscriptionsSection({
       {/* 「节点数 / 组数从哪来」那一句（`network.subscriptions.countHint`）已作废：
           它写着"本页尚未接入 subscription_nodes / subscription_groups"，而这两条命令
           这一页真的在调（见 `LaneWriteForm`）；/network/nodes 上更是直接列出了节点清单（[19 §2.3]）。 */}
-      {/* [docs/57] **写表单的入口在这里**（它不再常驻）。这一排**永远渲染**：
+      {/* **写表单的入口在这里**（它不再常驻）。这一排**永远渲染**：
           订阅一条都没有时，用户也必须有个地方能点"添加" —— 否则空列表就是个死路。 */}
       {/* **多选只在真的存在多选场景时才出现**（规则 3）：只有一条订阅时，
           "已选 0 条 / 删除选中"与行内那个勾选框都是纯噪音（一条订阅的批量删除 = 单条删除），
@@ -1190,7 +1190,7 @@ function SubscriptionsSection({
                     </TableCell>
                   ) : null}
                   <TableCell sx={CELL_NOWRAP_SX}>
-                    {/* [docs/54] 订阅名是**进详情页的入口**（用户第 321 轮："再去点击一个订阅，
+                    {/* 订阅名是**进详情页的入口**（用户第 321 轮："再去点击一个订阅，
                         里面就可以看到这个订阅的所有节点"）。`subscriptionHref` 由数据层传进来
                         （见它的 prop 注释：展示层不碰路由上下文）。
                         `AutoEllipsis` 只吃**字符串**子节点，所以它管的是那串用户数据本身。 */}
@@ -1210,7 +1210,7 @@ function SubscriptionsSection({
                     )}
                   </TableCell>
                   <TableCell sx={{ ...CELL_NOWRAP_SX, fontFamily: typography.fontMono }}>
-                    {/* [docs/26 §2] 订阅地址是最长的值之一（域名 + 路径 + 查询串）。
+                    {/* 订阅地址是最长的值之一（域名 + 路径 + 查询串）。
                         恢复路径：本行的订阅名就是详情页入口，完整信息在那一页；此外悬停的
                         tooltip 也能看全（`AutoEllipsis` 只在真溢出时挂提示）。 */}
                     <AutoEllipsis testId="network-subscription-url-ellipsis" sx={{ maxWidth: 280 }}>
@@ -1295,7 +1295,7 @@ function SubscriptionsSection({
         </Typography>
       )}
 
-      {/* 删除结果（[docs/21 §1.1 第 4 条] 的 `network-subscriptions-delete-result`）：
+      {/* 删除结果（`network-subscriptions-delete-result`）：
           成功写"已删除 <名称>"；批量先给成功/失败条数，失败项**逐条**带 id + 后端原文。 */}
       {deleteResult.length === 0 ? null : (
         <Stack spacing={1} data-testid="network-subscriptions-delete-result">
@@ -1312,7 +1312,7 @@ function SubscriptionsSection({
 
       <WriteError testId="network-subscriptions-row-error" error={refreshOne.error ?? removeOne.error} />
 
-      {/* 删除确认（[docs/21 §1 / §2]）：**先确认再发命令**；被引用时后端原文原样显示。
+      {/* 删除确认：**先确认再发命令**；被引用时后端原文原样显示。
           `subscription_delete` 没有 force 语义 → `cascadeAvailable={false}`，一个级联按钮都不放。 */}
       <ConfirmDelete
         open={deleteTarget !== undefined}
@@ -1340,7 +1340,7 @@ function SubscriptionsSection({
 
       <Divider />
 
-      {/* [docs/57] 写表单的对话框：**只在点了「添加订阅」或某一行「编辑」时才挂载**。
+      {/* 写表单的对话框：**只在点了「添加订阅」或某一行「编辑」时才挂载**。
           第 322 轮以前它是常驻的 `<SubscriptionWriteForm />`，占着列表下方一整屏。 */}
       {writeTarget === undefined ? null : (
         <SubscriptionWriteDialog row={writeTarget.row} onClose={() => setWriteTarget(undefined)} />
@@ -1351,7 +1351,7 @@ function SubscriptionsSection({
 
 // ================================================================ ③ 线路（只读）
 //
-// [docs/58]（用户第 325 轮：「这个功能好像没有什么用，可以在界面上删了」）
+//（用户第 325 轮：「这个功能好像没有什么用，可以在界面上删了」）
 // **手动新建 / 编辑线路的界面整块删除** —— 线路不再是用户要手填的东西：
 // 在服务商页选「自动」/ 某个节点 / 「直连」时，后端会把那条线路**按需建出来**
 //（`ensure_auto_lane` / `lane_ensure_for_node` / `lane_ensure_direct`）。
@@ -1388,11 +1388,11 @@ function LanesSection({
    *
    * 为什么是 `channel_matrix` 而不是 `lane_reverse_lookup`：矩阵的每一格就带 `lane_id`，
    * 一次读能覆盖**所有**线路（倒排要逐条问一次）；而且矩阵本来就是"通道挂在哪儿"的唯一真源。
-   * 它是**只读**命令（I2 不受影响）。读不到就一个字都不写（[docs/21 §1.1 第 3 条]：算不出来不编）。
+   * 它是**只读**命令（I2 不受影响）。读不到就一个字都不写（：算不出来不编）。
    */
   const matrix = useCommandQuery("channel_matrix", undefined, qk.channelMatrix);
 
-  // ---- 删除状态（[docs/21 §1]）：**只有单条删除**（线路表不做批量，见 `⋮` 菜单那段注释）
+  // ---- 删除状态：**只有单条删除**（线路表不做批量，见 `⋮` 菜单那段注释）
   /** 确认框里那一次操作（`undefined` = 框没开）。**确认之前一条命令都不发**。 */
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | undefined>(undefined);
   /** 后端原文（被引用时的错误）：有它才显示；线路没有 force 语义 → 级联按钮一个都不放。 */
@@ -1416,12 +1416,12 @@ function LanesSection({
   };
 
   /**
-   * 删除成功后要失效的**全部**受影响的查询（[docs/21 §1.1 第 4 条]）：
+   * 删除成功后要失效的**全部**受影响的查询：
    * **`qk.channelMatrix`（`["channels","matrix"]`）不在 `qk.lanes` 前缀里** ——
    * 通道矩阵每一格都带 `lane_id`，是"这条线路被哪些通道引用"的真源；不显式失效它，
    * 矩阵就会停在旧值上（"看起来删了、矩阵还指着它"）。列全了也更经得起后人删改。
    *
-   * [docs/55] `qk.laneAssignments` / `qk.lanePickOptions` 已随那三条命令一起删除 ——
+   * `qk.laneAssignments` / `qk.lanePickOptions` 已随那三条命令一起删除 ——
    * 原来它们挂在 `qk.lanes` 前缀下、由前缀失效顺带覆盖，现在连 key 都不存在了。
    */
   const invalidateAfterDelete = async (): Promise<void> => {
@@ -1464,7 +1464,7 @@ function LanesSection({
     await invalidateAfterDelete();
   };
 
-  /** 单条删除：**先开确认框**（[docs/21 §1.1 第 2 条]），确认之后才调命令。 */
+  /** 单条删除：**先开确认框**，确认之后才调命令。 */
   const onDelete = (row: LaneRow) => {
     setRowError(undefined);
     removeOne.reset();
@@ -1517,7 +1517,7 @@ function LanesSection({
     <SectionPaper
       title={t("network.lanes.title")}
       /*
-       * 六句解释与区块说明合成**一个**问号（[docs/22 §3]）：类型词表、通道数的口径、样本从哪来、
+       * 六句解释与区块说明合成**一个**问号：类型词表、通道数的口径、样本从哪来、
        * 钉住改了哪里、直连为什么没有组、测速为什么可能报错。正文一个字符都没丢。
        *
        * 为什么由这里自己构造 `<HelpTip>`，而不是走 `description="…"`（结果一样）：
@@ -1620,7 +1620,7 @@ function LanesSection({
                           : t(kindLabel)}
                     </TableCell>
                     <TableCell sx={CELL_NOWRAP_SX}>
-                      {/* [docs/26 §2] 节点名来自订阅，长名字很常见（机场里带序号/地区后缀）。
+                      {/* 节点名来自订阅，长名字很常见（机场里带序号/地区后缀）。
                           恢复路径：节点清单在 `/network/nodes`（页头就有入口）里有全名，
                           这里悬停/聚焦的 tooltip 也能看全。 */}
                       <AutoEllipsis testId="network-lane-node-ellipsis" sx={{ maxWidth: 240 }}>
@@ -1760,7 +1760,7 @@ function LanesSection({
         </Typography>
       )}
 
-      {/* 删除结果（[docs/21 §1.1 第 4 条] 的 `network-lanes-delete-result`）：
+      {/* 删除结果（`network-lanes-delete-result`）：
           成功写"已删除 <名称>"；批量先给成功/失败条数，失败项**逐条**带 id + 后端原文。 */}
       {deleteResult.length === 0 ? null : (
         <Stack spacing={1} data-testid="network-lanes-delete-result">
@@ -1798,7 +1798,7 @@ function LanesSection({
       <FormNotice testId="network-lanes-row-error" message={rowError} />
       <WriteError testId="network-lanes-row-error" error={setNode.error ?? removeOne.error} />
 
-      {/* 删除确认（[docs/21 §1 / §2]）：**先确认再发命令**；被引用时后端原文原样显示。
+      {/* 删除确认：**先确认再发命令**；被引用时后端原文原样显示。
           `lane_delete` 没有 force 语义 → `cascadeAvailable={false}`，一个级联按钮都不放。 */}
       <ConfirmDelete
         open={deleteTarget !== undefined}
@@ -1818,7 +1818,7 @@ function LanesSection({
         }}
       />
 
-      {/* [docs/58] 这里原来是「添加线路 / 编辑线路」的对话框 —— 手动建线路的整套界面已删除。
+      {/* 这里原来是「添加线路 / 编辑线路」的对话框 —— 手动建线路的整套界面已删除。
           线路在服务商页被选中时由后端按需建出来（见本区块上方的说明）。 */}
     </SectionPaper>
   );
@@ -1849,7 +1849,7 @@ export type NetworkBodyProps = {
    */
   showProviderReturn?: boolean;
   /**
-   * 「点订阅名进详情页」的地址（[docs/54]）。由数据层给，见 `SubscriptionsSection` 的 prop 注释。
+   * 「点订阅名进详情页」的地址。由数据层给，见 `SubscriptionsSection` 的 prop 注释。
    * 不传就退化成纯文本（展示层单测不包 Router）。
    */
   subscriptionHref?: (id: string) => string;
@@ -1944,7 +1944,7 @@ export default function NetworkPage() {
             <Button variant="outlined" component={Link} to="/network/nodes">
               {t("network.gotoNodes")}
             </Button>
-            {/* 「线路分配」那一页整页删除了（[docs/55]）→ 这里的入口一并去掉：
+            {/* 「线路分配」那一页整页删除了→ 这里的入口一并去掉：
                 留一个点了落到不存在路由的按钮，就是一个假控件。 */}
           </>
         }
@@ -1965,7 +1965,7 @@ export default function NetworkPage() {
         lanesError={lanes.error ?? undefined}
         onRetry={refresh}
         showProviderReturn={showProviderReturn}
-        // [docs/54] 数据层负责拼地址（展示层不碰路由上下文）
+        // 数据层负责拼地址（展示层不碰路由上下文）
         subscriptionHref={(id) => `/network/subscriptions/${encodeURIComponent(id)}`}
         // 线路空态那个按钮的地址（同一个理由：展示层不碰路由上下文）
         providersHref="/providers"

@@ -26,7 +26,7 @@ import path from "node:path";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-// [docs/55] `@/pages/network/assignments`（「线路分配」页）整页删除 —— 它的 import
+// `@/pages/network/assignments`（「线路分配」页）整页删除 —— 它的 import
 // 与下面全部相关用例一并去掉。那一页展示的五级继承链只剩两级还有意义。
 import {
   LANE_KINDS,
@@ -85,7 +85,7 @@ function contractSubscription(over: Record<string, unknown> = {}): Record<string
       health_check: { enabled: true, url: "https://api.commandcode.ai/v1/models", interval_s: 60, tolerance_ms: 100 },
       enabled: true,
       provider_key: "sub-jp",
-      // [docs/54] 用户关掉的节点名（逐节点开关的存档）。[docs/57] 的编辑用例靠它证明
+      // 用户关掉的节点名（逐节点开关的存档）。 的编辑用例靠它证明
       // "整条覆盖写 + 不回带底稿 = 静默把这些开关全打开"。
       disabled_nodes: ["剩余流量：100 GB"],
     },
@@ -245,7 +245,7 @@ function renderPageAt(path: string, node: React.ReactElement) {
 
 describe("两个 network 路由都不再落到占位壳", () => {
   it("routes.ts 的候选路径都能解析到真实页面文件", () => {
-    // [docs/55] `network-assignments` 已从那三个里去掉：那一页整页删除了。
+    // `network-assignments` 已从那三个里去掉：那一页整页删除了。
     for (const key of ["network", "network-nodes"]) {
       const route = routeByKey(key);
       expect(route, `路由表里没有 ${key}`).toBeDefined();
@@ -295,7 +295,7 @@ const CONFIG_WRITES_ALLOWED = new Set([
   // 节点级启用 / 关闭（用户第 202 轮）：写的是 TokenAgency 自己的配置（订阅的 `disabled_nodes`），
   // 系统网络一个字段都不动 —— 与上面三条同族。批量只是"一次命令带一批名字"，不是新的能力面。
   "subscription_nodes_enabled",
-  // [docs/58] `lane_upsert` 已从白名单去掉：手动建/改线路的界面整块删除，这一页不再写线路。
+  // `lane_upsert` 已从白名单去掉：手动建/改线路的界面整块删除，这一页不再写线路。
   // 线路的行级动作只剩删除与钉节点（那两条还在下面）。
   "lane_delete",
   "lane_set_node",
@@ -319,7 +319,7 @@ const OTHER_CONFIG_WRITES = new Set([
   "channel_set_tags",
   "channel_bulk_assign_lane",
   "credential_upsert",
-  // [docs/28 §1.3] `credential_delete` 已从命令面删除（一个服务商一把密钥：要撤密钥就删服务商）
+  // `credential_delete` 已从命令面删除（一个服务商一把密钥：要撤密钥就删服务商）
   "credential_set_secret",
   "credential_set_enabled",
   "group_upsert",
@@ -360,7 +360,7 @@ const READ_ONLY_ALLOWED = new Set([
   "subscription_preview",
   "subscription_nodes",
   "subscription_traffic",
-  // [docs/55] `lane_assignments` / `lane_pick_options` / `lane_reverse_lookup` 已从白名单去掉：
+  // `lane_assignments` / `lane_pick_options` / `lane_reverse_lookup` 已从白名单去掉：
   // 那三条命令随「线路分配」页整页删除，现在已经不在契约里了。
 ]);
 
@@ -383,7 +383,7 @@ const DIRECTLY_REFERENCED = [
   "lane_list",
   "lane_set_node",
   "lane_test",
-  // [docs/58]（第 325 轮）`lane_upsert` 已从"页面直接引用"里去掉：
+  //（第 325 轮）`lane_upsert` 已从"页面直接引用"里去掉：
   // 手动建 / 改线路的界面整块删除（用户："这个功能好像没有什么用，可以在界面上删了"）。
   // 线路改由后端在服务商选中时按需建出来（`lane_ensure_for_node` / `lane_ensure_direct` /
   // `ensure_auto_lane`）—— 那三条**不在这一页**调用，所以也不该出现在这份清单里。
@@ -631,11 +631,11 @@ describe("读线路：契约 LaneView 与 Rust lane_list 两套形状都认", ()
   });
 
   /**
-   * [docs/54] 用户第 321 轮："直接放弃订阅里面分组这一概念，只拿节点"。
+   * 用户第 321 轮："直接放弃订阅里面分组这一概念，只拿节点"。
    * 所以这里是**四种**（`subscription_group` 从界面选项里消失），
    * 而且这一条还要挡住"它悄悄回到选项里"。
    */
-  it("四种线路类型都有文案，且「订阅里的组」已从选项里消失（[docs/54]）", () => {
+  it("四种线路类型都有文案，且「订阅里的组」已从选项里消失", () => {
     expect(LANE_KINDS).toHaveLength(4);
     expect(LANE_KINDS).not.toContain("subscription_group");
     for (const kind of LANE_KINDS) {
@@ -721,7 +721,7 @@ describe("/network：有数据 / 空 / 错误三种状态都说实话", () => {
     renderBody(<NetworkBody {...networkProps({ subscriptions: subs, lanes })} />);
     const table = within(screen.getByTestId("network-lanes-table"));
     expect(table.getByText("日本线")).toBeTruthy();
-    // [docs/54] fixture 的 kind 现在是 `filter`（「订阅里的组」已取消）
+    // fixture 的 kind 现在是 `filter`（「订阅里的组」已取消）
     expect(table.getByText("正则筛选后择优")).toBeTruthy();
     expect(table.getByText("82ms")).toBeTruthy();
     expect(table.getByText("成功")).toBeTruthy();
@@ -946,7 +946,7 @@ describe("/network/nodes：只有拿得到的证据才画", () => {
 });
 // ================================================================ ⑧ /network/assignments —— 已删除
 //
-// [docs/55]（第 322 轮）「线路分配」整页删除（用户："线路级别的分配逻辑我们已经放弃了，
+//（第 322 轮）「线路分配」整页删除（用户："线路级别的分配逻辑我们已经放弃了，
 // 取而代之的，每个服务商统一一个节点"）。这里原来的 6 条用例全部删除：
 // 它们断言的是"五级里每一级显式写了什么" + "倒排谁引用了这条线"，
 // 而前三级已经没有字段、没有写入口、也不参与解析了。
@@ -971,7 +971,7 @@ describe("整页在 mock 基准场景下可用（不依赖 Rust/Tauri）", () =>
     expect(await screen.findByTestId("network-nodes-samples")).toBeTruthy();
   });
 
-  // [docs/55] `/network/assignments` 整页删除 → 这一档（它渲染页头 + 默认线路）随之删除。
+  // `/network/assignments` 整页删除 → 这一档（它渲染页头 + 默认线路）随之删除。
 });
 
 // ================================================================ ⑩ 文案回归
@@ -984,7 +984,7 @@ describe("文案里不留未替换的占位符", () => {
     renderBody(<NodesBody {...nodesProps({ lanes: [readLane(rustLane())] })} />);
     expect(document.body.textContent ?? "").not.toMatch(/\{\{\w+\}\}/);
     cleanup();
-    // [docs/55] `AssignmentsBody` 那一页整页删除，所以这一轮不再渲染它。
+    // `AssignmentsBody` 那一页整页删除，所以这一轮不再渲染它。
   });
 });
 
@@ -1020,7 +1020,7 @@ function typeInto(testId: string, value: string): void {
 }
 
 /**
- * [docs/57] **写表单不再常驻**（用户第 324 轮：「这个界面不要常驻，应该点击添加才会有，
+ * **写表单不再常驻**（用户第 324 轮：「这个界面不要常驻，应该点击添加才会有，
  * 或者说点击编辑」）→ 碰表单之前先打开对话框。
  *
  * 这两个 helper 同时也是那条"不常驻"断言的**前提**：如果表单又变回常驻，
@@ -1035,7 +1035,7 @@ function openSubscriptionEdit(index = 0): void {
   fireEvent.click(screen.getAllByTestId("network-subscriptions-edit")[index]!);
 }
 
-// [docs/58]（第 325 轮）`openLaneWrite` / `openLaneEdit` 两个 helper 随**手动建/改线路的界面**
+//（第 325 轮）`openLaneWrite` / `openLaneEdit` 两个 helper 随**手动建/改线路的界面**
 // 一起删除：线路区块现在没有任何写入入口（线路由后端在服务商选中时按需建出来）。
 
 describe("⑪ /network 订阅写界面：点了真的调命令，并且显示后端返回的对象", () => {
@@ -1086,7 +1086,7 @@ describe("⑪ /network 订阅写界面：点了真的调命令，并且显示后
     // 入参 key 一律 snake_case（104 条命令都显式声明了 rename_all = "snake_case"）
     for (const key of Object.keys(sub)) expect(key).toMatch(/^[a-z][a-z0-9_]*$/);
 
-    // [docs/46 §E] 健康检查地址：**填了才发**（留空时上面那条 "health_check" in sub === false 仍然成立）。
+    // 健康检查地址：**填了才发**（留空时上面那条 "health_check" in sub === false 仍然成立）。
     // 只放 `url`：Rust 侧 `health_check` 的其余项有 `#[serde(default)]`，前端不冒充第二份默认值。
     typeInto("network-subscriptions-add-health-url", "http://127.0.0.1:39099/");
     fireEvent.click(screen.getByTestId("network-subscriptions-add-submit"));
@@ -1215,7 +1215,7 @@ describe("⑪ /network 订阅写界面：点了真的调命令，并且显示后
   });
 
   /**
-   * [docs/53] **用户真机看到的就是这句** —— 这一条钉的是"报错必须能照着改"。
+   * **用户真机看到的就是这句** —— 这一条钉的是"报错必须能照着改"。
    *
    * 第 320 轮用户报的是：删订阅被拒之后只显示 `[TA-5001] 配置校验失败：1 处问题`。
    * 这句话不指出**是哪条线路**挡着，也不说**该去哪儿改** —— 用户只能来问人。
@@ -1224,7 +1224,7 @@ describe("⑪ /network 订阅写界面：点了真的调命令，并且显示后
    * 而且即使拿到的是带 `details` 的 `TA-5001`，前端也会把字段路径拼进去
    * （`errorMessage` 的唯一出口，见 `src/app/errorMessage.test.ts`）。
    */
-  it("[docs/53] 被拒的原文里必须能看出「谁在挡」与「该怎么办」，不能只有一句「N 处问题」", async () => {
+  it(" 被拒的原文里必须能看出「谁在挡」与「该怎么办」，不能只有一句「N 处问题」", async () => {
     registerMock("subscription_list", () => [contractSubscription()]);
     registerMock("subscription_delete", () => {
       // 后端**现在**回的形状：点名引用者（线路的显示名）+ 给出出路
@@ -1283,7 +1283,7 @@ describe("⑪ /network 订阅写界面：点了真的调命令，并且显示后
   });
 
   /**
-   * [docs/53] **这一条是第 320 轮用户真机报上来的那个 bug。**
+   * **这一条是第 320 轮用户真机报上来的那个 bug。**
    *
    * 订阅删除**没有 force 语义**：被线路引用时后端直接拒（TA-5001），一个字都不会删。
    * 但确认框的表头原来固定写「会连带删除 / 影响：」—— 那是在**承诺一件不会发生的事**，
@@ -1291,7 +1291,7 @@ describe("⑪ /network 订阅写界面：点了真的调命令，并且显示后
    *
    * 判据：没有 force 的实体，表头必须说「**阻止**删除」；有 force 的（服务商/模型）才说「会连带删除」。
    */
-  it("[docs/53] 确认框不许承诺做不到的级联：没有 force 时说「阻止删除」，不说「会连带删除」", async () => {
+  it(" 确认框不许承诺做不到的级联：没有 force 时说「阻止删除」，不说「会连带删除」", async () => {
     registerMock("subscription_list", () => [contractSubscription()]);
     registerMock("lane_list", () => [rustLane()]); // lane-jp 引用 sub-jp
 
@@ -1412,7 +1412,7 @@ describe("⑪ /network 订阅写界面：点了真的调命令，并且显示后
   });
 });
 
-// ================================================================ ㉑ [docs/57] 写表单不常驻 + 编辑
+// ================================================================ ㉑ 写表单不常驻 + 编辑
 
 /**
  * 用户第 324 轮原话：
@@ -1425,11 +1425,11 @@ describe("⑪ /network 订阅写界面：点了真的调命令，并且显示后
  * 1. 列表里的地址是**遮蔽过的**（`maskSubscriptionUrl` 是唯一出口）。把它回填进输入框，
  *    用户一保存就把 `token=***` 当成了真地址 —— 保存成功、下次刷新全挂；
  * 2. `subscription_upsert` 是**整条覆盖写**。只发表单字段会把 `disabled_nodes`
- *   （[docs/54] 逐节点开关的存档）清空 = 用户关掉的节点**全部被重新打开**，且不报错。
+ *   （逐节点开关的存档）清空 = 用户关掉的节点**全部被重新打开**，且不报错。
  *
  * 所以这两条各有一个断言，且都是**反向**的（"不许包含 ***"、"必须原样带上"）。
  */
-describe("㉑ [docs/57] 写表单不常驻；编辑不覆盖遮蔽地址、不丢底稿字段", () => {
+describe("㉑ 写表单不常驻；编辑不覆盖遮蔽地址、不丢底稿字段", () => {
   beforeEach(() => {
     registerBaselineMocks();
   });
@@ -1458,7 +1458,7 @@ describe("㉑ [docs/57] 写表单不常驻；编辑不覆盖遮蔽地址、不�
   });
 
   /**
-   * [docs/58]（第 325 轮）用户原话：「这个功能好像没有什么用，可以在界面上删了」。
+   *（第 325 轮）用户原话：「这个功能好像没有什么用，可以在界面上删了」。
    *
    * **反回归闸门**：线路区块从此**没有任何写入口** —— 添加按钮、编辑按钮、写表单，
    * 一个都不许再出现。线路由后端在服务商页被选中时按需建出来
@@ -1467,7 +1467,7 @@ describe("㉑ [docs/57] 写表单不常驻；编辑不覆盖遮蔽地址、不�
    * 为什么写成"页面里不许有"而不是"点了没反应"：入口一旦回来，用户就会以为
    * "线路还能手建"，于是又出现两条并行的真相源 —— 那正是这一轮要消灭的东西。
    */
-  it("[docs/58] 线路区块**没有任何写入口**（添加/编辑/写表单都不在）", async () => {
+  it(" 线路区块**没有任何写入口**（添加/编辑/写表单都不在）", async () => {
     registerMock("subscription_list", () => [contractSubscription()]);
     registerMock("lane_list", () => [contractLane()]);
 
@@ -1565,7 +1565,7 @@ describe("㉑ [docs/57] 写表单不常驻；编辑不覆盖遮蔽地址、不�
 
 // ================================================================ ⑫ 线路区块（只读 + 行级动作）
 //
-// [docs/58]（第 325 轮）**手动建 / 改线路的用例已整块删除** —— 那些界面没了。
+//（第 325 轮）**手动建 / 改线路的用例已整块删除** —— 那些界面没了。
 // 剩下的这一组钉住线路区块仍然能用的部分：删除（二次确认 + 连带清单 + 批量）与钉节点。
 //
 // 线路"该长什么样"的判断在后端：`lane_ensure_for_node` / `lane_ensure_direct` /
@@ -1641,7 +1641,7 @@ describe("⑫ /network 线路区块：lane_delete / lane_set_node 挂在真控�
   });
 
   it("删除线路后：channel_matrix 与 lane_list 都被重新拉取（不留旧值）", async () => {
-    // [docs/55] 原来这里还挂着 `lane_assignments` / `lane_pick_options` 两个观察者 ——
+    // 原来这里还挂着 `lane_assignments` / `lane_pick_options` 两个观察者 ——
     // 那两条命令随「线路分配」页删除了。**留下的那一条才是真风险**：
     // `channelMatrix` 的 key 是 `["channels","matrix"]`，**不在** `qk.lanes` 前缀里，
     // 旧实现（只失效 qk.lanes）下矩阵会一直停在旧值上 —— 所以这一条必须继续钉。
@@ -1748,7 +1748,7 @@ describe("⑫ /network 线路区块：lane_delete / lane_set_node 挂在真控�
 
 // ================================================================ ⑬ /network/assignments —— 已删除
 //
-// [docs/55]（第 322 轮）这一页整页删除，连同它显示的 `lane_assignments`（最终走哪条线 + 来自
+//（第 322 轮）这一页整页删除，连同它显示的 `lane_assignments`（最终走哪条线 + 来自
 // 哪一级）/ `lane_pick_options`（候选）/ `lane_reverse_lookup`（倒排）三条命令。
 // "来源哪一级"这个问题本身不再成立：生效线路只有 `provider.lane ?? net.default_lane ?? direct`。
 
@@ -1802,7 +1802,7 @@ describe("⑭ /network 常显：空配置下每块给诚实空态，且没有「
 
   it("空配置下**订阅**的写入入口仍在（否则第一份订阅永远建不出来）", () => {
     renderPage(<NetworkBody {...unconfiguredProps()} />);
-    // [docs/57] 表单不再常驻 → 入口是一个按钮。**按钮必须在**（空列表时更是唯一入口），
+    // 表单不再常驻 → 入口是一个按钮。**按钮必须在**（空列表时更是唯一入口），
     // 点开之后表单才出现 —— 两条都断言，否则"入口还在"就只是一句空话。
     expect(screen.getByTestId("network-subscriptions-add-open")).toBeTruthy();
     expect(screen.queryByTestId("network-subscriptions-add-id")).toBeNull();
@@ -1812,7 +1812,7 @@ describe("⑭ /network 常显：空配置下每块给诚实空态，且没有「
     cleanup();
 
     renderPage(<NetworkBody {...unconfiguredProps()} />);
-    // [docs/58] 线路**没有**写入入口了（手动建线路的界面删除）→ 空列表上给的是
+    // 线路**没有**写入入口了（手动建线路的界面删除）→ 空列表上给的是
     // 诚实的空态 + "线路从哪儿来"的说明，不是一条走不通的死路。
     expect(screen.queryByTestId("network-lanes-add-open")).toBeNull();
     expect(screen.getByTestId("network-lanes-empty")).toBeTruthy();
@@ -1898,9 +1898,9 @@ describe("⑭ /network 常显：空配置下每块给诚实空态，且没有「
     // 空配置的两块给的是**诚实空态**，不是"藏起来"
     expect(screen.getByTestId("network-subscriptions-empty")).toBeTruthy();
     expect(screen.getByTestId("network-lanes-empty")).toBeTruthy();
-    // 订阅的建第一条入口必须还在（[docs/57]：现在是"添加"按钮，表单点开才出现），
+    // 订阅的建第一条入口必须还在（：现在是"添加"按钮，表单点开才出现），
     // 且不再需要上一轮的"兜底 setup 块"。
-    // [docs/58] 线路没有写入入口了 —— 手动建线路的界面已删除。
+    // 线路没有写入入口了 —— 手动建线路的界面已删除。
     expect(screen.getByTestId("network-subscriptions-add-open")).toBeTruthy();
     expect(screen.queryByTestId("network-lanes-add-open")).toBeNull();
     expect(screen.queryByTestId("network-subscriptions-setup")).toBeNull();
@@ -1915,7 +1915,7 @@ describe("⑭ /network 常显：空配置下每块给诚实空态，且没有「
     );
     expect(screen.getByTestId("network-subscriptions-table")).toBeTruthy();
     expect(screen.getByTestId("network-lanes-empty")).toBeTruthy();
-    // [docs/58] 线路区块是**只读**的：没有任何写入口（连"添加"按钮都没有）
+    // 线路区块是**只读**的：没有任何写入口（连"添加"按钮都没有）
     expect(screen.queryByTestId("network-lanes-add-open")).toBeNull();
     expect(screen.queryByTestId("network-lanes-add-id")).toBeNull();
     expect(screen.queryByTestId("network-lanes-setup")).toBeNull();
@@ -2465,7 +2465,7 @@ describe("⑳ /network/nodes 节点级启用 / 关闭：逐行开关 + 全选 + 
     // 默认全选：表头勾上、不是"部分"
     expect(selectAllBox().checked).toBe(true);
     expect(selectAllBox().getAttribute("aria-checked")).not.toBe("mixed");
-    // 计数**只有数字**（[docs/30 §1] 极简：不留「已选 N 条」那种话）
+    // 计数**只有数字**（极简：不留「已选 N 条」那种话）
     expect(screen.getByTestId("network-nodes-selected-count").textContent).toBe(
       i18n.t("network.nodes.selectedCount", { count: 3 }),
     );
@@ -2635,10 +2635,10 @@ describe("⑱ /network 线路表：lane_test 真调，结果原样显示", () =>
   });
 });
 
-// ================================================================ ⑲ [docs/22] 长简介收进「问号圆圈 + 悬停提示」
+// ================================================================ ⑲ 长简介收进「问号圆圈 + 悬停提示」
 //
 // 用户原话：「我发现里面的简介好长，好多字，这样吧尽量缩短字数，那些比较介绍做成一个问好加一个圆圈，
-// 鼠标移上去能看到提示那种」。这一组按 [docs/22 §2/§3/§5] 钉三件事：
+// 鼠标移上去能看到提示那种」。这一组按 钉三件事：
 //
 // 1. 收走的正文**一个字都没丢** —— 它是问号圆圈的 `aria-label`
 //    （提示气泡是懒渲染的，读屏与"只看无障碍树"的调用方仍然拿得到全文）；
@@ -2648,7 +2648,7 @@ describe("⑱ /network 线路表：lane_test 真调，结果原样显示", () =>
 //
 // 另外钉住 §3 的「同一区块最多一个 `-help`」：一个区块的几句解释合成一个问号，而不是一排问号。
 
-describe("⑲ [docs/22] 长简介收进问号圆圈（HelpTip）", () => {
+describe("⑲ 长简介收进问号圆圈（HelpTip）", () => {
   const subs: SubscriptionRow[] = [readSubscription(contractSubscription())];
   const lanes: LaneRow[] = [readLane(contractLane())];
 
@@ -2674,8 +2674,8 @@ describe("⑲ [docs/22] 长简介收进问号圆圈（HelpTip）", () => {
     expectCollected("network-subscriptions-help", "network.subscriptions.description");
     expectCollected("network-lanes-help", "network.lanes.description");
 
-    // [docs/57] 订阅写表单自己的问号搬进了对话框 → 先点开才存在（不再是常驻页面的一部分）。
-    // [docs/58] 线路那份写表单的说明随界面一起删了，所以这里不再有它。
+    // 订阅写表单自己的问号搬进了对话框 → 先点开才存在（不再是常驻页面的一部分）。
+    // 线路那份写表单的说明随界面一起删了，所以这里不再有它。
     openSubscriptionWrite();
     expectCollected("network-subscriptions-write-help", "network.subscriptions.write.hint");
   });
@@ -2714,13 +2714,13 @@ describe("⑲ [docs/22] 长简介收进问号圆圈（HelpTip）", () => {
     expect(screen.queryByTestId("network-subscriptions-hint-help")).toBeNull();
 
     // 区块容器只挂**一个**问号。
-    // [docs/57] 两个写表单搬进对话框之后，它们不再算在区块容器里 ——
+    // 两个写表单搬进对话框之后，它们不再算在区块容器里 ——
     // 所以这里分别验：区块自己、以及**点开之后**的表单各一个。
     expect(
       within(screen.getByTestId("network-subscriptions")).getAllByTestId(/-help$/),
       "订阅区块里不该出现一排问号",
     ).toHaveLength(1);
-    // 线路区块现在只有**区块自己**那一个问号（[docs/58]：写表单整块删除，里面那个也没了）
+    // 线路区块现在只有**区块自己**那一个问号（：写表单整块删除，里面那个也没了）
     expect(within(screen.getByTestId("network-lanes")).getAllByTestId(/-help$/)).toHaveLength(1);
     cleanup();
 
@@ -2754,7 +2754,7 @@ describe("⑲ [docs/22] 长简介收进问号圆圈（HelpTip）", () => {
     renderBody(<NetworkBody {...networkProps({ subscriptions: subs, lanes })} />);
     expect(within(screen.getByTestId("network-subscriptions-table")).getByText("12")).toBeTruthy();
     expect(within(screen.getByTestId("network-lanes-table")).getByText("82ms")).toBeTruthy();
-    // [docs/57] 「保存订阅」现在是对话框里的主操作 → 先点开「添加订阅」
+    // 「保存订阅」现在是对话框里的主操作 → 先点开「添加订阅」
     openSubscriptionWrite();
     expect(screen.getByRole("button", { name: "保存订阅" })).toBeTruthy();
     // I2 的承诺（"不设置系统代理"）**仍然在用户看得见的地方**：它在页头那个问号里
@@ -2806,13 +2806,13 @@ describe("⑲ [docs/22] 长简介收进问号圆圈（HelpTip）", () => {
     expect(samples.getByText("200")).toBeTruthy();
   });
 
-  // [docs/55]（第 322 轮）这里原有三条 `/network/assignments` 的问号圆圈用例 ——
+  //（第 322 轮）这里原有三条 `/network/assignments` 的问号圆圈用例 ——
   // 那一页整页删除，所以它们连同 `AssignmentsBody` 一起删除。
 });
 
-// ================================================================ [docs/26 §2] 一级界面省略
+// ================================================================ 一级界面省略
 
-describe("[docs/26 §2] 订阅名 / 订阅地址 / 线路节点名：省略后全文仍在 DOM", () => {
+describe(" 订阅名 / 订阅地址 / 线路节点名：省略后全文仍在 DOM", () => {
   it("三个长值都整段留在 DOM 里；没溢出时一个提示都不挂", () => {
     const name = "机场A（东京专线 · 备用 · 团队共享）";
     const longNode = "东京 BGP 专线 01（仅工作日 09:00 后可用）";

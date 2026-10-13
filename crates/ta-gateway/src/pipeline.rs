@@ -1,6 +1,6 @@
 //! 12 步请求管线编排 + 失败转移。**工作包 G2 负责实现**。
 //!
-//! 步骤见 `docs/09-architecture-design.md` §5.1。G1 做完了 1–2 步与"定点改写"，
+//! 步骤见 。G1 做完了 1–2 步与"定点改写"，
 //! 这里做 3–12 步：hints → 路由决策 → 选择器 → 选通道 → 取凭据/lane → 建请求 →
 //! 分发 → 计量/追踪 → 失败转移 → trace。
 //!
@@ -9,11 +9,11 @@
 //! 1. **只用 `ingress::build_prepared_request` 造上游请求**。它是唯一一个
 //!    "整体转发 + 4 处定点改"的实现，也负责按实际 body 重算 `content-length`；
 //!    在这里自己拼头/拼 body = 把全透传的铁律交给第二个人去守（必然漂移）。
-//! 2. **已向客户端写出第一个字节后绝不重试**（`docs/03 §5.2`）。结构上保证：
+//! 2. **已向客户端写出第一个字节后绝不重试**。结构上保证：
 //!    流式响应一旦返回，"再试一次"的代码路径就不存在了。
 //! 3. **lane 失败 ≠ 通道失败**。lane 连不上 → 标记该 lane 不可用（只影响用这条 lane
 //!    的通道）；429/402/5xx → 冷却**通道**。混成一个循环就会出现
-//!    "同一个已耗尽的套餐被重试 5 次"（`docs/03 §5.1`、`docs/12 §4 G2`）。
+//!    "同一个已耗尽的套餐被重试 5 次"（）。
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -116,7 +116,7 @@ pub struct RequestTraceSummary {
     /// 最终答复客户端的那个通道（失败链走完时是"最后一个说话的上游"）
     pub chosen_channel: Option<ChannelId>,
     pub lane: Option<LaneId>,
-    /// 自检：**正常恒为空**，非空说明网关自己吞/加了头（[docs/03 §7.4]）
+    /// 自检：**正常恒为空**，非空说明网关自己吞/加了头
     pub header_diff: Option<HeaderDiff>,
     /// 客户端最终看到的 HTTP 状态码（上游透传的就是上游的码）
     pub status: u16,
@@ -184,7 +184,7 @@ pub struct PipelineDeps {
     pub passthrough: Arc<dyn PassthroughPolicy>,
     pub sink: Arc<dyn AttemptSink>,
     /// `None` = 计量还没接上（G4 在途）。**不提供空实现**：
-    /// 静默地"接了但没数据"比没接更糟（`docs/13 §4.5` L10）。
+    /// 静默地"接了但没数据"比没接更糟（L10）。
     pub meter: Option<Arc<dyn ResponseMeter>>,
 }
 
@@ -193,18 +193,18 @@ pub struct PipelineDeps {
 struct Runtime {
     /// 通道 → 冷却结束时间（ms）
     cooling_until_ms: BTreeMap<ChannelId, i64>,
-    /// 通道 → **连续**失败次数（退避阶梯用）。成功一次清零（[docs/03 §5.3]）。
+    /// 通道 → **连续**失败次数（退避阶梯用）。成功一次清零。
     channel_failures: BTreeMap<ChannelId, u32>,
     /// lane → 不可用**截止时间**（ms）。不是永久拉黑，见 [`LANE_RECOVERY_MS`]。
     lane_down_until_ms: BTreeMap<LaneId, i64>,
-    /// lane → **连续**连接失败次数。成功一次清零（[docs/03 §5.3]）。
+    /// lane → **连续**连接失败次数。成功一次清零。
     lane_failures: BTreeMap<LaneId, u32>,
 }
 
-/// 冷却退避的上限（[docs/03 §5.3]：1 小时）。
+/// 冷却退避的上限（：1 小时）。
 const COOLDOWN_CAP_S: u32 = 3_600;
 
-/// 第 `failures` 次连续失败后该冷却多久（[docs/03 §5.3] 的指数退避）。
+/// 第 `failures` 次连续失败后该冷却多久（指数退避）。
 ///
 /// 文档给的阶梯是 **`120s → 300s → 900s`，上限 1h**。这里把它写成"相对配置的
 /// `cooldown_s`"：base=120 时逐级得到 120 / 300 / 900（正是文档那串），再往上每级 ×3
@@ -223,7 +223,7 @@ fn cooldown_seconds(base_s: u32, failures: u32) -> u32 {
     (raw.min(COOLDOWN_CAP_S as f64).max(1.0)) as u32
 }
 
-/// 连续失败多少次才把一条 lane 判为降级（[docs/03 §5.3]：连续 3 次）。
+/// 连续失败多少次才把一条 lane 判为降级（：连续 3 次）。
 ///
 /// **不能一次失败就降级**：内核热重载（K1）时 listener 有一瞬的关闭/重建，
 /// 一次 `connection refused` 就拉黑 5 秒，等于用户每改一次线路就多一次失败 ——
@@ -232,7 +232,7 @@ const LANE_DEGRADE_AFTER: u32 = 3;
 
 /// lane 被判降级后的恢复窗口。
 ///
-/// **为什么必须"短暂"而不是永久**：M0 真机实测（`docs/06 §1.6`）—— 内核热重载
+/// **为什么必须"短暂"而不是永久**：M0 真机实测—— 内核热重载
 /// （`PUT /configs?force=true`）时 listener 会经历一瞬间的关闭/重建，此时会出现
 /// `connection refused`。若把它当成"这条 lane 坏了"永久拉黑，用户每改一次线路
 /// 就会永久失去那条线（直到重启网关）。
@@ -247,7 +247,7 @@ const LANE_RECOVERY_MS: i64 = 5_000;
 /// 通用退避属于通道级冷却（`cooldown_s`），两者混在一起会让"重试"变成"重打同一个
 /// 已耗尽的套餐"。
 ///
-/// ⚠️ **这个 50ms 是估的，没有实测**（[docs/13 L19] 的同一条纪律：别把估计写成事实）。
+/// ⚠️ **这个 50ms 是估的，没有实测**（同一条纪律：别把估计写成事实）。
 /// K1 实测的是"reload 是进程内重载、PID 不变、可逆"，**没有量过 listener 关闭→重建
 /// 持续多久**。若真实时长更大，单候选配置在这一瞬仍可能打不通 ——
 /// 那会表现为"改线路时偶发一次失败"，正是 K1 要消灭的形态。
@@ -307,7 +307,7 @@ impl Pipeline {
     }
 
     /// 通道级失败（429/402/5xx/传输失败）：冷却该通道，**按连续失败次数退避**
-    /// （[docs/03 §5.3] 的 120s → 300s → 900s → … → 上限 1h）。
+    /// （120s → 300s → 900s → … → 上限 1h）。
     fn cool_channel(&self, channel_id: &ChannelId, cooldown_s: u32, now_ms: i64) {
         let mut guard = self.lock_runtime();
         let failures = {
@@ -320,17 +320,17 @@ impl Pipeline {
     }
 
     /// 通道级成功：清掉连续失败计数并立即解除冷却
-    /// （[docs/03 §5.3]「成功一次 → 冷却计时器清零」）。
+    /// （「成功一次 → 冷却计时器清零」）。
     ///
     /// 不这么做的话，"偶发 429 的通道"会被自己的历史一次次推得更远 ——
-    /// 那正是 [docs/03 §6.2] 说的"自动学习降级比不降级更糟"。
+    /// 那正是 说的"自动学习降级比不降级更糟"。
     fn record_channel_success(&self, channel_id: &ChannelId) {
         let mut guard = self.lock_runtime();
         guard.channel_failures.remove(channel_id);
         guard.cooling_until_ms.remove(channel_id);
     }
 
-    /// lane 级失败：记一次**连续**失败；到阈值才降级（[docs/03 §5.3]）。
+    /// lane 级失败：记一次**连续**失败；到阈值才降级。
     ///
     /// 阈值判断与降级写在同一个锁里：分两次加锁会让并发的成功/失败互相覆盖计数。
     /// 注意 `entry(..).or_insert(..)` 返回的 `&mut` 必须在动 `guard` 的其它字段**之前**
@@ -350,7 +350,7 @@ impl Pipeline {
     }
 
     /// lane 级成功：成功一次就把连续失败计数清零，并立即解除降级
-    /// （[docs/03 §5.3]「成功一次 → 冷却计时器清零」）。
+    /// （「成功一次 → 冷却计时器清零」）。
     fn record_lane_success(&self, lane: &LaneId) {
         let mut guard = self.lock_runtime();
         guard.lane_failures.remove(lane);
@@ -402,14 +402,14 @@ impl Pipeline {
                 .iter()
                 .map(|(lane, until)| (lane.clone(), *until <= now_ms))
                 .collect(),
-            // 用量快照由**路由门面**填（`LiveRouter::plan`，[docs/48 §4]）：
+            // 用量快照由**路由门面**填（`LiveRouter::plan`）：
             // 那是唯一同时看得见"用量来源"与"选路"的地方，而这里只该负责运行态。
             // 留空 = 不知道用量 → 选路退化为按 priority。
             balance: BTreeMap::new(),
         }
     }
 
-    /// 线路解析 —— [docs/55]（第 322 轮）后**只剩两级**：
+    /// 线路解析 ——（第 322 轮）后**只剩两级**：
     /// `provider.lane → net.default_lane → direct`。
     ///
     /// 这里曾有"策略覆盖 → channel → credential → provider → net → direct"那条五级链。
@@ -498,7 +498,7 @@ impl Pipeline {
                 stream: prepared.stream,
                 chosen_channel: chosen_channel.cloned(),
                 lane: lane.cloned(),
-                // 自检信息一定要落库：非空就说明网关自己动了头（[docs/03 §7.4]）
+                // 自检信息一定要落库：非空就说明网关自己动了头
                 header_diff: Some(prepared.header_diff.clone()),
                 status,
                 total_ms,
@@ -539,7 +539,7 @@ impl Pipeline {
 
 // ================================================================ hints（步骤 3）
 
-/// 从快照里读路由需要的那几个字段。**只读，不改请求**（`docs/03 §1`）。
+/// 从快照里读路由需要的那几个字段。**只读，不改请求**。
 fn route_hints(snapshot: &RequestSnapshot) -> RouteHints {
     let hints = snapshot.hints();
     let headers: BTreeMap<String, String> = snapshot
@@ -602,7 +602,7 @@ impl RequestPipeline for Pipeline {
         let plan = self.deps.planner.plan(&hints, &ctx);
         let cfg = plan.cfg;
 
-        // 步骤 3.5：**模型级总开关**（[docs/48 §5]）。
+        // 步骤 3.5：**模型级总开关**。
         //
         // `enabled = false` 的模型必须**真的调不通** —— 否则"停用"只是"从 `/v1/models`
         // 藏起来"，客户端只要还记得名字就照旧能打进来，那个开关就是骗人的。
@@ -626,7 +626,7 @@ impl RequestPipeline for Pipeline {
             decision.candidates = self.all_channels_for(&cfg, &hints);
         }
         if decision.candidates.is_empty() {
-            // [docs/11 §5]：候选全空 → 由我们自己开口，说清是"没有可用通道"（415 / TA-2003）。
+            //：候选全空 → 由我们自己开口，说清是"没有可用通道"（415 / TA-2003）。
             // 本地额度账本已下线，所以不再有"候选全都额度耗尽"这个分支（原先它会给 402 / TA-2004）。
             return Err(TaError::NoViableChannel {
                 message: format!(
@@ -672,7 +672,7 @@ impl RequestPipeline for Pipeline {
         let mut saw_other = false;
         let mut attempt: u32 = 0;
         // 上游**真正回了话**的最后一个响应（429/402/5xx），连同它的通道/线路/第几次尝试。
-        // 失败链走完若没有候选成功，就把它原样交给客户端 —— 见函数末尾与 [docs/11 §5]。
+        // 失败链走完若没有候选成功，就把它原样交给客户端 —— 见函数末尾与。
         let mut last_upstream: Option<(UpstreamResponse, ChannelId, LaneId, u32)> = None;
         // 连接失败的候选：等队列空了再重试一次（K1）。
         //
@@ -737,7 +737,7 @@ impl RequestPipeline for Pipeline {
             let started = std::time::Instant::now();
             match self.deps.dialer.execute(&lane, request).await {
                 Ok(upstream) => {
-                    // 这条 lane 通了：连续失败计数清零，降级立即解除（[docs/03 §5.3]）
+                    // 这条 lane 通了：连续失败计数清零，降级立即解除
                     self.record_lane_success(&lane);
                     let latency_ms = started.elapsed().as_millis() as u32;
                     if dispatch::is_failover_status(upstream.status) {
@@ -767,7 +767,7 @@ impl RequestPipeline for Pipeline {
                     }
 
                     // 上游给了**非换通道**状态（2xx/其它 4xx）→ 这个通道是通的：
-                    // 连续失败计数清零、冷却立即解除（[docs/03 §5.3]「成功一次 → 清零」）。
+                    // 连续失败计数清零、冷却立即解除（「成功一次 → 清零」）。
                     // 放在这里而不是"读完 body"之后：状态码已经证明它服务正常，
                     // 后面 body 读坏了属于传输层问题（那条路径有自己的处理）。
                     self.record_channel_success(&channel_id);
@@ -794,7 +794,7 @@ impl RequestPipeline for Pipeline {
                             Some(meter) => meter.observe_stream(ctx, body),
                             None => body,
                         };
-                        // [docs/59] **跨协议：把上游 SSE 逐帧翻成客户端协议。**
+                        // **跨协议：把上游 SSE 逐帧翻成客户端协议。**
                         //
                         // 位置是刻意的，两边都有理由：
                         // * 放在 `meter` **之后** —— 用量/计费要按**上游协议**的形状解析
@@ -814,7 +814,7 @@ impl RequestPipeline for Pipeline {
                         } else {
                             stream
                         };
-                        // ④ 下游断连 → 取消上游（[docs/12 §4 G2]）：
+                        // ④ 下游断连 → 取消上游：
                         // body 被 axum 丢掉且**没读完**时置位；正常读完不置位
                         // （否则每一次成功的流式响应都会记一条假的"客户端断连"）。
                         let (stream, downstream) =
@@ -887,7 +887,7 @@ impl RequestPipeline for Pipeline {
                                 dispatch::client_response_from_bytes(
                                     status,
                                     upstream.headers,
-                                    // [docs/59] 响应方向也要转回来。只转请求方向是不够的：
+                                    // 响应方向也要转回来。只转请求方向是不够的：
                                     // Anthropic 客户端会收到 **OpenAI 形状**的 JSON 而解析失败。
                                     client_protocol_body(&prepared, status, bytes),
                                 ),
@@ -939,7 +939,7 @@ impl RequestPipeline for Pipeline {
             }
         }
 
-        // ---- 失败链走完了。对外语义按 [docs/11 §5] 的两分法：
+        // ---- 失败链走完了。对外语义按 的两分法：
         //
         // 1) **上游说了话**（我们手里有它的 HTTP 响应）→ 原样透传。
         //    状态码 / body / 头一个都不改（`x-tokenagency-*` 由 ingress 加）。
@@ -1021,14 +1021,14 @@ impl Pipeline {
     }
 }
 
-/// [docs/10 §1.4] 的 `x-tokenagency-*` 调试头。
+/// 的 `x-tokenagency-*` 调试头。
 ///
 /// 三个原则：
 /// 1. **只追加，绝不改上游的头** —— 这是加在响应上的"我们自己的补充信息"，
-///    不是对上游响应的改写（[docs/10 §1.4] 末句）。
+///    不是对上游响应的改写（末句）。
 /// 2. `gateway.debug_headers: false` 时**一个都不加**（有些客户端对未知头敏感）。
 /// 3. **不写猜的值**：`x-tokenagency-usage-source` 只有在计量**真的**给出来源时才加
-///    （[docs/11 §6] 铁律"不猜不估算"）；没有数据源就留空 —— 编一个 `upstream` 出来，
+///    （铁律"不猜不估算"）；没有数据源就留空 —— 编一个 `upstream` 出来，
 ///    比没有这个头更坏。
 fn with_debug_headers(
     mut response: axum::response::Response,
@@ -1054,7 +1054,7 @@ fn with_debug_headers(
     response
 }
 
-/// [docs/59] **非流式响应：跨协议时把上游的响应体翻回客户端协议。**
+/// **非流式响应：跨协议时把上游的响应体翻回客户端协议。**
 ///
 /// 只转请求方向是不够的 —— Anthropic 客户端会收到 **OpenAI 形状**的 JSON 而解析失败，
 /// 而且失败得很隐蔽（HTTP 200、body 是合法 JSON、只是字段对不上）。
@@ -1067,7 +1067,7 @@ fn client_protocol_body(
     status: http::StatusCode,
     bytes: Bytes,
 ) -> Bytes {
-    // ★ **非 2xx 一律原样透传**（[docs/11 §5] 的两分法：上游说了话就照抄）。
+    // ★ **非 2xx 一律原样透传**（两分法：上游说了话就照抄）。
     //
     // 这条是必须的，不是优化：上游的 400/429 正文里是**它自己的**错误说明
     // （`{"error":{"message":"bad request"}}`），跨协议硬翻会把它改写成目标协议的
@@ -1194,7 +1194,7 @@ mod tests {
         Transport(String),
     }
 
-    /// 一个"候选全被淘汰"的策略：用来测 [docs/11 §5] 里"谁开口"的分界
+    /// 一个"候选全被淘汰"的策略：用来测 里"谁开口"的分界
     /// （本地账本耗尽 → 我们开口 TA-2004；其它理由 → TA-2003）。
     struct EliminatingPolicy {
         eliminated: Vec<(ChannelId, EliminateReason)>,
@@ -1295,7 +1295,7 @@ mod tests {
     /// 两个通道：ch-a（服务商 p-a）走 lane-jp，ch-b（服务商 p-b）走 lane-tokyo
     /// （base_url 便于区分）。
     ///
-    /// [docs/55]：线路写在**服务商**上 —— 这正好也是本轮收敛的语义
+    ///：线路写在**服务商**上 —— 这正好也是本轮收敛的语义
     ///（以前这里写的是 `channel.lane`，那个字段已经删了）。
     fn test_cfg(provider_a: &str, provider_b: &str) -> ConfigDoc {
         let mut doc = ConfigDoc::default();
@@ -1313,7 +1313,7 @@ mod tests {
 
     /// **默认夹具是"同协议"**（客户端 OpenAI ↔ 上游 `Protocol::Openai`）。
     ///
-    /// [docs/59] 这一点在第 326 轮变成**必须**的：以前客户端是 `/v1/messages`（Anthropic）
+    /// 这一点在第 326 轮变成**必须**的：以前客户端是 `/v1/messages`（Anthropic）
     /// 而上游是 `Openai` —— 那是**跨协议**，而当时跨协议是原样透传（也就是 bug）。
     /// 现在跨协议会被真的翻译，于是"逐字节透传""流式原样"这些用例必须用同协议夹具，
     /// 否则它们测的是翻译结果、名字却写着 passthrough。跨协议的用例请用
@@ -1446,7 +1446,7 @@ mod tests {
 
     // ---------------------------------------------------------- 步骤 3–8
 
-    /// [docs/59] **跨协议（非流式）真的把 body 转了**，不只是把路径改对。
+    /// **跨协议（非流式）真的把 body 转了**，不只是把路径改对。
     ///
     /// 这是"协议翻译层从来没被调用过"这条用户报障的**反回归闸门**。
     /// 只钉路径是不够的：路径对了、body 还是 Anthropic 形状，上游照样 400 ——
@@ -1480,7 +1480,7 @@ mod tests {
         assert_eq!(sent["model"], "upstream-a", "模型名仍要按通道映射：{sent}");
     }
 
-    /// [docs/59] **端到端：客户端说 Anthropic 且要流式，上游是 OpenAI 兼容。**
+    /// **端到端：客户端说 Anthropic 且要流式，上游是 OpenAI 兼容。**
     ///
     /// 客户端必须收到**合法的 Anthropic SSE**，而不是 OpenAI 的 chunk 原样透传。
     /// 这是用户第 325 轮"选 Anthropic 访问不了"的**直接反回归**：
@@ -1547,7 +1547,7 @@ mod tests {
 
         assert_eq!(prepared.channel_id.as_str(), "ch-a");
         assert_eq!(prepared.upstream_model, "upstream-a");
-        // [docs/59] 默认夹具是**同协议**（客户端 OpenAI ↔ 上游 Openai）→ 路径 = 客户端路径，
+        // 默认夹具是**同协议**（客户端 OpenAI ↔ 上游 Openai）→ 路径 = 客户端路径，
         // 不做任何改写。跨协议那条改写路径由
         // `cross_protocol_request_body_is_translated_not_passed_through` 单独钉。
         assert_eq!(prepared.upstream_url, "https://a.example/v1/chat/completions");
@@ -1587,7 +1587,7 @@ mod tests {
         assert_eq!(err.http_status(), 415);
     }
 
-    /// [docs/48 §5]：**模型级开关关掉 → 请求被拒**，而且是 404「模型不存在」。
+    ///：**模型级开关关掉 → 请求被拒**，而且是 404「模型不存在」。
     ///
     /// 为什么这条必须单独存在：`/v1/models` 的用例只能证明"清单里不列出"，
     /// 而那只证明"藏起来了" —— 客户端只要还记得模型名就照旧能打进来，
@@ -1618,7 +1618,7 @@ mod tests {
         assert_eq!(err.http_status(), 404);
     }
 
-    /// [docs/11 §5]：**本地账本**判定"候选全都耗尽"时 —— 我们**没问过上游**，
+    ///：**本地账本**判定"候选全都耗尽"时 —— 我们**没问过上游**，
     /// 没有"上游说的话"可以透传 → 由我们自己开口，且必须说清是**额度**（402 / TA-2004），
     /// 不是含糊的"无可用通道"（415 / TA-2003）。
     ///
@@ -1747,7 +1747,7 @@ mod tests {
         let urls = dialer.seen_urls();
         assert!(urls[0].starts_with("lane-jp|"), "{urls:?}");
         assert!(urls[1].starts_with("lane-tokyo|"), "{urls:?}");
-        // lane 级失败只影响那条 lane，而且**一次失败不降级**（[docs/03 §5.3] 要求连续 3 次）：
+        // lane 级失败只影响那条 lane，而且**一次失败不降级**（要求连续 3 次）：
         // 内核热重载会让 listener 一瞬间关闭重建（M0 实测 K1），一次 refused 就把整条线
         // 拉黑 5 秒，会让"改线路"这个动作本身变成一次失败。
         let now = 1_700_000_000_000;
@@ -1767,7 +1767,7 @@ mod tests {
 
     // ---------------------------------------------------------- A2：上游真的收到了这些字节
 
-    /// A2（`docs/06 §2.1`）的 **wire 级**证据：把请求真的打到回环假上游，
+    /// A2的 **wire 级**证据：把请求真的打到回环假上游，
     /// 然后拿**上游收到的原始报文**逐项核对。
     ///
     /// 与 `passthrough.rs` 的 insta 快照互补：快照证明"我们构造出的请求是对的"，
@@ -1788,7 +1788,7 @@ mod tests {
         // 同一个 golden 夹具，只是把上游换成我们的回环假上游、lane 换成 direct
         let mut provider = fixture.provider.clone();
         provider.base_url = format!("http://{}", upstream.addr);
-        // [docs/55] 线路在**服务商**上（`channel.lane` 已删除）
+        // 线路在**服务商**上（`channel.lane` 已删除）
         provider.lane = Some(LaneId::new("direct"));
         let channel = fixture.channel.clone();
 
@@ -1817,7 +1817,7 @@ mod tests {
         let snapshot = RequestSnapshot {
             request_id: "req_a2_golden".into(),
             method: http::Method::POST,
-            // [docs/59] **同协议**（客户端 OpenAI ↔ 夹具上游 `Protocol::Openai`）：
+            // **同协议**（客户端 OpenAI ↔ 夹具上游 `Protocol::Openai`）：
             // 这一条测的是"逐字节透传"，跨协议会被翻译，那就不是它要测的东西了。
             path: "/v1/chat/completions".into(),
             query: None,
@@ -1898,7 +1898,7 @@ mod tests {
         // `reqwest-0.12.28/src/async_impl/client.rs:286` —— `ClientBuilder::new()` 就把
         // `accept: */*` 塞进了 `config.headers`，而 `default_headers()` 只做合并（:1163），
         // **清不掉**。于是客户端没发 `accept` 时，上游会多看到这一条。
-        // 这条断言的作用：把偏离**变成摆明的、被钉住的事实**（[docs/03 §7.2.1] 那种做法），
+        // 这条断言的作用：把偏离**变成摆明的、被钉住的事实**（那种做法），
         // reqwest 哪天再多塞一个默认头，这条就会红。
         let header_name = |line: &str| line.split(':').next().map(str::trim).map(str::to_string);
         let sent: std::collections::BTreeSet<String> = head_lower
@@ -1927,7 +1927,7 @@ mod tests {
 
     // ---------------------------------------------------------- G2 ④：下游断连取消上游
 
-    /// [docs/12 §4 G2] ④：**客户端中断时上游连接必须被及时取消**。
+    /// ④：**客户端中断时上游连接必须被及时取消**。
     ///
     /// 用真 TCP。假上游发头 + 第 1 个 chunk 后继续慢速发；测试只读 1 个 chunk 就把响应
     /// 丢掉（=客户端走人），然后断言**假上游的读半边看到连接被关**（`read` 返回 0）。
@@ -1964,7 +1964,7 @@ mod tests {
 
         let mut cfg =
             test_cfg(&format!("http://{}/v1/messages", upstream.addr), "https://b.example/v1");
-        // [docs/55] ch-a 的服务商就是 cfg.providers[0]（见 test_cfg 的构造顺序）
+        // ch-a 的服务商就是 cfg.providers[0]（见 test_cfg 的构造顺序）
         cfg.providers[0].lane = Some(LaneId::new("direct"));
         let pipeline = pipeline(
             cfg,
@@ -2024,7 +2024,7 @@ mod tests {
 
     // ---------------------------------------------------------- K1：listener 重建那一瞬
 
-    /// K1（`docs/06 §1.6`）：内核热重载 `PUT /configs?force=true` 是**进程内**重载、PID 不变，
+    /// K1：内核热重载 `PUT /configs?force=true` 是**进程内**重载、PID 不变，
     /// 但 listener 有一瞬间的关闭/重建 → 此时会出现 `connection refused`。
     ///
     /// **只有一个候选**时（"一个人的中转站"很常见，而"改线路"正是触发重载的动作），
@@ -2087,7 +2087,7 @@ mod tests {
         assert_eq!(dialer.calls(), 3, "重试不许超过 attempts 预算");
         assert_eq!(err.code(), "TA-3002", "线路问题是 503 可重试，不是 415 无可用通道");
         assert_eq!(err.http_status(), 503);
-        // 连续 3 次才降级（[docs/03 §5.3]）
+        // 连续 3 次才降级
         assert!(
             !pipeline.is_available(
                 &ChannelId::new("ch-a"),
@@ -2098,7 +2098,7 @@ mod tests {
         );
     }
 
-    /// 连续失败计数**成功一次就清零**（[docs/03 §5.3]「成功一次 → 冷却计时器清零」）。
+    /// 连续失败计数**成功一次就清零**（「成功一次 → 冷却计时器清零」）。
     ///
     /// 两个请求各失败 2 次后成功：如果计数不清零，第二个请求的第一次失败就是第 3 次连续
     /// 失败 → 立刻降级 → 那个请求会拿 503 而不是成功。所以这条测试能区分"清零"与"不清零"。
@@ -2162,7 +2162,7 @@ mod tests {
 
     /// 全部候选都回 402 时，客户端看到的是**上游的 402**。
     ///
-    /// 这条原先断言"返回我们的 TA-2004 信封"，按 [docs/11 §5] 第 1 行已改：
+    /// 这条原先断言"返回我们的 TA-2004 信封"，按 第 1 行已改：
     /// **上游返回了 HTTP 响应（哪怕 4xx/5xx）就原样透传** —— 401/404/429/402 都是
     /// "上游说的话"，改写成我们的信封会让用户以为"是 TokenAgency 坏了"。
     /// 账本侧的副作用不变（402 仍把该凭据标 `exhausted`）。
@@ -2198,7 +2198,7 @@ mod tests {
         assert_eq!(body_string(response).await, upstream_body);
     }
 
-    /// [docs/11 §5] 第 1 行：**上游返回了 HTTP 响应（哪怕 4xx/5xx）就原样透传**。
+    /// 第 1 行：**上游返回了 HTTP 响应（哪怕 4xx/5xx）就原样透传**。
     ///
     /// 这是用户提出的那条边界 —— 客户端必须看到上游原话（`retry-after`、错误 JSON），
     /// 而不是我们的信封。单候选、上游回 429：旧实现会把它冷却掉再拿我们自己的
@@ -2238,7 +2238,7 @@ mod tests {
         assert!(!body.contains("tokenagency"), "不许把上游的话改写成我们的信封：{body}");
     }
 
-    /// [docs/11 §5] 第 2 行：**没拿到响应**（连接被拒/TLS/超时）时**不假装那是上游的响应**。
+    /// 第 2 行：**没拿到响应**（连接被拒/TLS/超时）时**不假装那是上游的响应**。
     ///
     /// 客户端收到的是我们自己的信封：`TA-3002` + `retryable: true` + `tokenagency_*` 类型 +
     /// 人话，而不是裸 socket 错误文本（那会被误判成"中转站的服务没了"）。
@@ -2498,7 +2498,7 @@ mod tests {
         })
         .await;
 
-        // 通道指向假上游；lane = direct（不走代理）—— [docs/55] 线路在服务商上
+        // 通道指向假上游；lane = direct（不走代理）—— 线路在服务商上
         let mut cfg = test_cfg(&upstream.url("/v1/messages").await, "https://b.example/v1");
         cfg.providers[0].lane = Some(LaneId::new("direct"));
         let sink = Arc::new(RecordingSink::default());
@@ -2628,7 +2628,7 @@ mod tests {
         assert_eq!(records[0].usage_source, ta_core::types::UsageSource::UpstreamPartial);
     }
 
-    // ---------------------------------------------------------- 冷却退避（[docs/03 §5.3]）
+    // ---------------------------------------------------------- 冷却退避
 
     /// 同一通道连续失败时，冷却必须按文档的阶梯退避：`120s → 300s → 900s → … → 上限 1h`。
     ///
@@ -2655,7 +2655,7 @@ mod tests {
         for (round, expected_s) in ladder.iter().enumerate() {
             let prepared =
                 pipeline.prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#)).await.unwrap();
-            // 429 是"上游说的话" → 按 [docs/11 §5] 原样交给客户端（不是我们的错误信封）。
+            // 429 是"上游说的话" → 按 原样交给客户端（不是我们的错误信封）。
             // 冷却仍然照记（本测试要测的是冷却阶梯）。
             let response = pipeline.execute(prepared).await.expect("429 应当被透传");
             assert_eq!(response.status(), http::StatusCode::TOO_MANY_REQUESTS);
@@ -2669,7 +2669,7 @@ mod tests {
             );
             assert!(
                 pipeline.is_available(&channel, Some(&lane), until),
-                "第 {} 轮：冷却必须恰好是 {}s（[docs/03 §5.3] 的阶梯）",
+                "第 {} 轮：冷却必须恰好是 {}s（阶梯）",
                 round + 1,
                 expected_s
             );
@@ -2680,7 +2680,7 @@ mod tests {
     }
 
     /// 成功一次必须把"连续失败计数"与冷却一起清零：否则偶发 429 的通道会被自己的历史
-    /// 越推越远（[docs/03 §6.2]「自动学习降级比不降级更糟」）。
+    /// 越推越远（「自动学习降级比不降级更糟」）。
     ///
     /// 可观测点：成功后的下一次失败应当**从阶梯第一级（120s）重新开始**，
     /// 而不是接着上一级（300s）。
@@ -2743,7 +2743,7 @@ mod tests {
     /// 降级窗口必须**真的会过去**。
     ///
     /// 缺了这条正向控制，"把窗口写成 `i64::MAX`（永久拉黑）"不会有任何测试变红 ——
-    /// 而永久拉黑正是 M0 实测（`docs/06 §1.6`）要求避免的那条：用户改一次线路
+    /// 而永久拉黑正是 M0 实测要求避免的那条：用户改一次线路
     /// 就永久失去那条线（直到重启网关）。
     #[tokio::test]
     async fn a_degraded_lane_is_available_again_after_the_recovery_window() {
@@ -2774,7 +2774,7 @@ mod tests {
         );
         // 窗口长度**故意独立写死**，不从被测量的常量取：否则断言会退化成同义反复 ——
         // 把 `LANE_RECOVERY_MS` 改成 `i64::MAX`（永久拉黑）也照样通过，
-        // 而那正是 [docs/06 §1.6] 要求避免的形态。
+        // 而那正是 要求避免的形态。
         const EXPECTED_WINDOW_MS: i64 = 5_000;
         assert!(
             !pipeline.is_available(&channel, Some(&lane), now + EXPECTED_WINDOW_MS - 1),
@@ -2782,7 +2782,7 @@ mod tests {
         );
         assert!(
             pipeline.is_available(&channel, Some(&lane), now + EXPECTED_WINDOW_MS),
-            "恢复窗口过后必须重新可用（[docs/06 §1.6]：reload 那一瞬不是永久故障）"
+            "恢复窗口过后必须重新可用（：reload 那一瞬不是永久故障）"
         );
     }
 

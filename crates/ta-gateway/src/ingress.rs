@@ -1,6 +1,6 @@
 //! 入站：axum 路由、本地密钥、RPM 限流。**工作包 G1 负责实现**。
 //!
-//! 路由表见 `docs/10-interface-spec.md` §1.2。**只绑 127.0.0.1**。
+//! 路由表见 。**只绑 127.0.0.1**。
 //!
 //! ## G1 的职责边界
 //!
@@ -13,7 +13,7 @@
 //!
 //! ## 与文档的顺序差异（显式记录）
 //!
-//! `docs/09 §5.1` 把"记录原始头/体快照"放在第 1 步、鉴权放在第 2 步。实现上是
+//!  把"记录原始头/体快照"放在第 1 步、鉴权放在第 2 步。实现上是
 //! **先鉴权再读 body**：一个带着 32MB body 的未授权请求不该先被读进内存。
 //! 对合法请求这条差异不可观测（快照内容完全一致）。
 
@@ -43,7 +43,7 @@ use crate::GatewayDeps;
 
 // ================================================================ 端点
 
-/// 路由表（`docs/10 §1.2`）里的端点类别。
+/// 路由表里的端点类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Endpoint {
     ChatCompletions,
@@ -102,7 +102,7 @@ pub fn classify(method: &Method, path: &str) -> Endpoint {
         ("POST", "/v1/files") => Endpoint::Files,
         ("POST", rest) if rest.starts_with("/v1/audio/") => Endpoint::Audio,
         ("GET", "/v1/models") => Endpoint::ModelsList,
-        // [docs/59] **不带 `/v1` 的 `/models` 也必须是本地清单**。
+        // **不带 `/v1` 的 `/models` 也必须是本地清单**。
         //
         // 真机现象（用户第 325 轮）："选 OPENAI 会直接穿透拿到服务商的所有模型"。
         // 根因就是这里：`classify` 只认 `/v1/models`，而客户端把 base_url 填成
@@ -243,7 +243,7 @@ pub struct PreparedRequest {
     pub failover_chain: Vec<ChannelId>,
     // 这里曾有 `lane_override: Option<LaneId>`（策略级全局线路覆盖，G2 从 RouteDecision 抄过来）。
     //
-    // [docs/55]（第 322 轮）整条删除：线路分配只剩**服务商级**一处，`RouteDecision` 里那个
+    //（第 322 轮）整条删除：线路分配只剩**服务商级**一处，`RouteDecision` 里那个
     // 字段也删了，所以这里再没有任何东西可抄 —— 留着就是一段恒为 `None` 的死管线。
     /// 客户端原始请求（trace 用；body 与 headers 是 `Bytes`/`HeaderMap`，克隆很便宜）
     pub snapshot: RequestSnapshot,
@@ -262,11 +262,11 @@ pub struct PrepareInput<'a> {
     pub lane_id: Option<LaneId>,
 }
 
-/// [docs/59] 跨协议时，**上游要打的端点路径**由目标协议的语义决定。
+/// 跨协议时，**上游要打的端点路径**由目标协议的语义决定。
 ///
 /// 不能把客户端的路径原样带过去：客户端发 `/v1/messages`（Anthropic）而后端是 OpenAI 兼容的
 /// 中转站时，`POST /v1/messages` 必然 404 —— 那是把"协议不匹配"伪装成"上游没有这个接口"。
-/// [docs/59] Gemini 的端点**路径里带模型名**，所以它不能只返回一个常量。
+/// Gemini 的端点**路径里带模型名**，所以它不能只返回一个常量。
 /// 流式还换一个方法名（`:streamGenerateContent?alt=sse`）——
 /// 把 `alt=sse` 放进路径而不是查询串，是因为查询串那一格还要留给"调用方显式指定的 query"。
 fn gemini_path(upstream_model: &str, stream: bool) -> String {
@@ -292,7 +292,7 @@ pub fn upstream_path_for(target: Protocol, upstream_model: &str, stream: bool) -
 /// 只做契约允许的事：`model` 定点 patch、鉴权头替换、`host`/`content-length` 重算、
 /// hop-by-hop 剥离、以及用户显式配置的 `ChannelConfig::transform`。
 ///
-/// [docs/59]（第 326 轮）**外加跨协议中转**：客户端协议与上游协议不同时，body 走
+///（第 326 轮）**外加跨协议中转**：客户端协议与上游协议不同时，body 走
 /// `adapt` 的 IR 单向通道（客户端协议 → IR → 上游协议），路径换成目标协议的端点。
 /// 这一层原来写好了却**从来没有被调用** —— 于是网关一直原样透传客户端 body，
 /// 真机表现就是"客户端协议必须等于上游协议，否则必然 400"，用户被迫"把服务商切回
@@ -309,7 +309,7 @@ pub fn build_prepared_request(input: PrepareInput<'_>) -> Result<PreparedRequest
     };
 
     let client_protocol = snapshot.endpoint.protocol();
-    // [docs/59] **只在两边都有适配器时才转**（`adapt::can_translate`）。
+    // **只在两边都有适配器时才转**（`adapt::can_translate`）。
     //
     // 不能写成"协议不同就转"：`Protocol::OpenaiResponses` / `Gemini` 目前**没有适配器**
     // （`adapter_for` 返回 None），硬转会得到一个 `CapabilityLoss` —— 而在此之前
@@ -317,7 +317,7 @@ pub fn build_prepared_request(input: PrepareInput<'_>) -> Result<PreparedRequest
     // 原本能走的路变成 415：**能转就转（openai-chat ↔ anthropic），不能转就保持原样**。
     let cross_protocol = client_protocol != provider.protocol
         && crate::adapt::can_translate(client_protocol, provider.protocol)
-        // [docs/59] 第 326 轮起**流式也转**：响应方向由 `adapt::session` 逐帧翻译
+        // 第 326 轮起**流式也转**：响应方向由 `adapt::session` 逐帧翻译
         // （切帧 → IR → 目标协议），所以请求方向不再因为 `stream: true` 而区别对待。
         ;
 
@@ -340,7 +340,7 @@ pub fn build_prepared_request(input: PrepareInput<'_>) -> Result<PreparedRequest
     let mut upstream_url =
         passthrough::join_upstream_url(&provider.base_url, &path, snapshot.query.as_deref());
     upstream_url = passthrough::apply_query_auth(&upstream_url, &provider.auth, input.secret);
-    // [docs/46 §305] **把"我们实际打给上游的地址"记进日志**（去掉查询串：`auth.scheme: query`
+    // **把"我们实际打给上游的地址"记进日志**（去掉查询串：`auth.scheme: query`
     // 的密钥就在那里）。这一行是上一次排查时最缺的东西 —— 当时只能靠 base_url + 客户端路径手算，
     // 才看出 `…/api/coding/v3/v1/chat/completions` 这种拼错的路径（上游回 404 且无响应体，
     // 客户端只看到 `404 status code (no body)`）。字段名走 message，不加白名单外的新字段。
@@ -358,7 +358,7 @@ pub fn build_prepared_request(input: PrepareInput<'_>) -> Result<PreparedRequest
         );
     }
 
-    // [docs/59] **跨协议：body 先走 IR 中转**（客户端协议 → IR → 上游协议）。
+    // **跨协议：body 先走 IR 中转**（客户端协议 → IR → 上游协议）。
     //
     // 放在 `patch_body` **之前**：`translate_request` 已经按 `channel.upstream_model` 编码好了
     // 模型名，紧接着的 `patch_body` 看到 `model` 已经等于上游名 → 不动它（幂等）。
@@ -445,7 +445,7 @@ pub trait RequestPipeline: Send + Sync {
 
 // ================================================================ 内核探针
 
-/// 内核状态（`docs/10 §2.2` 的 `KernelStatus.state`）。
+/// 内核状态（`KernelStatus.state`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KernelState {
@@ -545,7 +545,7 @@ impl RpmLimiter {
 
 /// 入站选项。**RPM 上限没有配置字段**（`GatewayConfig` 里没有 `rpm_limit`），
 /// 所以它是构造参数而不是从 `gateway.extra` 里偷偷读 —— 静默不生效的配置
-/// 比编译失败更危险（`docs/13 §4.5` L10）。
+/// 比编译失败更危险（L10）。
 #[derive(Debug, Clone, Copy)]
 pub struct IngressOptions {
     /// `None` / `Some(0)` = 关闭本机限流
@@ -576,7 +576,7 @@ pub enum GatewayRunState {
 ///    ——  paused 必须是"我按了暂停"，不能显示成"网关失联"。
 ///
 /// 它挂在 [`IngressState`] 上（**唯一装配路径**），不是第二个服务入口：
-/// 在 ingress 外侧再包一层就是"第二条请求路径"，[docs/13 §4.5 L21] 明令禁止。
+/// 在 ingress 外侧再包一层就是"第二条请求路径"， 明令禁止。
 #[derive(Debug, Default)]
 pub struct GatewayGate {
     paused: std::sync::atomic::AtomicBool,
@@ -610,7 +610,7 @@ impl GatewayGate {
 
 /// 暂停期间拒绝新请求用的错误。
 ///
-/// 用 [docs/11 §5] 的专用码 **`TA-1005 tokenagency_gateway_paused`（503，retryable=false）**：
+/// 用 的专用码 **`TA-1005 tokenagency_gateway_paused`（503，retryable=false）**：
 /// - **不可重试**是关键：客户端拿到它会把话抛给用户，而**不会对着暂停的网关猛重试**
 ///   （`TA-1002`/429 或 `TA-3001`/`TA-3002` 都是 retryable，语义上就错了）；
 /// - 与"内核未就绪 / 线路不可用"（也都是 503）靠 `code` 与 `type` 区分 ——
@@ -628,7 +628,7 @@ pub struct IngressState {
     /// （默认配置就是），所以鉴权前必须解析。与通道凭据共用同一个解析器 ——
     /// 同一套引用语法有两份实现，迟早会漂移。
     pub secrets: Arc<dyn SecretResolver>,
-    /// API key 验票接缝（[docs/19 §3.3]）。默认件是 [`NoApiKeys`]：一把 key 都没有 =
+    /// API key 验票接缝。默认件是 [`NoApiKeys`]：一把 key 都没有 =
     /// 不做多 key 鉴权。装配点见 `RuntimeParts::with_api_keys`。
     pub api_keys: Arc<dyn ApiKeyVerifier>,
     pub pipeline: Arc<dyn RequestPipeline>,
@@ -696,7 +696,7 @@ impl IngressState {
     }
 }
 
-/// 构建 axum 路由（`docs/10 §1.2` 的路由表）。
+/// 构建 axum 路由（路由表）。
 ///
 /// 方法不匹配由 axum 自己挡（405）；`ANY /*` 由 `fallback` 承担。
 pub fn router(state: Arc<IngressState>) -> Router {
@@ -710,7 +710,7 @@ pub fn router(state: Arc<IngressState>) -> Router {
         .route("/v1/files", post(handle))
         .route("/v1/models", get(handle))
         .route("/v1/models/{id}", get(handle))
-        // [docs/59] 不带 `/v1` 的形态也本地作答（否则会原样透传上游，把服务商的
+        // 不带 `/v1` 的形态也本地作答（否则会原样透传上游，把服务商的
         // 完整模型清单端给客户端 —— 就是用户报的"穿透"）。
         .route("/models", get(handle))
         .route("/models/{id}", get(handle))
@@ -719,7 +719,7 @@ pub fn router(state: Arc<IngressState>) -> Router {
         .with_state(state)
 }
 
-/// 绑定监听端口。**只接受 loopback**（`docs/09 §1.2` I1：永不监听 `0.0.0.0`）。
+/// 绑定监听端口。**只接受 loopback**（I1：永不监听 `0.0.0.0`）。
 ///
 /// `localhost` 会被**归一化**成 `127.0.0.1`（人就是会写 `localhost`，让它变成
 /// 一个"启动失败"的坑不值得）。注意这是**归一化而不是信任**：归一化之后仍然
@@ -775,7 +775,7 @@ async fn handle(State(state): State<Arc<IngressState>>, req: Request) -> Respons
     let request_id = new_request_id();
     let endpoint = classify(&parts.method, parts.uri.path());
 
-    // `/healthz`：不走上游、不校验密钥（本机健康检查，见 docs/10 §1.2）
+    // `/healthz`：不走上游、不校验密钥
     if endpoint == Endpoint::Healthz {
         return healthz_response(&state, &request_id);
     }
@@ -787,7 +787,7 @@ async fn handle(State(state): State<Arc<IngressState>>, req: Request) -> Respons
 
 /// 请求处理主体。**唯一的作用是给整条路径套一个带 `request_id` 的 span。**
 ///
-/// [docs/14 §6 G2] 要求"拿一个 `request_id` 能筛出它经过的全部日志行，含跨 crate 与后台分叉"。
+/// 要求"拿一个 `request_id` 能筛出它经过的全部日志行，含跨 crate 与后台分叉"。
 /// 靠"每个日志点都手写 `request_id = %rid`"是守不住的：新加一行忘了写就静默失效。
 /// 用 `#[instrument]` 把 span 挂在**函数**上，`tracing` 会在每次 poll 时正确进入/退出
 /// （不是 `span.enter()` 那种跨 `.await` 的错法），于是：
@@ -812,7 +812,7 @@ async fn handle_request(
     let cfg = state.cfg.load_full();
     let now_ms = state.clock.now_ms();
 
-    // [docs/10 §1.4]：**全部** `x-tokenagency-*` 都受 `gateway.debug_headers` 控制。
+    //：**全部** `x-tokenagency-*` 都受 `gateway.debug_headers` 控制。
     // 出口只有一个，所以在这里统一收口 —— 逐个 return 去记"这个要不要加"迟早会漏一个。
     // 注意：**错误信封 body 里的 `request_id` 不受影响**（那是内容，不是头），
     // 关掉调试头只是让"对未知头敏感的客户端"看不见它们。
@@ -847,10 +847,10 @@ async fn handle_request(
             return finish(error_response(&TaError::BodyTooLarge { size, limit }, &request_id));
         }
     }
-    // 鉴权：本地 key / 库里的 API key（[docs/19 §3.3]）。
+    // 鉴权：本地 key / 库里的 API key。
     // 身份目前没有下游消费者（命中即记账在 `ApiKeyVerifier` 实现内部完成），返回它是为了让
     // "这条请求是哪把 key 打进来的"有一个**唯一**的落点 —— 只有这一层看得到客户端 token。
-    // 要把它写进请求日志/快照得先登记字段名（[docs/14 §5]，那不属于本轮）。
+    // 要把它写进请求日志/快照得先登记字段名（那不属于本轮）。
     let _identity = match check_local_key(
         &cfg,
         &parts.headers,
@@ -863,7 +863,7 @@ async fn handle_request(
         Err(err) => return finish(error_response(&err, &request_id)),
     };
 
-    // [docs/59] **下游 API 家族开关**（用户第 326 轮："是打开关闭形式，按需求勾选"）。
+    // **下游 API 家族开关**（用户第 326 轮："是打开关闭形式，按需求勾选"）。
     //
     // 三件事是刻意的：
     // * 关掉的端点**当场明确报错**，绝不转发上游 —— 客户端配错却收到一个来自上游的
@@ -893,7 +893,7 @@ async fn handle_request(
         Err(err) => return finish(error_response(&err, &request_id)),
     };
 
-    // [docs/28 §4]：`GET /v1/models` 与 `GET /v1/models/{id}` **不透传上游** ——
+    //：`GET /v1/models` 与 `GET /v1/models/{id}` **不透传上游** ——
     // 鉴权 / 限流 / body 上限都过了之后，在"选线路"之前直接用我们自己的模型回答。
     // 位置是刻意的：**没跳过任何鉴权**，也不再选 lane、不发任何上游请求。
     if matches!(endpoint, Endpoint::ModelsList | Endpoint::ModelGet) {
@@ -914,7 +914,7 @@ async fn handle_request(
     let prepared = match state.pipeline.prepare(&snapshot).await {
         Ok(prepared) => prepared,
         Err(err) => {
-            // 失败也要能在日志里按码+ID 查到（[docs/14 §6.2]：报 TaError 必带 code）
+            // 失败也要能在日志里按码+ID 查到（：报 TaError 必带 code）
             tracing::warn!(
                 code = err.code(),
                 retryable = err.retryable(),
@@ -975,7 +975,7 @@ fn declared_length(headers: &HeaderMap) -> Option<usize> {
 /// 都拿不到它），所以"这条请求是哪把 API key 打进来的"必须在鉴权那一刻定下来 ——
 /// 它是 `api_key_usage` 归属的唯一依据。
 ///
-/// 名字与 `src-tauri/src/apikey_auth.rs` 里计划的那个类型**同名同形**（[docs/19 §3.3]）：
+/// 名字与 `src-tauri/src/apikey_auth.rs` 里计划的那个类型**同名同形**：
 /// 应用层那个本地类型应当删掉改用这一个，否则就是第二份契约（一致时看不出来、漂移时静默）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyIdentity {
@@ -999,7 +999,7 @@ impl KeyIdentity {
     }
 }
 
-/// API key 校验接缝（[docs/19 §3.3] 的多 key 鉴权）。
+/// API key 校验接缝（多 key 鉴权）。
 ///
 /// ## 为什么是接缝，而不是网关自己去查库
 ///
@@ -1039,7 +1039,7 @@ impl ApiKeyVerifier for NoApiKeys {
     }
 }
 
-/// 鉴权：`gateway.local_key`（可为空）与库里的 API key（[docs/19 §3.3]）。
+/// 鉴权：`gateway.local_key`（可为空）与库里的 API key。
 ///
 /// ## 判定规则（主管定稿）
 ///
@@ -1049,7 +1049,7 @@ impl ApiKeyVerifier for NoApiKeys {
 /// | `local_key` 非空 **或** 有启用中的 key | 必须命中 ①本地 key 或 ②某把启用中的 api key，否则 **401 `TA-1001`** |
 ///
 /// 注意是 **TA-1001 `unauthorized`（401，不可重试）**，不是 TA-1002：后者是 429 限流，
-/// 客户端看到会**猛重试**一把根本没被接受的 key（[docs/11 §5]）。
+/// 客户端看到会**猛重试**一把根本没被接受的 key。
 ///
 /// ## 为什么必须先解析引用（[06 §10.2 D4]）
 ///
@@ -1175,7 +1175,7 @@ pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// [docs/59] 这个端点所属的**下游 API 家族**被关掉了吗？返回要打开的开关名。
+/// 这个端点所属的**下游 API 家族**被关掉了吗？返回要打开的开关名。
 ///
 /// 只覆盖"用户能勾的三个家族"：其它端点（`/v1/models`、embeddings、audio、files、
 /// wildcard）**没有开关**，一律照旧放行 —— `/v1/models` 尤其不能关，
@@ -1195,7 +1195,7 @@ fn disabled_downstream(
     }
 }
 
-/// `docs/10 §1.5` 的错误信封。**只有网关自身判断失败才用它**，上游错误一律原样透传。
+///  的错误信封。**只有网关自身判断失败才用它**，上游错误一律原样透传。
 pub fn error_response(err: &TaError, request_id: &str) -> Response {
     let status =
         StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -1237,7 +1237,7 @@ fn healthz_response(state: &IngressState, request_id: &str) -> Response {
     with_request_id((StatusCode::OK, axum::Json(body)).into_response(), request_id)
 }
 
-// ================================================================ `/v1/models`：本地作答（[docs/28 §4]）
+// ================================================================ `/v1/models`：本地作答
 
 /// `GET /v1/models` 的响应体：**我们自己的模型**，一条记录一个模型。
 ///
@@ -1252,7 +1252,7 @@ fn healthz_response(state: &IngressState, request_id: &str) -> Response {
 ///   各占一条 —— 否则客户端会把同一个模型算成两个模型。
 /// * `expose = false` 的模型**不出现**（[`Model::new`] 的注释写的就是"`expose = true` 才出现在
 ///   `/v1/models`"），它的 id/别名在这里也 404 —— 不然"隐藏"是假的。
-/// * 字段**只来自我们的配置**，一个都不编（[docs/28 §3]：上游没给的字段一个都不编）。
+/// * 字段**只来自我们的配置**，一个都不编（：上游没给的字段一个都不编）。
 ///   上下文窗口 / 最大输出**只在我们的线路真的声明了**的时候才带（见 [`model_info`]，
 ///   名字按客户端实际读的那两个键）；价格仍然一个都不带（我们没存价格）。
 fn models_list_body(cfg: &ConfigDoc, now_ms: i64) -> Value {
@@ -1276,7 +1276,7 @@ fn exposed_model<'a>(cfg: &'a ConfigDoc, name: &str) -> Option<&'a Model> {
     })
 }
 
-/// 该模型**公开出来的**能力数字 —— 直接取 [docs/46 §304] 那份**唯一口径**
+/// 该模型**公开出来的**能力数字 —— 直接取 那份**唯一口径**
 /// （`ConfigDoc::public_model_info`）：网关与模型页「查看模型信息」面板用的是同一个函数，
 /// 不会出现"客户端看到的"和"界面显示的"两套数字。
 ///
@@ -1289,7 +1289,7 @@ fn model_info(cfg: &ConfigDoc, model: &Model) -> (Option<u64>, Option<u64>) {
     (info.context_window, info.max_output_tokens)
 }
 
-/// `/v1/models` 里一条记录的**唯一**构造点（[docs/28 §4]）。
+/// `/v1/models` 里一条记录的**唯一**构造点。
 ///
 /// * `created`：**本次回答的时刻**（`now_ms / 1000`）。我们的配置里不存模型的创建时间，
 ///   而 OpenAI 客户端要求这个整数字段 —— 给响应时刻是唯一不编造"创建时间"的选择。
@@ -1314,7 +1314,7 @@ fn model_entry(cfg: &ConfigDoc, model: &Model, now_ms: i64) -> Value {
     entry
 }
 
-/// `owned_by` = 该模型**第一条线路**所属服务商的 `id`（[docs/28 §1]：线路归服务商）。
+/// `owned_by` = 该模型**第一条线路**所属服务商的 `id`（：线路归服务商）。
 ///
 /// 用 `Provider.id`（稳定标识）而不是 `name`（可改的显示名），也**不编**一个我们没有的机构名；
 /// 没有可解析的线路（悬空/空 `lines`，校验器本会拦下）时退化成我们自己的名字字面量
@@ -1329,7 +1329,7 @@ fn owned_by(cfg: &ConfigDoc, model: &Model) -> String {
         .unwrap_or_else(|| "tokenagency".to_string())
 }
 
-/// `/v1/models` 与 `/v1/models/{id}` 的本地响应（[docs/28 §4]）。
+/// `/v1/models` 与 `/v1/models/{id}` 的本地响应。
 ///
 /// **不选线路、不发任何上游请求**：调用点在鉴权 / 限流 / body 上限之后、"选线路"之前。
 fn models_response(
@@ -1467,7 +1467,7 @@ mod tests {
         state_with(test_cfg(), IngressOptions::default(), KernelState::Ready)
     }
 
-    /// `/v1/models` 的夹具（[docs/28 §4]）：**两个**模型，覆盖"两条线路 / 一条线路 / 隐藏"三种形态。
+    /// `/v1/models` 的夹具：**两个**模型，覆盖"两条线路 / 一条线路 / 隐藏"三种形态。
     ///
     /// * `gpt-4o`：两个别名，两条线路（`ch-openai` 在前 → `owned_by` 应是它那个服务商 `p-openai`）；
     /// * `claude-sonnet-4-5`：一条线路；
@@ -1505,7 +1505,7 @@ mod tests {
             "c-anthropic",
             "claude",
         ));
-        // [docs/46 §303] 线路**声明**的能力 —— `/v1/models` 要把它透传给客户端：
+        // 线路**声明**的能力 —— `/v1/models` 要把它透传给客户端：
         // `gpt-4o` 的两条线路声明不同（200k/128k、8192/16384）⇒ 取**最小值**（不夸大）；
         // `claude` 那条**什么都不声明** ⇒ 那两个键必须**不出现**（不编 0、不猜）。
         {
@@ -1527,7 +1527,7 @@ mod tests {
             lines: vec![ChannelId::new("ch-claude")],
             ..Model::new("m-hidden")
         });
-        // [docs/48 §5] **模型级总开关关掉**的模型：`expose` 还是 true，
+        // **模型级总开关关掉**的模型：`expose` 还是 true，
         // 但它必须既不进清单、也不可通过 `/v1/models/{id}` 取到。
         doc.models.push(Model {
             enabled: false,
@@ -1541,7 +1541,7 @@ mod tests {
         state_with(models_cfg(), IngressOptions::default(), KernelState::Ready)
     }
 
-    /// [docs/28 §4]：`/v1/models` 的**本地**答案形状与口径。
+    ///：`/v1/models` 的**本地**答案形状与口径。
     ///
     /// 断言的是完整 `data` 数组（逐字段），因为"多一条 / 少一条 / 多一个字段"都是这次改动的
     /// 核心契约；`created` 用固定时钟的 `1_700_000_000` 钉住。
@@ -1561,7 +1561,7 @@ mod tests {
                     "created": 1_700_000_000i64,
                     // 第一条线路 `ch-openai-2` → 服务商 `p-anthropic`（不是按 id 猜出来的）
                     "owned_by": "p-anthropic",
-                    // [docs/46 §303] 线路声明的能力透传给客户端；两条线路不同 ⇒ 取最小值
+                    // 线路声明的能力透传给客户端；两条线路不同 ⇒ 取最小值
                     "context_window": 128_000,
                     "max_output_tokens": 8_192,
                 },
@@ -1586,11 +1586,11 @@ mod tests {
         assert_eq!(
             second.keys().collect::<Vec<_>>(),
             ["id", "object", "created", "owned_by"],
-            "没声明就不许编字段（[docs/28 §3]）"
+            "没声明就不许编字段"
         );
     }
 
-    /// [docs/48 §5]：**模型级开关关掉 = 彻底停用**，不是"藏起来"。
+    ///：**模型级开关关掉 = 彻底停用**，不是"藏起来"。
     ///
     /// 两件一起验，缺一不可：
     /// * 清单里没有它（`enabled=false` 即使 `expose=true` 也不列）；
@@ -1630,7 +1630,7 @@ mod tests {
         assert_eq!(value["error"]["type"], "tokenagency_model_not_found");
     }
 
-    /// [docs/46 §303]：`/v1/models/{id}` 与清单**同一条记录**（能力字段也一起给）。
+    ///：`/v1/models/{id}` 与清单**同一条记录**（能力字段也一起给）。
     #[tokio::test]
     async fn model_get_carries_the_same_declared_capabilities() {
         let (status, _, value) =
@@ -1810,7 +1810,7 @@ mod tests {
             "models_list 不许有任何上游请求"
         );
 
-        // [docs/59] **不带 `/v1` 的 `/models` 也必须本地作答。**
+        // **不带 `/v1` 的 `/models` 也必须本地作答。**
         //
         // 这条是用户第 325 轮"OpenAI 会直接穿透拿到服务商的所有模型"的**反回归闸门**：
         // 客户端把 base_url 填成不带 `/v1` 的形态时会请求 `GET /models`，
@@ -1838,7 +1838,7 @@ mod tests {
         );
     }
 
-    /// [docs/59] 设置页关掉的**下游 API 家族**必须当场明确报错。
+    /// 设置页关掉的**下游 API 家族**必须当场明确报错。
     ///
     /// 用户第 326 轮的需求 2："可以在设置页面选择我们下游是统一成 OPENAI 的两种还是
     /// Anthropic 的" —— 补一句"是打开关闭形式，按需求勾选"。这条钉两件事：
@@ -1869,7 +1869,7 @@ mod tests {
         );
     }
 
-    /// [docs/59] 跨协议时**上游要打的端点路径**由目标协议决定（[docs/59] §2）。
+    /// 跨协议时**上游要打的端点路径**由目标协议决定（§2）。
     ///
     /// 三件事各自都会错（错一个就是必然 404/400）：
     /// ① 不能把客户端的路径原样带过去（把 `/v1/messages` 打给 OpenAI 端点）；
@@ -1950,7 +1950,7 @@ mod tests {
             ("POST", "/v1/audio/some-future-endpoint", Endpoint::Audio),
             ("GET", "/v1/models", Endpoint::ModelsList),
             ("GET", "/v1/models/gpt-4o", Endpoint::ModelGet),
-            // [docs/59] 不带 `/v1` 的形态：**必须本地作答**，否则会被透传上游
+            // 不带 `/v1` 的形态：**必须本地作答**，否则会被透传上游
             ("GET", "/models", Endpoint::ModelsList),
             ("GET", "/models/gpt-4o", Endpoint::ModelGet),
             ("GET", "/healthz", Endpoint::Healthz),
@@ -1985,7 +1985,7 @@ mod tests {
 
     /// **转发的**每一条注册路由都真的走到管线（`prepare` 能拿到它、端点分类正确）。
     ///
-    /// `/v1/models` 与 `/v1/models/{id}` **不在**这个清单里：[docs/28 §4] 起它们由网关
+    /// `/v1/models` 与 `/v1/models/{id}` **不在**这个清单里： 起它们由网关
     /// **本地作答**（见 `models_list_is_answered_locally_and_never_dials_upstream`），
     /// 故意不再进管线 —— 这里把它们排掉不是"漏了"，是防止有人把本地回答改回透传还看不出来。
     #[tokio::test]
@@ -2034,7 +2034,7 @@ mod tests {
     async fn golden_request_is_faithful_end_to_end_through_the_router() {
         let fixture = golden_fixture();
         let raw_body = serde_json::to_vec(&fixture.body).unwrap();
-        // [docs/59] **同协议**：这一条测"逐字节透传"，跨协议会被真的翻译掉。
+        // **同协议**：这一条测"逐字节透传"，跨协议会被真的翻译掉。
         // 跨协议的端到端路径由 `models_list_is_answered_locally...` 同族的用例与
         // `pipeline::cross_protocol_request_body_is_translated_not_passed_through` 覆盖。
         let mut builder = Request::builder().method("POST").uri("/v1/chat/completions");
@@ -2078,7 +2078,7 @@ mod tests {
         assert_eq!(echoed["body"], expected_body);
         assert_eq!(echoed["upstream_model"], "claude-sonnet-4-5-20250929");
         assert_eq!(echoed["endpoint"], "chat_completions");
-        // [docs/59] **同协议 → RAW 零改动透传**，这正是本测试要钉的东西（逐字节 faithful）。
+        // **同协议 → RAW 零改动透传**，这正是本测试要钉的东西（逐字节 faithful）。
         //
         // 跨协议会被**真的翻译**，那由
         // `pipeline::cross_protocol_request_body_is_translated_not_passed_through` 覆盖。
@@ -2681,7 +2681,7 @@ mod tests {
         assert!(snapshot(HeaderMap::new(), b"", "/v1/unknown").model_hint().is_none());
     }
 
-    /// [docs/51] 客户端发**别名**时，`PreparedRequest.model` 必须归一到规范模型 id。
+    /// 客户端发**别名**时，`PreparedRequest.model` 必须归一到规范模型 id。
     ///
     /// 为什么必须归一、且必须只在一处做：下游三处都要用**同一个**名字 ——
     /// ① 定价（`PriceMatch.model` 匹配对外模型名）、② 用量表的 `model` 列、
@@ -2953,7 +2953,7 @@ mod tests {
 
     // ---------------------------------------------------------- request_id 的 span
 
-    /// [docs/14 §6 G2]：**拿一个 `request_id` 能筛出它经过的全部日志行**。
+    ///：**拿一个 `request_id` 能筛出它经过的全部日志行**。
     ///
     /// 这条证明的不是"我们写了 `request_id` 字段"，而是**span 真的把它带出来了**：
     /// 断言的那行日志来自**拨号器**（另一个模块），而它自己**一个字段都没写**。

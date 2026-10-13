@@ -1,5 +1,5 @@
 /**
- * 服务商详情 `/providers/:id`（[07 §3.2]）—— **查看与编辑一体**（[docs/23]）。
+ * 服务商详情 `/providers/:id`（[07 §3.2]）—— **查看与编辑一体**。
  *
  * ## 这一页为什么长这样（用户第 75 轮原话）
  *
@@ -20,7 +20,7 @@
  * 3. **明文密钥只走密钥仓库**：`providers-edit-secret` 的值只交给
  *    `credential_set_secret`，不进 `provider_upsert` 的载荷、不进错误消息、成功后立刻清空。
  *
- * ## 第 80 轮：这一页是「基础数据 + 线路」（[docs/28 §1]）
+ * ## 第 80 轮：这一页是「基础数据 + 线路」
  *
  * 用户原话：「具体哪个服务商，点进去，是**编辑和显示基础数据(url key 协议 线路)，
  * 和编辑线路(查看线路信息, 编辑网络代理)**的地方」。于是这一页只有两块内容：
@@ -32,7 +32,7 @@
  *    以及「改代理」（`channel_upsert`）/「启停」（`channel_set_enabled`）/「移除」
  *    （`channel_delete`，走确认框）。
  *
- * **下线**的东西（[docs/28 §1] 硬规则 3 与 §4 S3）：整张**凭据表**（多行 / 多选 / 批量删除 /
+ * **下线**的东西（硬规则 3 与 §4 S3）：整张**凭据表**（多行 / 多选 / 批量删除 /
  * 每行的额度圈）。一个服务商就一把密钥；要多个账号 → **加多个服务商、取不同名字**。
  * 也**不再创建模型**（模型的创建/分配在 `/models`）：原来那一节「模型目录」只保留
  * 「扫描上游模型 → 勾一下」这个能力，改叫**创建线路**（契约暂时不变：仍调 `provider_model_attach`）。
@@ -44,7 +44,7 @@
  * 写：`provider_upsert`（整条覆盖写）、`credential_upsert` + `credential_set_secret`
  * （只有填了新密钥 / 保存额度窗口）、`provider_model_attach`（创建线路）、
  * `channel_upsert`（改线路的网络代理）、`channel_set_enabled`、以及 `provider_delete` /
- * `channel_delete`（[docs/21 §1] 的删除，语义与列表页完全一致）。
+ * `channel_delete`（删除，语义与列表页完全一致）。
  */
 
 import AddIcon from "@mui/icons-material/Add";
@@ -78,7 +78,7 @@ import {
 } from "@/shared/components";
 import { DASH, formatInt, formatLatency, formatPercent } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
-// [docs/52] 读后端原始对象的唯一实现（原先本文件自己写了 asRow/pickStr/pickNum/pickBool）
+// 读后端原始对象的唯一实现（原先本文件自己写了 asRow/pickStr/pickNum/pickBool）
 import { asRow, pickBool, pickNum, pickStr } from "@/shared/row";
 import { radius, typography } from "@/theme";
 
@@ -166,10 +166,10 @@ const SECTION_HEAD_SX = { display: "flex", alignItems: "center", gap: 2, minWidt
 /** 协议下拉的空值（`Protocol` 是必填，空就是真的空，不放"请选择…"的假选项）。 */
 const REQUIRED_LABEL_KEY: I18nKey = "wizard.required";
 
-// ================================================================ 本轮新增的文案键（[docs/28 §4 S3]）
+// ================================================================ 本轮新增的文案键
 
 /**
- * [docs/28 §4] S3 这一页新用的文案键由主管补进 `src/shared/i18n/**`（本任务的写作用域不含 i18n）。
+ * S3 这一页新用的文案键由主管补进 `src/shared/i18n/**`（本任务的写作用域不含 i18n）。
  * 键还没落地时 `I18nKey`（= `keyof typeof zhCN`）里没有它们，直接写会让 `tsc --noEmit` 变红 ——
  * 这里**集中断言一次**，让"代码先落地、文案随后补"这两件事解耦（与 `pages/models/index.tsx`
  * 同一手法）；键补齐后可以删掉这个函数，调用点一个字都不用改。
@@ -213,13 +213,13 @@ const K = {
   keyMultiple: i18nKey("providers.key.multiple"),
 } as const;
 
-// ================================================================ 删除（[docs/21 §1]）
+// ================================================================ 删除
 
 /**
  * 一次删除的目标。
  *
  * 本页只剩**两条**单条删除（页头删服务商、线路行移除线路）：凭据表的批量删除随
- * 「一个服务商一把密钥」下线（[docs/28 §1] 硬规则 3），所以这里不再有 `batch` 这一档。
+ * 「一个服务商一把密钥」下线（硬规则 3），所以这里不再有 `batch` 这一档。
  */
 type DeleteTarget = {
   readonly ids: readonly string[];
@@ -275,7 +275,7 @@ async function invalidate(qc: QueryClient, keys: readonly (readonly unknown[])[]
  * 是**静默失效**的（组件只解构 `children`，属性被丢掉，测试里就成了"元素不存在"）。
  */
 
-/** 区块标题 + **至多一个**问号（[docs/22 §3]：一排问号比一排字更糟）。 */
+/** 区块标题 + **至多一个**问号（：一排问号比一排字更糟）。 */
 function SectionTitle({ title, helpText, helpTestId }: { title: string; helpText?: string; helpTestId?: string }) {
   return (
     <Box sx={SECTION_HEAD_SX}>
@@ -371,7 +371,7 @@ function TextControl({
 /**
  * 一个可编辑的开关。
  *
- * [docs/50]：形状已收敛到共享件 [`SwitchControl`]（`@/shared/components`），
+ *：形状已收敛到共享件 [`SwitchControl`]（`@/shared/components`），
  * 本文件不再自己实现。这里保留一个同名薄包装是为了**不动本页 4 个调用点**；
  * 新代码直接用共享件即可。
  */
@@ -390,12 +390,12 @@ function labelOf(
   return key === undefined ? raw : t(key);
 }
 
-// ================================================================ 线路（[docs/28 §1]：这家服务商**自己的**线路）
+// ================================================================ 线路（：这家服务商**自己的**线路）
 
 type RawRow = Record<string, unknown>;
 
 /**
- * [docs/28 §4] 上游原文是不是"没有"。
+ * 上游原文是不是"没有"。
  *
  * `{}` 是**唯一**的"没记到原文"表示（store 那一列 `NOT NULL DEFAULT '{}'`，
  * 上游那一条不是对象或压根没扫到时也是它）—— 所以这里只用"有没有键"判断，
@@ -409,14 +409,14 @@ function isEmptyRaw(raw: unknown): boolean {
 /**
  * 一条线路（`channel_list` 的一行）。
  *
- * **`raw` 必须原样带着**：`channel_upsert` 是**整条覆盖写**（[docs/23] 对 `provider_upsert`
+ * **`raw` 必须原样带着**：`channel_upsert` 是**整条覆盖写**（对 `provider_upsert`
  * 记下的同一条纪律），少一个键就会把 `upstream_model` / `capabilities` / `transform` 抹成
  * 后端默认值 —— 那是真实的数据丢失。
  */
 export type LineRow = {
   id: string;
   providerId: string;
-  /** 上游模型名 —— **线路的身份**（[docs/28 §1]；逻辑模型名不在这里）。 */
+  /** 上游模型名 —— **线路的身份**（；逻辑模型名不在这里）。 */
   upstreamModel: string;
   /** 这条线路**自己的**网络代理；`null` = 不指定（按继承链落到凭据 / 服务商 / 默认线路）。 */
   laneId: string | null;
@@ -458,11 +458,11 @@ export function linesOfProvider(
 }
 
 /*
- * [docs/55]（第 322 轮）这里曾有 `linePayloadForLane(line, lane)`：改一条线路的**网络代理**
+ *（第 322 轮）这里曾有 `linePayloadForLane(line, lane)`：改一条线路的**网络代理**
  * 时构造 `channel_upsert` 的载荷（"以原始记录为底，只覆盖 lane 一个键"）。
  *
  * 它随"放弃线路级别的分配"删除：`ChannelConfig.lane` 字段已经不存在，
- * 而**线路级的代理控件**本身在 [docs/25] 那一轮就从界面上撤掉了 ——
+ * 而**线路级的代理控件**本身在 那一轮就从界面上撤掉了 ——
  * 也就是说这个函数**早就没有调用方了**，只是没人回来删。
  *
  * 现在改网络代理只有一处：**服务商级**的「网络代理」下拉（走 `provider_upsert` 的 `lane`）。
@@ -470,7 +470,7 @@ export function linesOfProvider(
  */
 
 /**
- * 这家服务商**那唯一一把**凭据（[docs/28 §1] 硬规则 3：`credential` 退化成 1:1 附件）。
+ * 这家服务商**那唯一一把**凭据（硬规则 3：`credential` 退化成 1:1 附件）。
  *
  * 选哪一份：优先 `<provider>-default`（向导建的那一份），否则这家挂的第一份。
  * 页面用同一张规则做三件事：写密钥的目标、「额度窗口」按钮挂给谁、只读状态显示的是谁。
@@ -508,7 +508,7 @@ export function staleLineIdsOf(
 /**
  * 线路区的**全部输入**由数据层注入（展示层不取数、不认识 IPC）。
  *
- * [docs/28 §1.4]（用户第 82 轮的重构）：这一节**只有一个列表**。
+ *（用户第 82 轮的重构）：这一节**只有一个列表**。
  * * **扫描 = 扫上游 + 把清单里的每条线路都建出来**（默认关闭）：不再有"勾一下才创建"；
  * * 每行 = **上游原文** + **网络代理** + **启用/关闭的滑块**；
  * * 列表头上有**全选**：一次动作把所有线路一起启用 / 一起关闭
@@ -595,7 +595,7 @@ export function LinesSection({
 }: ProviderLinesProps) {
   const { t } = useTranslation();
   /**
-   * 哪一行的「详情」是展开的（[docs/28 §1.5]）。
+   * 哪一行的「详情」是展开的。
    *
    * 列表里**只放名字 + 网络代理 + 滑块**（用户原话："一条就是左边名字，右边选择滑块就好了"）；
    * 上游原文 / 线路 id / 优先级权重 / 移除都收进这个点开的详情里。
@@ -619,7 +619,7 @@ export function LinesSection({
         />
 
         {/* ① 扫描：扫上游 + **把清单里的每条线路都建出来**（默认关闭）
-            —— [docs/28 §1.4] 之后这里不再有"勾一下才创建"。
+            —— 之后这里不再有"勾一下才创建"。
             [15 §2] **极简**：那句解释收进本节标题的问号（`linesHint`），版面上只留一个图标按钮 +
             一个只在真等后端时才出现的状态字 —— 节标题右边已经有一个问号，不需要第二份说明。 */}
         <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
@@ -714,7 +714,7 @@ export function LinesSection({
                     <Typography variant="caption" sx={{ flex: 1, minWidth: 0 }}>
                       {t(K.linesColName)}
                     </Typography>
-                    {/* [docs/29 §2.1] 列头里**不再有「网络代理」那一列**：行内已经没有代理控件
+                    {/* 列头里**不再有「网络代理」那一列**：行内已经没有代理控件
                         （出口只由服务商决定），留一个没有内容的列头 = 一条指向不存在列的说明。
                         第 88 轮删行内下拉时漏了这一处（那次替换静默失败、`tsc` 也不会报），
                         第 117 轮补删。 */}
@@ -743,7 +743,7 @@ export function LinesSection({
                           borderColor: "divider",
                           bgcolor: "background.surface",
                           /**
-                           * **一行 = 名字 + 右键两个控件**（[docs/28 §1.5] 用户原话："一条就是左边名字，
+                           * **一行 = 名字 + 右键两个控件**（用户原话："一条就是左边名字，
                            * 右边选择滑块就好了"）。整条列表因此是一眼扫得完的清单，
                            * 而不是"每条线路一张卡片"。
                            *
@@ -770,7 +770,7 @@ export function LinesSection({
                           {/* 中间留白：把两个控件推到右边 */}
                           <Box sx={{ flex: 1, minWidth: 8 }} />
 
-                          {/* [docs/29 §2.1] **这里不再有代理下拉**：出口只由**服务商**决定 ——
+                          {/* **这里不再有代理下拉**：出口只由**服务商**决定 ——
                               同一服务商下的模型打同一个 URL，用不同出口 IP 会被上游当成
                               "同账号多地并发"（用户原话："反而会封号"）。
                               线路一律继承服务商，界面上不再给第二条路。 */}
@@ -942,13 +942,13 @@ export type ProviderDetailBodyProps = {
   credentialsError: unknown;
   onRetryCredentials: () => void;
   /**
-   * [docs/29 §2.2] 「自动」出口的候选（**启用的订阅**，一份一个）。
+   * 「自动」出口的候选（**启用的订阅**，一份一个）。
    * 由页面查好传进来：视图组件不自己查数据（本仓库的视图只吃 props，才好在没有 QueryClient
    * 的地方单测 —— 我第一版就是在这儿直接查了，测试当场红在 "No QueryClient set"）。
    */
   autoSubscriptions: readonly { id: string; name: string }[];
   /**
-   * [docs/58] **`lane_options` 的分组**（`lane_options` 原样返回）。
+   * **`lane_options` 的分组**（`lane_options` 原样返回）。
    *
    * 为什么不是 `lane_list`：那一份**只有已配置的线路**，于是"用户加了订阅却在服务商这边
    * 选不到任何节点"（用户第 325 轮报的 bug，根因就在这儿）。`lane_options` 才带订阅节点
@@ -961,7 +961,7 @@ export type ProviderDetailBodyProps = {
   onBack: () => void;
 
   /**
-   * 保存（[docs/23]）：数据层注入，载荷由展示层用 [`buildProviderPayload`] 从**原始记录**拼。
+   * 保存：数据层注入，载荷由展示层用 [`buildProviderPayload`] 从**原始记录**拼。
    * **省略 = 这一页只读**（拿到的是只读视图，覆盖写会用默认值抹掉线上配置）。
    */
   onSave?: (payload: ProviderInput, plaintextKey: string) => Promise<void>;
@@ -992,7 +992,7 @@ export function ProviderDetailBody({
 }: ProviderDetailBodyProps) {
   const { t } = useTranslation();
 
-  // ---------------------------------------------------------------- 草稿（[docs/23]）
+  // ---------------------------------------------------------------- 草稿
 
   const editable = canEdit(row) && onSave !== undefined;
 
@@ -1055,7 +1055,7 @@ export function ProviderDetailBody({
     setSavedJustNow(false);
   };
 
-  // ---------------------------------------------------------------- 这家那唯一一条凭据（[docs/28 §1] 硬规则 3）
+  // ---------------------------------------------------------------- 这家那唯一一条凭据（硬规则 3）
 
   /**
    * 这一家挂的全部凭据（正常只有一份）与**页面编辑的那一份**。
@@ -1106,7 +1106,7 @@ export function ProviderDetailBody({
     [t],
   );
   /**
-   * [docs/29 §2.2] 「自动」出口的候选 = **启用的订阅**（一份订阅一个选项；多份时带订阅名）。
+   * 「自动」出口的候选 = **启用的订阅**（一份订阅一个选项；多份时带订阅名）。
    *
    * 值发的是标记 `auto:<订阅 id>`，由后端 `provider_upsert` 解析成一条合格的线路
    * （`subscription_auto` + 显式 `select`）并写回真实 id —— 前端不建线路、也不编 id。
@@ -1204,7 +1204,7 @@ export function ProviderDetailBody({
           <Paper variant="outlined" sx={SECTION_SX} data-testid="providers-overview">
             <Stack spacing={4}>
               {/* 那句解释（原本铺在字段网格下面的"这四列只有后端视图才提供"）收进问号
-                  （[docs/22 §2]）；**健康数值与「—」照旧留在版面上**（红线第 5 条）。 */}
+                  ；**健康数值与「—」照旧留在版面上**（红线第 5 条）。 */}
               <SectionTitle
                 title={t("providers.section.basic")}
                 helpText={t("providers.honesty.detailFields")}
@@ -1213,7 +1213,7 @@ export function ProviderDetailBody({
 
               <Box sx={GRID_SX}>
                 <Field label={t("providers.field.id")}>
-                  {/* id 是主键：改名不等于换 id（[docs/20 §4]），所以它只读显示 */}
+                  {/* id 是主键：改名不等于换 id，所以它只读显示 */}
                   <MonoValue>{row.id === "" ? DASH : row.id}</MonoValue>
                 </Field>
                 <TextControl
@@ -1311,7 +1311,7 @@ export function ProviderDetailBody({
                     <Value>{row.channelCount === undefined ? DASH : formatInt(row.channelCount)}</Value>
                   </Field>
                 </Box>
-                {/* 线路名读不到是**后端原文 + TA 码**（[docs/22 §2 第 2 条]）→ 留在版面上 */}
+                {/* 线路名读不到是**后端原文 + TA 码**→ 留在版面上 */}
                 {laneError !== undefined && laneError !== null ? (
                   <Typography variant="caption" data-testid="providers-lane-error" sx={{ color: "error.main" }}>
                     {t("providers.lane.error", { message: errorMessage(laneError) })}
@@ -1324,7 +1324,7 @@ export function ProviderDetailBody({
           {/* ② 鉴权与连接：只有完整 `Provider` 才有这些字段 */}
           <Paper variant="outlined" sx={SECTION_SX} data-testid="providers-connection">
             <Stack spacing={4}>
-              {/* 两句区块说明合成**一条**提示（[docs/22 §2/§3]：一个区块最多一个问号）。
+              {/* 两句区块说明合成**一条**提示（：一个区块最多一个问号）。
                   第 2 轮补丁：**破坏性后果留在版面**（下面那行 `providers-connection-protect`），
                   原因与超时结论进这个 `?` —— 所以 `providers.connection.hint` **不再**在提示里。 */}
               <SectionTitle
@@ -1335,7 +1335,7 @@ export function ProviderDetailBody({
 
               {/* 破坏性后果（补丁纪律）：这一块**不会**拿默认值去覆盖线上已有的值。
                   只在**可编辑**时画：只读时上面那条 `providers-view-only` 说的就是同一件事 ——
-                  同一屏同一个事实说两遍是纯噪音（[docs/30 §1 判据 1]），所以两边各说一次不重复。 */}
+                  同一屏同一个事实说两遍是纯噪音，所以两边各说一次不重复。 */}
               {editable ? (
                 <Caption testId="providers-connection-protect">
                   {t("providers.connection.hint")}
@@ -1520,14 +1520,14 @@ export function ProviderDetailBody({
             </Paper>
           ) : null}
 
-          {/* ④ 密钥（基础数据的最后一块）：**一个服务商一把密钥**（[docs/28 §1] 硬规则 3）。
+          {/* ④ 密钥（基础数据的最后一块）：**一个服务商一把密钥**（硬规则 3）。
               留空 = 不改；填了 = 写到这家那条凭据（`credential_set_secret`，明文永不回显）。
               额度窗口挂在**这一条**凭据上（不再有凭据表）。
 
-              标题右边**只放一个问号**（[docs/22 §3]）：两条说明都是"怎么用"的长句 ——
+              标题右边**只放一个问号**：两条说明都是"怎么用"的长句 ——
               · `providers.credentials.secretHint`：密钥以引用形式显示、明文只进密钥仓库；
               · `providers.key.multipleHint`：**要两个账号就再加一条服务商、取不同名字**
-                （一个服务商就是一把密钥 —— owner 原话，[docs/28 §1] 硬规则 3）。
+                （一个服务商就是一把密钥 —— owner 原话， 硬规则 3）。
               「一个服务商一把密钥」这个**结论**本身也留在版面上（下面的空态 / 老配置提示里都说），
               不靠悬停才看得见。 */}
           <Paper variant="outlined" sx={SECTION_SX} data-testid="providers-key">
@@ -1553,7 +1553,7 @@ export function ProviderDetailBody({
                     onChange={(key) => patch({ key })}
                   />
                   {/**
-                   * [docs/30] 极简：**已经存在的凭据不再重复报一遍** —— 它就在下面那张凭据表里
+                   * 极简：**已经存在的凭据不再重复报一遍** —— 它就在下面那张凭据表里
                    * （同一屏里同一个事实说两遍是纯噪音）。
                    *
                    * 留下的两种都是"用户不看会误判"的话：
@@ -1645,7 +1645,7 @@ export function ProviderDetailBody({
             </Stack>
           </Paper>
 
-          {/* ⑤ 线路（[docs/28 §1]：这一页的**主体**）——这家服务商自己的线路，一行一条 */}
+          {/* ⑤ 线路（：这一页的**主体**）——这家服务商自己的线路，一行一条 */}
           {lines === undefined ? null : <LinesSection {...lines} />}
 
           {/* ⑥ 原始字段：后端返回的整条记录，原样显示（未做任何清洗）。
@@ -1683,7 +1683,7 @@ export function ProviderDetailBody({
           </Paper>
 
           {/* 保存条：改了什么、能不能存，一眼可见。**吸在视口底部**——这一页很长，
-              把"保存"埋在末尾等于让用户滚到底才想起来自己改过什么（[docs/23 §1]）。 */}
+              把"保存"埋在末尾等于让用户滚到底才想起来自己改过什么。 */}
           {editable ? (
             <Paper
               variant="outlined"
@@ -1736,7 +1736,7 @@ export default function ProviderDetailPage() {
   const providers = useCommandQuery("provider_list", undefined, qk.providers);
   const credentials = useCommandQuery("credential_list", undefined, qk.credentials);
   const lanes = useCommandQuery("lane_list", undefined, qk.lanes);
-  /** 这一家的线路（[docs/28 §1]）：`channel_list` 全量拉回来，再按 `provider` 过滤。 */
+  /** 这一家的线路：`channel_list` 全量拉回来，再按 `provider` 过滤。 */
   const channels = useCommandQuery("channel_list", undefined, qk.channels);
 
   const upsertProvider = useCommandMutation("provider_upsert");
@@ -1755,7 +1755,7 @@ export default function ProviderDetailPage() {
     [credentials.data],
   );
   /**
-   * [docs/29 §2.2] 「自动」出口的候选：**启用的订阅**（一份一个）。页面查好、传进视图 ——
+   * 「自动」出口的候选：**启用的订阅**（一份一个）。页面查好、传进视图 ——
    * 视图组件不自己查数据（它要能在没有 QueryClient 的地方单测）。
    */
   const subscriptions = useCommandQuery("subscription_list", undefined, qk.subscriptions);
@@ -1790,7 +1790,7 @@ export default function ProviderDetailPage() {
   const laneOptions = useMemo(() => (lanes.data ?? []).map((l) => readLane(l)), [lanes.data]);
 
   /**
-   * [docs/58] **网络代理下拉的选项来源**：`lane_options`（含订阅节点），不是 `lane_list`。
+   * **网络代理下拉的选项来源**：`lane_options`（含订阅节点），不是 `lane_list`。
    *
    * 用**独立的 key**（`qk.lanes` 加一段后缀）而不是复用 `qk.lanes`：两者是不同的查询
    * （一个是"已配置的线路"，一个是"能选的全部出口"），共用 key 会让 TanStack Query
@@ -1811,11 +1811,11 @@ export default function ProviderDetailPage() {
   );
   const ensureNodeLane = useCommandMutation("lane_ensure_for_node");
 
-  // ---------------------------------------------------------------- 线路（[docs/28 §1]：创建线路 + 逐条编辑）
+  // ---------------------------------------------------------------- 线路（：创建线路 + 逐条编辑）
   //
   // 这一页**不创建模型**（模型的创建/分配在 `/models`）。原来那一节「模型目录」只保留
   // 「扫描上游模型 → 勾一下」这个能力，改叫**创建线路**（契约暂时不变：仍调
-  // `provider_model_attach`，[docs/28 §4] S3）。线路本身来自 `channel_list`：
+  // `provider_model_attach`， S3）。线路本身来自 `channel_list`：
   //   * 改网络代理 → `channel_upsert`（**整条覆盖写**，载荷以原始记录为底）
   //   * 启用/停用   → `channel_set_enabled`（可逆）
   //   * 移除       → `channel_delete`（走确认框；被策略点名引用时后端拒绝并给原文）
@@ -1829,7 +1829,7 @@ export default function ProviderDetailPage() {
   );
   const upsertChannel = useCommandMutation("channel_upsert");
   const setChannelEnabled = useCommandMutation("channel_set_enabled");
-  /** [docs/28 §1.4] 全选：批量启停（一次写库、一次内核重载）。 */
+  /** 全选：批量启停（一次写库、一次内核重载）。 */
   const bulkSetEnabled = useCommandMutation("channel_bulk_set_enabled");
   const removeChannel = useCommandMutation("channel_delete");
   const [scanPending, setScanPending] = useState(false);
@@ -1887,7 +1887,7 @@ export default function ProviderDetailPage() {
   };
 
   /**
-   * 「重新扫描」：扫上游 + 刷新目录 + **把缺的线路补建出来**（[docs/28 §1.4] 用户第 82 轮）。
+   * 「重新扫描」：扫上游 + 刷新目录 + **把缺的线路补建出来**（用户第 82 轮）。
    *
    * 用户原话：「添加服务商默认添加所有线路，然后通过滑块来'启用'和'关闭'……只是有个滑块
    * 控制是否可见」。所以扫描这一步就把清单里**每条**线路建出来（**默认关闭**），
@@ -1904,7 +1904,7 @@ export default function ProviderDetailPage() {
         const preview = await api.model.importFromProvider(id);
         const recorded = preview.models.length + preview.skipped.length;
         /**
-         * 扫描**只记录**目录；"建出全部线路"是紧跟着的第二条命令（[docs/28 §1.4]）。
+         * 扫描**只记录**目录；"建出全部线路"是紧跟着的第二条命令。
          * 两步分开是有意的：目录是"上游给了什么"（事实），建线路是"我们拿它做什么"（决定）
          * —— 把它们糊成一条命令，就没法解释"扫到了但一条都没建出来"这种状态。
          */
@@ -1921,7 +1921,7 @@ export default function ProviderDetailPage() {
     })();
   };
 
-  // ---------------------------------------------------------------- 保存（[docs/23]）
+  // ---------------------------------------------------------------- 保存
 
   /**
    * 保存这一行。**顺序**：
@@ -1932,7 +1932,7 @@ export default function ProviderDetailPage() {
    */
   const save = async (payload: ProviderInput, plaintextKey: string): Promise<void> => {
     /**
-     * [docs/58] **先把选中的出口解析成真实 lane id**，再写服务商。
+     * **先把选中的出口解析成真实 lane id**，再写服务商。
      *
      * `auto:` / `direct:` 两种标记由后端 `provider_upsert` 自己解析（"这条线路该长什么样"
      * 的判断只有一份）；**订阅节点**不行 —— 值是 `node:<订阅>:<节点名>`，后端不认识这个标记，
@@ -1966,21 +1966,21 @@ export default function ProviderDetailPage() {
       : { id: chosen.id, exists: true };
   }, [credentialRows, id]);
 
-  // ---------------------------------------------------------------- 删除（[docs/21 §1]）
+  // ---------------------------------------------------------------- 删除
   //
   // 本页有**两条**删除流程（页头删服务商、线路行移除线路），语义完全一样：
   // 先确认 → `force=false` → 被引用时后端原文原样显示（服务商此时才给级联按钮）→ 成功写结果区。
   // 凭据的删除随「一个服务商一把密钥」下线：要撤掉一把密钥就删掉这个服务商
-  // （[docs/28 §1] 硬规则 3：多账号 = 加多个服务商）。
+  // （硬规则 3：多账号 = 加多个服务商）。
 
   const removeProvider = useCommandMutation("provider_delete");
 
-  // ---------------------------------------------------------------- 额度窗口（[docs/24]）
+  // ---------------------------------------------------------------- 额度窗口
   //
   // 窗口是**用户自己配**的：这里只负责"打开哪一份 / 保存成什么载荷 / 保存后失效哪些查询"。
   // 载荷以**整条 credential 的原始记录**为底（`credential_upsert` 是整条覆盖写，
-  // 少发一个键就会把 secret / guard / tags 抹掉 —— 与 [docs/23] 同一条纪律）。
-  // 挂的是这家**那唯一一条**凭据（[docs/28 §1] 硬规则 3）。
+  // 少发一个键就会把 secret / guard / tags 抹掉 —— 与 同一条纪律）。
+  // 挂的是这家**那唯一一条**凭据（硬规则 3）。
 
   /** 一条删除流程的状态（本页两条：服务商 / 线路）。 */
   type DeleteFlowState = {
@@ -1995,7 +1995,7 @@ export default function ProviderDetailPage() {
   type SetFlow = Dispatch<SetStateAction<DeleteFlowState>>;
   const [providerFlow, setProviderFlow] = useState<DeleteFlowState>(EMPTY_FLOW);
   /**
-   * 「移除线路」那条流程（[docs/28 §1]）。
+   * 「移除线路」那条流程。
    *
    * 与删服务商共用同一套执行体（先确认 → 拿到后端原文）。**但 `channel_delete` 没有 `force`**：
    * 所以这条流程的 `cascadeAvailable` 恒为 false —— 不显示一个点了会报错的级联按钮。
@@ -2011,7 +2011,7 @@ export default function ProviderDetailPage() {
     setFlow((prev) => ({ ...prev, target: undefined, error: undefined }));
   };
 
-  /** 删服务商成功后要失效的查询（[docs/21 §1.1 第 4 条]）：会连带动到凭据 / 线路 / 模型。 */
+  /** 删服务商成功后要失效的查询：会连带动到凭据 / 线路 / 模型。 */
   const invalidateAfterDelete = async (): Promise<void> => {
     await invalidate(qc, [qk.providers, qk.credentials, qk.models, qk.channels, qk.channelMatrix]);
   };
@@ -2069,9 +2069,9 @@ export default function ProviderDetailPage() {
         actions={
           <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
             {/*
-              「删除服务商」（[docs/21 §1 / §3]）：只在这一行真的存在时出现 ——
+              「删除服务商」：只在这一行真的存在时出现 ——
               目录里没有这个 id 时不放一个点了会错的按钮。点击**先弹确认框**，不发命令。
-              保存按钮在页面底部的保存条上（[docs/23]：这一页本身就是编辑器）。
+              保存按钮在页面底部的保存条上（：这一页本身就是编辑器）。
             */}
             {row === undefined ? null : (
               <Button
@@ -2179,7 +2179,7 @@ export default function ProviderDetailPage() {
       )}
 
       {/*
-        删除服务商（[docs/21 §1 / §2]）：testid 前缀用 `providers`（与列表页同一个实体同一个前缀，
+        删除服务商：testid 前缀用 `providers`（与列表页同一个实体同一个前缀，
         §3 表里点名的级联按钮就是 `providers-delete-cascade`）。先确认 → `force=false` →
         被引用时后端原文原样显示、此时才出现级联按钮。
       */}
@@ -2220,7 +2220,7 @@ export default function ProviderDetailPage() {
       />
 
       {/*
-        「移除线路」（[docs/28 §1]）：与删服务商同一套语义（先确认、被引用时原样显示后端原文），
+        「移除线路」：与删服务商同一套语义（先确认、被引用时原样显示后端原文），
         **但没有级联** —— `channel_delete` 不接受 `force`：它只会在被策略点名引用时拒绝，
         而不是"确认一下就连带删掉"。
       */}

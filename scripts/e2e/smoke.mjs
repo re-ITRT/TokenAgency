@@ -50,7 +50,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:http";
 import { connect as netConnect } from "node:net";
-/// [docs/46 E 期] 延迟测试台实例（模块级；默认 null = 不启用）。
+/// 延迟测试台实例（模块级；默认 null = 不启用）。
 let rig = null;
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -66,7 +66,7 @@ const OUT = process.env.TA_E2E_OUT ?? join(process.env.TEMP ?? process.env.TMP ?
 const SHOTS = join(OUT, "shots");
 
 /**
- * [docs/46 §297] E 期**统一的探测目标**：应用给 provider 体检时带的就是**服务商的 `base_url`**，
+ * E 期**统一的探测目标**：应用给 provider 体检时带的就是**服务商的 `base_url`**，
  * 所以两处（夹具档 step28、真实订阅档 step29）都把它指向这条**公网可达**的端点 —— 本机实测
  * `generate_204 → HTTP 204` ✓，且 34 条真实节点里能量到 26 条 ✓。
  *
@@ -122,7 +122,7 @@ const STEP_TITLES = {
   step20: "服务商详情 →「编辑」进同一个向导的编辑模式：预填现有值、留空密钥不改、第 2 步线路列只读",
   step21: "各种项的删除（确认框 + 级联 + 批量逐条汇报）与线路级代理归属（已在服务商详情页验）",
   step22: "长篇介绍收进「问号圆圈」：悬停/聚焦展开原文，版面上不再铺字",
-  step23: "订阅详情页（[docs/54]）：从 /network 点订阅名进得去；顶部「自动选择」「直连」恒在且不可关；节点开关真落库、关掉的节点真被排除出内核组",
+  step23: "订阅详情页：从 /network 点订阅名进得去；顶部「自动选择」「直连」恒在且不可关；节点开关真落库、关掉的节点真被排除出内核组",
 };
 
 // ================================================================ 小工具
@@ -622,7 +622,7 @@ function tryJson(s) {
 
 /** 一份最小但**结构真实**的 Clash 订阅。节点名是断言用的标记。 */
 /**
- * [docs/46 E 期] **本机延迟测试台**：两个 HTTP CONNECT 代理（一慢一快）+ 一个健康检查端点。
+ * **本机延迟测试台**：两个 HTTP CONNECT 代理（一慢一快）+ 一个健康检查端点。
  *
  * 为什么需要它：挂具原来的 fixture 节点是**假端口**（连不通）⇒ 内核根本测不出延迟
  * ⇒ "选最低延迟 / 订阅更新后不换 IP"这两条**在这台机器上无法验证**。
@@ -649,7 +649,7 @@ function startLatencyRig({
   /** 一个 CONNECT 代理：延迟 `delayMs` 之后把字节转发到目标；绑到 `port`（0 = 随机）。 */
   const makeProxy = (delayMs, port) => {
     const proxy = createServer((req, res) => {
-      // [docs/46 §E] **普通 HTTP 代理路径**（不只是 CONNECT）。
+      // **普通 HTTP 代理路径**（不只是 CONNECT）。
       //
       // 为什么必须补：自检证明"经 CONNECT 代理连本地端点"是通的（`200 Connection Established` ✓），
       // 可 mihomo 那边两条节点仍是"未测出" ⇒ 它对 `http://` 目标很可能走的是
@@ -718,7 +718,7 @@ function startLatencyRig({
 }
 
 /**
- * [docs/46 E 期] **延迟测试用的订阅**：两条 `type: http` 节点，分别指向测试台的 fast / slow 代理。
+ * **延迟测试用的订阅**：两条 `type: http` 节点，分别指向测试台的 fast / slow 代理。
  *
  * 与 `CLASH_YAML` 的关系：**完全独立**（走另一个 URL 路径），既有步骤一行都不受影响。
  * 节点的 `server/port` 是**真的能连**的本机代理，健康检查指向本机那个返回 200 的端点 ——
@@ -755,7 +755,7 @@ const CLASH_YAML = `port: 7890
 socks-port: 7891
 mode: rule
 proxies:
-  # [docs/46 E 期] 两条**真节点**：指向测试台的两个本地 CONNECT 代理（固定端口 8391 = 慢 400ms、
+  # 两条**真节点**：指向测试台的两个本地 CONNECT 代理（固定端口 8391 = 慢 400ms、
   # 8390 = 快 0ms）。**故意把慢的排在前面** —— 这样"选中了快的那条"就排除了"选第一个"的巧合。
   # 两个端口由 startLatencyRig({ fastPort: 8390, slowPort: 8391 }) 在同一次运行里绑定。
   - name: "ta-lat-slow"
@@ -816,7 +816,7 @@ async function startFixture() {
   const models = ["ta-e2e-scan-a", "ta-e2e-scan-b", "ta-e2e-m-add"];
   const server = createServer((req, res) => {
     const path = (req.url ?? "").split("?")[0];
-    // [docs/46 E 期] **延迟测试订阅**：只有新步骤会用；`rig` 没启动就 404（既有步骤完全不受影响）。
+    // **延迟测试订阅**：只有新步骤会用；`rig` 没启动就 404（既有步骤完全不受影响）。
     if (path === "/clash-latency.yaml") {
       if (rig === null) {
         res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -852,12 +852,12 @@ async function startFixture() {
       // upload + download = 92.9 GB，total = 130 GB → 71%。
       "subscription-userinfo": `upload=${Math.round(10.0 * 1024 ** 3)}; download=${Math.round(82.9 * 1024 ** 3)}; total=${130 * 1024 ** 3}; expire=1893456000`,
     });
-      // [docs/46 E 期] 把测试台的两条**真节点**并进这份订阅（快 0ms / 慢 400ms 的两个本地代理），
+      // 把测试台的两条**真节点**并进这份订阅（快 0ms / 慢 400ms 的两个本地代理），
       // 这样内核能测出真实延迟，"选最低延迟 / 粘性"才有可验数值。匹配不到 `proxies:` 就原样返回（安全）。
     res.end(clashYamlGrown());
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  // [docs/46 E 期] 固定端口：`CLASH_YAML` 里那两条静态真节点就指向 8390（快）/ 8391（慢）。
+  // 固定端口：`CLASH_YAML` 里那两条静态真节点就指向 8390（快）/ 8391（慢）。
   rig = startLatencyRig({ fastPort: 8390, slowPort: 8391, healthPort: 8392 });
   const port = server.address().port;
   const url = `http://127.0.0.1:${port}/clash.yaml`;
@@ -904,7 +904,7 @@ function dumpScratchDb(tag) {
       .prepare("select id, name, url, format, enabled, node_count, group_count, updated_at from subscription")
       .all();
     out.store_setting = db.prepare("select key, value, updated_at from store_setting order by key").all();
-    // [docs/25] 扫描记录（**一张独立的表**，不在 `config` 里）：step24 要靠它证明
+    // 扫描记录（**一张独立的表**，不在 `config` 里）：step24 要靠它证明
     // "扫描真的落库了"。过去这里没 dump 它，于是 step24 永远读到 0 行、把一次成功的扫描
     // 判成"没有全量记录" —— 那是**证据读错了地方**，不是产品缺陷（真机实测：界面有候选行）。
     try {
@@ -912,7 +912,7 @@ function dumpScratchDb(tag) {
     } catch (e) {
       out.provider_model_catalog_error = String(e && e.message ? e.message : e);
     }
-    // 密钥**元数据**（`secret_meta`，[docs/19 §1.3]）：step2 要证明"向导第 1 步填的那把密钥
+    // 密钥**元数据**（`secret_meta`）：step2 要证明"向导第 1 步填的那把密钥
     // 真的进了密钥仓库"。这张表**过去根本没有被 dump**：`dump.secret_meta` 永远是
     // `undefined` → 调用点的 `?? []` → "0 行" → `metaOk` 恒为 false。
     // 于是 step2 报的 `密钥(落库=false)` 是一句**假红**：真机查同一个 scratch 库，
@@ -955,7 +955,7 @@ function dbFingerprint(dump) {
 // ================================================================ 第 61 轮：四个添加向导（真机）
 //
 // 用户的原话：「我仍然没有看到添加服务商、添加提供商、模型、路由策略的地方，用户在软件里面不能添加这些」。
-// 这四步就是去真窗口里把「添加」走一遍，并按固定 testid 驱动（契约见 docs/17）。
+// 这四步就是去真窗口里把「添加」走一遍，并按固定 testid 驱动（那批 testid 是前端契约的一部分）。
 // 约定与其它步骤一致：**入口不存在就是 SKIP，绝不用替代路径凑 PASS**；每一步都查 `config` 表确认真的落库。
 
 /** WebDriver 错误原文：去掉会话/元素 id 的长噪音，保留**错误码与原因**（截断会把原因吃掉）。 */
@@ -1052,7 +1052,7 @@ async function markForClick(wd, selector, { rowTid = null, match = [] } = {}) {
         // （模型那一格，或策略行的名字那一格）让"整词"判定失败 —— 后一个字符仍是 id 字符。
         // 真机证据就是这一句：找不到行（[data-testid="channels-row"] 文本含
         // ["ch-ta-e2e-ta-e2e-default-ta-e2e-m-add"]）里的控件 channels-delete，
-        // 而那一行的 id **明明整段在 DOM 里**（[docs/26 §2] 的 AutoEllipsis 是 CSS 省略，
+        // 而那一行的 id **明明整段在 DOM 里**（AutoEllipsis 是 CSS 省略，
         // 原文字一个不少）—— 那是挂具看错了边界，不是产品少了行。
         //
         // 逐格取文本、再逐格按内层 testid 取一遍：格子/元件边界天然就是词边界。
@@ -1257,7 +1257,7 @@ async function wdPickOption(wd, tid, evidence, prefer) {
  * 这里原有 `wdKeepOptions` 与 `wdPickOptions` 两个 helper（MUI 多选弹层的"取消已选 / 连点 N 项"）。
  *
  * **第 315 轮删除**：它们唯一的调用方是旧 step11 与旧 step15 里"在 /policies 路由向导上选线路"那几行，
- * 而 `/policies` 整页已按用户裁决删除（[docs/48]）—— 没有调用方了，留着就是死代码。
+ * 而 `/policies` 整页已按用户裁决删除—— 没有调用方了，留着就是死代码。
  * 页面若哪天回来（或别处要用多选弹层），照 git 历史取回即可。
  */
 
@@ -1266,7 +1266,7 @@ async function wdPickOption(wd, tid, evidence, prefer) {
  * 只用来把"有没有选项"这件事量成证据）。
  *
  * **第 318 轮删除**：它最后的调用方是 step10 里"定价对话框的服务商 / 凭据两个下拉"，
- * 而定价入口已按用户裁决搬到模型页、`match` 只写 `model`（[docs/51]）——
+ * 而定价入口已按用户裁决搬到模型页、`match` 只写 `model`——
  * 那两个下拉整体消失，它就没有调用方了，留着就是死代码。
  * 下拉探测本身仍有价值（`wdOpenSelect` 还在用），页面若哪天又需要"先量再选"，
  * 照 git 历史取回即可。
@@ -1301,7 +1301,7 @@ function configEntities(dump, kind) {
 }
 
 /**
- * **step8：「高级添加」那条单步对话框仍然可用**（docs/19 §1 的裁决：新两步向导挂在
+ * **step8：「高级添加」那条单步对话框仍然可用**（裁决是：新两步向导挂在
  * `providers-add-open` 上，原样的单步对话框改挂 `providers-add-advanced-open` —— 保留能力、不删控件）。
  * 真正的主流程（两步向导）由 step2 覆盖。
  */
@@ -1360,7 +1360,7 @@ async function step9(wd) {
   const mid = "ta-e2e-m-add";
   await wdFillByTid(wd, "models-add-id", mid, evidence);
   await wdFillByTid(wd, "models-add-aliases", `${mid}-alias`, evidence);
-  // [docs/28 §2] 模型必须**至少分配一条线路**（先到服务商页/通道页把线路建出来）：
+  // 模型必须**至少分配一条线路**（先到服务商页/通道页把线路建出来）：
   // 零线路时提交会被本地预检挡住 —— 那不是缺陷，是产品规则。
   const lineIds =
     (await wd.exec(
@@ -1371,7 +1371,7 @@ async function step9(wd) {
     record(
       "step9",
       "FAIL",
-      "添加模型对话框里一条可选线路都没有：前面的步骤没造出线路（[docs/28 §2] 要求至少选一条）",
+      "添加模型对话框里一条可选线路都没有：前面的步骤没造出线路（要求至少选一条）",
       evidence,
     );
     return;
@@ -1423,7 +1423,7 @@ function configKinds(tag) {
 /**
  * 一条 channel **服务哪个逻辑模型**（读 config 行；读不出来返回 null）。
  *
- * [docs/28 §2] 关系已经翻到模型侧（`Model.lines`），所以解析顺序是：
+ * 关系已经翻到模型侧（`Model.lines`），所以解析顺序是：
  * 1. **遗留字段** `channel.model`（老配置/迁移前就在这里，仍然有效）；
  * 2. 拿 `dump` 里的 model 行按 `lines` **反查**（新写入的线路没有遗留字段）。
  *
@@ -1456,7 +1456,7 @@ function channelModelOf(row, dump) {
   return null;
 }
 
-/** 经 /models 的「添加模型」向导真建一个模型（[docs/28 §2]：必须**分配至少一条线路**）。 */
+/** 经 /models 的「添加模型」向导真建一个模型（：必须**分配至少一条线路**）。 */
 async function addModelViaDialog(wd, evidence, id = "ta-e2e-m-add") {
   const page = await gotoPage(wd, "#/models");
   if (page === null) {
@@ -1639,7 +1639,7 @@ async function wdToggleCheckbox(wd, tid, target, evidence) {
  * `(provider, credential)`，用来驱动两个下拉）。
  *
  * **第 318 轮删除**：它最后的调用方是 step10 里"定价对话框的服务商 / 凭据两个下拉"，
- * 而 [docs/51] 之后这两个下拉整体消失（`match` 只写 `model`，用户不再挑服务商/线路）——
+ * 而 之后这两个下拉整体消失（`match` 只写 `model`，用户不再挑服务商/线路）——
  * 没有调用方了，留着就是死代码。**顺带删掉的还有 `reEsc`**（把文案当字面量转义的助手），
  * 它当时也只被那几行 `wdPickOption(..., new RegExp(reEsc(...)))` 用。
  *
@@ -1648,15 +1648,15 @@ async function wdToggleCheckbox(wd, tid, target, evidence) {
  */
 
 /**
- * step10：**在模型页给一个对外模型定价**（[docs/51]）。
+ * step10：**在模型页给一个对外模型定价**。
  *
  * **这一步被换过两次用途**，每次都是跟着产品一起搬：
  * 1. 原点："/channels 的线路添加向导：能力声明 + 计费落地"——那个向导所在的
- *    `/channels`（导航「套餐与线路」）整页已按用户裁决删除（[docs/49]），能力声明随页消失
+ *    `/channels`（导航「套餐与线路」）整页已按用户裁决删除，能力声明随页消失
  *    （改由**扫描自动认领上游声明**），于是这一步改成"经成本中心新增定价"；
  * 2. 用户第 318 轮：*"我是希望用户为每一个对外模型定价，来算自己大概花了多少，
  *    而不是对服务商的线路计价"* + *"成本中心页面只做显示，价格配置到模型页面去"*。
- *    于是定价入口搬到 `/models` 的每一行，成本中心只剩只读展示（[docs/51]）。
+ *    于是定价入口搬到 `/models` 的每一行，成本中心只剩只读展示。
  *    覆盖度是**换**不是减。
  *
  * 验四件事：
@@ -1866,7 +1866,7 @@ function configSectionOf(dump, entityId) {
 }
 
 /**
- * step11：**模型开关与线路开关**（[docs/48 §5]）。
+ * step11：**模型开关与线路开关**。
  *
  * 这一步**替换**掉了原来那个"路由向导能力一致性"的 step11：
  * `/policies`（路由策略）整页已按用户裁决删除（「功能是重复的，一起融入模型目录里面去」），
@@ -1899,7 +1899,7 @@ async function step11(wd, fixture) {
   evidence.push(`/models 命中 data-testid: ${ids.slice(0, 40).join(", ")}`);
   for (const need of ["models-enabled", "models-line-enabled"]) {
     if (!ids.includes(need)) {
-      record("step11", "FAIL", `界面上没有 ${need}（[docs/48 §5] 的两个开关没接上）`, evidence);
+      record("step11", "FAIL", `界面上没有 ${need}（两个开关没接上）`, evidence);
       return;
     }
   }
@@ -1984,7 +1984,7 @@ async function step11(wd, fixture) {
   await sleep(600);
   const dlgIds = await wd.probeTestIds();
   if (!dlgIds.includes("models-line-toggle-dialog")) {
-    record("step11", "FAIL", "点线路开关没有先弹确认框（[docs/48 §5]：线路是共用的，必须先问）", evidence);
+    record("step11", "FAIL", "点线路开关没有先弹确认框（：线路是共用的，必须先问）", evidence);
     return;
   }
   const sharedText = await wd.textOf('[data-testid="models-line-toggle-shared"]');
@@ -2205,7 +2205,7 @@ async function step17(wd) {
   const rows = await wd.exec(`return document.querySelectorAll('[data-testid="nodes-row"]').length;`);
   const text = await wd.pageText();
   const hasFixtureNode = text.includes("ta-e2e-node-hk");
-  // 每屏都要有真机截图（[docs/30] 的验收要求）：这一屏以前没截过，补上。
+  // 每屏都要有真机截图（验收要求）：这一屏以前没截过，补上。
   await shot(wd, "step17-nodes");
   evidence.push(`刷新后 nodes-row 行数 = ${rows}；页面文本里出现 fixture 节点 ta-e2e-node-hk = ${hasFixtureNode}`);
   evidence.push(
@@ -2217,7 +2217,7 @@ async function step17(wd) {
     record("step17", "FAIL", "空态与错误区同时存在（状态没分档）", evidence);
     return;
   }
-  // [docs/29 §202] **用户第 202 轮：节点级启用/关闭 + 全选（默认全选）** —— 真机上验这两条。
+  // **用户第 202 轮：节点级启用/关闭 + 全选（默认全选）** —— 真机上验这两条。
   // 语义：关掉的节点**不进「自动」的候选**；所以这一档必须**可逆**（关掉再打开），
   // 否则后面共用这份订阅的步骤会被影响（那会变成"我自己改坏了后面的档"）。
   let nodesToggleOk = true;
@@ -2305,10 +2305,10 @@ async function step17(wd) {
   }
 }
 
-// ---------------------------------------------------------------- step23 订阅详情页（[docs/54]）
+// ---------------------------------------------------------------- step23 订阅详情页
 
 /**
- * **step23：订阅详情页真的成立**（[docs/54]，用户第 321 轮）。
+ * **step23：订阅详情页真的成立**（用户第 321 轮）。
  *
  * 用户原话："先到网络界面，再去点击一个订阅，里面就可以看到这个订阅的所有节点，
  * 可以打开或者关闭" + "其中自动选择和直连在最上面" + "直连是伪节点，但属于一直有的"。
@@ -2335,7 +2335,7 @@ async function step23(wd) {
   if (!tids.includes("network-subscription-open")) {
     evidence.push("找不到 network-subscription-open（订阅名不是链接）");
     await shot(wd, "step23-no-open-link");
-    record("step23", "FAIL", "/network 的订阅名不是进详情页的链接（[docs/54] 的入口不存在）", evidence);
+    record("step23", "FAIL", "/network 的订阅名不是进详情页的链接（入口不存在）", evidence);
     return;
   }
 
@@ -2483,7 +2483,7 @@ async function step23(wd) {
 /**
  * **step18：访问密钥真的能管**（用户第 71 轮：「API key 的管理也需要」）。
  *
- * 关键语义（[docs/19 §3.3] 已定死）：`gateway.local_key` 为空**且**表里没有 enabled 的 key → **不鉴权**；
+ * 关键语义（已定死）：`gateway.local_key` 为空**且**表里没有 enabled 的 key → **不鉴权**；
  * 一旦存在任一凭据来源 → **必须匹配**。所以本步骤分成两段，**分别给结论**：
  *
  * 1. **本地 CRUD（本环境可验证，必须真过）**：创建 → 明文只显示一次 → 列表只留前缀不含明文
@@ -2740,7 +2740,7 @@ async function step18(wd) {
 }
 
 /**
- * **step20：服务商详情 = 查看 + 编辑一体**（[docs/23]；用户第 75 轮原话：
+ * **step20：服务商详情 = 查看 + 编辑一体**（；用户第 75 轮原话：
  * 「服务商编辑页面不走下一步下一步，直接把所有信息在点开服务商之后提供可视化编辑界面，
  * 相当于编辑和查看一体了，当然不是纯文本编辑」）。
  *
@@ -2771,7 +2771,7 @@ async function step20(wd) {
     return;
   }
   const mineBefore = channelsBefore.filter((c) => c.json?.provider === target.entityId);
-  /** 编辑**不许动**的那些字段（逐项原样比对；[docs/23] 的核心回归判据）。 */
+  /** 编辑**不许动**的那些字段（逐项原样比对； 的核心回归判据）。 */
   const untouchedKeys = [
     "protocol",
     "base_url",
@@ -2823,12 +2823,12 @@ async function step20(wd) {
     "providers-edit-authPrefix",
     "providers-edit-timeoutConnect",
     "providers-edit-timeoutRead",
-    // [docs/28 §1] 附加头编辑器的 testid 是 `providers-headers-editor`（旧名 `providers-header-editor`
+    // 附加头编辑器的 testid 是 `providers-headers-editor`（旧名 `providers-header-editor`
     // 已随详情页重构下线）
     "providers-headers-editor",
     "providers-header-add",
     "providers-edit-headerConflict",
-    // [docs/28 §1] 详情页的**线路**列表（旧 `providers-model-row` 现在只出现在"还没创建"的候选行上，
+    // 详情页的**线路**列表（旧 `providers-model-row` 现在只出现在"还没创建"的候选行上，
     // 已建成的线路只在 `providers-line-row` 里）
     "providers-line-row",
     "providers-lines",
@@ -2953,7 +2953,7 @@ async function step20(wd) {
 }
 
 /**
- * **step24：服务商模型目录**（[docs/25]）。
+ * **step24：服务商模型目录**。
  *
  * 扫描 = 记录 + 按目录补齐线路（不建模型）。
  */
@@ -2968,7 +2968,7 @@ async function step24(wd) {
   }
   // 扫描要用凭据鉴权 → 优先挑一个**已经有凭据**的服务商。
   //
-  // [docs/28 §2] "勾一下 = 建一条线路"需要一个**还没接入**的候选行才验得到，所以下面
+  // "勾一下 = 建一条线路"需要一个**还没接入**的候选行才验得到，所以下面
   // （扫完之后）会先**移除一条既有线路**把某个模型退回候选状态 —— 不去挑那些"从没配过密钥、
   // 根本扫不动"的服务商（`ta-e2e-2` 那种高级添加出来的就是）：拿它跑，扫描必然失败，
   // 于是整条用例的结论变成"扫描没记录"，那是**假缺陷**。
@@ -3025,7 +3025,7 @@ async function step24(wd) {
         const rows = [...document.querySelectorAll('[data-testid="providers-line-row"]')];
         const row = rows.find((r) => (r.textContent || '').includes(${JSON.stringify("__NAME__")}));
         if (!row) return { found: false };
-        // [docs/28 §1.5] 列表行只放名字 + 代理 + 滑块：**先点开这一行的「详情」**，
+        // 列表行只放名字 + 代理 + 滑块：**先点开这一行的「详情」**，
         // 「移除线路」才在面板里（真实用户也是这么走的）。
         const info = row.querySelector('[data-testid="providers-line-info"]');
         if (!info) return { found: true, info: false };
@@ -3099,7 +3099,7 @@ async function step24(wd) {
     `该服务商的凭据: ${JSON.stringify(creds.map((c) => ({ id: c.entityId, enabled: c.json?.enabled, secret: c.json?.secret })))}`,
   );
 
-  // [docs/28 §1.4]（用户第 82 轮）扫描的**新语义**：目录全量落库 + **把缺的线路补齐**
+  //（用户第 82 轮）扫描的**新语义**：目录全量落库 + **把缺的线路补齐**
   // （默认关闭），而**一条模型都不建**。所以判据是：
   //   · 目录里这家有行（= 真的记下来了，`provider_model_catalog` 表）；
   //   · `models` 一条都没多（扫描不建模型）；
@@ -3150,10 +3150,10 @@ async function step24(wd) {
     return;
   }
 
-  // ---- ② [docs/28 §1.4] 线路的存在不再靠"勾一下"：扫描时已经建好，界面上只用**滑块**控制启停。
+  // ---- ② 线路的存在不再靠"勾一下"：扫描时已经建好，界面上只用**滑块**控制启停。
   //       所以这一档是：找一条**当前关闭**的行 → 用滑块启用 → 库里那条真的变成 enabled=true
   //       且**没有被删**（可逆）。
-  //       按**可见的上游名**定位行，而不是按 id：[docs/28 §1.5] 之后列表行只显示名字，
+  //       按**可见的上游名**定位行，而不是按 id： 之后列表行只显示名字，
   //       id 在"点开的详情"里。
   const enabledNow = await wd.exec(`
     const rows = [...document.querySelectorAll('[data-testid="providers-line-row"]')];
@@ -3192,7 +3192,7 @@ async function step24(wd) {
 
   // ---- ③ 在图上的**线路行**里停用（可逆），不是删掉
   //
-  // [docs/28 §1.5] 列表行只显示名字 → 按**上游名**定位那一行（刚刚在 ② 里启用的那条）。
+  // 列表行只显示名字 → 按**上游名**定位那一行（刚刚在 ② 里启用的那条）。
   const toggledName = String(enabledNow?.name ?? "");
   const unchecked = await wd.exec(`
     const rows = [...document.querySelectorAll('[data-testid="providers-line-row"]')];
@@ -3235,12 +3235,12 @@ async function step24(wd) {
     `#/providers/${encodeURIComponent(providerId)}`,
     '[data-testid="providers-detail"], [data-testid="providers-detail-notfound"]',
   );
-  // [docs/28 §2] 候选行勾完就从候选列表里消失（它变成了一条**线路**），所以这里数的是线路行：
+  // 候选行勾完就从候选列表里消失（它变成了一条**线路**），所以这里数的是线路行：
   // 「离开再回来还在」这个事实落在 `providers-line-row` 上（目录条目仍在库里，step24 ① 已验）。
   const ownLines = channelsAfterUncheck.filter(
     (c) => String(c.json?.provider ?? "") === String(providerId),
   ).length;
-  // [docs/46 §220] **轮询等待**：导航回来时列表还没渲染完，只读一次会偶发拿到 0（本会话已出现两次：
+  // **轮询等待**：导航回来时列表还没渲染完，只读一次会偶发拿到 0（本会话已出现两次：
   // step24/step25）。等到非空或超时才认，并在失败信息里带上"等了多久/最后读到几行"。
   let rowsAfterReturn = 0;
   let returnWaited = 0;
@@ -3275,7 +3275,7 @@ async function step24(wd) {
 }
 
 /**
- * **step21：各种项的删除 + 通道页改线路**（[docs/21]，用户第 73 轮两条要求）。
+ * **step21：各种项的删除 + 通道页改线路**（用户第 73 轮两条要求）。
  *
  * 用户原话：①「用户可能需要有各种项的删除」（并明确要**批量/危险**删除）；
  * ②「线路设置不能点进服务商里面去修改」——所以线路的唯一编辑入口是**通道页**（step20 已经断言
@@ -3321,10 +3321,10 @@ async function step21(wd) {
     return ids.find((t) => t.endsWith(suffix)) ?? null;
   };
 
-  // ---------------------------------------------------------------- A. 线路级代理归属（[docs/29 §2.1]）
+  // ---------------------------------------------------------------- A. 线路级代理归属
   //
   // **这一档原来在 `/channels` 上验**（"通道页不再有线路级代理下拉、'当前生效线路'那行还在"）。
-  // `/channels` 整页已按用户裁决删除（[docs/49]），所以改到**服务商详情页**上验同一件事：
+  // `/channels` 整页已按用户裁决删除，所以改到**服务商详情页**上验同一件事：
   // 线路行里不得有任何代理写入控件（`providers-line-lane` 之类），而服务商级的代理入口仍在。
   // 这与 step25 的结论同源 —— 只是把"在哪一页看"跟着页面一起搬走了。
   let laneControlGone = false;
@@ -3440,7 +3440,7 @@ async function step21(wd) {
     const afterN = countOf(kind, `step21-${kind}-a`);
     const removed = beforeN - afterN;
     const backend = errText === null ? null : String(errText).replace(/\s+/g, " ").trim();
-    // 「被引用 → 拒绝」是**正确行为**，不是"删除失败"（[docs/21 §1.1]）：`channel` / `group` 没有
+    // 「被引用 → 拒绝」是**正确行为**，不是"删除失败"：`channel` / `group` 没有
     // `force` 参数，被点名时只能拒绝。夹具认这种结局合格 —— 但判据必须**紧**，否则一句
     // "被拒绝了"就能把真缺陷洗白：
     //   ① 码必须是"被引用"这一档（`TA-5002` / `TA-5001`）。用 `/TA-\d{4}/` 会把
@@ -3487,7 +3487,7 @@ async function step21(wd) {
   };
 
   /**
-   * 「删除定价条目」这一档（[docs/51]）。
+   * 「删除定价条目」这一档。
    *
    * 入口从成本页搬到了**模型页那一行**的定价对话框，所以不能再走 `runDelete`
    * （它按 `delTid` 在页面里找按钮 —— `pricing-delete` 已经不存在了，那会得到一次假红）。
@@ -3504,7 +3504,7 @@ async function step21(wd) {
       return { label, ok: true, note: "库里没有定价条目 → 这一档没有可删的对象（未覆盖，如实记账）", removed: 0 };
     }
 
-    // 条目属于哪个模型：`match.model` 就是模型页上那一行的 id（[docs/51] 的核心形状）
+    // 条目属于哪个模型：`match.model` 就是模型页上那一行的 id（核心形状）
     const row = (dumpScratchDb("step21-pricing-row").config ?? []).find(
       (r) => r.kind === "section" && String(r.entity_id) === "pricing",
     );
@@ -3569,7 +3569,7 @@ async function step21(wd) {
   };
 
   /**
-   * [docs/53] 「删一份**被线路引用**的订阅」必须得到一句**能照着改**的拒绝。
+   * 「删一份**被线路引用**的订阅」必须得到一句**能照着改**的拒绝。
    *
    * 第 320 轮用户报的就是这一步：确认框承诺"会连带删除 1 条线路"（其实不会），
    * 点确认后只显示 `[TA-5001] 配置校验失败：1 处问题` —— 既不说哪条线路挡着，
@@ -3583,7 +3583,7 @@ async function step21(wd) {
    * 前置：配置里要有 ≥1 条线路引用着某份订阅。造不出来就**如实记 SKIP**，不假报通过。
    */
   const refuseDeletingReferencedSubscription = async () => {
-    const label = "被引用的订阅不许删（[docs/53] 用户报的那个 bug）";
+    const label = "被引用的订阅不许删（用户报的那个 bug）";
     const dump = dumpScratchDb("step21-subref");
     const lanes = configEntities(dump, "lane");
     const subs = configEntities(dump, "subscription");
@@ -3672,7 +3672,7 @@ async function step21(wd) {
      * 两类引用必须分开看，否则这一档的选路与"解除引用"都会走错（这就是 step21 真机红的原因）：
      * 1. **策略侧**（`delete_channel` 的 `blocking` 三类）：`use_channels` / `pin_sticky` /
      *    "组里只剩它一个成员"。这三类会得到 `TA-5002` + "要先解除这些引用再删"的**诚实拒绝**。
-     * 2. **模型侧**（[docs/28 §2] 翻转后的**主引用**）：`Model.lines` 点名了它。挂具原来**根本不认**
+     * 2. **模型侧**（翻转后的**主引用**）：`Model.lines` 点名了它。挂具原来**根本不认**
      *    这一类 —— 于是 `blockedChan` 被当成"仅仅被 use_channels 拦住"，删掉策略后再删通道，
      *    后端回的是 `[TA-5001] 配置校验失败：1 处问题`（校验器要求 `models[i].lines[j]` 指向
      *    真实存在的 `channels[].id`），夹具就把它记成"少 0 条，且不是一次诚实的拒绝"。
@@ -3721,7 +3721,7 @@ async function step21(wd) {
     `通道拓扑：共 ${topo.chans.length} 条；被策略点名=${JSON.stringify(topo.blockedChan)}；` +
       `没有引用=${JSON.stringify(topo.freeChan)}；策略=${JSON.stringify(topo.policies)}`,
   );
-  // 每一类引用的**明细**（策略侧 + [docs/28 §2] 翻转后的模型侧 `models.lines`）：
+  // 每一类引用的**明细**（策略侧 + 翻转后的模型侧 `models.lines`）：
   // 这一行是"为什么这条通道删不掉"的现场，缺了它就只能对着 `TA-5001` 猜。
   const blockedDetail = topo.classified
     .filter((x) => x.kinds.length > 0)
@@ -3737,7 +3737,7 @@ async function step21(wd) {
   }
 
   const results = [];
-  // ★ **通道删除那一档整块搬走了**（[docs/49]：`/channels`「套餐与线路」页已删除）。
+  // ★ **通道删除那一档整块搬走了**（：`/channels`「套餐与线路」页已删除）。
   //
   // 原来这里有四档：删被点名的通道（mustRefuse）/ 删没引用的通道（must delete）/
   // 解除引用后再删 / 批量删。它们全部依赖 `/channels` 列表页的行内 `channels-delete` 与
@@ -3749,10 +3749,10 @@ async function step21(wd) {
   //   并断言"该线路真的从库里少了一条"，同时验证了"扫回来的目录行可以再建一条"。
   // * **"被引用 → 拒绝"这一档暂时没有界面入口**：`channel_delete` 仍在（服务商页也能删），
   //   但要在界面上点出一条"被策略/模型引用"的行需要构造引用链；本档不再假装验它。
-  // * **批量删除线路**：界面已无入口（[docs/49 §3] 记为能力减法）。
+  // * **批量删除线路**：界面已无入口（记为能力减法）。
   // * **通道组删除**：界面已无入口（同上）。
   evidence.push(
-    "通道/通道组的删除档已随 /channels 页删除（[docs/49]）：单条线路删除由 step24 在服务商页覆盖；" +
+    "通道/通道组的删除档已随 /channels 页删除：单条线路删除由 step24 在服务商页覆盖；" +
       "被引用时的拒绝、批量删除、通道组删除**当前没有界面入口**，本档不再覆盖（如实记，不假报）",
   );
   // ---------------------------------------------------------------- B2. 按原文的建议走一遍
@@ -3762,7 +3762,7 @@ async function step21(wd) {
   //
   // ★ 引用有**两类**（挂具原来只认第一类，"解除引用后真能删"因此在真机上永远是红的）：
   //   ① 策略侧 `action.use_channels` —— 删掉那条策略（`/policies` 的删除，走真界面）；
-  //   ② 模型侧 `Model.lines`（[docs/28 §2] 翻转后的**主引用**）—— 去 `/models` 打开那个模型的
+  //   ② 模型侧 `Model.lines`（翻转后的**主引用**）—— 去 `/models` 打开那个模型的
   //      编辑框，把这条线路**取消勾选**再保存。这一步以前挂具根本没有，于是引用永远没解除干净，
   //      后端回 `[TA-5001] 配置校验失败：1 处问题`（校验器要求 `models[i].lines[j]` 指向真实存在的线路），
   //      而那句原文既不点模型、也没有"先解除引用"的去处 —— 用户照原文做也走不通。
@@ -3779,7 +3779,7 @@ async function step21(wd) {
       `解除引用①（策略侧）：还在点名 ${topo.blockedChan} 的策略=${JSON.stringify(blockers.map((p) => p.entityId))}`,
     );
     for (const p of blockers) {
-      // **不再点进去删**：`/policies` 整页已按用户裁决删除（[docs/48]），
+      // **不再点进去删**：`/policies` 整页已按用户裁决删除，
       // 界面上已没有删策略的入口。这里如实记一笔，而不是去访问一个不存在的页面
       // （那会在别的步骤里表现成"页面没渲染出来"，把原因指错方向）。
       // 注：本机真实配置里 policy 行数为 0，所以这条分支通常根本不会走到。
@@ -3820,14 +3820,14 @@ async function step21(wd) {
   if (leftPolicies.length > 0) {
     // 同上的理由：`/policies` 已删，界面没有删策略的入口。如实记，不去访问不存在的页面。
     evidence.push(
-      `还剩策略 ${JSON.stringify(leftPolicies)}，但界面已无删策略入口（/policies 已删，[docs/48]）→ 这一步不再覆盖"删策略"`,
+      `还剩策略 ${JSON.stringify(leftPolicies)}，但界面已无删策略入口（/policies 已删）→ 这一步不再覆盖"删策略"`,
     );
   }
-  // 定价条目：**入口已从成本页搬到模型页**（[docs/51]），所以这一档改为
+  // 定价条目：**入口已从成本页搬到模型页**，所以这一档改为
   // "在模型页打开那一行的定价对话框 → 清除定价（先确认）"。
   // 成本页只做显示，那儿已经没有 `pricing-delete` 了 —— 再去点它只会得到一次假红。
   results.push(await deletePricingViaModelsDialog());
-  // ---------------------------------------------------------------- B′. 被引用的订阅不许删（[docs/53]）
+  // ---------------------------------------------------------------- B′. 被引用的订阅不许删
   //
   // ★ 这一档是**用户真机报上来的那个 bug 的回归闸门**（第 320 轮）：
   //   在 `/network` 删一份被线路引用的订阅，确认框说"会连带删除：引用这份订阅的 1 条线路"，
@@ -3838,10 +3838,10 @@ async function step21(wd) {
   //   ② 原文里能看出**谁在挡**与**该怎么办**（引用者清单 + "先解除"）。
   results.push(await refuseDeletingReferencedSubscription());
   // 通道组：E2E 流程里不一定建过 → 没行就如实记理由。
-  // [docs/49] 之后**界面已无删通道组入口**（它在已删的 /channels 上），所以这里只记事实。
+  // 之后**界面已无删通道组入口**（它在已删的 /channels 上），所以这里只记事实。
   const groupRows = kindCount("channel_group", "step21-groups");
   evidence.push(
-    `通道组条目数=${groupRows}；界面已无删通道组入口（/channels 已删，[docs/49 §3]）→ 这一档不再覆盖`,
+    `通道组条目数=${groupRows}；界面已无删通道组入口（/channels 已删）→ 这一档不再覆盖`,
   );
   // 模型 / 凭据 / 服务商：都有 force 语义，被引用时走级联
   results.push(
@@ -3849,7 +3849,7 @@ async function step21(wd) {
   );
   const providerId = configIds(dumpScratchDb("step21-prov"), "provider")[0] ?? null;
   if (providerId !== null) {
-    // [docs/28 §1.3] **不再有"删凭据"这一档**：一个服务商就一把密钥，要撤密钥 = 删这个服务商。
+    // **不再有"删凭据"这一档**：一个服务商就一把密钥，要撤密钥 = 删这个服务商。
     // 所以这里只验服务商删除，并把"页面不提供删密钥入口"作为一条**事实断言**。
     const keyDel = await wd.exec(
       `return document.querySelectorAll('[data-testid^="providers-credential-"]').length;`,
@@ -3870,7 +3870,7 @@ async function step21(wd) {
   // ---------------------------------------------------------------- C. 批量删除（逐条汇报）
   //
   // ★ 这一档原来**恒定跑不出结论**，两个原因叠在一起（都不是产品缺陷）：
-  //   ① 目标页写死 `#/models`，而 [docs/28 §2] 关系翻转之后 E2E 夹具里**只会有 1 个模型**
+  //   ① 目标页写死 `#/models`，而 关系翻转之后 E2E 夹具里**只会有 1 个模型**
   //      （模型不再随线路自动生成，要用户去模型页"分配"）；
   //   ② 上面那一段"删模型（可能级联）"又先把这个唯一的模型删掉了。
   //   于是 `gotoPage("#/models", '[data-testid="models-row"]')` 等不到行、直接超时，
@@ -3895,7 +3895,7 @@ async function step21(wd) {
       resultTid: "providers-delete-result",
       rowTid: "providers-row",
     },
-    // 这里原有 `#/channels` 的批量删线路档：页面已删（[docs/49 §3] 记为能力减法），
+    // 这里原有 `#/channels` 的批量删线路档：页面已删（记为能力减法），
     // 所以批量删除只剩服务商这一档。挑不到 ≥2 行的列表时下面的逻辑会**如实记理由**，不当成通过。
   ];
   const bulkTarget =
@@ -3936,11 +3936,11 @@ async function step21(wd) {
       }
       const afterN = kindCount(bulkTarget.kind, "step21-bulk-a");
       const removed = beforeN - afterN;
-      // 结果区原文：`成功 N 条，失败 M 条` + 每条的 `已删除 <名称>`（[docs/21 §1.2] 的逐条汇报）
+      // 结果区原文：`成功 N 条，失败 M 条` + 每条的 `已删除 <名称>`（逐条汇报）
       const resultText = ((await wd.textOf(`[data-testid="${bulkTarget.resultTid}"]`)) ?? "")
         .replace(/\s+/g, " ")
         .trim();
-    // [docs/31 §43] **"批量逐条汇报"的正确语义**（这一档原来写死"失败 0 条"）：
+    // **"批量逐条汇报"的正确语义**（这一档原来写死"失败 0 条"）：
     // 成功的条数必须等于库里真少的条数；**失败的每一条都必须是"如实拒绝"**（带 TA 码），
     // 例如还被凭据引用的服务商会被后端拒绝并要求显式 force=true —— 那是对的行为，
     // 要求"失败 0 条"等于要求产品在这件事上撒谎。
@@ -3956,7 +3956,7 @@ async function step21(wd) {
     const perItemOk = removed > 0 && perItem >= removed;
       bulkOk =
     selectAllOk && Number.isFinite(chosenN) && chosenN >= 2 && clickedBulk && dialogTid !== null &&
-    // [docs/31 §44] **不能要求 removed >= 2**：批量里有一条被「如实拒绝」时它就该是 1。
+    // **不能要求 removed >= 2**：批量里有一条被「如实拒绝」时它就该是 1。
     // 正确语义：选中的每一条**要么被删掉、要么被如实拒绝**（拒绝已在 summaryOk 里验过带 TA 码）。
     removed >= 1 && removed === chosenN - refusedN && summaryOk && perItemOk;
       bulkNote =
@@ -3973,7 +3973,7 @@ async function step21(wd) {
   const deletedKinds = results.filter((r) => r.removed >= 1).length;
   const refusedKinds = results.filter((r) => r.refused === true).length;
   const usedDomFallback = domClickFallbacks - fallbacksBefore;
-  // 档数下限随页面变化：`/channels` 删页后通道那 4 档搬走了（[docs/49]），
+  // 档数下限随页面变化：`/channels` 删页后通道那 4 档搬走了，
   // 现在剩的是"定价 / 模型 / 服务商 / 密钥入口不该存在"——**4 档**。
   // 下限写的是"至少要覆盖多类实体"，不是"必须等于某个历史数字"。
   const deleteOk = results.length >= 4 && failed.length === 0;
@@ -3999,7 +3999,7 @@ async function step21(wd) {
 }
 
 /**
- * **step22：长篇介绍收进「问号圆圈 + 悬停提示」**（[docs/22]，用户第 74 轮原话：
+ * **step22：长篇介绍收进「问号圆圈 + 悬停提示」**（用户第 74 轮原话：
  * 「里面的简介好长，好多字……那些比较介绍做成一个问好加一个圆圈，鼠标移上去能看到提示那种」）。
  *
  * 逐页断言：
@@ -4016,19 +4016,19 @@ async function step21(wd) {
  * 但**判据没有放宽**：从"前 24 个字对得上"加严成"与 aria-label 逐字相同"。
  */
 /**
- * **step25：线路的网络代理真的能切，而且能直接选订阅节点**（[docs/28 §1.2]，用户第 81 轮原话：
+ * **step25：线路的网络代理真的能切，而且能直接选订阅节点**（用户第 81 轮原话：
  * 「我在网络那边添加了订阅也加载出来了，但是在服务商那边依然无法对一个线路切换网络」）。
  *
  * 现场查清的事实：下拉过去只列**已配置的线路**（`doc.lanes`），而用户的配置里一条线路都没有
  * —— 所以只剩「不指定（继承）」，看起来像"下拉坏了"。这一版把**订阅节点**也列出来：
  * 选中一个节点时先 `lane_ensure_for_node` 建/复用一条线路，再把它写进**服务商**的 `lane`。
- * （[docs/55]：`channel.lane` 字段已删除 —— 线路分配只剩服务商级一处。）
+ * （：`channel.lane` 字段已删除 —— 线路分配只剩服务商级一处。）
  *
  * 断言（缺一条都不算做到）：
  * 1. 服务商详情页那条线路的代理下拉里，**除了"不指定"还有订阅里的节点**（名字来自 fixture）；
  * 2. 选中一个节点之后：库里**多了一条 `subscription_node` 线路**（订阅 id + 节点名都对上）；
  * 3. 写下去之后**服务商的 `lane`** 真的指向那条线路 id（不是只在界面上显示对了）；
- *    同时**线路级**代理控件一个都不许有（[docs/29 §2.1]，也是 [docs/55] 的收口）；
+ *    同时**线路级**代理控件一个都不许有（也是 的收口）；
  * 4. 向导第 1 步有可选代理（`pw-lane`），第 2 步每条候选线路也有自己的
  *    （`pw-scan-lane-*`）—— 用户第 81 轮第二条要求「在向导添加的时候，我也希望可以选择代理网络」。
  *
@@ -4077,7 +4077,7 @@ async function step25(wd) {
     `return [...document.querySelectorAll('[data-testid="providers-line-row"]')].map((r) => r.textContent || '');`,
   );
   evidence.push(`线路行数=${Array.isArray(rows) ? rows.length : 0}`);
-  // [docs/29 §2.1]（用户第 88 轮）线路**不再有**自己的代理：出口只由**服务商**决定
+  //（用户第 88 轮）线路**不再有**自己的代理：出口只由**服务商**决定
   // （同一服务商下的模型打同一个 URL，用不同出口 IP 会被上游当成"同账号多地并发" → 封号）。
   //
   // 所以这一档验的是**反面**：界面上一个线路级代理入口都不许有，而服务商级入口必须在。
@@ -4094,7 +4094,7 @@ async function step25(wd) {
   `);
   evidence.push(`线路级代理控件=${counts?.lineLane}（应为 0）服务商级代理入口=${counts?.providerLane}（应 > 0）`);
   evidence.push(`线路行=${JSON.stringify(counts?.rows ?? [])}`);
-  // [docs/29 §2.2] 服务商级代理下拉里必须**有**「自动」（D 期入口）；值是标记 `auto:<订阅>`。
+  // 服务商级代理下拉里必须**有**「自动」（D 期入口）；值是标记 `auto:<订阅>`。
   // 线路级那一列则相反：一个都不许有（A 期）。
   // MUI 的选项渲染在 portal 里、**展开后**才存在 → 先点开再读（与其它档同样的做法）
   const openedAuto = await wdOpenSelect(wd, "providers-edit-lane", evidence);
@@ -4116,7 +4116,7 @@ async function step25(wd) {
   await sleep(600);
   const wizardIds = await wd.probeTestIds();
   const step1HasPicker = wizardIds.includes("pw-default-lane");
-  // [docs/29 §2.2]（用户第 112 轮）**"添加"向导里必须能为服务商选代理**，选项要含
+  //（用户第 112 轮）**"添加"向导里必须能为服务商选代理**，选项要含
   // 「直连」「自动」和所有已配置线路 —— 与详情页同一份 `providerLaneChoices`。
   const wizardLane = await wdOpenSelect(wd, "pw-lane", evidence);
   const wizardLaneOptions = (wizardLane.items ?? []).map((o) => String(o.text ?? o).trim());
@@ -4126,7 +4126,7 @@ async function step25(wd) {
   evidence.push(`向导第 1 步有代理下拉（pw-default-lane）=${step1HasPicker}（应为 false）`);
 
   /**
-   * [docs/29 §2.2] **D 期链路的真机验证**：在服务商详情页选「自动」并保存 →
+   * **D 期链路的真机验证**：在服务商详情页选「自动」并保存 →
    * 后端应当**建出一条** `subscription_auto` + 显式 `select` 的线路，并把服务商的 `lane`
    * 指过去（前端只发标记 `auto:<订阅>`，不建线路、不编 id）。
    *
@@ -4164,7 +4164,7 @@ async function step25(wd) {
       `选「自动」并保存：保存=${saved}；自动线路数=${autoLanes.length}（lanes ${lanesBefore.length}→${lanesAfter2.length}）；` +
         `服务商 lane=${JSON.stringify(providerRow?.json?.lane ?? null)} 期望=${JSON.stringify(autoLaneId)} → ${autoLaneWired}`,
     );
-    // [docs/29 §2.2] **C 期触发点②的真机证据**：手动点订阅「刷新」= 重挑（manual = true）。
+    // **C 期触发点②的真机证据**：手动点订阅「刷新」= 重挑（manual = true）。
     // 顺带把"内核没起 → 如实拒绝"那条也逼出来（这一档的 scratch 里内核没在跑）。
     await gotoPage(wd, "#/network");
     await sleep(600);
@@ -4180,7 +4180,7 @@ async function step25(wd) {
   await sleep(400);
 
   /**
-   * [docs/58]（第 325 轮）用户报的 bug：「我已经添加了订阅和节点，但是在服务商那边选节点还是
+   *（第 325 轮）用户报的 bug：「我已经添加了订阅和节点，但是在服务商那边选节点还是
    * 啥也没看到」。根因是两个下拉都读 `lane_list`（**只有已配置的线路**），而不是 `lane_options`
    * （含订阅节点）。所以这一档现在**必须**在真机上看到订阅里的节点 ——
    * 只看到「自动 / 直连 / 不指定」这三项就说明节点又没进去（那就是原来的 bug）。
@@ -4218,7 +4218,7 @@ async function step22(wd) {
   const pages = [
     "#/models",
     // 这里原来还有 `#/routing`（模型路由）、`#/policies`（路由策略）与 `#/channels`
-    // （导航标签「套餐与线路」）三页 —— 按用户裁决整页删除，见 [docs/48] / [docs/49]。
+    // （导航标签「套餐与线路」）三页 —— 按用户裁决整页删除，见 /。
     // 所以它们从"每屏都要有真机截图"的清单里去掉。
     "#/cost",
     "#/network",
@@ -4232,7 +4232,7 @@ async function step22(wd) {
   const bad = [];
 
   for (const hash of pages) {
-  // [docs/31 §38/§39] 进每一页前先关掉残留的对话框：前面步骤（向导/详情编辑）可能留下模态没关，
+  // 进每一页前先关掉残留的对话框：前面步骤（向导/详情编辑）可能留下模态没关，
   // 它的遮罩会盖住页头问号、焦点陷阱让 focus() 也落不到按钮上 —— #/providers 的 step22 就是这样假红的。
   // 合成 Escape 两次都没生效（§38），这里**直接点它的按钮**。
   await wd
@@ -4269,7 +4269,7 @@ async function step22(wd) {
     withHelp += 1;
   const helpState = await wd     .exec(`       const btn = document.querySelector('[data-testid="page-header-help"]');       if (!btn) return null;       const r = btn.getBoundingClientRect();       const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);       return {         disabled: btn.disabled === true,         pointerEvents: getComputedStyle(btn).pointerEvents,         rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],         topIsButton: top === btn || (top ? btn.contains(top) : false),         topTag: top ? top.tagName : null,       };     `)     .catch(() => null);   evidence.push(`${hash}: 问号按钮态=${JSON.stringify(helpState)}`);
   const cover = await wd     .exec(`       const btn = document.querySelector('[data-testid="page-header-help"]');       if (!btn) return null;       const r = btn.getBoundingClientRect();       const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);       return top && top !== btn ? {         tag: top.tagName,         cls: String(top.className).slice(0, 120),         id: top.id || null,         text: (top.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 40),         html: top.outerHTML.slice(0, 140),       } : null;     `)     .catch(() => null);   if (cover) evidence.push(`${hash}: 遮挡元素=${JSON.stringify(cover)}`);
-      // [docs/30 §5] 每屏真机截图（跑通后顺便留下每页画面，当证据归档）
+      // 每屏真机截图（跑通后顺便留下每页画面，当证据归档）
       await shot(wd, `page-${hash.replace(/[#/]/g, "-")}`).catch(() => {});
     // ★ 悬停/聚焦 → 读 tooltip 这一对动作**最多重试 3 轮**。
     //
@@ -4286,7 +4286,7 @@ async function step22(wd) {
     let tip = null;
     let tipOk = false;
     let tipTries = 0;
-    const MAX_TIP_TRIES = 5;   // [docs/31 §31] 3 → 5：providers 那页偶尔第 3 轮还读不到（懒渲染 + 列表取数后重渲染），多给两轮，判据不变
+    const MAX_TIP_TRIES = 5;   // 3 → 5：providers 那页偶尔第 3 轮还读不到（懒渲染 + 列表取数后重渲染），多给两轮，判据不变
     /**
      * 三轮**从最保守到最激进**（第 1 轮绝不先"清状态"：清状态本身也可能把 MUI 的
      * hover 迟滞（hysteresis）打开，反而让这一次永远展不开 —— 那会把挂具的动作
@@ -4298,7 +4298,7 @@ async function step22(wd) {
      */
     const tipStrategies = [
       `btn.focus();`,
-      // [docs/31 §32] MUI v7 的 `Tooltip` 走 **pointer 事件**；只发 mouse 事件在个别页面开不了。       `btn.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })); btn.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false, pointerType: "mouse" })); btn.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); btn.focus();`,
+      // MUI v7 的 `Tooltip` 走 **pointer 事件**；只发 mouse 事件在个别页面开不了。       `btn.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })); btn.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false, pointerType: "mouse" })); btn.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); btn.focus();`,
       `btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
           btn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
           btn.focus();`,
@@ -4371,7 +4371,7 @@ async function step22(wd) {
     );
     if (tipOk && notInline) okCount += 1;
     else bad.push(`${hash}(tooltip=${tipOk} 试了 ${Math.min(tipTries, MAX_TIP_TRIES)} 轮 前24字命中=${tipPrefixOk} 不内联=${notInline})`);
-    // [docs/31 §38] 失败时才问"那一刻到底命中了谁"（探针必须与诊断同时刻，见 §37）     const cover = await wd       .exec(`         const btn = document.querySelector('[data-testid="page-header-help"]');         if (!btn) return { noButton: true };         const r = btn.getBoundingClientRect();         const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);         return {           activeElement: document.activeElement === btn,           describedBy: btn.getAttribute('aria-describedby'),           rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],           topTag: top ? top.tagName : null,           topIsButton: top === btn || (top ? btn.contains(top) : false),           topCls: top ? String(top.className).slice(0, 90) : null,           topText: top ? (top.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 30) : null,         };       `)       .catch(() => null);     bad.push(`   ↳ 现场：${JSON.stringify(cover)}`);
+    // 失败时才问"那一刻到底命中了谁"（探针必须与诊断同时刻，见 §37）     const cover = await wd       .exec(`         const btn = document.querySelector('[data-testid="page-header-help"]');         if (!btn) return { noButton: true };         const r = btn.getBoundingClientRect();         const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);         return {           activeElement: document.activeElement === btn,           describedBy: btn.getAttribute('aria-describedby'),           rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],           topTag: top ? top.tagName : null,           topIsButton: top === btn || (top ? btn.contains(top) : false),           topCls: top ? String(top.className).slice(0, 90) : null,           topText: top ? (top.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 30) : null,         };       `)       .catch(() => null);     bad.push(`   ↳ 现场：${JSON.stringify(cover)}`);
     await wd.exec(`if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); return null;`);
   }
 
@@ -4394,7 +4394,7 @@ async function step22(wd) {
 }
 
 /**
- * **step12：网络代理默认开启（默认直连），不再有"启用"这个动作** —— [docs/19 §2.2]。
+ * **step12：网络代理默认开启（默认直连），不再有"启用"这个动作** ——。
  *
  * 上一轮的做法（未配置时**什么都不渲染**、只给一个 `network-optional` 选装入口）被用户明确推翻：
  * 「网络代理默认开启，反正默认直连，也不用"启动"了」。所以本步骤的断言与上一版**正好相反**：
@@ -4539,7 +4539,7 @@ function printHelp() {
 }
 
 /**
- * [docs/46 §297] **把服务商的 `base_url` 指向一个真的可达的探测目标**。
+ * **把服务商的 `base_url` 指向一个真的可达的探测目标**。
  *
  * 为什么必须改：应用给 provider 体检时带上的 `url` 就是**这家服务商的 `base_url`**
  * （延迟的语义是"这条节点到该服务商有多快"）。夹具里服务商的 `base_url` 是故意配成
@@ -4559,7 +4559,7 @@ async function patchProviderProbeTarget(probeUrl, evidence, autoLaneId = null) {
   for (const r of rows) {
     const j = JSON.parse(r.json);
     const needUrl = j.base_url !== probeUrl;
-    // [docs/46 §300] **「自动」线路只准挂在一家服务商上**：多家共用同一条 lane 时，每家都会按
+    // **「自动」线路只准挂在一家服务商上**：多家共用同一条 lane 时，每家都会按
     // **自己存的那条地址**（`auto_choice` 是按 provider_id 存的）独立重算并写同一个组 ⇒
     // 组上的 `now` 是"最后写的那家"的选择，日志里还会出现互相打脸的判决行
     // （实测：一家写"沿用 日本-优化2"、另一家写"剩余流量"）⇒ 粘性判据没法读。
@@ -4592,7 +4592,7 @@ async function patchProviderProbeTarget(probeUrl, evidence, autoLaneId = null) {
 }
 
 /**
- * [docs/46 §297] 读 provider 那张延迟表：
+ * 读 provider 那张延迟表：
  * `GET /providers/proxies/<key>` → `[[节点名, 末次延迟, alive], …]`。
  *
  * 三件必须做对的事（前两条都踩过）：
@@ -4631,7 +4631,7 @@ function measuredNodes(rows) {
 /**
  * 读**应用自己记的**「自动」出口地址（`store_setting.auto_export:<provider>`）。
  *
- * 为什么要读它（[docs/50 §5.4]）：应用的重挑判据是**地址级**的 ——
+ * 为什么要读它：应用的重挑判据是**地址级**的 ——
  * `choose_auto_export` 做的是 `find(|c| c.address == previous)`，而 `previous` 就是这张表里
  * 那个值（实测真机是 `m.cnmjin.net` 这样的 **server 主机名**，不含 port）。
  * 挂具读 mihomo 的 `/providers/proxies` 却只能拿到**名字**。
@@ -4683,7 +4683,7 @@ async function findAutoLaneId(subscriptionId, evidence) {
 }
 
 /**
- * [docs/46 E 期] **只读探测**：本地延迟测试台的订阅能不能取到、两条节点在不在。
+ * **只读探测**：本地延迟测试台的订阅能不能取到、两条节点在不在。
  *
  * 为什么先要这一步：后面"选最低延迟 / 粘性"的断言都依赖这份订阅；
  * 它取不到时，红的是"测试台没起来"，而不是"产品选错了"——两者必须能分开。
@@ -4709,7 +4709,7 @@ async function step26(_wd, fixture) {
 }
 
 /**
- * [docs/46 E 期] **读内核状态**：把「自动」出口当前选中了谁、各节点实测延迟打出来。
+ * **读内核状态**：把「自动」出口当前选中了谁、各节点实测延迟打出来。
  *
  * 为什么单独一步：E 期"选最低延迟 / 粘性"的断言都要读内核；先把"读得到"这件事本身验通，
  * 后面红了才能分清"读不到"与"选错了"。
@@ -4725,7 +4725,7 @@ async function step27(_wd, fixture) {
     const controller = /external-controller:\s*([^\s]+)/.exec(cfgText)?.[1] ?? null;
     const secret = /secret:\s*"([^"]*)"/.exec(cfgText)?.[1] ?? "";
     evidence.push(`内核控制器=${controller}（从 ${kernelDir} 的生成配置里读到）`);
-    // [docs/46] **P1/P2 分辨器**：生成配置里到底有没有我们自己的 provider / group。
+    // **P1/P2 分辨器**：生成配置里到底有没有我们自己的 provider / group。
     const providers = /proxy-providers:([\s\S]*?)\n[a-z-]+:/.exec(cfgText)?.[1] ?? "(没有这一段)";
     const groups = /proxy-groups:([\s\S]*?)\nrules:/.exec(cfgText)?.[1] ?? "(没有这一段)";
     evidence.push(`生成配置 proxy-providers=${providers.trim().slice(0, 140) || "(空)"}`);
@@ -4738,7 +4738,7 @@ async function step27(_wd, fixture) {
       const res = await fetch(`http://${controller}/proxies${path}`, {
         headers: secret ? { authorization: `Bearer ${secret}` } : {},
       }).catch(() => null);
-      // [docs/46 §291] `fetch` 自身 reject 时**必须返回一个"读不到"**，而不是把整轮打崩
+      // `fetch` 自身 reject 时**必须返回一个"读不到"**，而不是把整轮打崩
       // （上一次就是这样：`未捕获异常：fetch failed` ⇒ 整轮 FAIL，判定根本没执行 ✗）。
       if (res === null) return { status: "fetch failed", body: null };
       return { status: res.status, body: await res.json().catch(() => null) };
@@ -4767,7 +4767,7 @@ async function step27(_wd, fixture) {
 }
 
 /**
- * [docs/46 E 期] **触发点②（用户手动刷新）→ 看「自动」出口选的是谁**。
+ * **触发点②（用户手动刷新）→ 看「自动」出口选的是谁**。
  *
  * 两条分支都要如实记录（不许制造假绿）：
  *  · `now === "ta-lat-fast"` ⇒ **按最低延迟选**（`CLASH_YAML` 里慢的排在前面 ⇒ 不是"选第一个"）；
@@ -4779,9 +4779,9 @@ async function step28(wd, fixture) {
   await gotoPage(wd, "#/network");
   await sleep(600);
 
-  // [docs/46 §E] **先把这条订阅的探测目标改成本机可达**（否则本机无公网 ⇒ 应用只能如实报 all_unreachable，
+  // **先把这条订阅的探测目标改成本机可达**（否则本机无公网 ⇒ 应用只能如实报 all_unreachable，
   // "选最低延迟"永远测不出来）。同 id = 覆盖，所以不需要另找"编辑"入口。
-  // [docs/46 §297] 探测目标用**公网端点**（本机实测可达 gstatic 204 ✓）。为什么不再用挂具的本地
+  // 探测目标用**公网端点**（本机实测可达 gstatic 204 ✓）。为什么不再用挂具的本地
   // 健康端口：夹具节点是"转发型" HTTP 代理，而 mihomo 对 `http://` 目标是走**绝对 URI 明文转发**的
   // —— 这条路径在真机上一直给不出延迟（14 条全 0，把内核杀掉重来也是 0）。用**同一份** gstatic
   // 目标则与 step29 走的是同一条已被证实的路径（34 条真实节点里量到 26 条 ✓）。
@@ -4796,7 +4796,7 @@ async function step28(wd, fixture) {
   await sleep(2500);
   evidence.push(`订阅已覆盖保存：提交=${submitted}；健康检查地址=${healthUrlLabel}`);
 
-  // [docs/46 §297] **把服务商的 `base_url` 改成同一个本机可达地址** —— 应用体检时带的就是它。
+  // **把服务商的 `base_url` 改成同一个本机可达地址** —— 应用体检时带的就是它。
   // 运行中改配置只能走界面（改库只对冷启动有效）：`providers-edit-baseUrl` + 保存是既有的真控件。
   // 顺便把「自动」线路的 `group_type` 读出来当证据（必须是 select，否则 set_select 会被内核忽略）。
   let setupOk = false;
@@ -4835,7 +4835,7 @@ async function step28(wd, fixture) {
   } catch (err) {
     evidence.push(`改服务商 base_url 失败（不影响本档其余证据）：${String(err).slice(0, 120)}`);
   }
-  // [docs/46 §300] **前置不足就如实 SKIP，不要当成产品的红**：本档需要"某家服务商挂着这条
+  // **前置不足就如实 SKIP，不要当成产品的红**：本档需要"某家服务商挂着这条
   // 「自动」线路"（那一步由 `step25` 经界面做出来）。只跑 `net` 档、或前面步骤没把它建出来时，
   // 这里的失败是**挂具自己的前置没搭起来**，不是"应用没重算"。
   if (!setupOk) {
@@ -4850,7 +4850,7 @@ async function step28(wd, fixture) {
   await gotoPage(wd, "#/network");
   await sleep(400);
 
-  // [docs/46 §E] **自检：自己走一遍 mihomo 要走的路** —— 经挂具的 CONNECT 代理连到本地健康端点。
+  // **自检：自己走一遍 mihomo 要走的路** —— 经挂具的 CONNECT 代理连到本地健康端点。
   // 通了 ⇒ 代理实现没问题，症结在 mihomo 侧（类型/超时/时机）；不通 ⇒ 症结在挂具这一侧。
   // 这一条把"猜"变成"读"：不再靠推理判断 8390/8391 上到底发生了什么。
   const probeLine = await new Promise((resolve) => {
@@ -4874,7 +4874,7 @@ async function step28(wd, fixture) {
   });
   evidence.push(`自检（走一遍 mihomo 的路）：${probeLine}`);
 
-  // [docs/46 §E/§297] **保存之后让 provider 重新加载一次**（mihomo 的探测设置是 provider 加载时建立的），
+  // **保存之后让 provider 重新加载一次**（mihomo 的探测设置是 provider 加载时建立的），
   // 然后**只读**等它把延迟填上 —— **不再杀内核**：上一次为了逼 mihomo 重读配置而 `taskkill mihomo.exe`，
   // 结果是"provider 共 0 条"，应用那一轮体检必然 `measured=0` ⇒ 判红的是我自己的动作。
   const earlyCfg = readFileSync(join(OUT, "data", "kernel", "kernel.generated.yaml"), "utf8");
@@ -4947,7 +4947,7 @@ async function step28(wd, fixture) {
     return;
   }
   const head = secret ? { authorization: `Bearer ${secret}` } : {};
-  // [docs/46 §291] **必须接住 `fetch` 自身的 reject**：之前 `(await fetch(url)).json().catch(...)` 把
+  // **必须接住 `fetch` 自身的 reject**：之前 `(await fetch(url)).json().catch(...)` 把
   // `.catch` 只挂在 `json()` 上 ⇒ 内核 REST 瞬时不可达就把整轮打崩（上上次就是这么崩的 ✗）。
   // 现在 `try/catch` + **重试 3 次**，仍失败返回 null，交给判定处理"读不到"。
   const json = async (url) => {
@@ -4962,7 +4962,7 @@ async function step28(wd, fixture) {
     return null;
   };
 
-  // [docs/46 §297] **不再自己触发体检**：
+  // **不再自己触发体检**：
   // 应用刚刚用同一张表（同一接口、同一个探测目标）做过裁决，所以现在读到的这张表**就是它读的那张**；
   // 挂具再体检一次只会与应用的探测**并发打架**（上一次就是这么把真最快那条打成超时的 ✗）。
   const pairs = (await readProvider(controller, secret))
@@ -5042,7 +5042,7 @@ function judgeLines() {
 }
 
 /**
- * [docs/46 §E] **两段式收口**：把健康检查地址写进库后**冷启动应用**，让内核在**启动时**就按
+ * **两段式收口**：把健康检查地址写进库后**冷启动应用**，让内核在**启动时**就按
  * "本机可达"的地址探测 —— 运行中改配置不会重读探测设置（§273 已用证据确认），所以必须冷启动。
  *
  * 这是"能在本机拿到《选最低延迟》数值证据"的唯一做法，且**不碰产品、不放宽断言**：
@@ -5050,14 +5050,14 @@ function judgeLines() {
  */
 async function step29(wd, fixture, exe) {
   const evidence = [];
-  // [docs/46 §291] 看门狗：本档最长 12 分钟，超时**如实记 FAIL**，不让整轮挂住。
+  // 看门狗：本档最长 12 分钟，超时**如实记 FAIL**，不让整轮挂住。
   const watchdog = setTimeout(() => {
     record("step29", "FAIL", "看门狗：step29 超过 12 分钟仍未收尾（内核/界面卡住）", evidence);
     process.exit(1);
   }, 12 * 60 * 1000);
   watchdog.unref();
 
-  // [docs/46 §291] **先把上一个应用/内核实例清干净** —— 用户观察到"有个窗口没关"，那正是根因：
+  // **先把上一个应用/内核实例清干净** —— 用户观察到"有个窗口没关"，那正是根因：
   // 两个实例会抢同一个 `external-controller: 127.0.0.1:39090` ⇒ 后起的起不来
   // ⇒ `TA-9001 内核就绪超时` / REST 不可达 / 我脚本 `fetch failed` 崩掉 / 整轮挂住，全是这一条的下游 ✓
   await new Promise((resolve) => {
@@ -5103,15 +5103,15 @@ async function step29(wd, fixture, exe) {
     return;
   }
   const doc = JSON.parse(row.json);
-  // [docs/46 §297] 体检目标 = 服务商的 `base_url`（应用就是这样测的）。真实订阅是**境外真实节点**
+  // 体检目标 = 服务商的 `base_url`（应用就是这样测的）。真实订阅是**境外真实节点**
   // ⇒ 挂具的本地端口它们够不着，只能用**公网**端点当探测目标（本机实测 gstatic 204 ✓，
-  // 且 [docs/46 §296] 测得 34 条真实节点里有 32 条量得出延迟）。
+  // 且 测得 34 条真实节点里有 32 条量得出延迟）。
   const PROBE = PROBE_GLOBAL;
   // ⚠️ 周期**不要**压成 1 秒（上一版踩过）：34 条真实节点每秒钟被整份体检一遍 ⇒ 网络被打满、
   // 测量结果剧烈抖动（同一节点一会儿 137ms 一会儿"量不到"）⇒ 连"上次那条还在不在"都判不准。
   // 应用**自己**会在需要时触发一次完整体检（`provider_delays`），所以这里留默认节奏即可。
   const HEALTH_INTERVAL_S = 60;
-  // [docs/46 §288] **用用户给的真实订阅**（36 台真实服务器 ⇒ 真实延迟差异 ⇒ 「选最低延迟」可判）。
+  // **用用户给的真实订阅**（36 台真实服务器 ⇒ 真实延迟差异 ⇒ 「选最低延迟」可判）。
   // 订阅 URL 只从 `.ta-tmp/secrets/net-sub.url` **读进内存**，**绝不打印**（只打 host）。
   // 健康检查地址**复位为后端默认**（本机实测可达 gstatic ✓）⇒ 真实节点才量得出延迟。
   // **不猜路径**：多候选依次试（上一次我算错了 REPO 的相对层级 ⇒ 真实订阅根本没读到 ✗
@@ -5143,7 +5143,7 @@ async function step29(wd, fixture, exe) {
     doc.health_check = { enabled: true, url: null, interval_s: 60, tolerance_ms: 100 };
     evidence.push(`已用真实订阅（host=${new URL(realSubUrl).host}，URL/token 不外泄）`);
   }
-  // [docs/46 §297] 间隔**不要**压到 1 秒（上一版这么做，踩了两次坑）：34 条真实节点每秒被整份体检
+  // 间隔**不要**压到 1 秒（上一版这么做，踩了两次坑）：34 条真实节点每秒被整份体检
   // 一遍 ⇒ 网络打满、同一节点的延迟一会儿 137ms 一会儿"量不到" ⇒ 连"上次那条还在不在"都判不准。
   // 应用**自己**会在需要时触发一次完整体检，所以这里用默认节奏（60 秒）即可。
   doc.health_check = {
@@ -5162,14 +5162,14 @@ async function step29(wd, fixture, exe) {
   );
   db.close();
   evidence.push(`已把订阅的健康检查地址改成 ${PROBE}（间隔 ${HEALTH_INTERVAL_S}s）`);
-  // [docs/46 §297] 应用体检时带的是**服务商的 `base_url`** ⇒ 冷启动前把它也指向同一个可达目标
+  // 应用体检时带的是**服务商的 `base_url`** ⇒ 冷启动前把它也指向同一个可达目标
   // （夹具里它是 `http://127.0.0.1:1/v1`，不可达 ⇒ 每个节点都会被记成失败 ⇒ 只能得到 all_unreachable）。
   // 「自动」线路 id 现在是**按服务商**派生的（用户第 202 轮）：`lane-<服务商>-auto`。
   // 挂具**不许硬编码**它 —— 从库里按后端同一判据找出来，再用它拼内核里的组名。
   const autoLaneId = await findAutoLaneId("ta-e2e-sub-form", evidence);
   await patchProviderProbeTarget(PROBE, evidence, autoLaneId);
 
-  // [docs/46 §297] **必须确认这条「自动」线路的组类型是 `select`**：`type: url-test` 的组会**忽略**
+  // **必须确认这条「自动」线路的组类型是 `select`**：`type: url-test` 的组会**忽略**
   // `PUT /proxies/<组>`（HTTP 204 但 `now` 不变 —— 实测见 §297）⇒ 应用算出来的选择根本写不进去。
   // 只当证据打出来（产品侧由 ta-core 的 `auto_lane_on` 保证只认 `group_type == select` 的线路）。
   try {
@@ -5197,13 +5197,13 @@ async function step29(wd, fixture, exe) {
   await wd.newSession(exe, { args: ["--autostart-mode=window"] });
   evidence.push("已冷启动应用（内核会在启动时读这份配置）");
 
-  // [docs/46 §E] 冷启动后**不会自动重抓订阅**（同步任务实测会报「本轮没有到期的」）⇒ provider 不会被登记
+  // 冷启动后**不会自动重抓订阅**（同步任务实测会报「本轮没有到期的」）⇒ provider 不会被登记
   // ⇒ `/providers/proxies/<key>` 是空的、也就无所谓"选谁" ✗。所以这里**主动点一次「手动刷新」**
   // （它同时就是触发点②：用户手动更新 ⇒ 重挑）⇒ provider 登记 + 触发重算 ⇒ 才谈得上比较延迟 ✓
   // 冷启动后**必须等页面真正就绪再点**：上次直接 sleep 1.5s 就点，命中了 `缺控件 network-subscriptions-refresh`
   // ⇒ 刷新没触发 ⇒ 重算没发生 ⇒ 拿到的是 mihomo 默认值（不是产品的判断）✗
   //
-  // [docs/46 §297] **两段等待**（上一版只有 30 秒的一段，实测不够：冷启动要重读配置 + 拉订阅 +
+  // **两段等待**（上一版只有 30 秒的一段，实测不够：冷启动要重读配置 + 拉订阅 +
   // 起内核，30 秒里 `#/network` 还没渲染出来 ⇒ 刷新点了个空 ⇒ 日志停在**上一轮的旧判决行** ⇒ 误判）：
   //   ① 先等窗口真的渲染出 `page-header`（最多 90 秒）；
   //   ② 再反复 `gotoPage("#/network")` 直到刷新控件出现（最多 5 轮 × 20 秒）。
@@ -5290,7 +5290,7 @@ async function step29(wd, fixture, exe) {
     return null;
   };
 
-  // [docs/46 §289] **显式让 mihomo 重新读 provider 文件** —— 这条是 step28 里有、step29 里漏掉的：
+  // **显式让 mihomo 重新读 provider 文件** —— 这条是 step28 里有、step29 里漏掉的：
   // 应用手动刷新后会把**真实订阅**写进 provider 文件 ✓，但 mihomo 的 provider 走 `path:` 缓存
   // ⇒ 不刷新它就还用旧的（实测：不清缓存=夹具 14 条；清了缓存不刷新=0 条 ✗）。
   const putRes = await fetch(
@@ -5300,20 +5300,20 @@ async function step29(wd, fixture, exe) {
   evidence.push(`provider 显式刷新：HTTP ${putRes.status}`);
   await sleep(5000);
 
-  // —— [docs/46 §290/§297] 最后一击：**先确保延迟表是真的**，再读应用自己的判决 ——
+  // —— 最后一击：**先确保延迟表是真的**，再读应用自己的判决 ——
   // 判据用的表与应用**同一张**（provider 的 `history[].delay`）；挂具这一轮显式触发一次体检，
   // 保证读到的不是"还没测过"的空表。探测目标就是应用会用的那条（服务商 base_url）。
   const SUBKEY = "ta-e2e-sub-form";
   const GROUPNAME = autoLaneId === null ? "LANE-lane-ta-e2e-sub-form-auto" : "LANE-" + autoLaneId;
   const provNodes = () => readProviderNodes(controller, secret, SUBKEY);
   // **[修正]** provider 快照里的名字与组 `all` 里的名字是同一批（`/proxies/<组>` 的 `all` 更权威）；
-  // 但**测延迟只能走 provider 接口**（见下面的 [docs/46 §297]），`/proxies/<name>/delay` 对它们全 404。
+  // 但**测延迟只能走 provider 接口**（见下面的），`/proxies/<name>/delay` 对它们全 404。
   const groupObj = await json(`http://${controller}/proxies/${encodeURIComponent(GROUPNAME)}`);
   const groupAll = groupObj?.all ?? [];
   const provNames = (await provNodes()).map(([n]) => n);
   const names = groupAll.length > 0 ? groupAll : provNames;
   evidence.push(`节点来源：组 all=${groupAll.length} 条 / provider=${provNames.length} 条（延迟一律读 provider 那张表）`);
-  // [docs/46 §295] **先等"应用自己的健康检查"把延迟填上**（这才是能跑通的方式：免挂具脚本实测 32/34 有值 ✓）；
+  // **先等"应用自己的健康检查"把延迟填上**（这才是能跑通的方式：免挂具脚本实测 32/34 有值 ✓）；
   // 后面那次显式体检只是"保证这一刻一定有值"。每步带**时间戳**便于分析耗时（按用户要求）。
   const tProbe = Date.now();
   const mark = (s) => evidence.push(`+${String(Date.now() - tProbe).padStart(6)}ms  ${s}`);
@@ -5325,7 +5325,7 @@ async function step29(wd, fixture, exe) {
   }
   mark(`等待结束（${Math.round((Date.now() - tProbe) / 1000)}s）`);
 
-  // [docs/46 §297] **点第二次「更新」**（这一步是 E 期能判定的关键）：
+  // **点第二次「更新」**（这一步是 E 期能判定的关键）：
   // 第一次点的时候内核里 provider 还没加载好 ⇒ 应用那一刻体检必然 `measured=0` ⇒ 结论没有意义。
   // 等挂具确认"provider 已加载且量到了 ≥8 条"之后再点一次，应用这一轮才有东西可量 ——
   // 判定用的就是**这一轮**的结论（触发点②：用户手动更新 ⇒ 重挑最低延迟）。
@@ -5344,7 +5344,7 @@ async function step29(wd, fixture, exe) {
     await sleep(5000);
   }
   mark(`应用这一轮的判决行：${freshVerdict === null ? "(150s 内没有出现)" : "出现了"}`);
-  // —— [docs/46 §297] 测量**只能走 provider 命名空间**，而且**不再自己触发体检** ——
+  // —— 测量**只能走 provider 命名空间**，而且**不再自己触发体检** ——
   // 上一版 ① 用 `/proxies/<name>/delay` 逐个强制探测（**0/34 全 404**）② 又用挂具自己的
   // `healthcheck` 去测一次 ⇒ 与应用那一轮的探测**并发打架**（34 条节点被同时拨两遍，真最快那条
   // 被打成超时）⇒ 拿挂具的表去否应用的结论，等于自己制造假红 ✗。
@@ -5413,7 +5413,7 @@ async function step29(wd, fixture, exe) {
     `判定：now=${groupNow ?? "(未选)"}（${nowMs ?? "?"}ms）；应用日志里选的=${appNode ?? "(无)"}` +
       `（picked_ms=${pickedMs} / best_ms=${bestMs}）；这张表里最快=${fastestName}（${fastestMs}ms）`,
   );
-  // **写的那一半**（[docs/46 §297] ⑦⑧）：应用算出来的选择必须真的落到内核的组上
+  // **写的那一半**（⑦⑧）：应用算出来的选择必须真的落到内核的组上
   // （只有 `type: select` 的组认这一刀；`url-test` 组会返回 204 但 `now` 不变）。
   if (appNode !== null && groupNow !== appNode) {
     record(
@@ -5424,7 +5424,7 @@ async function step29(wd, fixture, exe) {
     );
     return;
   }
-  // **"选了最低延迟"这句话的判据**（[docs/46 §300]）：用**应用自己那张表**自证 ——
+  // **"选了最低延迟"这句话的判据**：用**应用自己那张表**自证 ——
   // `picked_ms == best_ms` 就是"它选了自己表里最低的那条"。为什么不拿挂具后来读到的最快去比：
   // 真机实测这批境外节点在几十秒内抖动极大（同一条节点 137ms → 1523ms → 3006ms 都被读到过），
   // 两次独立测量互相对账会把一个**正确**的实现判成错。挂具的读数照旧打在证据里（含量、明细），
@@ -5458,7 +5458,7 @@ async function step29(wd, fixture, exe) {
 }
 
 /**
- * [docs/46 §299] **粘性真机验证 —— 触发点①：后台自动刷新（`manual = false`）**
+ * **粘性真机验证 —— 触发点①：后台自动刷新（`manual = false`）**
  *
  * 用户第 88 轮的原话要求：订阅更新后，**如果上次选的出口地址还在，就沿用**它（出口 IP 不变）。
  * 这条与"手动刷新"共用同一个实现、只差一个布尔值，可真机上要验它需要一个**非手动**的刷新：
@@ -5527,8 +5527,8 @@ async function step30(wd, fixture, exe) {
     return;
   }
 
-  // [docs/29 §2.3] 把订阅周期压到 1 秒 ⇒ 应用自己的后台同步任务会把它判成"到期"。
-  // **必须冷启动**：应用读的是**内存里的文档**，改库对运行中的进程无效（[docs/35 §8] 的旧教训）。
+  // 把订阅周期压到 1 秒 ⇒ 应用自己的后台同步任务会把它判成"到期"。
+  // **必须冷启动**：应用读的是**内存里的文档**，改库对运行中的进程无效（旧教训）。
   try {
     const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(join(OUT, "data", "db.sqlite"));
@@ -5561,7 +5561,7 @@ async function step30(wd, fixture, exe) {
   // 这时不能判红 —— 但也不能判绿（粘性没被观察到），如实记 SKIP 并写明理由。
   const readNow = async () => {
     // ⚠️ 冷启动之后**必须重新读控制器与 secret**：应用每次生成配置都会**换一个 secret**
-    // （[docs/11 §2.3]：随机 secret + reload），拿旧 secret 去打只会拿到 401 ⇒ `now=null`
+    // （：随机 secret + reload），拿旧 secret 去打只会拿到 401 ⇒ `now=null`
     // （上一次 step30 就是这么假红的 ✗）。
     try {
       const text = readFileSync(cfgPath, "utf8");
@@ -5618,13 +5618,13 @@ async function step30(wd, fixture, exe) {
       `第 ${round + 1} 轮：status=${status} node=${JSON.stringify(node)} now=${JSON.stringify(now1)}（基准=${JSON.stringify(stickyBase)}）`,
     );
     if (status === "same_address_still_there") {
-      // [docs/46 §301] 真机实测（2026-09-27）：应用这一轮报的是 `same_address_still_there`
+      // 真机实测（2026-09-27）：应用这一轮报的是 `same_address_still_there`
       // （= 上次那条的**地址**还在订阅里 ⇒ 按规则沿用，出口 IP 没变），但**名字**从
       // `新加坡-优化2-GPT` 变成了 `日本-优化2` —— 机场里**多个名字共用一个地址**是常态，
       // 而内核 `/providers/proxies/<key>` 的节点对象**不含 address 字段**（实测确认），
       // 挂具没法独立比地址。所以判据是：
       //   · 硬要求：应用日志里的 node 与内核组的 now **一致**（说明它真的写进内核了）；
-      //   · 名字变了 ⇒ **不算红**，如实记一条说明（地址是否相同由应用自己的判据决定，
+      //   · 名字变了 ⇒ **不算红**，如实记一条说明（址是否相同由应用自己的判据决定，
       //     它判的就是地址；挂具不再用"名字"去当"IP"）。
       if (now1 === null || node === null || node === "(未选)" || now1 !== node) {
         record(
@@ -5718,7 +5718,7 @@ async function step30(wd, fixture, exe) {
   }
   // 最终判定：判的是"**出口有没有变**"，而出口的判据是**地址**，不是名字。
   //
-  // 挂具读不到地址（内核 `/proxies/<key>` 的节点对象里没有 address 字段 —— [docs/46 §301] 实测确认），
+  // 挂具读不到地址（内核 `/proxies/<key>` 的节点对象里没有 address 字段 —— 实测确认），
   // 所以"地址还是不是同一条"只能采信应用自己那条 `status=same_address_still_there`；
   // 挂具这一侧能**独立**验的是："它真的把决定写进内核了"（日志 node == 内核 now）。
   //
@@ -5795,7 +5795,7 @@ function judgePricedMatch(match, model) {
  * `step30` 的**最终判定**（抽成纯函数，好让 `--selfcheck` 直接喂用例）。
  *
  * 判的是"**出口有没有变**"。出口的判据是**地址**，而挂具读不到地址
- * （内核 `/proxies/<key>` 的节点对象里没有 address 字段，[docs/46 §301] 实测确认），
+ * （内核 `/proxies/<key>` 的节点对象里没有 address 字段， 实测确认），
  * 所以：
  *
  * * 地址还是不是同一条 —— 只能采信应用自己那条 `status=same_address_still_there`；
@@ -5910,7 +5910,7 @@ function runSelfCheck() {
       want: true,
     },
     {
-      // 🦷 这一条就是真机上判红的那次输入（[docs/46]：把说明文案当判据那个坑）
+      // 🦷 这一条就是真机上判红的那次输入（：把说明文案当判据那个坑）
       fn: "judgeSticky",
       name: "同一地址换了名字 → 绿（不许再把「说明文案」当判据）",
       input: {
@@ -5960,7 +5960,7 @@ function runSelfCheck() {
     },
     // ---------------- judgePreviousUnreachable（重挑判定）
     {
-      // 🦷 这一条就是把"无法判定"错判成 FAIL 的那次真机输入（[docs/50 §5.4]）
+      // 🦷 这一条就是把"无法判定"错判成 FAIL 的那次真机输入
       fn: "judgePreviousUnreachable",
       name: "应用选出了出口 + 挂具按名字看到 alive → undecidable（不许判红）",
       input: { alive: true, node: "新加坡-优化2-GPT", stickyBase: "新加坡-优化2-GPT" },
@@ -5984,7 +5984,7 @@ function runSelfCheck() {
       input: { alive: false, node: "日本-优化2", stickyBase: "新加坡-优化2-GPT" },
       wantKind: "app_right",
     },
-    // ---------------- pricingWriteEntries（[docs/51] 成本中心只读的判定）
+    // ---------------- pricingWriteEntries（成本中心只读的判定）
     {
       fn: "pricingWriteEntries",
       name: "只有只读控件 → 空（成本中心确实只做显示）",
@@ -6025,7 +6025,7 @@ function runSelfCheck() {
       input: [],
       wantLen: 0,
     },
-    // ---------------- judgePricedMatch（[docs/51] 落库的 match 形状）
+    // ---------------- judgePricedMatch（落库的 match 形状）
     {
       // 🦷 这一条就是真机上先红了一次的那个**真实**形状（`null` 而不是缺键）
       fn: "judgePricedMatch",
@@ -6098,7 +6098,7 @@ function runSelfCheck() {
   }
   process.stdout.write(
     bad.length === 0
-      ? `\n自检通过：${cases.length}/${cases.length}（step30 的两条判定 + [docs/51] 成本中心只读 / 落库 match 形状）\n`
+      ? `\n自检通过：${cases.length}/${cases.length}（step30 的两条判定 + 成本中心只读 / 落库 match 形状）\n`
       : `\n自检失败 ${bad.length}/${cases.length}：${bad.join("；")}\n`,
   );
   return bad.length === 0 ? 0 : 1;
@@ -6256,7 +6256,7 @@ async function main() {
     }
 
     log("新建 WebDriver 会话（启动真实 Tauri 窗口）...");
-    // [docs/31 §27] 让应用以**窗口模式**启动：托盘模式下应用启动后会自行退出
+    // 让应用以**窗口模式**启动：托盘模式下应用启动后会自行退出
   // （真机实测：进程"已退出" → WebView 连接关闭 → WebDriver 会话被服务器删除 →
   //  之后所有查询 404、页面文本为空）。这不是产品缺陷，是**用例该跑在窗口模式下**。
   await wd.newSession(exe, { args: ["--autostart-mode=window"] });
@@ -6313,35 +6313,35 @@ async function main() {
     // ============================================================ step18 访问密钥（会自己造 key 并真打网关）
     if (want("step18")) await step18(wd);
 
-    // ============================================================ step20 服务商详情即编辑器（[docs/23]）
+    // ============================================================ step20 服务商详情即编辑器
     if (want("step20")) await step20(wd);
 
-    // ============================================================ step24 模型目录（[docs/25]）
+    // ============================================================ step24 模型目录
     if (want("step24")) await step24(wd);
 
-    // ============================================================ step25 线路的网络代理（[docs/28 §1.2]）
+    // ============================================================ step25 线路的网络代理
     if (want("step25")) await step25(wd);
   if (want("step26")) await step26(wd, fixture);
-  // [docs/46 §297] **顺序有语义**：step26–step29 依赖 step25 建好的状态
+  // **顺序有语义**：step26–step29 依赖 step25 建好的状态
   // （服务商挂上「自动」线路 + 订阅刷新链路），而 step21 是**破坏性**的（删服务商/通道/模型/
   // policy）—— 它曾经排在 step27 前面，于是 step28/step29 跑到的时候"服务商已经没有 lane 了"
   // ⇒ 应用不再重算（日志停在上一轮）、step29 读到的是**旧判决行** ⇒ 判红的是"状态被前面的步骤
   // 拆了"，不是产品。所以 E 期的四步必须**紧跟 step25**，在破坏性步骤之前。
   if (want("step27")) await step27(wd, fixture);
-  // [docs/46 E 期] 先让订阅/线路都建好，再点手动刷新看「自动」出口选谁。
+  // 先让订阅/线路都建好，再点手动刷新看「自动」出口选谁。
   if (want("step28")) await step28(wd, fixture);
-  // [docs/46 §E] 两段式（冷启动）拿"选最低延迟"的数值证据。
+  // 两段式（冷启动）拿"选最低延迟"的数值证据。
   if (want("step29")) await step29(wd, fixture, exe);
-  // [docs/46 §299] 粘性：后台自动刷新（manual=false）必须**沿用**上次那条（出口 IP 不变）。
+  // 粘性：后台自动刷新（manual=false）必须**沿用**上次那条（出口 IP 不变）。
   if (want("step30")) await step30(wd, fixture, exe);
 
     // ============================================================ step21 删除与通道页线路（跑在最后）
     if (want("step21")) await step21(wd);
 
-    // ============================================================ step22 问号圆圈（[docs/22]）
+    // ============================================================ step22 问号圆圈
     if (want("step22")) await step22(wd);
 
-    // ============================================================ step23 订阅详情页（[docs/54]）
+    // ============================================================ step23 订阅详情页
     // 放在最后：它会开关一个节点再复原，前面的档不该被它影响（复原失败会红，不会静默改坏别人）
     if (want("step23")) await step23(wd);
 
@@ -6441,7 +6441,7 @@ async function step1(wd) {
   if (header === null) {
     evidence.push("等 25s 未见 [data-testid=\"page-header\"]");
     evidence.push(`页面文本前 400 字: ${(await wd.pageText().catch(() => "")).slice(0, 400)}`);
-      // [docs/31 §18] **协议层现场**：页面 JS 执行不了时（`wd.exec` 返回 null），
+      // **协议层现场**：页面 JS 执行不了时（`wd.exec` 返回 null），
       // 就用驱动器自己的接口看"附着到的是哪个窗口/哪个 URL"——它们不依赖页面上下文。
       {
         const handles = await wd.raw("GET", `/session/${wd.sessionId}/window/handles`).catch((e) => ({ err: String(e) }));
@@ -6452,7 +6452,7 @@ async function step1(wd) {
         );
         const status = await wd.raw("GET", "/status").catch((e) => ({ err: String(e) }));
         evidence.push(`驱动器 /status = ${JSON.stringify(status)?.slice(0, 200)}`);
-        // [docs/31 §23] 应用进程是否还活着：失败到底是"应用退出"还是"WebView 崩"
+        // 应用进程是否还活着：失败到底是"应用退出"还是"WebView 崩"
         {
           const { execSync } = await import("node:child_process");
           let list = "";
@@ -6523,7 +6523,7 @@ async function step1(wd) {
   if (p) evidence.push(`截图: ${p}`);
 
   /**
-   * [docs/56] **侧边栏的顺序与分组**（用户第 323 轮："重新排序一下…从用户体验工程和直觉上来说"）。
+   * **侧边栏的顺序与分组**（用户第 323 轮："重新排序一下…从用户体验工程和直觉上来说"）。
    *
    * 这一档在**真机**上验三件事（单测验的是纯函数与 jsdom 渲染，这里验的是真的 WebView）：
    * 1. 三个组名真的画出来了；
@@ -6587,7 +6587,7 @@ async function step1(wd) {
     record(
       "step1",
       "FAIL",
-      `首页渲染出来了，但**侧边栏**不符合 [docs/56]：组名=${headingsOk} 顺序=${orderOk} 折叠=${collapseOk}`,
+      `首页渲染出来了，但**侧边栏**不符合：组名=${headingsOk} 顺序=${orderOk} 折叠=${collapseOk}`,
       evidence,
     );
     return;
@@ -6595,7 +6595,7 @@ async function step1(wd) {
   record(
     "step1",
     "PASS",
-    "真实 Tauri 窗口渲染出首页（page-header 命中）；侧边栏按 [docs/56] 分组且顺序正确，" +
+    "真实 Tauri 窗口渲染出首页（page-header 命中）；侧边栏按 分组且顺序正确，" +
       "折叠后组名消失而 8 个导航项仍在",
     evidence,
   );
@@ -6694,7 +6694,7 @@ async function step2(wd, fixture) {
     return;
   }
 
-  // ---- ① 添加服务商：走 /providers 页头的**两步向导**（[docs/19 §1]）----
+  // ---- ① 添加服务商：走 /providers 页头的**两步向导**----
   // 第 71 轮用户要的就是这个：显示名称(不重复) → 协议 → URL → key → 测试连接(非必填) → 下一步 → 添加模型。
   // 挂具只固定**显示名称**：provider id 由界面从名称派生（见下面的真实 id 读取），不写 id 常量。
   const pname = "TA E2E 供应商";
@@ -6759,12 +6759,12 @@ async function step2(wd, fixture) {
       `；库里全部 provider id=${JSON.stringify(providerRows.map((r) => r.entityId))}`,
   );
 
-  // 第 2 步（[docs/28 §1.4] 用户第 82 轮的重构）：
+  // 第 2 步（用户第 82 轮的重构）：
   //   扫描 = 记录目录 + **把清单里的每条线路都建出来（默认关闭）**；
   //   列表里每行 = 上游原文 + 网络代理（可改）+ 启用滑块（默认关）；
   //   全选 = 一条 `channel_bulk_set_enabled`。
   let scanRows = 0;
-  let addedModels = false; // [docs/28 §2] 语义已改为"真的建出了线路"
+  let addedModels = false; // 语义已改为"真的建出了线路"
   let addedRowsVisible = 0;
   let addedRowsOk = false;
   let addedRoutedOk = false;
@@ -6782,7 +6782,7 @@ async function step2(wd, fixture) {
         `notice=${JSON.stringify((scanNotice ?? "").replace(/\s+/g, " ").slice(0, 120))}`,
     );
 
-    // ★ 一个列表：行来自 `channel_list`。**[docs/28 §1.5] 一行 = 名字 + 网络代理 + 滑块**
+    // ★ 一个列表：行来自 `channel_list`。** 一行 = 名字 + 网络代理 + 滑块**
     //   （用户原话："一条就是左边名字，右边选择滑块就好了"）——行里**不该**有 id / 优先级 / 原文。
     const listProbe2 = await wd.exec(`
       const rows = [...document.querySelectorAll('[data-testid="providers-line-row"]')];
@@ -6809,7 +6809,7 @@ async function step2(wd, fixture) {
         legacyAdd: document.querySelector('[data-testid="pw-scan-add"]') !== null,
       };
     `);
-    // [docs/28 §1.7] **长列表里的主操作不能跟着滚走**：把向导内容滚到底，
+    // **长列表里的主操作不能跟着滚走**：把向导内容滚到底，
     // 「完成」必须仍然在视口内（它在对话框的固定按钮区，不在滚动容器里）。
     const stickyProbe = await wd.exec(`
       const scroll = document.querySelector('[data-testid="pw-step2-scroll"]');
@@ -6850,7 +6850,7 @@ async function step2(wd, fixture) {
       scanRows > 0 &&
       (listProbe2?.lanes ?? []).every(
         (l) =>
-          // [docs/29 §2.1] 行里**没有**代理控件（出口只由服务商决定）
+          // 行里**没有**代理控件（出口只由服务商决定）
           l.hasLane === false &&
           l.hasSwitch === true &&
           l.hasInfo === true &&
@@ -6861,7 +6861,7 @@ async function step2(wd, fixture) {
       listProbe2?.hasSelectAll === true &&
       panelProbe?.panel === true &&
       panelProbe?.raw !== null &&
-      // [docs/28 §1.7] 滚到底之后主操作仍**在视口内**，且**不在**滚动容器里
+      // 滚到底之后主操作仍**在视口内**，且**不在**滚动容器里
       stickyProbe?.button === true &&
       stickyProbe?.inViewport === true &&
       stickyProbe?.inScrollContainer === false &&
@@ -6924,7 +6924,7 @@ async function step2(wd, fixture) {
 
   // ---- ② 「一个服务商一把密钥」：**列表页不许有第二条密钥的入口**；向导那一把必须真进密钥仓库 ----
   //
-  // [docs/28 §1.3]（用户原话：「一个服务商肯定就一个密钥，怎么还做多个删除的…要多个账号就直接
+  //（用户原话：「一个服务商肯定就一个密钥，怎么还做多个删除的…要多个账号就直接
   // 添加多个服务商、取不同名字」）：`/providers` 的「添加密钥」入口与 `credentials-add-*` 对话框
   // **已经下线**。所以这一段的判据从"能不能加第二份凭据"倒过来变成两件事：
   //   ① 那个入口**不存在**（它一旦回来，就是多凭据模型回来了 —— 这才是真缺陷）；
@@ -6957,7 +6957,7 @@ async function step2(wd, fixture) {
     //   ① **等到后端回执再读**：轮询 `secret_meta` 直到 `<id>-default` 那一行真的出现
     //      （不再"睡 800ms 赌它写完"）；
     //   ② hint 必须是**脱敏**的（非空、不等于明文、不含明文）；
-    //   ③ `secret_meta` 表里**没有**任何值列（列名清单直接断言，[docs/19 §1.3] 的硬约束）；
+    //   ③ `secret_meta` 表里**没有**任何值列（列名清单直接断言， 的硬约束）；
     //   ④ 配置里的引用 `${secret:<id>-default}` 要对得上；
     //   ⑤ 明文不许出现在**任何** secrets.enc（scratch 与真实数据目录两处都要查
     //      —— 便携库的默认路径是 `%APPDATA%\TokenAgency\secrets.enc`，
@@ -6986,7 +6986,7 @@ async function step2(wd, fixture) {
     const metaRow =
       expectedSecretName === null ? null : (metaRows.find((r) => String(r.name) === expectedSecretName) ?? null);
     const metaOk = metaRow !== null;
-    // ② 脱敏：`hint` 不是明文、也不含明文（[docs/19 §1.3]：表里只留 `sk-a***` 这种提示）
+    // ② 脱敏：`hint` 不是明文、也不含明文（：表里只留 `sk-a***` 这种提示）
     const hint = metaRow === null ? null : String(metaRow.hint ?? "");
     const hintMasked = hint !== null && hint.trim() !== "" && hint !== PLAINTEXT && !hint.includes(PLAINTEXT);
     // ③ 表里没有值列（列名清单已经在 dump 里落盘，断言直接读它）
@@ -7020,7 +7020,7 @@ async function step2(wd, fixture) {
     credentialInUi = !plainInPage && !plainInDb;
   }
 
-  // 向导第 1 步的契约（[docs/19 §1.3]）：provider 落库时同时挂一份 `<provider>-default` 凭据。
+  // 向导第 1 步的契约：provider 落库时同时挂一份 `<provider>-default` 凭据。
   // 用**库里读出的真实 id** 去认领它 —— 这比"按钮点过了"强：证明库里真的存在这样一对实体，
   // 而不是挂具自己想象出来的 id 上有这么一对。
   const dumpAfterCred = dumpScratchDb("step2-default-credential");
@@ -7088,7 +7088,7 @@ async function step2(wd, fixture) {
 }
 
 /**
- * 「上游没有 /models 端点」那一档（[docs/19 §1.1]）：建第二个服务商，baseUrl 指向 fixture 的
+ * 「上游没有 /models 端点」那一档：建第二个服务商，baseUrl 指向 fixture 的
  * `/notfound/v1`（恒 404），点「测试连接」→ 结果区必须说"上游没有 /models 端点"，
  * **不许**渲染成"连接失败"（那会把一个正常的上游说成坏的）。
  *
@@ -7518,7 +7518,7 @@ async function step3(wd, fixture) {
   const inDb = subRows.some(
     (r) => String(r.entity_id) === "ta-e2e-sub-form" || String(r.json).includes("ta-e2e-sub-form"),
   );
-  // [docs/57] 写表单在对话框里：走之前把它关掉，别把模态留给后面的步骤
+  // 写表单在对话框里：走之前把它关掉，别把模态留给后面的步骤
   //（遮罩会挡住下一页的控件 —— 那是"假红"的常见来源，见 step22 里的同类注释）。
   await wd.closeDialog();
   if (inList && inDb) record("step3", "PASS", "订阅经真界面（/network 表单）新增，列表与 config 表都出现", evidence);
@@ -7531,7 +7531,7 @@ async function step4(wd) {
   const evidence = [];
   // 契约里"线路"的两个写命令是 lane_upsert / lane_set_node。
   // 原来这里还先看 `/channels`（套餐与线路）上有没有 lane 写入口 —— 那一页已按用户裁决删除
-  // （[docs/49]），所以直接看现在唯一可能有的地方：`/network` 的线路区。
+  // ，所以直接看现在唯一可能有的地方：`/network` 的线路区。
   await gotoPage(wd, "#/network");
   const tidsNet = (await wd.probeTestIds()).filter((t) => t.includes("lane"));
   evidence.push(`路由: #/network；与 lane 相关的 data-testid: ${tidsNet.join(", ") || "（无）"}`);
@@ -7551,13 +7551,13 @@ async function step4(wd) {
       "step4",
       "SKIP",
       "界面缺入口：/network 没有建线路/指派节点的控件（缺 selector：任何 lane upsert / set-node 的 testid 或按钮）" +
-        "（原来还会看 /channels，那一页已删 —— [docs/49]）",
+        "（原来还会看 /channels，那一页已删 ——）",
       evidence,
     );
     return;
   }
   // ---- 真实 lane 写入口：/network 的「③ 线路」区块（命令 lane_upsert / lane_set_node）----
-  // [docs/57]（第 324 轮）写表单**不再常驻**：入口按钮点开之后输入框才出现。
+  //（第 324 轮）写表单**不再常驻**：入口按钮点开之后输入框才出现。
   // step3 一直是"先点一下 add 控件再填"（所以它没受影响），这里原来漏了这一步 ——
   // 表单搬进对话框之后就直接找不到输入框了。**那是挂具的假设过期，不是产品缺陷。**
   //
@@ -7567,7 +7567,7 @@ async function step4(wd) {
   //   （上面那次 `findAddControl` 只用来判"这一页到底有没有写入口"，不再用来点。）
   const laneAddBtn = await wd.findElement('[data-testid="network-lanes-add-open"]');
   if (laneAddBtn === null) {
-    // [docs/58]（第 325 轮）**手动建 / 改线路的界面整块删除**（用户："这个功能好像没有什么用，
+    //（第 325 轮）**手动建 / 改线路的界面整块删除**（用户："这个功能好像没有什么用，
     // 可以在界面上删了"）。所以"找不到入口"现在是**预期结果**，不是缺功能 ——
     // 这一档改成**反回归闸门**：把"线路区块只读"这件事在真机上钉住。
     const writeEntries = await wd.exec(`
@@ -7591,20 +7591,20 @@ async function step4(wd) {
       writeEntries.submit === 0;
     if (!clean) {
       await shot(wd, "step4-lane-write-entry-returned");
-      record("step4", "FAIL", "线路区块又出现了写入口（[docs/58] 已删除手动建线路的界面）", evidence);
+      record("step4", "FAIL", "线路区块又出现了写入口（已删除手动建线路的界面）", evidence);
       return;
     }
     record(
       "step4",
       "PASS",
-      "线路区块**只读**：没有任何建/改线路的入口（[docs/58]）；线路由服务商页选中时按需建出来" +
+      "线路区块**只读**：没有任何建/改线路的入口；线路由服务商页选中时按需建出来" +
         `（表=${writeEntries.table} 空态=${writeEntries.empty}）`,
       evidence,
     );
     return;
   }
 
-  // ★ [docs/57] 先证明**不常驻**（用户第 324 轮："这个界面不要常驻"）：
+  // ★ 先证明**不常驻**（用户第 324 轮："这个界面不要常驻"）：
   //   点开之前，写表单的输入框在 DOM 里**一个都不该有**。
   //   这一条是"不常驻"在真机上的可执行判据 —— 光"点了能出现"证明不了它不再常驻。
   const formBeforeClick = await wd.exec(
@@ -7672,7 +7672,7 @@ async function step4(wd) {
   await wd.click(laneSubmit);
   await sleep(1500);
   await shot(wd, "step4-after-submit");
-  // [docs/57] 走之前关掉对话框：留着模态会挡住后面步骤的控件（"假红"的常见来源）
+  // 走之前关掉对话框：留着模态会挡住后面步骤的控件（"假红"的常见来源）
   await wd.closeDialog();
 
   const dur = dumpScratchDb("step4");

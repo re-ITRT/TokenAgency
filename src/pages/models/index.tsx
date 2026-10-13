@@ -1,9 +1,9 @@
 /**
- * 模型目录页 `/models`（[07 §4] / [docs/28]）。候选路径见 `src/app/routes.ts`：
+ * 模型目录页 `/models`（[07 §4] /）。候选路径见 `src/app/routes.ts`：
  * `pages: ["models", "models/index"]` —— 本文件是**文件夹形式**（与 `logs/index.tsx`、
  * `providers/index.tsx` 一致）。纯逻辑与整形在 `./model.ts`，那一层是单测的主要对象。
  *
- * ## 这一页的职责（[docs/28 §1]）
+ * ## 这一页的职责
  *
  * **模型是在这里"分配"出来的**：服务商与线路在服务商页创建，**模型不自动创建** ——
  * 用户在这一页把若干条**已经存在**的线路指定给一个模型（≥1 条）。
@@ -11,7 +11,7 @@
  *
  * 1. **读** `model_list` / `pricing_unpriced_models` / `channel_list` / `provider_list` / `lane_list`；
  * 2. **写**只走 `model_upsert`（新增/覆盖，`lines` 是必备项）与 `model_delete`；
- * 3. **没有**任何"给模型挑网络代理"的控件（[docs/28 §1.2]：代理是**线路**的属性，只在服务商页改）；
+ * 3. **没有**任何"给模型挑网络代理"的控件（：代理是**线路**的属性，只在服务商页改）；
  *    本页也从不读写 `Model.default_lane`。
  *
  * 其余写命令（`model_import_from_provider` / `model_apply_import` / `model_bulk_update`）**已在后端登记**
@@ -96,7 +96,7 @@ const ISSUE_KEYS: Record<string, I18nKey> = {
   "id.duplicate": "models.add.issue.id.duplicate",
   "order.notInteger": "models.add.issue.order.notInteger",
   "order.negative": "models.add.issue.order.negative",
-  // 线路是这一页新加的一条硬规则（[docs/28 §2]），文案在 `models.lines.*` 域下
+  // 线路是这一页新加的一条硬规则，文案在 `models.lines.*` 域下
   "lines.required": i18nKey("models.lines.required"),
 };
 
@@ -106,7 +106,7 @@ function issueKey(issue: ModelDraftIssue): I18nKey {
 }
 
 
-// ================================================================ 删除（[docs/21 §1]）
+// ================================================================ 删除
 
 /** 表头全选复选框的无障碍标签：用 `common.selectAll`（见 `providers/index.tsx` 同一常量说明）。 */
 const SELECT_ALL_LABEL_KEY: I18nKey = "common.selectAll";
@@ -115,7 +115,7 @@ const SELECT_ALL_LABEL_KEY: I18nKey = "common.selectAll";
 type DeleteTarget = {
   readonly ids: readonly string[];
   readonly label: string;
-  /** 批量**没有**级联按钮（[docs/21 §1.2]：批量一律 `force=false`）。 */
+  /** 批量**没有**级联按钮（：批量一律 `force=false`）。 */
   readonly batch: boolean;
   readonly consequences: readonly string[];
 };
@@ -127,7 +127,7 @@ type DeleteOutcome = {
 };
 
 /**
- * 逐条执行删除：**一条失败不中止其余条**、**批量一律 `force=false`**（[docs/21 §1]）。
+ * 逐条执行删除：**一条失败不中止其余条**、**批量一律 `force=false`**。
  * 与 `pages/providers/index.tsx` 的同名函数是同一套语义（同一份契约、同一套 testid 约定）。
  */
 async function runDelete(
@@ -172,7 +172,7 @@ const PRICING_STATUS: Record<PricingVerdict, "ok" | "warn" | "off"> = {
 
 
 /** 一个统计格：标签（text.label）+ 值（等宽数字）。 */
-// [docs/52] 统计格收敛到共享件（原先本文件自己写了一份）
+// 统计格收敛到共享件（原先本文件自己写了一份）
 
 /** 只读信息面板里的一行：上标签、下取值（**没有输入控件** —— 这一块只给人看）。 */
 function InfoRow({
@@ -198,7 +198,7 @@ function InfoRow({
 }
 
 /**
- * [docs/46 §304] 对外暴露信息里的**一行**：左标签 + 右取值。
+ * 对外暴露信息里的**一行**：左标签 + 右取值。
  *
  * 与 [`InfoRow`] 的区别：这里的标签是**同一个区块内的次级字段**（不是一整块），所以标签用
  * `caption` 而不是 `overline`，并且固定一个最小宽度让五行能对齐。
@@ -229,7 +229,7 @@ function InfoLine({
 }
 
 /**
- * 上下文窗口 / 最大输出：**没声明就写「未声明」**（`null` 与 0 是两件事，见 [docs/46 §304]）。
+ * 上下文窗口 / 最大输出：**没声明就写「未声明」**（`null` 与 0 是两件事，见）。
  */
 function tokenCount(value: number | null, t: (key: I18nKey) => string): string {
   return value === null ? t("models.info.public.undeclared") : formatInt(value);
@@ -276,13 +276,13 @@ function upstreamCellText(row: ModelRowView, sameLabel: string): string {
 /**
  * 一个开关。
  *
- * [docs/50] 把这个形状收敛成了共享件 [`SwitchControl`]（`@/shared/components`）。
+ * 把这个形状收敛成了共享件 [`SwitchControl`]（`@/shared/components`）。
  * 本文件原先自己写了一份，注释里写的理由是"另一份是 `providers/detail.tsx` 的私有组件，
  * 提成公共件是跨页重构、风险大于收益" —— 那个判断在**当时**是对的，
  * 但现在两处已经**各自漂移**（本文件恒隐藏文字、那一处有 `hideLabel`），
  * 而漂移点恰好是**无障碍名称**：开关视觉上不写"启用/关闭"，读屏的名称只能来自 `aria-label`，
  * 谁漏给一次，那一屏的开关对读屏用户就是"无名复选框"。
- * 共享件把 `label` 变成**必填参数**，从根上消掉这个漏法。见 [docs/50] 的实测记录。
+ * 共享件把 `label` 变成**必填参数**，从根上消掉这个漏法。见 的实测记录。
  */
 function ModelSwitch(props: {
   testId: string;
@@ -313,8 +313,8 @@ function ModelLines({
   /** 逐条线路的 testid 前缀：`<prefix>-<线路 id>`，另加 `<prefix>-none/-mismatch/-missing`。 */
   testIdPrefix: string;
   /**
-   * 打开/关闭这一条线路（[docs/48 §5]）。**省略 = 只读** —— 只读信息面板复用这个组件，
-   * 而那一页刻意一个可写控件都没有（[docs/28 §3]，有专门用例钉着）。
+   * 打开/关闭这一条线路。**省略 = 只读** —— 只读信息面板复用这个组件，
+   * 而那一页刻意一个可写控件都没有（有专门用例钉着）。
    */
   onToggleLine?: (lineId: string, enabled: boolean) => void;
   /** 正在提交的那条线路 id（按钮转圈 + 防重复点）。 */
@@ -419,14 +419,14 @@ export type ModelsBodyProps = {
   error: unknown;
   onRetry: () => void;
   /**
-   * 行内「删除」（[docs/21 §1]）。**省略 = 这一行没有删除入口** ——
+   * 行内「删除」。**省略 = 这一行没有删除入口** ——
    * 纯展示件不自己造写入口，页面（数据层）注入真处理器。
    */
   onDelete?: (row: ModelRowView) => void;
   /** 打开「编辑」（给已有模型加/减线路）：与删除一样由页面传下来，表格自己不发命令。 */
   onEdit?: (row: ModelRowView) => void;
   /**
-   * 模型级总开关（[docs/48 §5]）。**省略 = 只读**（信息面板那条路径刻意没有可写控件）。
+   * 模型级总开关。**省略 = 只读**（信息面板那条路径刻意没有可写控件）。
    *
    * 契约 `Model` 里 `enabled` 是必填，所以在数据层发的是**整条覆盖写**
    * （`model_upsert`）：这条回调只负责"翻一下这一位"，其余字段由页面从 `row.raw` 带齐。
@@ -435,7 +435,7 @@ export type ModelsBodyProps = {
   /** 正在提交开关的模型 id（防重复点）。 */
   togglingModel?: string;
   /**
-   * 线路开关（[docs/48 §5]）：走 `channel_set_enabled`。
+   * 线路开关：走 `channel_set_enabled`。
    *
    * **与模型开关是两回事**：线路可能被**多个模型共用**，关掉它会影响别的模型 ——
    * 页面负责把这件事说清楚（在确认框里），这里只负责把意图传上去。
@@ -451,7 +451,7 @@ export type ModelsBodyProps = {
   /** 「删除选中」（`models-delete-selected`）：一次确认后**逐条**删。 */
   onDeleteSelected?: () => void;
   /**
-   * 行内「定价 / 改价」（[docs/51]）。**省略 = 这一行没有定价入口**。
+   * 行内「定价 / 改价」。**省略 = 这一行没有定价入口**。
    *
    * 与删除/编辑同一条纪律：表格是纯展示件，不自己开对话框、也不发写命令 ——
    * 对话框挂在页面（数据层）上，因为它要 `useCommandQuery("pricing_list")`
@@ -483,10 +483,10 @@ export function ModelsBody({
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   /**
-   * 「查看模型信息」（[docs/28 §3]）：**只读**面板，从行里点进去看。
+   * 「查看模型信息」：**只读**面板，从行里点进去看。
    *
    * 它没有写入口 —— 改关系要走 `model_upsert`（本页只做新增/覆盖的分配），
-   * 代理更是线路自己的事（[docs/28 §1.2]），所以面板里连一个可编辑控件都没有。
+   * 代理更是线路自己的事，所以面板里连一个可编辑控件都没有。
    */
   const [infoRow, setInfoRow] = useState<ModelRowView | undefined>(undefined);
 
@@ -530,7 +530,7 @@ export function ModelsBody({
       {/* 1 概览：读不到的那一维一律画破折号，不画 0 */}
       <Paper variant="outlined" sx={SECTION_SX} data-testid="models-summary">
         <Stack spacing={3}>
-          {/* 「引用通道 / 未定价这两个数从哪来」是**解释** → 收进标题右边的问号（[docs/22 §2]）；
+          {/* 「引用通道 / 未定价这两个数从哪来」是**解释** → 收进标题右边的问号；
               四个统计格里的**数值**照旧留在一眼可见的地方（§2 第 5 条）。 */}
           <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
             <Typography variant="h4">{t("models.summary.title")}</Typography>
@@ -564,7 +564,7 @@ export function ModelsBody({
           </Box>
 
           {/* 缺数据必须说出来：这一列不可用 != 这个模型没有线路
-              （后端原文 + TA 码是红线，[docs/22 §2 第 2 条] → 永远内联） */}
+              （后端原文 + TA 码是红线， → 永远内联） */}
           {channelsMissing ? (
             <Typography
               variant="body1"
@@ -581,7 +581,7 @@ export function ModelsBody({
       {ordered.length > 0 ? (
         <Paper variant="outlined" sx={SECTION_SX} data-testid="models-pricing">
           <Stack spacing={3}>
-            {/* 「未定价清单来自哪条命令」是解释 → 收进标题右边的问号（[docs/22 §2]）。
+            {/* 「未定价清单来自哪条命令」是解释 → 收进标题右边的问号。
                 而下面那句「全部已定价。」是**空态结论**、「本页不替它们裁决」是**这一块自己的
                 判定说明** → 都留在版面上（§2 第 1 条；且既有用例断言后者在 `models-mismatch` 里）。 */}
             <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
@@ -714,7 +714,7 @@ export function ModelsBody({
             </Typography>
           ) : (
             <>
-              {/* 删除选中：选中数 + 「删除选中」（[docs/21 §1.2]） */}
+              {/* 删除选中：选中数 + 「删除选中」 */}
               {onDeleteSelected === undefined ? null : (
                 <Stack
                   direction="row"
@@ -722,7 +722,7 @@ export function ModelsBody({
                   alignItems="center"
                   data-testid="models-delete-bar"
                   sx={{
-                    // [docs/28 §1.7] 长列表：批量操作**钉在顶上**，滚到第 100 行也点得到
+                    // 长列表：批量操作**钉在顶上**，滚到第 100 行也点得到
                     //（它在表格上方，所以钉顶而不是钉底 —— 用户原话允许"在上面或者下面"）。
                     position: "sticky",
                     top: 0,
@@ -765,7 +765,7 @@ export function ModelsBody({
                         </TableCell>
                       ) : null}
                       <TableCell>{t("models.col.expose")}</TableCell>
-                      {/* [docs/48 §5] **总开关**单开一列，与"对外暴露"分开：
+                      {/* **总开关**单开一列，与"对外暴露"分开：
                           一个是"列不列进 /v1/models"，一个是"能不能用"。混在一列里，
                           用户就分不清"我只是藏起来"和"我把它关了"。 */}
                       <TableCell>{t(i18nKey("models.col.enabled"))}</TableCell>
@@ -775,7 +775,7 @@ export function ModelsBody({
                           历史别名仍在配置里，只读信息面板里还看得到（数据不动，只是不再要人管）。 */}
                       <TableCell>{t("models.col.group")}</TableCell>
                       <TableCell>{t("models.col.upstream")}</TableCell>
-                      {/* 关系翻转后这一列是**模型侧的线路分配**（[docs/28 §2]），不再是"被谁引用" */}
+                      {/* 关系翻转后这一列是**模型侧的线路分配**，不再是"被谁引用" */}
                       <TableCell>{t(i18nKey("models.lines.title"))}</TableCell>
                       <TableCell>{t("models.col.priced")}</TableCell>
                       {/* 操作列表头留空（同服务商页）：不为一个表头去造 i18n 键 */}
@@ -807,7 +807,7 @@ export function ModelsBody({
                           label={row.expose ? t("models.expose.on") : t("models.expose.off")}
                         />
                       </TableCell>
-                      {/* 模型级总开关：关掉 = 网关不再列出它、调用它直接 404（[docs/48 §5]）。
+                      {/* 模型级总开关：关掉 = 网关不再列出它、调用它直接 404。
                           关掉**不删除**任何东西 —— 这正是这个开关存在的理由。 */}
                       <TableCell>
                         {onToggleModel === undefined ? (
@@ -830,7 +830,7 @@ export function ModelsBody({
                         )}
                       </TableCell>
                       <TableCell data-testid="models-id" sx={{ fontFamily: typography.fontMono }}>
-                        {/* [docs/26 §2] 模型 id 是最长的标识（`提供商/型号-日期`）。
+                        {/* 模型 id 是最长的标识（`提供商/型号-日期`）。
                             恢复路径：行内的「查看模型信息」面板给全文（不靠 tooltip 猜）。 */}
                         <AutoEllipsis testId="models-id-ellipsis" sx={{ maxWidth: 280 }}>
                           {row.id}
@@ -838,7 +838,7 @@ export function ModelsBody({
                       </TableCell>
                       <TableCell sx={{ color: "text.secondary" }}>{groupOrderText(row)}</TableCell>
                       <TableCell sx={{ fontFamily: typography.fontMono }}>
-                        {/* [docs/26 §2] 上游模型名（`upstream`）常常带前缀与日期。
+                        {/* 上游模型名（`upstream`）常常带前缀与日期。
                             恢复路径：行内的「查看模型信息」面板给全文。 */}
                         <AutoEllipsis testId="models-upstream-ellipsis" sx={{ maxWidth: 280 }}>
                           {upstreamCellText(row, t("models.upstream.same"))}
@@ -873,7 +873,7 @@ export function ModelsBody({
                       </TableCell>
                       <TableCell align="right">
                         <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
-                          {/* 定价（[docs/51]）：价格配置的唯一入口就在这里 —— 成本中心只做显示。
+                          {/* 定价：价格配置的唯一入口就在这里 —— 成本中心只做显示。
                               「改价」与「定价」是同一个入口：对话框打开时会回填当前价，
                               所以文案按"有没有价"分两种，用户一眼知道点下去是新建还是改。 */}
                           <Button
@@ -886,7 +886,7 @@ export function ModelsBody({
                               ? t(i18nKey("models.price.openEdit"))
                               : t(i18nKey("models.price.open"))}
                           </Button>
-                          {/* 只读信息面板（[docs/28 §3]）：点进去看这个模型到底用了哪几条线路 */}
+                          {/* 只读信息面板：点进去看这个模型到底用了哪几条线路 */}
                           <Button
                             size="small"
                             variant="text"
@@ -896,7 +896,7 @@ export function ModelsBody({
                             {t(i18nKey("models.info.open"))}
                           </Button>
                           {/*
-                            「编辑」（[docs/28 §1]）：给**已有**模型加/减线路。
+                            「编辑」：给**已有**模型加/减线路。
                             没有它，用户想用上一条新建的线路就只能删掉模型重建 —— 那会连带丢掉
                             别名/分组/顺序/expose。它与「查看」的区别就是**能改**，所以文案必须是
                             动词，不能也叫"查看模型信息"。
@@ -934,7 +934,7 @@ export function ModelsBody({
       </Paper>
 
       {/*
-        只读模型信息面板（[docs/28 §3]）：模型 id / 别名 / 对外暴露 / 它用的线路。
+        只读模型信息面板：模型 id / 别名 / 对外暴露 / 它用的线路。
         **一个可编辑控件都没有** —— 没有代理选择器（代理是线路的属性）、没有保存按钮：
         这个面板只回答"这个模型现在到底是怎么组成的"。收起来靠 Esc 或点面板外（对话框自带）。
       */}
@@ -973,7 +973,7 @@ export function ModelsBody({
                 />
               </InfoRow>
 
-              {/* [docs/46 §304] **对外暴露的信息**：客户端在 `/v1/models` 里看到的就是这一份
+              {/* **对外暴露的信息**：客户端在 `/v1/models` 里看到的就是这一份
                   （后端只有一个聚合口径，网关与这里用的是同一个函数）。
                   没声明的写「未声明」——**不编 0、不猜**。 */}
               <InfoRow label={t("models.info.public")} testId="models-info-public">
@@ -1045,7 +1045,7 @@ export default function ModelsPage() {
    * **为什么定价在模型页**（用户第 318 轮：*"成本中心页面只做显示，价格配置到模型页面去"*）：
    * 定价的对象就是**这一行的模型**，id 现成，所以对话框不必再问"给哪个模型定价"。
    * 旧的实现让用户从服务商/凭据下拉里挑 —— 挑出来的东西与"这个模型花了多少钱"无关，
-   * 这正是用户指出的那个错（[docs/51]）。
+   * 这正是用户指出的那个错。
    */
   const [priceRow, setPriceRow] = useState<ModelRowView | undefined>(undefined);
 
@@ -1053,12 +1053,12 @@ export default function ModelsPage() {
   const channels = useCommandQuery("channel_list", undefined, qk.channels);
   const providers = useCommandQuery("provider_list", undefined, qk.providers);
   // `lane_list` 只用来把线路的 `lane` 翻成**网络代理的名字**（查不到就回落 id）。
-  // 它是只读的，本页也不会拿它当"给模型选代理"的选项表（[docs/28 §1.2]）。
+  // 它是只读的，本页也不会拿它当"给模型选代理"的选项表。
   const lanes = useCommandQuery("lane_list", undefined, qk.lanes);
   const unpriced = useCommandQuery("pricing_unpriced_models", undefined, qk.unpricedModels);
 
   const upsert = useCommandMutation("model_upsert");
-  /** 线路启停（[docs/48 §5]）：与服务商页用的是**同一条**命令，不是新造一条。 */
+  /** 线路启停：与服务商页用的是**同一条**命令，不是新造一条。 */
   const setLineEnabled = useCommandMutation("channel_set_enabled");
   /** 正在提交开关的模型 / 线路 id（防重复点；空 = 没有在提交）。 */
   const [togglingModel, setTogglingModel] = useState<string | undefined>(undefined);
@@ -1090,7 +1090,7 @@ export default function ModelsPage() {
   /**
    * 正在**编辑**的那个模型 id（`undefined` = 新建）。
    *
-   * [docs/28 §1]「模型……是等待用户去分配的」：线路总是后加的，所以"给已有模型加/减线路"
+   *「模型……是等待用户去分配的」：线路总是后加的，所以"给已有模型加/减线路"
    * 必须有入口 —— 否则用户只能删掉模型重建，连带丢掉别名/分组/顺序/expose。
    * 编辑与新建**共用同一个对话框**（同一份校验、同一份载荷纪律），只有 id 只读。
    */
@@ -1116,7 +1116,7 @@ export default function ModelsPage() {
   );
 
   /**
-   * [docs/28 §1.6]（用户第 86 轮）**与「套餐与线路」同一套**：按服务商分组、可折叠、只留下
+   *（用户第 86 轮）**与「套餐与线路」同一套**：按服务商分组、可折叠、只留下
    * 已经打开的线路。
    *
    * 为什么"已选中的"也要留下：用户可能正是要**改一个已经用着关闭线路的模型** ——
@@ -1150,7 +1150,7 @@ export default function ModelsPage() {
   };
 
   /**
-   * `channel_list` 读不到时**如实说出来**（[docs/28 §3]）：没有候选可选、提交会被本地预检挡住，
+   * `channel_list` 读不到时**如实说出来**：没有候选可选、提交会被本地预检挡住，
    * 用户必须知道这是"读不到"而不是"配置里一条线路都没有"——两者对用户是两件事。
    */
   const channelsBroken = channels.error !== null && channels.error !== undefined;
@@ -1163,7 +1163,7 @@ export default function ModelsPage() {
     void unpriced.refetch();
   };
 
-  // ---------------------------------------------------------------- 开关（[docs/48 §5]）
+  // ---------------------------------------------------------------- 开关
 
   /**
    * 模型级总开关。`model_upsert` 是**整条覆盖写**，所以要把 `row.raw` 原样带上、
@@ -1216,7 +1216,7 @@ export default function ModelsPage() {
     }
   };
 
-  // ---------------------------------------------------------------- 删除（[docs/21 §1]）
+  // ---------------------------------------------------------------- 删除
 
   const removeModel = useCommandMutation("model_delete");
 
@@ -1231,7 +1231,7 @@ export default function ModelsPage() {
   /** 批量进行中（`mutateAsync` 逐条之间 `isPending` 会回落，所以单独记一笔）。 */
   const [batchRunning, setBatchRunning] = useState(false);
 
-  /** 删除成功后要失效的查询（[docs/21 §1.1 第 4 条]）。 */
+  /** 删除成功后要失效的查询。 */
   const invalidateAfterDelete = async (): Promise<void> => {
     for (const key of [qk.models, qk.credentials, qk.providers, qk.channelMatrix]) {
       await qc.invalidateQueries({ queryKey: key });
@@ -1239,11 +1239,11 @@ export default function ModelsPage() {
   };
 
   /**
-   * 「会连带删除 / 影响」清单（[docs/27 §1.2]）：**删模型不会删线路**。
+   * 「会连带删除 / 影响」清单：**删模型不会删线路**。
    *
    * 线路是服务商那边定义的，模型只负责**用**它们 —— 所以这里如实写"线路不会被删"
    * （用户要能在点删除之前就知道这件事），并指路"要删线路去服务商界面"。
-   * 通道清单读失败时一个字都不写（[docs/21 §1.1 第 3 条]：算不出来不编）。
+   * 通道清单读失败时一个字都不写（：算不出来不编）。
    */
   const consequencesOf = (row: ModelRowView): string[] => {
     if (channels.error !== null && channels.error !== undefined) return [];
@@ -1429,7 +1429,7 @@ export default function ModelsPage() {
       />
 
       {/*
-        定价对话框（[docs/51]）：模型来自被点的那一行，**用户改不了它**。
+        定价对话框：模型来自被点的那一行，**用户改不了它**。
         挂在数据层（而不是 `ModelsBody`）的理由与删除/编辑一样：它要自己的查询
         （`pricing_list`，用来回填当前价 + 定位删除下标）与两条写命令。
       */}
@@ -1439,7 +1439,7 @@ export default function ModelsPage() {
         onClose={() => setPriceRow(undefined)}
       />
 
-      {/* 删除结果区（[docs/21 §3] 的 `models-delete-result`）：只写真的发生过的事 */}
+      {/* 删除结果区（`models-delete-result`）：只写真的发生过的事 */}
       {deleteResult.length === 0 ? null : (
         <Box sx={{ px: 8, pb: 8 }}>
           <Paper variant="outlined" sx={SECTION_SX}>
@@ -1455,8 +1455,8 @@ export default function ModelsPage() {
       )}
 
       {/*
-        删除确认（[docs/21 §1 / §2]）：**先确认再发命令**；被引用时后端原文原样显示。
-        [docs/27 §1.2]：**这里没有级联按钮** —— 删模型永远不会删线路（线路归服务商），
+        删除确认：**先确认再发命令**；被引用时后端原文原样显示。
+：**这里没有级联按钮** —— 删模型永远不会删线路（线路归服务商），
         所以"确认级联"只会再一次失败，那是个假按钮。真被线路引用时后端会给出原文与指路。
       */}
       <ConfirmDelete
@@ -1476,7 +1476,7 @@ export default function ModelsPage() {
       />
 
       {/*
-        线路启停的确认框（[docs/48 §5]）。
+        线路启停的确认框。
         为什么它必须存在：线路是**共用**的，关掉它不只影响当前这个模型 ——
         别的模型也会一起少一条。用户点的是"这个模型上的一个开关"，
         所以我们有义务在改之前告诉他"还有谁在用"。共用者名单来自**已加载的模型清单**
@@ -1605,8 +1605,8 @@ export default function ModelsPage() {
             </Typography>
 
             {/*
-              **线路分配**（[docs/28 §2–§3]）：模型由线路构成，至少一条。
-              这是**选线路**的控件，不是选网络代理 —— 代理是线路自己的属性（[docs/28 §1.2]），
+              **线路分配**：模型由线路构成，至少一条。
+              这是**选线路**的控件，不是选网络代理 —— 代理是线路自己的属性，
               这一页没有、也不加"给模型挑代理"的入口。
             */}
             <FormControl component="fieldset" fullWidth data-testid="models-add-lines">
@@ -1630,7 +1630,7 @@ export default function ModelsPage() {
                 </Typography>
               ) : (
                 /**
-                 * [docs/28 §1.6]（用户第 86 轮）：**与「套餐与线路」同一套逻辑** ——
+                 *（用户第 86 轮）：**与「套餐与线路」同一套逻辑** ——
                  * 按服务商分组、可展开收起、**只列已经打开（`enabled`）的线路**。
                  *
                  * 两个边界不能踩：

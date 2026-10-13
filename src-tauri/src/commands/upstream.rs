@@ -1,4 +1,4 @@
-//! 上游探测类命令（[docs/19 §1.1–§1.3]）：`provider_test` / `model_import_from_provider` /
+//! 上游探测类命令：`provider_test` / `model_import_from_provider` /
 //! `model_apply_import`。
 //!
 //! # 为什么单独一个模块（而不是塞进 `entity.rs`）
@@ -17,7 +17,7 @@
 //! 拿不到 dialer（网关还没装配）时**如实报错**（`TA-3002`）：一个"看起来成功了"的
 //! 探测比一个明确的失败坏得多。
 //!
-//! # 语义分档（[docs/19 §1.1]，由 `probe.rs` 给出）
+//! # 语义分档（由 `probe.rs` 给出）
 //!
 //! `ok=false` **不等于**"服务商坏了"：
 //! * `probe="models"` + `status=404/405/403` = "上游没有 `/models` 端点"（很多中转只有
@@ -44,7 +44,7 @@ use tauri::State;
 use ta_core::domain::capabilities::channel_capability_mismatches;
 use ta_core::domain::{AuthScheme, ChannelConfig, ConfigDoc, Provider};
 use ta_core::error::TaError;
-// [docs/46 §303] 补齐上游声明的能力前先校验（`validate` 由这个 trait 提供）
+// 补齐上游声明的能力前先校验（`validate` 由这个 trait 提供）
 use ta_core::config::ConfigValidator;
 use ta_core::types::{CredentialId, LaneId, ProviderId};
 use ta_gateway::passthrough;
@@ -63,7 +63,7 @@ use crate::state::AppState;
 
 // ================================================================ DTO（线上契约）
 
-/// `ProbeResult`（`bindings.ts` / [docs/19 §1.1]）。
+/// `ProbeResult`（`bindings.ts` /）。
 ///
 /// **为什么这里有一个本地结构体**：`ta_gateway::probe::ProbeResult` 是**网关内部**类型
 /// （`ta-gateway` 不依赖 specta，也不可能为它 derive `specta::Type` —— 那是 E5 的地盘），
@@ -127,7 +127,7 @@ impl From<PreviewSkip> for ImportSkippedRow {
     }
 }
 
-/// `ImportPreview`（`bindings.ts` / [docs/19 §1.2]）。
+/// `ImportPreview`（`bindings.ts` /）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct ImportPreview {
     /// 取回这次扫描结果的句柄（**进程内存**，5 分钟 TTL，不落库）
@@ -136,7 +136,7 @@ pub struct ImportPreview {
     pub skipped: Vec<ImportSkippedRow>,
 }
 
-/// `ModelCatalogEntry`（`bindings.ts` / [docs/25]）：模型目录里的一行。
+/// `ModelCatalogEntry`（`bindings.ts` /）：模型目录里的一行。
 ///
 /// 目录是**观察记录**（"这家扫描到过哪些模型"，落 SQLite），`added` 才是用户意图
 /// （配置里真有 `Model` + 通道）。两者混成一个字段就会让"扫描"等于"接入"，
@@ -156,7 +156,7 @@ pub struct ModelCatalogEntry {
     /// 我们不认识的字段（`owned_by` / `created` / `permission` / 中转自造字段……）也都在，
     /// 键序也没被重排（`serde_json` 开了 `preserve_order`）。
     /// 用户要看的就是"上游真的声明了什么"；给模型填能力字段时它是**唯一**可核对的来源
-    /// （[docs/28 §3]：上游没给的字段一个都不编）。
+    /// （：上游没给的字段一个都不编）。
     ///
     /// 上游那一条不是对象、或那次没记到 → `{}`（**绝不是**我们编出来的对象）。
     ///
@@ -268,7 +268,7 @@ pub async fn test_provider(
     Ok(ProbeResult::from_probe(outcome))
 }
 
-/// `provider_test({ id, model? }) -> ProbeResult`（[docs/19 §1.1]）。
+/// `provider_test({ id, model? }) -> ProbeResult`。
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn provider_test(
@@ -284,7 +284,7 @@ pub async fn provider_test(
 
 /// 一条上游模型名 → 建议的逻辑模型 id。
 ///
-/// 规则**就这么四条**（[docs/19 §1.2] 要求"简单规则 + 写在注释里"，不做智能改名）：
+/// 规则**就这么四条**（要求"简单规则 + 写在注释里"，不做智能改名）：
 ///
 /// 1. 取最后一段路径：`openai/gpt-4o` → `gpt-4o`（中转爱把厂商前缀写进名字里，
 ///    而 `channel.model` 是我们对外暴露的逻辑名，带厂商前缀没有意义）；
@@ -364,7 +364,7 @@ fn model_exists(doc: &ConfigDoc, suggested_id: &str) -> bool {
 /// 一次扫描解析出来的一行：**预览行**（给向导）+ **上游原文**（给目录）。
 ///
 /// 为什么不把 `raw` 塞进 [`PreviewModel`]：预览是**进程内存、5 分钟就没了**的东西
-/// （它服务"这次就勾着加"），而原文要**落 SQLite**（[docs/25 §2.1]：扫过就记得住）。
+/// （它服务"这次就勾着加"），而原文要**落 SQLite**（：扫过就记得住）。
 /// 两件事生命周期不同，混成一个结构会让"预览过期"顺手把原文也丢掉。
 struct ScannedModel {
     /// 派生结果（上游名 + 建议逻辑名 + 此刻是否已存在）
@@ -380,7 +380,7 @@ struct ScannedModel {
 ///
 /// 用的是 [`UpstreamProbe::list_upstream_models_with_raw`]：与只取名字那条**同一条腿、
 /// 同一套错误口径**（后者现在是它的薄包装），多的只是把每条的上游原文一起带回来 ——
-/// 目录要记的正是"上游给了什么"（[docs/28 §3]），不是我们派生出来的名字。
+/// 目录要记的正是"上游给了什么"，不是我们派生出来的名字。
 pub async fn import_models_from_provider(
     state: &AppState,
     secrets: &dyn SecretResolver,
@@ -443,7 +443,7 @@ pub async fn import_models_from_provider(
         skipped.len()
     );
 
-    // [docs/25] 扫描 = **全量记录**（不是接入）：把这次的清单写进模型目录。
+    // 扫描 = **全量记录**（不是接入）：把这次的清单写进模型目录。
     //
     // 顺序刻意放在"返回预览之前"：目录落不下来就不算扫描成功 —— 那就如实报错，
     // 而不是回一个"扫到了"的预览、用户关掉向导后什么都没有（那正是本轮要修的缺陷）。
@@ -464,7 +464,7 @@ pub async fn import_models_from_provider(
     })
 }
 
-/// `model_import_from_provider({ provider_id, prefix_filter? }) -> ImportPreview`（[docs/19 §1.2]）。
+/// `model_import_from_provider({ provider_id, prefix_filter? }) -> ImportPreview`。
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn model_import_from_provider(
@@ -476,9 +476,9 @@ pub async fn model_import_from_provider(
     import_models_from_provider(&state, &secrets, &provider_id, prefix_filter.as_deref()).await
 }
 
-// ================================================================ 模型目录（[docs/25]）
+// ================================================================ 模型目录
 
-/// 扫描结果 → 目录（[docs/25 §2.1]）：逐条 upsert，然后**以本次为准**清掉本次没返回的。
+/// 扫描结果 → 目录：逐条 upsert，然后**以本次为准**清掉本次没返回的。
 ///
 /// 唯一不删的例外：**还接着通道**的那些行（`keep`）—— 用户明确接过它们，
 /// 删掉会让界面出现"有一条通道、但模型区看不到这个模型"的鬼状态。
@@ -487,8 +487,8 @@ pub async fn model_import_from_provider(
 /// **没有"手动添加"**（用户要求）：目录里的每一行都必须来自一次真实扫描 ——
 /// 手填一行会让"目录 = 上游真实提供了什么"这条不变量失效，而自动化全建在它上面。
 ///
-/// 每行连同**上游原文对象**一起落库（[docs/28 §3]）：`raw` 就是 `data[i]` 本身，
-/// 我们不挑字段、不补字段。派生不出的（`skipped`）**不进目录**（[docs/25 §2.1]）：
+/// 每行连同**上游原文对象**一起落库：`raw` 就是 `data[i]` 本身，
+/// 我们不挑字段、不补字段。派生不出的（`skipped`）**不进目录**：
 /// 它连"接入"都做不到，记下来只会变成一行点不动的东西。
 async fn persist_model_catalog(
     state: &AppState,
@@ -517,7 +517,7 @@ async fn persist_model_catalog(
             .await?;
     }
 
-    // ②.5 [docs/46 §303] **上游声明过的能力 → 补进还没声明的线路**。
+    // ②.5 **上游声明过的能力 → 补进还没声明的线路**。
     //
     //     链路：上游 `/models` →（上面刚存的）原文 → **这一步** → 线路能力 → 网关 `/v1/models`
     //     → 客户端（DeepSeek Harness 的「获取可用模型」那一栏）。少了这一步，客户端永远是空的
@@ -567,14 +567,14 @@ async fn persist_model_catalog(
     if !dropped.is_empty() {
         tracing::debug!(
             provider_id = %provider_id,
-            "本次没返回 {} 个已记录的模型，已从目录里清掉（[docs/25 §2.1]：以本次为准）",
+            "本次没返回 {} 个已记录的模型，已从目录里清掉（：以本次为准）",
             dropped.len()
         );
     }
     Ok(())
 }
 
-/// 目录行 → 线上契约行：`added` 那几项**按当前配置现算**（[docs/25 §3]）。
+/// 目录行 → 线上契约行：`added` 那几项**按当前配置现算**。
 ///
 /// 为什么不存进目录：目录是"上游提供过什么"的**观察**，`added` 是"用户接没接"的
 /// **意图**。存进目录就是第二份真相源，配置一改（用户在通道页删了那条通道）两边立刻漂移。
@@ -616,7 +616,7 @@ pub async fn model_catalog_entries(
     Ok(rows.iter().map(|r| catalog_entry(&doc, r)).collect())
 }
 
-/// `provider_model_catalog({ provider_id }) -> ModelCatalogEntry[]`（[docs/25 §3]）。
+/// `provider_model_catalog({ provider_id }) -> ModelCatalogEntry[]`。
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn provider_model_catalog(
@@ -626,7 +626,7 @@ pub async fn provider_model_catalog(
     model_catalog_entries(&state, &provider_id).await
 }
 
-/// 实现体（测试直接调它）：把目录里的一条**接到**这家服务商上（[docs/25 §2.2]）。
+/// 实现体（测试直接调它）：把目录里的一条**接到**这家服务商上。
 ///
 /// 三件事：建 `Model`（缺才建）→ 建一条**启用中**的通道 → 落库。
 /// 逻辑名**只从目录行取**（入参只有上游名）：界面没有机会传一个与目录不一致的名字。
@@ -658,7 +658,7 @@ pub async fn attach_catalog_model(
         return Err(no_credential(&pid));
     };
 
-    // [docs/28 §2] **只建线路，不建模型** —— 用户原话："创建完服务商和线路之后，
+    // **只建线路，不建模型** —— 用户原话："创建完服务商和线路之后，
     // 模型是不自动创建的，是等待用户去分配的"。模型由用户在模型页把线路分配给某些模型时创建，
     // 所以这里**绝不** `doc.models.push(...)`：那样会凭空造出一个"用户没要过、也没有线路"
     // 的模型（它还会因为 0 条线路而无法路由）。
@@ -667,7 +667,7 @@ pub async fn attach_catalog_model(
     // "服务商 × 凭据 × 上游模型"，逻辑名只是扫描给出的**建议**。
     let channel = ChannelConfig::new(
         channel_id_for(pid.as_str(), credential.as_str(), &row.upstream_model),
-        // 遗留字段留空：关系在 `Model.lines` 上（[docs/28 §2]）
+        // 遗留字段留空：关系在 `Model.lines` 上
         "",
         pid.clone(),
         credential,
@@ -676,8 +676,8 @@ pub async fn attach_catalog_model(
     let channel_id = channel.id.clone();
     doc.channels.push(channel);
 
-    // 与通道页**手动建通道**同一条能力规则（[docs/17 §2]）：绝不静默造一对能力声明矛盾的线路。
-    // （`model_apply_import` 那条批量路径的宽松行为是既有事实，[docs/25 §5] 已登记差异。）
+    // 与通道页**手动建通道**同一条能力规则：绝不静默造一对能力声明矛盾的线路。
+    // （`model_apply_import` 那条批量路径的宽松行为是既有事实， 已登记差异。）
     if let Some(detail) =
         channel_capability_mismatches(&doc, channel_id.as_str()).into_iter().next()
     {
@@ -693,7 +693,7 @@ pub async fn attach_catalog_model(
     Ok(applied_with_channels(1))
 }
 
-/// `provider_model_attach({ provider_id, upstream_model }) -> ApplyResult`（[docs/25 §3]）。
+/// `provider_model_attach({ provider_id, upstream_model }) -> ApplyResult`。
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn provider_model_attach(
@@ -725,7 +725,7 @@ pub struct LinesCreateAllResult {
 /// 幂等：已经有线路的条目**一个字节都不动**（不覆盖用户改过的 lane / enabled / 优先级），
 /// 只补缺的；一条都没补时**不写库**（写一份一模一样的配置只会多一个快照）。
 ///
-/// 仍然**不建模型**（[docs/28 §1] 硬规则 1）：模型由用户在模型页把线路分配给它时才出现。
+/// 仍然**不建模型**（硬规则 1）：模型由用户在模型页把线路分配给它时才出现。
 pub async fn create_all_provider_lines(
     state: &AppState,
     provider_id: &str,
@@ -756,13 +756,13 @@ pub async fn create_all_provider_lines(
         };
         let mut channel = ChannelConfig::new(
             channel_id_for(pid.as_str(), credential.as_str(), &row.upstream_model),
-            // 遗留字段留空：关系在 `Model.lines` 上（[docs/28 §2]）
+            // 遗留字段留空：关系在 `Model.lines` 上
             "",
             pid.clone(),
             credential,
             row.upstream_model.clone(),
         );
-        // [docs/55] 线路**不再逐条写在通道上**（那个字段已删除）：走哪个节点由
+        // 线路**不再逐条写在通道上**（那个字段已删除）：走哪个节点由
         // **服务商**决定。入参给的默认代理在下面统一写到 provider 上。
         // ★ **默认关闭**：新建出来的线路都不参与路由，等用户用滑块逐条（或全选）打开。
         channel.enabled = false;
@@ -770,7 +770,7 @@ pub async fn create_all_provider_lines(
         created += 1;
     }
 
-    // [docs/55] 入参给的默认代理写在**服务商**上（通道级 lane 已删除）
+    // 入参给的默认代理写在**服务商**上（通道级 lane 已删除）
     apply_default_lane_to_provider(&mut doc, &pid, lane.as_ref());
 
     if created == 0 {
@@ -779,7 +779,7 @@ pub async fn create_all_provider_lines(
     }
 
     save_validated(state, doc, "provider_lines_create_all").await?;
-    // 字段名只能用 [docs/14 §5] 白名单里的（`status` = 本次真新建几条，`attempt` = 目录里共几条）
+    // 字段名只能用 白名单里的（`status` = 本次真新建几条，`attempt` = 目录里共几条）
     tracing::info!(
         provider_id = %pid,
         status = created,
@@ -789,7 +789,7 @@ pub async fn create_all_provider_lines(
     Ok(LinesCreateAllResult { created, total })
 }
 
-/// `provider_lines_create_all({ provider_id, lane? }) -> LinesCreateAllResult`（[docs/28 §1.4]）。
+/// `provider_lines_create_all({ provider_id, lane? }) -> LinesCreateAllResult`。
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn provider_lines_create_all(
@@ -822,7 +822,7 @@ pub(crate) fn id_slug(raw: &str) -> String {
     buf.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-")
 }
 
-/// 派生通道 id：`ch-<provider>-<credential>-<model>`（[docs/20 §1.1]）。
+/// 派生通道 id：`ch-<provider>-<credential>-<model>`。
 ///
 /// **必须与前端 `channelIdFor` 逐字一致**：这个 id 是"同一条线"的稳定指纹，
 /// 两边派生法一旦分叉，界面按 A 判定"还没有这条线"、后端按 B 建出另一条，
@@ -837,7 +837,7 @@ fn channel_id_for(provider: &str, credential: &str, model: &str) -> String {
     out
 }
 
-/// 这次导入该把新通道挂到哪份凭据上（[docs/20 §1.1] 的选择顺序）：
+/// 这次导入该把新通道挂到哪份凭据上（选择顺序）：
 /// `<provider>-default`（向导第 1 步建的那一份）→ 该服务商**第一条启用中**的凭据。
 ///
 /// 两步都要求 `enabled`：把通道接到一份停用的凭据上，等于建了一条永远不会有流量的线
@@ -861,7 +861,7 @@ fn no_credential(provider: &ProviderId) -> IpcError {
 
 /// 实现体（测试直接调它）。
 ///
-/// 一次导入做**两件事**（[docs/20 §1.1]）：把模型写进 `doc.models`（没有才建），
+/// 一次导入做**两件事**：把模型写进 `doc.models`（没有才建），
 /// 并把它**接到**这个服务商上（建 `ch-<provider>-<credential>-<model>` 这条通道）。
 /// 只写模型不建通道，就是第 71 轮的真机缺陷：列表从 `channel_matrix` 派生，
 /// 没有通道 → 上面永远空、模型永远显示"未配置"。
@@ -918,11 +918,11 @@ pub async fn apply_model_import(
             continue;
         }
 
-        // [docs/28 §2] **只建线路，不建模型**（用户原话："模型是不自动创建的，是等待用户去分配的"）。
+        // **只建线路，不建模型**（用户原话："模型是不自动创建的，是等待用户去分配的"）。
         // 所以这里不再找/建 `Model`、也不写 `Model.default_lane`：模型由用户在模型页
         // 把这些线路分配给它时创建。勾一个候选 = 建一条线路。
         //
-        // 判重按 `(provider, credential, 上游模型名)` 这个三元组（[docs/20 §1.1] 的原意：
+        // 判重按 `(provider, credential, 上游模型名)` 这个三元组（原意：
         // 三条里任何一条不同就是**另一条线**）—— 线路的身份现在就是这一组，不再含逻辑名。
         let credential = chosen_credential.clone().or_else(|| pick_credential(&doc, &provider_id));
 
@@ -950,13 +950,13 @@ pub async fn apply_model_import(
             // 线路 id 用**上游模型名**派生（与前端 `channelIdFor` 同口径）：线路的身份是
             // "服务商 × 凭据 × 上游模型"，扫描给出的逻辑名只是**建议**。
             channel_id_for(provider_id.as_str(), credential.as_str(), &row.upstream_model),
-            // 遗留字段留空：关系在 `Model.lines` 上（[docs/28 §2]）
+            // 遗留字段留空：关系在 `Model.lines` 上
             "",
             provider_id.clone(),
             credential,
             row.upstream_model.clone(),
         );
-        // [docs/55] 线路**不再逐条写在通道上**（那个字段已删除）：走哪个节点由
+        // 线路**不再逐条写在通道上**（那个字段已删除）：走哪个节点由
         // **服务商**决定。入参给的默认代理在下面统一写到 provider 上。
         channel.enabled = false;
         doc.channels.push(channel);
@@ -969,7 +969,7 @@ pub async fn apply_model_import(
         return Ok(applied_with_channels(0));
     }
 
-    // [docs/55] 入参给的默认代理写在**服务商**上（通道级 lane 已删除）
+    // 入参给的默认代理写在**服务商**上（通道级 lane 已删除）
     apply_default_lane_to_provider(&mut doc, &provider_id, lane.as_ref());
 
     save_validated(state, doc, "model_apply_import").await?;
@@ -981,7 +981,7 @@ pub async fn apply_model_import(
     Ok(applied_with_channels(channels_created))
 }
 
-/// [docs/55] 把"新建线路时选的默认网络代理"写到**服务商**上。
+/// 把"新建线路时选的默认网络代理"写到**服务商**上。
 ///
 /// 通道级的 `lane` 字段已删除（用户裁决："线路级别的分配逻辑我们已经放弃了，
 /// 取而代之的，**每个服务商统一一个节点**"），所以这两个导入命令的 `lane` 入参
@@ -1000,7 +1000,7 @@ fn apply_default_lane_to_provider(
     }
 }
 
-/// `model_apply_import({ preview_token, selected, lane? }) -> ApplyResult`（[docs/20 §2.3]）。
+/// `model_apply_import({ preview_token, selected, lane? }) -> ApplyResult`。
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn model_apply_import(
@@ -1226,7 +1226,7 @@ mod tests {
         assert!(head.starts_with("GET /models"), "{head}");
     }
 
-    /// **上游 404 那一档**（[docs/19 §1.1] 的核心裁决）：这是"没有 `/models` 端点"，
+    /// **上游 404 那一档**（核心裁决）：这是"没有 `/models` 端点"，
     /// **不是**"连不通" —— `probe` 必须是 `models`、note 必须说清这一档。
     #[tokio::test]
     async fn provider_test_404_is_a_missing_models_endpoint_not_a_connection_failure() {
@@ -1449,7 +1449,7 @@ mod tests {
         .expect("应用导入应当成功");
 
         assert!(result.applied);
-        // [docs/28 §2] 勾选 = 建**线路**：`Model` 一条都不许建（模型由用户在模型页分配）。
+        // 勾选 = 建**线路**：`Model` 一条都不许建（模型由用户在模型页分配）。
         // 夹具里那份 `gpt-4o` 模型是**配置里本来就有的**，不算这次建的 —— 所以断言的是
         // "没有**新增**模型"（数量与夹具一致）。
         assert_eq!(state.doc().models.len(), 1, "创建线路不许顺带建模型");
@@ -1501,7 +1501,7 @@ mod tests {
             .await
             .expect("第二次导入（同一个 token）");
 
-        // [docs/28 §2] 建的是线路（上游模型名就是线路的身份），不是模型
+        // 建的是线路（上游模型名就是线路的身份），不是模型
         let ups: Vec<String> =
             state.doc().channels.iter().map(|c| c.upstream_model.clone()).collect();
         assert_eq!(ups, vec!["a-model".to_string(), "b-model".to_string()]);
@@ -1586,7 +1586,7 @@ mod tests {
         assert!(state.doc().models.is_empty());
     }
 
-    /// 「添加模型」= 建模型 + **建线路**（[docs/20 §1.1]）：导入之后模型真的接在这个服务商上。
+    /// 「添加模型」= 建模型 + **建线路**：导入之后模型真的接在这个服务商上。
     ///
     /// 这是第 71 轮真机缺陷的回归测试：只往 `doc.models` 塞一行的话，第 2 步的
     /// "已添加的模型"（从 `channel_matrix` 派生）永远是空的，模型也永远显示"未配置"。
@@ -1621,7 +1621,7 @@ mod tests {
         assert_eq!(result.channels_created, 2, "两个模型各接了一条线");
 
         let doc = state.config.load().await.expect("load");
-        // [docs/28 §2] 线路 id 用**上游模型名**派生（线路的身份 = 服务商 × 凭据 × 上游模型）
+        // 线路 id 用**上游模型名**派生（线路的身份 = 服务商 × 凭据 × 上游模型）
         let wired = doc
             .channels
             .iter()
@@ -1640,7 +1640,7 @@ mod tests {
             wired.upstream_model, "gpt-4o-2024-08-06",
             "上游名要用扫描行的那一个（不是派生出来的逻辑 id）"
         );
-        // [docs/55] 入参给的默认代理写在**服务商**上（通道级 lane 字段已删除）
+        // 入参给的默认代理写在**服务商**上（通道级 lane 字段已删除）
         assert_eq!(
             doc.providers
                 .iter()
@@ -1656,7 +1656,7 @@ mod tests {
             doc.channels
         );
 
-        // [docs/28 §2] 模型侧**不写任何东西**：`default_lane` 那套"给模型选代理"的语义已经作废
+        // 模型侧**不写任何东西**：`default_lane` 那套"给模型选代理"的语义已经作废
         // （代理是线路自己的属性），所以这里断言"没有因为这次导入而多出模型"。
         assert!(
             doc.models.is_empty(),
@@ -1665,7 +1665,7 @@ mod tests {
         );
     }
 
-    /// **幂等**：同一次预览应用两次，第二次不重复建模型/通道，**且不写库**（[docs/20 §2.3]）。
+    /// **幂等**：同一次预览应用两次，第二次不重复建模型/通道，**且不写库**。
     #[tokio::test]
     async fn apply_import_twice_creates_nothing_and_writes_nothing() {
         let upstream = spawn_upstream(vec![Reply::json(200, models_body(&["m-1"]))]).await;
@@ -1724,7 +1724,7 @@ mod tests {
         assert!(back.channels.is_empty(), "报错就不许写库");
     }
 
-    /// 凭据选择顺序（[docs/20 §1.1]）：`<provider>-default` 优先；它停用时退到第一条启用中的。
+    /// 凭据选择顺序：`<provider>-default` 优先；它停用时退到第一条启用中的。
     #[tokio::test]
     async fn apply_import_picks_the_default_credential_first_then_the_first_enabled() {
         let upstream = spawn_upstream(vec![Reply::json(200, models_body(&["m-1"]))]).await;
@@ -1803,7 +1803,7 @@ mod tests {
     }
 
     /// 通道 id 的派生法**必须与前端 `channelIdFor`（`src/pages/channels/model.ts`）逐字一致**
-    /// （[docs/20 §1.1]）：两边一旦分叉，界面会说"还没有这条线"、后端却建出另一条。
+    /// ：两边一旦分叉，界面会说"还没有这条线"、后端却建出另一条。
     #[test]
     fn channel_id_derivation_matches_the_frontend() {
         let cases = [
@@ -1865,9 +1865,9 @@ mod tests {
             aliases: Vec::new(),
             display: ta_core::domain::DisplayConfig::default(),
             expose: true,
-            // [docs/48 §5]：模型级总开关。停用 = 不列出 + 拒绝请求。
+            //：模型级总开关。停用 = 不列出 + 拒绝请求。
             enabled: true,
-            // [docs/28 §2]：线路归属在模型这一侧（`lines`），关系由模型页"分配"时建立
+            //：线路归属在模型这一侧（`lines`），关系由模型页"分配"时建立
             lines: Vec::new(),
             extra: serde_json::Map::new(),
         };
@@ -1878,7 +1878,7 @@ mod tests {
         assert!(back.enabled);
     }
 
-    /// 日志里没有密钥：源码级断言（`docs/14 §11`：日志文件是要被分享出去的）。
+    /// 日志里没有密钥：源码级断言（：日志文件是要被分享出去的）。
     #[test]
     fn the_source_never_logs_a_secret() {
         let src = include_str!("upstream.rs");
@@ -1902,7 +1902,7 @@ mod tests {
         assert!(production.contains("UpstreamProbe::new("), "探测必须走网关的 UpstreamProbe");
     }
 
-    // ================================================================ 模型目录（[docs/25]）
+    // ================================================================ 模型目录
     //
     // 用户第 77 轮的原话是"一旦扫描，全部记录下来（当然不是添加）……直接把那个没勾的勾上就行了"。
     // 所以这一组测试钉住的正是那两件事：**扫描 ≠ 接入**，以及**扫过的东西留得住**。
@@ -1929,7 +1929,7 @@ mod tests {
         let rows = state.model_catalog.list("p1").await.expect("读目录");
         assert_eq!(rows.len(), 2, "两条候选都要落库（含没勾的那条）");
         assert_eq!(rows[0].upstream_model, "claude-3-5-sonnet");
-        // 日期后缀被剥掉（[docs/19 §1.2] 的派生规则），并且存的就是这个派生结果
+        // 日期后缀被剥掉（派生规则），并且存的就是这个派生结果
         assert_eq!(rows[1].upstream_model, "vendor/gpt-4o-2024-08-06");
         assert_eq!(rows[1].suggested_id, "gpt-4o");
         assert!(rows.iter().all(|r| r.seen_in_last_scan), "本次都见到了");
@@ -1950,7 +1950,7 @@ mod tests {
     /// 必须原字段、原键序地出现在 `provider_model_catalog` 的 `raw` 里，命令层**一个字段都不加、不改**。
     ///
     /// 这是"用户能看到上游真的声明了什么"与"给模型填能力时有可核对的来源"的唯一落点：
-    /// 只在内存里留一个 id，两件事都做不到，只能靠猜 —— 那就是编字段（[docs/28 §3]）。
+    /// 只在内存里留一个 id，两件事都做不到，只能靠猜 —— 那就是编字段。
     #[tokio::test]
     async fn scan_keeps_the_upstream_object_verbatim_and_returns_it_unchanged() {
         let upstream = spawn_upstream(vec![Reply::json(200, models_body_verbatim())]).await;
@@ -1990,12 +1990,12 @@ mod tests {
         // `id` 在派生列之外**还在原文里**（两个字段，不是同一个东西）
         assert_eq!(obj.get("id").and_then(|v| v.as_str()), Some("gpt-4o"));
 
-        // 扫描仍然**不是**接入（[docs/25 §2.1]）：配置里一条模型、一条通道都没有
+        // 扫描仍然**不是**接入：配置里一条模型、一条通道都没有
         assert!(state.doc().models.is_empty() && state.doc().channels.is_empty());
     }
 
     /// 上游清单里有一条**没有 `id`** → 整次扫描如实报错（形状不对 = `TA-2005`），
-    /// **不**给它编一个名字记进目录："记不到"与"编一个"是两件事（[docs/28 §3]）。
+    /// **不**给它编一个名字记进目录："记不到"与"编一个"是两件事。
     #[tokio::test]
     async fn scan_refuses_a_list_entry_without_an_id_instead_of_inventing_one() {
         let upstream = spawn_upstream(vec![Reply::json(
@@ -2089,7 +2089,7 @@ mod tests {
         assert_eq!(state.doc().channels.len(), 1);
     }
 
-    /// 勾一下 = **只建一条线路**（[docs/28 §2]：**不建模型**，模型由用户在模型页分配）；再勾一次幂等。
+    /// 勾一下 = **只建一条线路**（：**不建模型**，模型由用户在模型页分配）；再勾一次幂等。
     #[tokio::test]
     async fn attach_creates_only_a_line_then_is_idempotent() {
         let upstream =
@@ -2133,7 +2133,7 @@ mod tests {
         assert_eq!(state.doc().channels.len(), 1, "不许建第二条");
     }
 
-    /// [docs/28 §1.4]「添加服务商就把**所有**线路建出来」：目录里每条都建，**默认关闭**，
+    ///「添加服务商就把**所有**线路建出来」：目录里每条都建，**默认关闭**，
     /// 幂等且**绝不覆盖**用户已经调过的那条线路。
     #[tokio::test]
     async fn create_all_provider_lines_builds_everything_disabled_and_is_idempotent() {

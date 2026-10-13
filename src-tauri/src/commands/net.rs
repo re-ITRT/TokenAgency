@@ -1,6 +1,6 @@
 //! `subscription_*` / `lane_*` / `kernel_*`：网络面（订阅 / 线路 / 内核）的读写命令。
 //!
-//! 契约：`docs/10-interface-spec.md` 2.2 的 `subscription / lane / kernel` 三张表。
+//! 契约： 2.2 的 `subscription / lane / kernel` 三张表。
 //! 这一批命令**此前只在契约里有名字**，没有任何实现 —— 于是"加 Clash 订阅""切/钉线路"
 //! "控内核"三件事在界面上做不完，用户只能手写配置文件。本文件把它们接到真实 service 层：
 //!
@@ -70,7 +70,7 @@ use ta_core::domain::{
     ConfigDoc, KernelProvider, Lane, LaneKind, Subscription, SubscriptionFormat,
 };
 use ta_core::error::TaError;
-// [docs/55] `RoutingIndex` / `ChannelId` / `ModelId` 三个导入随
+// `RoutingIndex` / `ChannelId` / `ModelId` 三个导入随
 // `lane_assignments` / `lane_reverse_lookup` / `lane_pick_options` 一起删除 ——
 // 它们只被那三条命令的实现用到。
 use ta_core::types::{LaneId, ProviderId, SubscriptionId};
@@ -109,13 +109,13 @@ const LANE_TEST_MAX_NODES: usize = 32;
 /// `subscription_preview` 里最多回几个节点样本（契约的 `sample`）。
 const PREVIEW_SAMPLE: usize = 10;
 
-/// 下拉里"直连"那一组的标题（`docs/04` 8.3：每个线路下拉的第一项就是直连）。
+/// 下拉里"直连"那一组的标题（8.3：每个线路下拉的第一项就是直连）。
 pub const DIRECT_GROUP_LABEL: &str = "直连（本机网络）";
 
 /// 其它线路（没有订阅、也不是直连）的分组标题。
 const OTHER_GROUP_LABEL: &str = "其它线路";
 
-/// 五级继承链的兜底（`docs/04` 8.1 的 `... ?? direct`）在**配置里没有 direct lane** 时
+/// 五级继承链的兜底（8.1 的 `... ?? direct`）在**配置里没有 direct lane** 时
 /// 用的名字。它不是配置里的 lane id，是"直连"这个语义的名字。
 const IMPLICIT_DIRECT_LANE: &str = "direct";
 
@@ -128,7 +128,7 @@ pub struct RefreshResult {
     pub group_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// 本次刷新拿到的流量与更新时间（`docs/18 §1.2`）。**没给头就是 `None`**。
+    /// 本次刷新拿到的流量与更新时间。**没给头就是 `None`**。
     ///
     /// ★ 只在刷新**一份**订阅时才有值：多份订阅的字节数**不能相加**（那是假数据），
     /// 那种情况下它是 `None`，逐份的数字走只读命令 `subscription_traffic` 读"上次已知"。
@@ -185,7 +185,7 @@ pub struct LaneTestResult {
     pub ok: bool,
 }
 
-// [docs/55]（第 322 轮）这里曾有 `LaneSource` / `LaneAssignment` / `LaneReverseLookup` /
+//（第 322 轮）这里曾有 `LaneSource` / `LaneAssignment` / `LaneReverseLookup` /
 // `LanePickOption(Item)` 五个类型，以及 `lane_assignments` / `lane_reverse_lookup` /
 // `lane_pick_options` 三条命令。
 //
@@ -309,7 +309,7 @@ pub(crate) async fn commit_config(state: &AppState, doc: ConfigDoc, label: &str)
     save_validated(state, doc.clone(), label).await?;
     if let (Some(source), Some(ports)) = (source, ports) {
         source.set_doc(doc);
-        // [docs/59] 同一份端口表也要推给**网关拨号器**（它按 lane 查端口）。
+        // 同一份端口表也要推给**网关拨号器**（它按 lane 查端口）。
         source.set_ports(ports.clone());
         if let Some(hot) = state.lane_ports() {
             hot.replace(ports);
@@ -410,13 +410,13 @@ fn find_subscription(doc: &ConfigDoc, id: &SubscriptionId) -> IpcResult<Subscrip
         .ok_or_else(|| not_found("订阅", id.as_str()))
 }
 
-// ================================================================ 订阅流量（docs/18 §1）
+// ================================================================ 订阅流量
 
 /// 流量快照的读写口（`subscription` 表的 5 个可空列）。
 ///
 /// 每次从 `AppState::db` 现构造：`SqlitePool` 的 clone 是 Arc 级的，代价可忽略；
 /// 也因此不必往 `AppState` 里加字段（那个文件不在本次改动面上）。
-/// 找出**用着「自动」出口、且挂在给定订阅上**的服务商（[docs/29 §2.2]）。
+/// 找出**用着「自动」出口、且挂在给定订阅上**的服务商。
 ///
 /// 判据两条，缺一不可：
 /// * 服务商自己的 `lane` 指向的那条线路是 `subscription_auto`（界面上叫「自动」）；
@@ -442,7 +442,7 @@ pub fn auto_providers_on(
         })
         .collect()
 }
-/// **订阅刷新成功后**重算所有「自动」出口（C 期触发点①，[docs/29 §2.2]）。
+/// **订阅刷新成功后**重算所有「自动」出口（C 期触发点①）。
 ///
 /// `manual = false`：**粘性优先** —— 上次选的那条地址还在就沿用（订阅换了节点也一样，
 /// 只要地址没变）；只有"上次那条不见了/测不通"才会重挑。返回值 = 真的重算了几家。
@@ -466,7 +466,7 @@ pub async fn reapply_auto_after_refresh(state: &AppState, subscription_id: &str)
 /// "上次那条到底量到了没有"（误判一次就换一次出口 IP，正是用户要避免的）。
 const AUTO_PROBE_WAIT_MS: u64 = 15_000;
 
-/// 「自动」出口探测的**两个坐标**（[docs/29 §2.2]、[docs/46 §297]）。
+/// 「自动」出口探测的**两个坐标**（）。
 ///
 /// * `provider_key`：去哪家 provider 取延迟表 —— **必须是内核 `proxy-providers` 上的 key**
 ///   （`config_gen::provider_key`，不是订阅 id）；
@@ -499,7 +499,7 @@ pub fn auto_probe_target(
     Ok((key, probe))
 }
 
-/// 「自动」出口这一轮的结果（[docs/29 §2.2]）。**不是 DTO**：先只在内部用，
+/// 「自动」出口这一轮的结果。**不是 DTO**：先只在内部用，
 /// 等 D 期把它接到界面时再决定要不要给前端看（那时再加 specta 与 bindings）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoApplyOutcome {
@@ -518,7 +518,7 @@ pub struct AutoApplyOutcome {
     pub measured: usize,
     /// 这一轮用的**探测目标**（服务商 `base_url`；服务商没配时是兜底那条）。
     ///
-    /// 它是"延迟到底按谁测的"的**唯一书面证据**（[docs/46 §297]）—— 真机验证就认它。
+    /// 它是"延迟到底按谁测的"的**唯一书面证据**—— 真机验证就认它。
     pub probe: Option<String>,
     /// **被选中那条在它自己那张表里的延迟**（毫秒；`None` = 没选中任何一条）。
     pub picked_ms: Option<u32>,
@@ -530,7 +530,7 @@ pub struct AutoApplyOutcome {
     pub best_ms: Option<u32>,
 }
 
-/// [docs/29 §2.2] **「自动」出口的编排**：探测 → 裁决 → 写内核 → 记住。
+/// **「自动」出口的编排**：探测 → 裁决 → 写内核 → 记住。
 ///
 /// 参数是**已经解析好的**三件事（服务商 id / 自动线路 id / 它挂在哪个订阅）——
 /// 配置查找留给调用方，这样这个函数只做"出口决策"这一件事，也好测、好读。
@@ -538,7 +538,7 @@ pub struct AutoApplyOutcome {
 /// 顺序与纪律：
 ///
 /// 1. 节点只来自**已采纳的订阅版本**（`latest_outcome`，坏更新会被拦下并保留上一版）；
-/// 2. 延迟**只走 provider 命名空间**（[docs/46 §297] 实测）：先
+/// 2. 延迟**只走 provider 命名空间**（实测）：先
 ///    `GET /providers/proxies/{key}/healthcheck?url=<这家服务商的 base_url>` 触发整份订阅体检，
 ///    再读 `/providers/proxies/{key}` 里每个节点的 `history[].delay`。
 ///    **不能**用 `/proxies/{node}/delay` —— provider 的节点不在 `/proxies` 顶层，
@@ -590,11 +590,11 @@ pub async fn apply_auto_export(
     Ok(out)
 }
 
-/// **探测之后**的那一半：裁决 → 写内核 → 记住地址（[docs/29 §2.2]）。
+/// **探测之后**的那一半：裁决 → 写内核 → 记住地址。
 ///
 /// 入参直接收**候选**（`AutoCandidate` 自带 `latency`）：探测结果就是候选本身。
-/// 于是"判断 + 两个副作用"能**脱离内核被完整回放**（[docs/33] 的 B 方案）——
-/// 这是 E 期在本环境唯一能拿到的编排证据（真机端到端见 [docs/35] 的人工清单）。
+/// 于是"判断 + 两个副作用"能**脱离内核被完整回放**（B 方案）——
+/// 这是 E 期在本环境唯一能拿到的编排证据（真机端到端见 的人工清单）。
 ///
 /// 与 [`apply_auto_export`] 的一处**有意差异**：这里不预先要求内核在场 ——
 /// 因为"什么都不写"的结论（`all_unreachable` / `no_candidates`）本来就不需要内核。
@@ -647,7 +647,7 @@ pub async fn apply_auto_export_choice(
     })
 }
 
-/// [docs/29 §2.3] **自动刷新一条到期订阅**：走**和手动刷新完全同一条**链路
+/// **自动刷新一条到期订阅**：走**和手动刷新完全同一条**链路
 /// （`refresh_subscriptions` → 下载 → 校验 → 采纳 → 版本 → 流量），
 /// 唯一的区别是 `force = false`：
 ///
@@ -659,7 +659,7 @@ pub async fn apply_auto_export_choice(
 pub async fn auto_refresh_subscription(state: &AppState, id: &str) -> IpcResult<RefreshResult> {
     refresh_subscriptions(state, Some(SubscriptionId::new(id)), false).await
 }
-/// [docs/29 §2.3] **自动刷新：算出此刻该刷新哪些订阅**（只算，不动网络）。
+/// **自动刷新：算出此刻该刷新哪些订阅**（只算，不动网络）。
 ///
 /// 这是「订阅自动更新时间」落地链路的第一步（第二步才是真的去刷）。分开做是因为
 /// "算得对不对"与"刷得对不对"是两件事，混在一起出错时说不清是哪一头。
@@ -739,7 +739,7 @@ fn kernel_missing() -> IpcError {
 
 /// `subscription_upsert`：同 id 覆盖、不存在则新增（幂等，不会写出重复条目）。
 ///
-/// [docs/57] **覆盖已存在的条目时，`url` 留空 = 不改地址**。
+/// **覆盖已存在的条目时，`url` 留空 = 不改地址**。
 ///
 /// 这不是省事，是**防静默写坏**：订阅地址里带订阅 token，界面**从不回显原文**
 ///（`maskSubscriptionUrl` 是唯一出口，见 `src/pages/network/model.ts`），
@@ -785,7 +785,7 @@ pub async fn subscription_upsert(
 
 /// `subscription_delete`：删订阅。
 ///
-/// [docs/53] **先查引用，再动手**：被线路引用时直接回 `TA-5002` + "引用它的地方 + 先解除"，
+/// **先查引用，再动手**：被线路引用时直接回 `TA-5002` + "引用它的地方 + 先解除"，
 /// 与 `delete_provider` / `delete_channel` 同一条口径（`entity::referenced`）。
 /// `subscription_delete` **没有** `force` 参数，所以消息里只报"先解除"，绝不承诺级联。
 ///
@@ -886,7 +886,7 @@ async fn refresh_one(state: &AppState, sub: &Subscription, force: bool) -> IpcRe
         "订阅刷新完成"
     );
 
-    // ★ 每次**成功刷新**写"上次已知"（docs/18 §1.2）。
+    // ★ 每次**成功刷新**写"上次已知"。
     //   头缺失（`None`）时**不动**库里的旧值：机场偶尔不给头，不该把已知的数字擦掉。
     //   写失败不改判刷新本身（订阅已经生效了），但必须如实说出来 —— 否则界面会显示
     //   过期数字而没人知道为什么。
@@ -976,7 +976,7 @@ pub async fn subscription_refresh(
     let force = force.unwrap_or(false);
     let result = refresh_subscriptions(&state, id.clone(), force).await?;
 
-    // [docs/29 §2.2] **C 期触发点②：用户手动刷新 = 重挑**（`manual = true`）。
+    // **C 期触发点②：用户手动刷新 = 重挑**（`manual = true`）。
     //
     // 为什么挂在命令上而不是共用链路里：后台自动刷新那条路（`auto_refresh_subscription`）
     // 自己在 tick 里以 `manual = false` 调用重算（粘性优先）；如果这里也塞进共用函数，
@@ -1008,18 +1008,18 @@ pub async fn subscription_refresh(
     Ok(result)
 }
 
-/// 重算某份订阅上的所有「自动」出口（[docs/29 §2.2]）。
+/// 重算某份订阅上的所有「自动」出口。
 ///
 /// `manual = true` 来自**用户手动刷新**（C 期触发点②：重挑最低延迟，无视粘性）；
 /// `false` 来自后台自动刷新（触发点①：粘性优先）。逐家吞错、逐家记日志 ——
 /// 一家算不出来不该让别家跟着不更新。
 async fn reapply_auto_export(
-    // [docs/46] 订阅刚刷新成功 → **数据出现了，内核才有意义**。启动时没有任何 provider，
+    // 订阅刚刷新成功 → **数据出现了，内核才有意义**。启动时没有任何 provider，
     state: &AppState,
     subscription_id: &SubscriptionId,
     manual: bool,
 ) -> usize {
-    // [docs/46] 订阅刚刷新成功 → **数据出现了，内核才有意义**。启动那一刻还没有 provider，
+    // 订阅刚刷新成功 → **数据出现了，内核才有意义**。启动那一刻还没有 provider，
     // 生成配置的预检会如实拒绝（TA-5001）；这里补一次"再拉"。失败只记 WARN。
     kick_kernel(state).await;
     let doc = state.doc();
@@ -1209,7 +1209,7 @@ pub async fn set_nodes_enabled(
             }
         }
     }
-    // ★ 关掉的节点必须**真的**从内核那侧的择优里消失（[docs/54]）。
+    // ★ 关掉的节点必须**真的**从内核那侧的择优里消失。
     //
     // 这里原来是裸 `save_validated`（只写库 + `set_doc`），**既没更新内核配置源、也没 apply**：
     // 于是界面上的开关当场变了，内核却还在拿旧配置按老节点清单择优 —— 一个**假开关**。
@@ -1246,7 +1246,7 @@ pub async fn subscription_nodes_enabled(
 /// 数据来源是 `VersionKeeper::history`（**只读元数据，不解压原文**）。刻意不用
 /// `latest_accepted`：它每次都要解压整份订阅，只为拿两个计数太贵。
 ///
-/// 三态口径与 [docs/18 §1.2] 一致：**没有已采纳的版本 = 字段缺失，不用 `0` / 空串冒充**。
+/// 三态口径与 一致：**没有已采纳的版本 = 字段缺失，不用 `0` / 空串冒充**。
 /// 前端 `readSubscription` 把"缺失"读成 `undefined`（未读取）、把"明确 null"读成 `null`
 /// （后端说没有）—— 两者不是一回事。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -1261,7 +1261,7 @@ pub struct SubscriptionView {
     /// 生效版本的分组数。没有已采纳版本时**缺失**（不是 0）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_count: Option<u32>,
-    /// 生效版本的抓取时刻（Unix 毫秒）。节点页的硬前置就判它（[docs/19 §2.3]）。
+    /// 生效版本的抓取时刻（Unix 毫秒）。节点页的硬前置就判它。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_update_ms: Option<i64>,
     /// 嗅探到的格式（`clash_yaml` / `base64_links` / `plain_links` / `html` / `unknown`）。
@@ -1349,12 +1349,12 @@ pub async fn subscription_rules_raw(
     rules_raw_of_subscription(&state, &id).await
 }
 
-/// `subscription_traffic`：每份订阅的"上次已知流量与更新时间"（只读，docs/18 §1.2 的 (a)）。
+/// `subscription_traffic`：每份订阅的"上次已知流量与更新时间"。
 ///
 /// 返回 `{ id, traffic }[]`，**以配置里的订阅清单为准**（不是表里的行 —— 表里可能有
 /// 已删订阅的残留行）；`traffic: null` = 这份订阅从未成功刷新过（界面上是"尚未获取"）。
 ///
-/// 为什么另开一条只读命令，而不是把 `traffic` 塞进 `SubscriptionView`（docs/18 §1.2 给了
+/// 为什么另开一条只读命令，而不是把 `traffic` 塞进 `SubscriptionView`（给了
 /// 两个选项，(a) 是推荐的）：`Subscription` 是**配置实体**，流量是**运行期观测值**。
 /// 混在一起之后，"改配置"的写路径会顺手把观测值一起改写/清掉，而且 `subscription_upsert`
 /// 的返回值会带上一个它根本没碰过的字段。
@@ -1447,10 +1447,10 @@ pub async fn lane_upsert(state: State<'_, AppState>, lane: Lane) -> IpcResult<La
 
 /// `lane_delete`：删线路。
 ///
-/// [docs/53] **先查引用，再动手**（与 `delete_subscription` 同一个理由）。
+/// **先查引用，再动手**（与 `delete_subscription` 同一个理由）。
 /// `lane_delete` **没有** `force` 参数 → 只报"先解除"。
 ///
-/// [docs/55]（第 322 轮）引用类别从**五类收敛到两类** —— 线路分配只剩服务商级一处：
+///（第 322 轮）引用类别从**五类收敛到两类** —— 线路分配只剩服务商级一处：
 /// `net.default_lane` 与 `providers[].lane`。
 /// `credentials[].lane` / `channels[].lane` / `policies[].action.use_lane` 三个字段已删除，
 /// 所以它们不再可能挡住删除（老配置里的残留值落进 `extra`，既不解析也不引用）。
@@ -1497,7 +1497,7 @@ pub async fn lane_delete(state: State<'_, AppState>, id: LaneId) -> IpcResult<()
     delete_lane(&state, &id).await
 }
 
-/// `lane_set_node`：手动钉住 `select` 组里的节点（`docs/04` 8.2 的线路下拉）。
+/// `lane_set_node`：手动钉住 `select` 组里的节点（8.2 的线路下拉）。
 ///
 /// 只动内核（`PUT /proxies/{group}`），**不改配置**：钉住是运行态，配置里的线路定义没变。
 /// 节点先在内核快照里查一次：钉一个内核不认识的名字，内核会收下但每个请求 502 ——
@@ -1627,7 +1627,7 @@ pub async fn lane_test(
     test_lane(&state, &id, node).await
 }
 
-// ================================================================ 网络代理可选清单（[docs/28 §1.2]）
+// ================================================================ 网络代理可选清单
 
 /// 线路下拉里一项的网络来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -1704,7 +1704,7 @@ fn lane_is_for_node(lane: &Lane, subscription: &SubscriptionId, node: &str) -> b
 /// 同一个网络在配置里的**稳定 id**（`lane-<订阅>-<节点>`，两段都用同一套 slug 规则净化）。
 ///
 /// 复用 `upstream::id_slug` 而不是在这里再写一遍：id 派生法有两份实现就一定会漂移
-/// （`docs/20 §1.1` 那条教训）。
+/// （那条教训）。
 fn lane_id_for_node(subscription: &SubscriptionId, node: &str) -> LaneId {
     let sid = crate::commands::upstream::id_slug(subscription.as_str());
     let nid = crate::commands::upstream::id_slug(node);
@@ -2254,7 +2254,7 @@ pub async fn kernel_probe_path(state: State<'_, AppState>) -> IpcResult<KernelPr
 fn probe_version(exe: &std::path::Path) -> Option<String> {
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("-v").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    // [docs/14] 内核是控制台程序：不给 CREATE_NO_WINDOW，探一次版本就会闪一个 cmd 窗口
+    // 内核是控制台程序：不给 CREATE_NO_WINDOW，探一次版本就会闪一个 cmd 窗口
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -2324,7 +2324,7 @@ fn top_level_block(text: &str, key: &str) -> Option<String> {
 
 /// **补齐线路端口，并推给内核源与网关拨号器。**
 ///
-/// 为什么需要它（2026-10-13 的真机复现，[docs/59] 同族）：
+/// 为什么需要它（2026-10-13 的真机复现， 同族）：
 ///
 /// `commit_config`（本文件上方）只在 `kernel_source_slot()` **已经装好**时才调
 /// `allocate_ports` —— 而开机编排完成之前那个槽是 `None`，此时提交的配置
@@ -2353,7 +2353,7 @@ fn ensure_lane_ports(state: &AppState) -> IpcResult<()> {
     Ok(())
 }
 
-/// [docs/46] 订阅/线路数据出现之后再拉一次内核。
+/// 订阅/线路数据出现之后再拉一次内核。
 ///
 /// 启动那一刻还没有任何 provider，生成配置的预检会**如实拒绝**（`TA-5001`），内核不会就绪——
 /// 那是对的（没有节点时内核无路可走）。等用户真的建了订阅、节点出现之后，内核才有意义。
@@ -2384,7 +2384,7 @@ pub(crate) async fn kick_kernel(state: &AppState) {
             "重拉内核前补分配线路端口失败：内核会因缺少端口而不就绪，网关也不会启动"
         );
     }
-    // [docs/46] **`apply()` 而不是 `start()`**：`apply()` = 生成 + 落盘 + reload；
+    // **`apply()` 而不是 `start()`**：`apply()` = 生成 + 落盘 + reload；
     // 内核已经在跑时 `start()` 是空操作 ⇒ 配置永远不重新生成（实测：`proxy-groups: []`）。
     match kernel.apply().await {
         Ok(status) => tracing::info!(?status, "订阅数据就绪：已重生成并重载内核配置"),
@@ -2779,7 +2779,7 @@ mod tests {
                 Err(TaError::Kernel(format!("内核里没有 {name}")))
             }
         }
-        /// ★ 假内核也**只暴露 provider 命名空间这一条路**（[docs/46 §297]）：调用会记进
+        /// ★ 假内核也**只暴露 provider 命名空间这一条路**：调用会记进
         /// `calls`，于是"应用到底问的是哪条路由"在测试里是可断言的。
         async fn provider_delays(
             &self,
@@ -2807,9 +2807,9 @@ mod tests {
         state.set_kernel(kernel);
     }
 
-    /// [docs/33] **E 期 B 方案**：把「自动」出口的**后半段编排**在测试里完整回放。
+    /// **E 期 B 方案**：把「自动」出口的**后半段编排**在测试里完整回放。
     ///
-    /// 为什么必须有这条：本环境**没有内核可执行文件**（[docs/33]），真机验不了"选最低延迟"；
+    /// 为什么必须有这条：本环境**没有内核可执行文件**，真机验不了"选最低延迟"；
     /// 而这一段恰恰是用户最在意的语义 —— 它不验"判断"（那有 `decide_export` 的 7 条单测），
     /// 验的是**两个副作用**：内核真的收到了 `set_select`、库里真的记住了那个**地址**。
     #[tokio::test]
@@ -2964,7 +2964,7 @@ mod tests {
         );
     }
 
-    /// [docs/57]（第 324 轮）**覆盖已存在的条目时，`url` 留空 = 不改地址**。
+    ///（第 324 轮）**覆盖已存在的条目时，`url` 留空 = 不改地址**。
     ///
     /// 为什么必须有这条语义：订阅地址里带订阅 token，界面**从不回显原文**
     ///（`maskSubscriptionUrl` 是唯一出口，见 `src/pages/network/model.ts`），
@@ -3010,7 +3010,7 @@ mod tests {
 
     /// 被引用的订阅不许删。
     ///
-    /// [docs/53] 第 320 轮改判据：这里原来断言 `TA-5001`，而那**正是用户报的那个 bug** ——
+    /// 第 320 轮改判据：这里原来断言 `TA-5001`，而那**正是用户报的那个 bug** ——
     /// `TA-5001`（配置校验失败）把"这次删除会造成悬空引用"说成了"配置本来就有一处错"，
     /// 且消息只有「1 处问题」，指不出是哪条线路、该怎么办。
     /// 现在前置检查 → `TA-5002` + **引用者清单** + "先解除"，与 `delete_provider` / `delete_channel` 同一口径。
@@ -3063,7 +3063,7 @@ mod tests {
         assert_eq!(h[0].node_count, 5);
     }
 
-    // ------------------------------------------------------------ 线路下拉的来源（[docs/28 §1.2]）
+    // ------------------------------------------------------------ 线路下拉的来源
 
     /// 「直连」**永远单独列出来、永远排第一**，哪怕配置里一条线路都没有。
     ///
@@ -3394,7 +3394,7 @@ mod tests {
 
     // ------------------------------------------------------------ subscription_list 的解析状态
 
-    /// `subscription_list` 必须带上**当前生效版本**的解析状态（[docs/19 §2.3] 那条硬前置）。
+    /// `subscription_list` 必须带上**当前生效版本**的解析状态（那条硬前置）。
     ///
     /// 这是"订阅加好了、刷新也成功了、页面却说没有解析结果、一个节点都不显示"那个真机缺陷的
     /// 回归测试：判据字段缺失时节点页**不敢发** `subscription_nodes`，节点清单永远是空的。
@@ -3520,7 +3520,7 @@ mod tests {
 
     // ------------------------------------------------------------ 订阅流量与更新时间
 
-    /// 用户原话里那一行（docs/18 §1）：更新时间 + 已用/总量。
+    /// 用户原话里那一行：更新时间 + 已用/总量。
     /// 这里用的字节数就是真实量级（130 GiB 套餐 / 已用约 92.9 GB）。
     const USERINFO: &str =
         "Subscription-Userinfo: upload=123456789; download=98765432100; total=139586437120; expire=1893456000";
@@ -3674,13 +3674,13 @@ mod tests {
         assert_eq!(state.config.load().await.expect("load").lanes.len(), 2, "一个都不该写进去");
     }
 
-    /// [docs/53][docs/55] 删线路的**每一类引用**都必须认出来。
+    /// 删线路的**每一类引用**都必须认出来。
     ///
     /// 为什么每类都要单独钉：引用分散在配置的不同地方，而 validator 的检查也是分开写的。
     /// **漏认一类**的后果是静默的：那一类会回到"靠校验层兜底"的老路，
-    /// 用户又只拿到一句「配置校验失败：1 处问题」—— 正是 [docs/53] 要修的那个 bug。
+    /// 用户又只拿到一句「配置校验失败：1 处问题」—— 正是 要修的那个 bug。
     ///
-    /// [docs/55]（第 322 轮）类别从**五类收敛到两类**：线路分配只剩服务商级一处。
+    ///（第 322 轮）类别从**五类收敛到两类**：线路分配只剩服务商级一处。
     #[tokio::test]
     async fn lane_delete_names_every_kind_of_reference() {
         /// 每一类引用：怎么把它挂上去、以及消息里**必须**出现的关键词。
@@ -3726,7 +3726,7 @@ mod tests {
         }
     }
 
-    /// [docs/55] **反回归闸门**：三个已删除的字段**不许**再挡住删除。
+    /// **反回归闸门**：三个已删除的字段**不许**再挡住删除。
     ///
     /// 用户裁决放弃线路级别的分配之后，`credentials[].lane` / `channels[].lane` /
     /// `policies[].action.use_lane` 都不再参与任何判定。如果哪天有人把某一条的引用检查
@@ -3754,10 +3754,10 @@ mod tests {
         assert!(!state.doc().lanes.iter().any(|l| l.id.as_str() == "lane-auto"));
     }
 
-    /// [docs/53] 同 `subscription_delete`：这里原来断言 `TA-5001`（也就是用户报的那个 bug）。
+    /// 同 `subscription_delete`：这里原来断言 `TA-5001`（也就是用户报的那个 bug）。
     /// 现在前置检查 → `TA-5002` + 逐类列出引用者 + "先解除"。
     ///
-    /// [docs/55] 挡路的引用改成**服务商**（`providers[].lane`）—— 那是现在唯一的分配入口。
+    /// 挡路的引用改成**服务商**（`providers[].lane`）—— 那是现在唯一的分配入口。
     #[tokio::test]
     async fn lane_delete_removes_unreferenced_and_refuses_referenced() {
         let state = seeded("lane-del", "https://airport.example/sub").await;
@@ -4049,7 +4049,7 @@ mod tests {
         assert_eq!(p.version, None, "跑不起来就没有版本，不许编一个");
     }
 
-    // ------------------------------------------------------------ 「自动」出口探测（docs/46 §297）
+    // ------------------------------------------------------------ 「自动」出口探测
 
     /// ★ 这条是本次修复的**回归锚点**：探测必须走 provider 命名空间，且按服务商 `base_url`。
     #[tokio::test]

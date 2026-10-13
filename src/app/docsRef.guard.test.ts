@@ -52,7 +52,7 @@ const EXT = new Set([".rs", ".ts", ".tsx", ".mjs", ".js", ".ps1", ".sh", ".yaml"
  * **只许往下调。** 改掉一批引用后，把这两个数字改小；守卫会逼着你确认
  * "确实只减不增"。
  */
-const BASELINE = { files: 227, lines: 2454 };
+const BASELINE = { files: 224, lines: 1647 };
 
 /**
  * `docs/` 篇数的棘轮基线（第 342 轮实测 52 篇）。

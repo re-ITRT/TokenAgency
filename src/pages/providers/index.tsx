@@ -7,13 +7,13 @@
  *    写入口是页头的**两个**向导（见下），它们调 `provider_upsert` / `credential_upsert` /
  *    `credential_set_secret` / `model_apply_import` —— 都在 `src-tauri/src/commands/mod.rs` 的
  *    `collect_commands!` 里（`src/app/commandSurface.guard.test.ts` 机械检查）。
- *    **本页已有真入口**：`providers-add-open`（两步向导：[docs/19 §1] 服务商信息 → 创建线路，
+ *    **本页已有真入口**：`providers-add-open`（两步向导： 服务商信息 → 创建线路，
  *    `./providerWizard.tsx`）、`providers-add-advanced-open`（**原样的单步对话框**，
- *    `./wizards.tsx`，一次填完 id / 鉴权方式等完整字段）与 `providers-delete`（[docs/21 §1] 删除，
+ *    `./wizards.tsx`，一次填完 id / 鉴权方式等完整字段）与 `providers-delete`（删除，
  *    走共享确认组件 `ConfirmDelete`，先 `force=false`、被引用才给级联）。**编辑入口就是"点名称
- *    进详情页"**（[docs/23]：详情页本身是查看 + 编辑一体的编辑器），所以行上不需要第二个编辑按钮；
+ *    进详情页"**（：详情页本身是查看 + 编辑一体的编辑器），所以行上不需要第二个编辑按钮；
  *    连通性测试仍未接线，未接线之前不放假控件、也不放禁用占位。
- *    **本页没有凭据表，也没有「添加密钥」入口**（[docs/28 §1] 硬规则 3：**一个服务商一把密钥**；
+ *    **本页没有凭据表，也没有「添加密钥」入口**（硬规则 3：**一个服务商一把密钥**；
  *    要两个账号就**再加一条服务商、取不同名字**）。凭据只用来数"挂载了几个"（见下第 3 条），
  *    它的写入口全在别处：两步向导第 1 步写 `<provider>-default` 那一把、详情页「密钥」块改
  *    已有的那一把（留空 = 不改）。所以**列表页一个 `credential_upsert` 调用点都没有** ——
@@ -100,14 +100,14 @@ const STATUS_LABEL: Record<string, I18nKey> = {
  */
 const CELL_SX = { whiteSpace: "nowrap" } as const;
 
-// ================================================================ 删除（[docs/21 §1]）
+// ================================================================ 删除
 
 /**
  * 「会连带删除 / 影响」清单的行文案：用 i18n 键 `delete.consequence.credentials` / `.channels`
  * （第 73 轮主管补上；在这之前这里是带注释的字面量，英文界面会露中文）。
  *
  * **只放前端真算得出来的事实**：凭据数来自 `credential_list`、通道数来自 `provider_list` 的
- * `channel_count` 那一列；两样任一读不到就不写那一行（[docs/21 §1.1 第 3 条]：算不出来不编）。
+ * `channel_count` 那一列；两样任一读不到就不写那一行（：算不出来不编）。
  * 本页**读不到策略清单**，所以这里不会出现"被 N 条策略引用"这类话。
  */
 
@@ -125,14 +125,14 @@ type DeleteTarget = {
   readonly ids: readonly string[];
   /** 确认框里写清的"删的是哪一个"（名称 + id；批量 = 逐条列出）。 */
   readonly label: string;
-  /** 批量与单条唯一的区别：批量**没有**级联按钮（[docs/21 §1.2] 规定批量一律 `force=false`）。 */
+  /** 批量与单条唯一的区别：批量**没有**级联按钮（规定批量一律 `force=false`）。 */
   readonly batch: boolean;
   /** 前端算得出来的连带影响（算不出来就是空数组）。 */
   readonly consequences: readonly string[];
 };
 
 /**
- * 一次删除执行完的**事实**（[docs/21 §1]）：哪些真删掉了、哪些失败了、后端各自说了什么。
+ * 一次删除执行完的**事实**：哪些真删掉了、哪些失败了、后端各自说了什么。
  *
  * 故意**不带任何文案** —— 这一层只管"调了什么、后端回了什么"，文案由页面用 `t(...)` 拼
  * （页面的 `t` 有完整的键类型，模块级函数拿不到那个类型）。
@@ -144,7 +144,7 @@ type DeleteOutcome = {
 };
 
 /**
- * 执行一次删除（单条或批量），**同一套语义**（[docs/21 §1]）：
+ * 执行一次删除（单条或批量），**同一套语义**：
  *
  * 1. 逐条调 `remove(id, force)`；**批量一律 `force=false`**（批量没有级联档，机械地钉在这里）；
  * 2. **一条失败不中止其余条**，逐条记录结果；
@@ -192,7 +192,7 @@ export type ProvidersBodyProps = {
   /** 打开某一个服务商（页面注入路由跳转，展示层不认识 router）。 */
   onOpen: (id: string) => void;
   /**
-   * 行内「删除」（[docs/21 §1]）。**省略 = 这一行没有删除入口** ——
+   * 行内「删除」。**省略 = 这一行没有删除入口** ——
    * 纯展示件不自己造写入口，页面（数据层）注入真处理器。
    */
   onDelete?: (row: ProviderRow) => void;
@@ -259,9 +259,9 @@ export function ProvidersBody({
     <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
       <Paper variant="outlined" sx={SECTION_SX}>
         <Stack spacing={3}>
-          {/* 表名 + 条数。**条数是数值（[docs/22 §2 第 5 条]）→ 留在版面上**，
+          {/* 表名 + 条数。**条数是数值→ 留在版面上**，
               而这一块原来铺在表下面的四行长解释（状态灯列从哪来 / 缺列为什么画「—」/
-              凭据数怎么归并 / 点名称去哪）收进标题右边的**一个**问号里（[docs/22 §2/§3]）：
+              凭据数怎么归并 / 点名称去哪）收进标题右边的**一个**问号里：
               正文一个字都没丢，`aria-label` 就是全文。 */}
           <Box sx={{ display: "flex", alignItems: "baseline", gap: 3, flexWrap: "wrap" }}>
             <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
@@ -322,7 +322,7 @@ export function ProvidersBody({
             </Typography>
           ) : (
             <>
-              {/* 删除选中（[docs/21 §1.2]）：只在**多选真的出现**时才有这一行（见 `multiSelect`），
+              {/* 删除选中：只在**多选真的出现**时才有这一行（见 `multiSelect`），
                   一行都没选时按钮点不动，也就不会去开后端根本不需要受理的批删。 */}
               {!multiSelect ? null : (
                 <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
@@ -368,7 +368,7 @@ export function ProvidersBody({
                       </TableCell>
                       <TableCell sx={CELL_SX}>{t("providers.col.mount")}</TableCell>
                       {/* 操作列表头留空（与 `pages/apikeys` 同一写法）：没有现成的键，
-                          不为一个表头去造键（[docs/21 §5] 键由主管独占）。 */}
+                          不为一个表头去造键（键由主管独占）。 */}
                       {onDelete === undefined ? null : <TableCell align="right" />}
                     </TableRow>
                   </TableHead>
@@ -412,7 +412,7 @@ export function ProvidersBody({
                           ) : null}
                           <TableCell sx={CELL_SX}>
                             {/* 名称是进入详情的入口。**它只是个跳转**，不是数据写入。
-                                [docs/26 §2] 省略的**两条**恢复路径都在这一格上：
+ 省略的**两条**恢复路径都在这一格上：
                                 ①点名称进详情页（本行既有入口，详情页一个字都不省略）；
                                 ②悬停/聚焦的 tooltip。所以这里的省略不构成"信息被藏起来"。 */}
                             <Link
@@ -482,7 +482,7 @@ export function ProvidersBody({
           )}
 
           {/* 原来这里铺着四行"诚实说明"灰字（哪些列是后端真给的、哪些只是这一版没有）。
-              它们全是**解释**，已按 [docs/22 §2] 合成一条收进标题右边的 `providers-table-help`
+              它们全是**解释**，已按 合成一条收进标题右边的 `providers-table-help`
               （见上面那个问号）——**不是删掉**：正文进 tooltip 与 `aria-label`，一个字都没丢。 */}
         </Stack>
       </Paper>
@@ -505,12 +505,12 @@ export default function ProvidersPage() {
    * 与 `./wizards.tsx`（高级添加的单步对话框）里。
    *
    * 这里**没有**「添加密钥」的开关：一个服务商一把密钥，凭据的写入口只有两步向导第 1 步
-   * 与详情页「密钥」块两处（[docs/28 §1] 硬规则 3）—— 在列表页再开一个"给已存在的服务商
+   * 与详情页「密钥」块两处（硬规则 3）—— 在列表页再开一个"给已存在的服务商
    * 挂第二份凭据"的对话框，就是 owner 明确否掉的那个模型。
    *
    * 两步向导的"开着/第几步/草稿"活在 `./providerWizardModel.ts` 的**模块级 store** 里：
    * 用户点 `pw-proxy` 去 `/network` 会把这一页整个卸载，草稿必须比组件活得久
-   * （[docs/19 §1.4]）。所以初值从 store 读 —— 从 `/network` 回来时向导自己还是开着的。
+   * 。所以初值从 store 读 —— 从 `/network` 回来时向导自己还是开着的。
    */
   const [providerAddOpen, setProviderAddOpen] = useState(() => readWizardSession().open);
   const [advancedAddOpen, setAdvancedAddOpen] = useState(false);
@@ -533,7 +533,7 @@ export default function ProvidersPage() {
 
   /** 本地去重用的现有 id：契约的视图与 Rust 的完整实体都有 `id`，两种形状都读得到。 */
   const providerIds = useMemo(() => (providers.data ?? []).map((p) => p.id), [providers.data]);
-  /** 两步向导的显示名称**去重**要对着后端返回的现有名字做（[docs/19 §1.1]）。 */
+  /** 两步向导的显示名称**去重**要对着后端返回的现有名字做。 */
   const providerNames = useMemo(
     () => (providers.data ?? []).map((p) => p.name).filter((name): name is string => typeof name === "string"),
     [providers.data],
@@ -544,7 +544,7 @@ export default function ProvidersPage() {
     void credentials.refetch();
   };
 
-  // ---------------------------------------------------------------- 删除（[docs/21 §1]）
+  // ---------------------------------------------------------------- 删除
 
   const qc = useQueryClient();
   const removeProvider = useCommandMutation("provider_delete");
@@ -566,7 +566,7 @@ export default function ProvidersPage() {
     return row.name === "" ? row.id : row.name;
   };
 
-  /** 删除成功后要失效的查询（[docs/21 §1.1 第 4 条]）：服务商级联会动到凭据 / 模型 / 通道矩阵。 */
+  /** 删除成功后要失效的查询：服务商级联会动到凭据 / 模型 / 通道矩阵。 */
   const invalidateAfterDelete = async (): Promise<void> => {
     for (const key of [qk.providers, qk.credentials, qk.models, qk.channelMatrix]) {
       await qc.invalidateQueries({ queryKey: key });
@@ -574,7 +574,7 @@ export default function ProvidersPage() {
   };
 
   /**
-   * 「会连带删除 / 影响」清单：**只用前端算得出来的事实**（[docs/21 §1.1 第 3 条]）。
+   * 「会连带删除 / 影响」清单：**只用前端算得出来的事实**。
    * 凭据数来自 `credential_list`、通道数来自 `provider_list` 的 `channel_count`；
    * 读不到的那一维**不写**（不编）。
    */
@@ -614,7 +614,7 @@ export default function ProvidersPage() {
     );
     setBatchRunning(false);
 
-    // 结果区：**只写真的发生过的事**（[docs/21 §1.1 第 4 / §1.2 条]）
+    // 结果区：**只写真的发生过的事**
     // 单条失败时不写任何成功 —— 后端原文进对话框（那里才有级联按钮）。
     const singleFailed = !target.batch && outcome.failures.length > 0;
     setDeleteResult(
@@ -676,7 +676,7 @@ export default function ProvidersPage() {
               两个入口的按钮文案：两步向导用它的 title 键（「添加服务商」）、高级添加用
               `providers.add.advanced` —— 并排两个「添加」用户分不出谁是谁。
 
-              **这里没有「添加密钥」按钮了**（[docs/28 §1] 硬规则 3）：一个服务商一把密钥，
+              **这里没有「添加密钥」按钮了**（硬规则 3）：一个服务商一把密钥，
               密钥的写入口是两步向导第 1 步（`pw-key`）与详情页「密钥」块。
               要两个账号 → 再加一条服务商、取不同名字（两句提示见
               `providers.key.multipleHint`）—— 而不是在这里给同一家挂第二份凭据。
@@ -734,7 +734,7 @@ export default function ProvidersPage() {
         }}
       />
 
-      {/* 删除的**结果区**（[docs/21 §3] 的 `<prefix>-delete-result`）：只写真的发生过的事 */}
+      {/* 删除的**结果区**（`<prefix>-delete-result`）：只写真的发生过的事 */}
       {deleteResult.length === 0 ? null : (
         <Box sx={{ px: 8, pb: 8 }}>
           <Paper variant="outlined" sx={SECTION_SX}>
@@ -754,7 +754,7 @@ export default function ProvidersPage() {
       )}
 
       {/*
-        删除确认（[docs/21 §1 / §2]）：**先确认再发命令**；被引用时后端原文原样显示、
+        删除确认：**先确认再发命令**；被引用时后端原文原样显示、
         此时才出现级联按钮；批量一律 `force=false`，所以批量框里没有级联按钮。
       */}
       <ConfirmDelete
@@ -772,7 +772,7 @@ export default function ProvidersPage() {
       />
 
       {/*
-        两步向导（[docs/19 §1]）：`providers-add-open` 进的就是它 ——
+        两步向导：`providers-add-open` 进的就是它 ——
         第 1 步服务商信息（含落库）、第 2 步添加模型。
       */}
       <ProviderTwoStepWizard
@@ -783,7 +783,7 @@ export default function ProvidersPage() {
       {/*
         原来的**单步**对话框**原样保留**（字段 tid 一个没变），改挂到「高级添加」入口：
         它是真控件、真能提交 —— 老手要的"一次填完 id / 鉴权方式 / 头名 / 值前缀"仍然可达。
-        名称重复在这里也要挡住（[docs/28 §1] 硬规则 3：名字是用户区分"同一家的不同账号"的抓手）。
+        名称重复在这里也要挡住（硬规则 3：名字是用户区分"同一家的不同账号"的抓手）。
       */}
       <ProviderAddDialog
         open={advancedAddOpen}
