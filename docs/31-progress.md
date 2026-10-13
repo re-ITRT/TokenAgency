@@ -2009,7 +2009,7 @@ step30 PASS：后台刷新沿用上次那条 ⇒ 出口 IP 没变
   「应用策略」= `policy_upsert` 一条 `pol-model-strategy-<模型>`（priority 500、`use_channels` 留空）；
 * **权重不实现**（用户明确要求）：无权重输入、无百分比徽章；「项目作用域」换成网络代理/上游模型名；
   「综合评分」不摆（引擎没有对应选择器）；
-* 归属：`THIRD_PARTY_NOTICES.md` 登记 `margrop/coding-plan-dashboard`（MIT 全文 + 我们只借鉴不搬运），
+* 归属：`THIRD-PARTY-NOTICES.md` 登记 `margrop/coding-plan-dashboard`（MIT 全文 + 我们只借鉴不搬运），
   额度功能落地时界面里再标一次；
 * 前端全量 753 例全绿（含设计守卫：无硬编码颜色、i18n 无 `**`、版面无 ≥40 字长句）。
 * 产物：安装器 `E4D4EF6F2376990E`（22.57 MB）、安装目录 exe `164DE4A42B309FE4`、便携包 `B70CCC9A49B7369F`；

@@ -133,7 +133,42 @@ MIT、Apache-2.0、BSD-2/3-Clause、ISC、Zlib、Unlicense、0BSD、MIT-0、Unic
 
 ---
 
-## 6. 本文件怎么维护
+## 6. 借鉴来源（MIT，需保留归属）
+
+界面形态上借鉴了 **`margrop/coding-plan-dashboard`**（<https://github.com/margrop/coding-plan-dashboard>）。
+我们**只借鉴做法、没有搬运代码**，但 MIT 要求保留归属，因此在此登记：
+
+```
+MIT License
+
+Copyright (c) 2026 margrop
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+> 本节是**补写的**：仓库里有两处旧文档（已删）都写着"归属落在 `THIRD_PARTY_NOTICES.md`（含 MIT 全文）"，
+> 但那个文件里**既没有 margrop 这一行、也没有 MIT 全文** —— 义务被指向了，却从没真正落下来。
+> 该文件已删除（其余内容已被本文件 §1 覆盖），归属统一由本文件承担。
+
+---
+
+## 7. 本文件怎么维护
 
 * 依赖增减后：`node scripts/gen-third-party.mjs` 重新生成清单，并**人工复查**
   第 3、4 节那类"非宽松"的条目有没有新增（生成器会把它们单独标出来）；

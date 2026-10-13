@@ -3870,7 +3870,7 @@ pwsh -File scripts/verify-endpoint-hello.ps1 -ApiKey <TA端点密钥> -Prompt he
 
 1. **「图片上权重啥的不用去实现哈」** —— 所以这一页**没有**权重输入框、也没有 `50%`/`W100` 数字徽章；
 2. 「为了自动化获取 tokenplan 的额度，我们借鉴 `margrop/coding-plan-dashboard`，
-   **一定要加上来源**，不能埋没人家的付出」 —— 归属声明落在 `THIRD_PARTY_NOTICES.md`（含 MIT 全文），
+   **一定要加上来源**，不能埋没人家的付出」 —— 归属声明落在 `THIRD-PARTY-NOTICES.md`（含 MIT 全文），
    额度功能实现时**在界面里也要再标一次**（下一轮）。
 
 ### 这一页是什么
@@ -3936,7 +3936,7 @@ pwsh -File scripts/verify-endpoint-hello.ps1 -ApiKey <TA端点密钥> -Prompt he
   3. 「综合评分」页签（引擎没有对应选择器，不摆点不动的页签）；
   4. 「项目作用域」（数据模型里没有"项目"）。
 * 下一轮：**套餐额度自动获取**（借鉴 `margrop/coding-plan-dashboard`，MIT）——
-  接进凭据/套餐卡里，并在界面上**再标一次来源**（`THIRD_PARTY_NOTICES.md` 已有完整归属声明）。
+  接进凭据/套餐卡里，并在界面上**再标一次来源**（`THIRD-PARTY-NOTICES.md` 已有完整归属声明）。
 ## 🧭 第 309 轮：**别名不再要用户输入**（用户：「别名那个没必要搞，创建模型的时候就只输入模型名称和 id 就好」）
 
 改的是**模型目录页**（`/models`）的创建/编辑对话框与表格：
