@@ -176,4 +176,4 @@ Write-Host "    cargo fmt --all --check" -ForegroundColor DarkGray
 Write-Host "    cargo check  --workspace --all-targets" -ForegroundColor DarkGray
 Write-Host "    cargo clippy --workspace --all-targets -- -D warnings" -ForegroundColor DarkGray
 Write-Host "    cargo test   --workspace" -ForegroundColor DarkGray
-Write-Host "    （git merge 不触发 pre-commit，主管的门禁就是唯一门禁 —— docs/13 §7.6.4）" -ForegroundColor DarkGray
+Write-Host "    （git merge 不触发 pre-commit，主管的门禁就是唯一门禁）" -ForegroundColor DarkGray

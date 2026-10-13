@@ -292,7 +292,7 @@ afterEach(() => {
   cleanup();
 });
 
-describe("[26 §1] 动效守卫（[15 §7] 的机械检查）", () => {
+describe("动效守卫（机械检查）", () => {
   it("1. 时长只有一个来源：组件里没有字面量时长/缓动（例外按值钉住）", () => {
     // 先证明扫描器真的扫到了东西（空目录里"没违规"和"没在扫"长得一样）
     expect(listSources().length).toBeGreaterThan(20);
@@ -325,7 +325,7 @@ describe("[26 §1] 动效守卫（[15 §7] 的机械检查）", () => {
     expect(scanMotionSource("sneaky.tsx", 'transition:\n  "all 300ms ease-in-out",')).not.toEqual([]);
   });
 
-  it("2. 循环动效的检查器有牙，且当前源码里一处都没有（[26 §1.2]）", () => {
+  it("2. 循环动效的检查器有牙，且当前源码里一处都没有", () => {
     const loops = listSources().flatMap(({ rel, source }) => loopingDeclarations(rel, source));
     // `QuotaBar` 的额度硬耗尽脉动随额度功能下线 —— 现在源码里不该再有循环动效
     expect(loops, `源码里不该再有循环动效。\n${format(loops)}`).toHaveLength(0);
@@ -339,7 +339,7 @@ describe("[26 §1] 动效守卫（[15 §7] 的机械检查）", () => {
     expect(loopingDeclarations("x.tsx", 'animation: "fade ${motion.enter} ease-out",')).toHaveLength(0);
   });
 
-  it("3. 源码里声明的每个 @keyframes 都在 reduced-motion 里有一份静止版（[26 §1.3]）", () => {
+  it("3. 源码里声明的每个 @keyframes 都在 reduced-motion 里有一份静止版", () => {
     const sources = listSources();
     const declared = sources.flatMap(({ source }) => keyframesNames(source));
     // 现在源码里不该再声明任何循环脉动关键帧（额度功能已整条下线）

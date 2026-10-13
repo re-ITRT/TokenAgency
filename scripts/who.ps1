@@ -44,7 +44,7 @@ function Get-AuthorColor($name) {
 if ($Uncommitted) {
     Write-Host ""
     Write-Host "=== 在途未提交的改动 ===" -ForegroundColor Cyan
-    Write-Host "注意：git 无法归属未提交的改动，下列分组是按 docs/12 §1.2 的范围**粗归因**。" -ForegroundColor DarkGray
+    Write-Host "注意：git 无法归属未提交的改动，下列分组是按编制范围**粗归因**。" -ForegroundColor DarkGray
     Write-Host "     如果某文件出现在这里而不是某次提交里，说明它的作者还没交付。" -ForegroundColor DarkGray
     Write-Host ""
 

@@ -115,7 +115,7 @@ if ($outside.Count -gt 0) {
         Write-Host "  你的范围：" -ForegroundColor DarkGray
         $scope | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
         Write-Host ""
-        Write-Host "  这是 docs/13 §1.2 的编制表。确实需要提交范围外的文件时：" -ForegroundColor Yellow
+        Write-Host "  这是编制表。确实需要提交范围外的文件时：" -ForegroundColor Yellow
         Write-Host "    -Override ""一句话说明原因""" -ForegroundColor Yellow
         Write-Host "  （会写进提交 trailer，可审计）" -ForegroundColor DarkGray
         exit 2
@@ -163,7 +163,7 @@ if ($As -eq 'lead') {
         Write-Host "  那一刻所有脏文件都收进来，**包括同事的在途工作**。同事的活应该走他的 PR。" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "  两条出路：" -ForegroundColor Cyan
-        Write-Host "    ① 换成**具体文件**：-Paths docs/14-observability.md,crates/ta-core/src/diag/fields.rs"
+        Write-Host "    ① 换成**具体文件**：-Paths config.example.yaml,crates/ta-core/src/diag/fields.rs"
         Write-Host "    ② 确实要主管落笔（例如契约同改）：-Override ""一句话说明原因"""
         Write-Host ""
         exit 3

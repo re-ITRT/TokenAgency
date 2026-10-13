@@ -65,7 +65,7 @@ const ARCHIVE: &str = "docs/contracts/bindings-handwritten-reference.ts.txt";
 /// → **109**
 /// → **114**（：我们网关对外的访问密钥，新增 `api_key_list` / `api_key_create` /
 /// `api_key_set_enabled` / `api_key_delete` / `api_key_usage` 五条）。
-/// → **116**（docs/25：模型目录，新增 `provider_model_catalog` / `provider_model_attach` 两条 ——
+/// → **116**（模型目录，新增 `provider_model_catalog` / `provider_model_attach` 两条 ——
 /// 扫描只记录、勾一下才接入；**没有**手动添加命令）。
 /// → **115**（：**删掉 `credential_delete`** —— 一个服务商就一把密钥，
 /// 要撤密钥就删服务商；实现体 `delete_credential` 仍在，但它不再是一条 IPC 命令。

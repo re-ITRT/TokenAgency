@@ -221,7 +221,7 @@ mod tests {
         }
         assert!(
             !cat_cols.iter().any(|(name, _)| name == "origin"),
-            "目录里**不该**有来源列：手动添加已被否决（docs/25 §1），每一行都必须来自真实扫描"
+            "目录里**不该**有来源列：手动添加这条路已被否决，每一行都必须来自真实扫描"
         );
 
         let cat_pk: Vec<String> = sqlx::query_scalar(

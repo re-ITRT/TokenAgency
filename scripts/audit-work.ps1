@@ -28,7 +28,7 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
 Write-Host ""
-Write-Host "=== 在途与提交历史对照（docs/13 L22）===" -ForegroundColor Cyan
+Write-Host "=== 在途与提交历史对照===" -ForegroundColor Cyan
 Write-Host "判据：有在途是正常的；'在途很多 + 很久没提交' 才是危险信号。" -ForegroundColor DarkGray
 Write-Host ""
 
@@ -136,7 +136,7 @@ Write-Host ""
 Write-Host "⚠ 发现 $($alerts.Count) 条需要处理的迹象：" -ForegroundColor Yellow
 $alerts | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
 Write-Host ""
-Write-Host "处置（按 docs/13 §7.5 提交协议）：" -ForegroundColor DarkGray
+Write-Host "处置（按提交协议）：" -ForegroundColor DarkGray
 Write-Host "  · 找到该路径的 Owner，让它用 scripts/commit.ps1 -As <它的身份> 提交" -ForegroundColor DarkGray
 Write-Host "  · 若无法确定 Owner，按 L17 的纪律：**先让对方自证范围，不要靠时间戳推断**" -ForegroundColor DarkGray
 Write-Host "  · 在途本身不是问题，'在途了很久还没入库'才是" -ForegroundColor DarkGray

@@ -2141,7 +2141,7 @@ pub async fn set_kernel_provider(
     if effective.is_empty() {
         return Err(IpcError::from(TaError::MalformedRequest(
             "provider: external / bundled 都需要一个内核可执行文件路径（本仓库不随包分发内核，\
-             见 docs/04 第 10 节的方案 B）—— 请在 path 里给出内核可执行文件的位置"
+             方案 B）—— 请在 path 里给出内核可执行文件的位置"
                 .to_string(),
         )));
     }

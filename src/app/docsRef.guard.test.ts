@@ -52,7 +52,7 @@ const EXT = new Set([".rs", ".ts", ".tsx", ".mjs", ".js", ".ps1", ".sh", ".yaml"
  * **只许往下调。** 改掉一批引用后，把这两个数字改小；守卫会逼着你确认
  * "确实只减不增"。
  */
-const BASELINE = { files: 17, lines: 27 };
+const BASELINE = { files: 0, lines: 0 };
 
 /**
  * `docs/` 篇数的棘轮基线（第 342 轮实测 52 篇）。
@@ -62,8 +62,29 @@ const BASELINE = { files: 17, lines: 27 };
  */
 const DOCS_BASELINE = { files: 16 };
 
-/** 命中一处引用即算一行。两个形态都要认。 */
+/**
+ * 功能性路径实参的**极小例外清单**。
+ *
+ * 这些不是"引用"，而是**函数实参**：守卫靠它去读它核对的那篇契约。
+ * 删掉它没有语法错误，`cargo check` 与 `tsc` 也全过 —— **只有 `cargo test` 会红**
+ * （第 343 轮实测）。所以它们必须留，但要留得**有账可查**：
+ * 下面有一条测试断言"全仓命中这个模式的行数不超过 3"，清单一旦变大就红。
+ */
+const FUNCTIONAL_PATH = /(?:read_repo_file|repo_doc)\(\s*"docs\/\d{2}/;
+
+/**
+ * 夹具里的文档路径 —— **在源码里拼出来**，不写字面量。
+ *
+ * 本文件也在棘轮的扫描范围里；写死的字面量会让棘轮**永远到不了 0**
+ * （实测：本文件自己贡献了 3 行）。理由与 `uiMinimalism.guard` 的自检完全一样。
+ */
+const DOC_OF = (stem: string) => ["docs", stem].join("/");
+
+/** 命中一处引用即算一行。两个形态都要认；**功能性路径实参不算**。 */
 export function countsAsRef(line: string): boolean {
+  if (FUNCTIONAL_PATH.test(line)) {
+    return false;
+  }
   return /docs\/\d{2}|\[\d{2} §/.test(line);
 }
 
@@ -140,7 +161,7 @@ describe("[docsRef] docs/NN 引用制度的棘轮", () => {
     // 正面：两种形态都要被数到
     expect(countsAsRef(`// 见 ${ref("28", "1.2")} 说明了关系翻转`)).toBe(true);
     expect(countsAsRef(`it("${short("30", "3.18")} 筛选区的主操作固定在底部", () => {})`)).toBe(true);
-    expect(countsAsRef("`docs/11-internal-contracts.md` 是契约")).toBe(true);
+    expect(countsAsRef("`" + DOC_OF("11-internal-contracts.md") + "` 是契约")).toBe(true);
     // 关键：**短式**也必须认（不带 docs/），否则这一整类会漏掉
     expect(countsAsRef(`* 模型目录页（${short("07", "4")} / ${ref("28")}）的纯逻辑层`)).toBe(true);
     // 反面：这些不该被误判
@@ -156,6 +177,30 @@ describe("[docsRef] docs/NN 引用制度的棘轮", () => {
       `it("${ref("32")} 契约给了就显示", () => {});`,
     ].join("\n");
     expect(countRefLines(synthetic)).toBe(3);
+
+    // 功能性路径实参**不算引用**（它是函数实参）；但**同类写法不带调用时必须算**，
+    // 否则这条豁免会被滥用成新的"引用制度"。
+    // 夹具同样在源码里拼出来 —— 否则它自己会变成第 4 条"功能性路径"（实测被上面那条断言抓到过）。
+    const fixture = `let doc = common::read_repo_file("${DOC_OF("14-observability.md")}")`;
+    expect(countsAsRef(fixture)).toBe(false);
+    expect(countsAsRef("// 见 " + DOC_OF("14-observability.md") + " 的字段白名单")).toBe(true);
+  });
+
+  it("功能性路径实参的例外清单不许变大（当前 3 行）", () => {
+    let n = 0;
+    for (const dir of SCAN_DIRS) {
+      for (const p of walk(join(ROOT, dir))) {
+        const text = readFileSync(p, "utf8");
+        n += text.split("\n").filter((line) => FUNCTIONAL_PATH.test(line)).length;
+      }
+    }
+    expect(
+      n,
+      `功能性路径实参从 3 行变成了 ${n} 行。这是**故意留的例外** —— 守卫必须读它核对的那篇契约，` +
+        `删了它只有 cargo test 会红。但它只许有那几处；新增之前先问自己：这是"读文档"，` +
+        `还是又长出了新的引用制度？`,
+    ).toBeLessThanOrEqual(3);
+    expect(n, "一处都没有说明扫描写错了").toBeGreaterThan(0);
   });
 
   it("引用总数不得超过棘轮基线（只许减少）", () => {

@@ -236,7 +236,7 @@ mod tests {
         ] {
             assert!(
                 doc.contains(needle),
-                "docs/14-observability.md §4.1 里找不到 `{needle}` —— 文档与本模块的规则不同步了"
+                "日志字段契约里找不到 `{needle}` —— 文档与本模块的规则不同步了"
             );
         }
     }

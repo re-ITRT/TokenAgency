@@ -623,7 +623,7 @@ export const en: Record<I18nKey, string> = {
   "providers.credentials.secretHint":
     "Secrets are shown as references (such as ${secret:name}); plaintext never appears.",
 
-  // ---------------------------------------------------------------- provider detail: view + edit in one page (docs/23)
+  // ---------------------------------------------------------------- provider detail: view + edit in one page
   "providers.section.basic": "Basics",
   "providers.edit.reset": "Discard changes",
   "providers.edit.clean": "No changes",
@@ -645,7 +645,7 @@ export const en: Record<I18nKey, string> = {
     "Connection config could not be read: this page is read-only and will not overwrite the live values.",
 
 
-  // ------------------------------------------------ provider model catalog (docs/25)
+  // ------------------------------------------------ provider model catalog
   "providers.catalog.rawTitle": "Upstream object as recorded (we never rewrite it)",
   "providers.catalog.rawEmpty": "That upstream entry is not a JSON object (or nothing was recorded) — we will not invent one.",
   "providers.catalog.stale": "Not in the last scan",

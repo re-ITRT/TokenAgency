@@ -123,7 +123,7 @@ try {
         $leakWarn | ForEach-Object { Write-Host "  $_" }
     }
     if ($leakFail.Count -gt 0) {
-        Fail "以下生产代码文件含疑似明文密钥。请改用 `${secret:name} 或 `${env:VAR}（见 docs/02 §5）。`n  $($leakFail -join "`n  ")"
+        Fail "以下生产代码文件含疑似明文密钥。请改用 `${secret:name} 或 `${env:VAR}。`n  $($leakFail -join "`n  ")"
     }
 
     # ------------------------------------------------------------ 2) 大文件守卫

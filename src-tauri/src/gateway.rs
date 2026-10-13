@@ -701,7 +701,7 @@ mod tests {
         );
         assert!(
             production.contains(".with_api_keys("),
-            "装配入参必须装上 API key 验票器（docs/19 §3.3：少这一句 = 建了 key 也挡不住人）"
+            "装配入参必须装上 API key 验票器（少这一句 = 建了 key 也挡不住人）"
         );
         // 第二处同类缺口：`with_trace_store` 的文档写着"生产装配应当接上"，
         // 但它此前**从未被调用、也没有任何测试** ⇒ 请求轨迹一条都不落库，

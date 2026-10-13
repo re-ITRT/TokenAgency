@@ -155,7 +155,7 @@ function offScaleSpacing(line: string): string | null {
   return null;
 }
 
-describe("[15 §8] 设计系统守卫（机械检查，违反即红）", () => {
+describe("设计系统守卫（机械检查，违反即红）", () => {
   it("1. 我们自己产出的文本里没有 emoji（用户数据除外）", () => {
     const findings = scan(
       (line) => EMOJI_PATTERN.test(line) && !line.includes("ta-allow-emoji"),

@@ -205,7 +205,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             upstream::provider_test,
             upstream::model_import_from_provider,
             upstream::model_apply_import,
-            // ---- docs/25：模型目录（扫描只记录、勾一下才接入；没有手动添加）
+            // ---- 模型目录（扫描只记录、勾一下才接入；没有手动添加）
             upstream::provider_model_catalog,
             upstream::provider_model_attach,
             // 「添加服务商就把所有线路建出来」（默认关闭，之后只用滑块启停）

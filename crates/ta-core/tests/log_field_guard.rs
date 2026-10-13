@@ -57,7 +57,7 @@ fn tracing_field_names_must_be_in_the_whitelist() {
         violations.is_empty(),
         "发现 {} 处不在 白名单里的 tracing 字段名：\n{}\n\n\
          修法（二选一）：① 改用 §5 里的名字（首选，例如 request_id / channel_id / attempt / code）；\
-         ② 如果这个字段确实该进契约，先改 docs/14-observability.md §5，再更新 diag::fields 常量与守卫白名单。",
+         ② 如果这个字段确实该进契约，先改「日志、错误追踪与诊断」一篇里的字段白名单，再更新 diag::fields 常量与守卫白名单。",
         violations.len(),
         violations.join("\n")
     );
@@ -67,7 +67,7 @@ fn tracing_field_names_must_be_in_the_whitelist() {
 #[test]
 fn canonical_fields_match_the_doc() {
     let doc = common::read_repo_file("docs/14-observability.md")
-        .expect("读不到 docs/14-observability.md —— 契约文件缺失，守卫失去依据");
+        .expect("读不到日志字段契约 —— 契约文件缺失，守卫失去依据");
 
     let section_51 = section_table_first_column(&doc, "## 5.1", "## 5.2");
     let section_52 = section_table_first_column(&doc, "## 5.2", "## 5.3");
@@ -103,8 +103,7 @@ fn canonical_fields_match_the_doc() {
 /// 没有这条，"§5.6 必须登记"就会退化成一句口号。
 #[test]
 fn local_context_fields_match_the_doc() {
-    let doc = common::read_repo_file("docs/14-observability.md")
-        .expect("读不到 docs/14-observability.md");
+    let doc = common::read_repo_file("docs/14-observability.md").expect("读不到日志字段契约");
     let mut doc_fields =
         section_table_first_column(&doc, "**当前已登记的本地上下文字段**", "\n# 6.");
     doc_fields.sort();
