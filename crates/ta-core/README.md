@@ -38,9 +38,8 @@
 - **不许有**：`tokio` / `axum` / `reqwest` / `tauri` —— 出现任何一个就是边界破了（[docs/09](../../docs/09-architecture-design.md)）。
 
 ## OWNER
-- 按 `docs/12-work-breakdown.md` §1.2 的固定编制：`domain` / `config` → **E1 领域官**；`routing` / `sticky` / `pricing` / `metering` → **E2 决策官**。
+- 固定编制：`domain` / `config` → **E1 领域官**；`routing` / `sticky` / `pricing` / `metering` → **E2 决策官**。
 - `clock` / `error` / `types` / `trace` / `diag` → **未标注**（编制表没点名，文件头也没有归属标记）。
-- 注意：`docs/12-work-breakdown.md` 编制表里的 `quota` 模块在本 crate 已不存在（已删除）；那份表在这一点上过期。
 
 ## 测试位置
 | 类型 | 位置 |

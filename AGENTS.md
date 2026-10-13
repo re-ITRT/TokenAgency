@@ -71,13 +71,13 @@
 | `crates/ta-gateway` | **本地网关本体**：入站、全透传、路由管线、分发、协议适配、trace | 上面全部 | 源码内联 `#[cfg(test)]` |
 | `src-tauri` | Tauri 壳：命令层、托盘、插件、生命周期（**薄**） | 全部 crate | 源码内联 + `src-tauri/tests/`（`src-tauri/tests/boot_real_kernel.rs` 真内核全路径、`src-tauri/tests/runtime_manifest.rs` Windows 清单守卫） |
 | `src` | React 19 + MUI v7 前端（页面 / 组件 / 契约绑定） | 无（只经 IPC） | `src/**/*.test.tsx` |
-| `docs` | 设计文档 01–60（**09 是架构基线，10/11 是接口契约**） | — | — |
+| `docs` | 设计文档**只剩 16 篇**（09 是架构基线、10/11 是接口契约；索引见 `docs/README.md`） | — | — |
 | `scripts` | 构建 / 门禁 / 审计 / e2e | — | — |
 | `verify` | 厂商错误响应样本（HTML，用于对齐错误形状） | — | — |
 
 **边界铁律**：
 * **转发路径**必须走 `GatewayDeps.dialer` —— 另开一条出站路径会**绕过线路策略**。
-  注意措辞：`src-tauri` **是**依赖 `reqwest` 的（`src-tauri/Cargo.toml`，[docs/46 §310] 的额度查询出网口），
+  注意措辞：`src-tauri` **是**依赖 `reqwest` 的（`src-tauri/Cargo.toml`，额度查询的出网口），
   所以这不是"不许用 reqwest"，而是"**用户流量的转发链路上**不许出现第二个 client"。
   源码级约束有**两条**（别搞混，它们的出处不同）：
   * `crates/ta-gateway/src/probe.rs` 的 `production_slice_has_no_second_egress_path`
@@ -110,7 +110,7 @@
 | 请求日志 | trace | `crates/ta-store/src/trace_store.rs` | 请求级轨迹（mode 决定记多少） |
 | 用量 / 花费 | usage / `UsageRecord` | `crates/ta-core/src/types.rs`、`crates/ta-store/src/usage_store.rs` | 账本；花费是**本地估算**，不是上游账单 |
 | 计量器 | `ResponseMeter` | `crates/ta-gateway/src/meter.rs` | 把响应 usage 落账的钩子 |
-| 协议适配 | adapter / IR | `crates/ta-gateway/src/adapt/` | 边缘 N 种协议 → 内部 1 种 IR（见 [docs/59](docs/59-protocol-hub-and-lane-ports.md)） |
+| 协议适配 | adapter / IR | `crates/ta-gateway/src/adapt/` | 边缘 N 种协议 → 内部 1 种 IR |
 
 **类型速查**（都在 `crates/ta-core/src/types.rs`）：
 `Protocol`（`Openai` / `Anthropic` / `OpenaiResponses` / `Gemini` / `Custom`）、
@@ -126,7 +126,7 @@
 | **IPC 命令面**（TS ↔ Rust） | `src-tauri/src/commands/*.rs` 的 `#[tauri::command]` | `src/shared/bindings.ts`、`docs/contracts/bindings-handwritten-reference.ts.txt` | `pwsh -File scripts/gen-bindings.ps1` |
 | **用户配置** | `crates/ta-core/src/domain/mod.rs`（`ConfigDoc`） | `config.example.yaml`、`src/shared/bindings.ts` | `pwsh -File scripts/gen-example-config.ps1` |
 | **事件**（后端 → 前端） | `crates/ta-gateway/src/events.rs`（`TaEvent::name()`） | 前端订阅处（`src/shared/…`） | 手动；有守卫逐字核对事件名 |
-| **日志字段** | `docs/14-observability.md` §5 白名单 | — | 手动；`crates/ta-core/tests/log_field_guard.rs` 会拦白名单外的字段名 |
+| **日志字段** | 「日志、错误追踪与诊断」一篇里的字段白名单 | — | 手动；`crates/ta-core/tests/log_field_guard.rs` 会拦白名单外的字段名 |
 | **trace 表结构** | `crates/ta-store/src/trace_store.rs` | 前端日志页 | 迁移在 `ta-store` |
 
 **跨切面守卫**（改到上面任何一处就该跑它们）：
@@ -199,7 +199,7 @@ git log --oneline -20 -- path/file.rs            # 这个文件的近期历史
 
 **动态行为的反推**（静态搜不到时）：`request_id` 是贯穿全链路的关联 id ——
 从请求日志（前端日志页 / `trace` 表）拿它，再 `rg -n "<request_id>"` 追日志行；
-网关的 `tracing` 字段名被白名单约束（`docs/14-observability.md` §5），所以字段名可当检索锚点。
+网关的 `tracing` 字段名被白名单约束，所以字段名可当检索锚点。
 
 ### 7.3 还没有、但值得接的（诚实清单）
 
@@ -255,7 +255,9 @@ git log --oneline -20 -- path/file.rs            # 这个文件的近期历史
 1. **注释用中文，写"为什么"** —— 不是"这行做什么"。
 2. **不许假绿**：改不动就说改不动；`SKIP` 要写清"环境给不了什么条件"，
    而且**先怀疑自己**（第 336 轮有个 SKIP 的理由是假的：数据一直在，只是换了页面）。
-3. **文档编号写在注释里，不写在界面上**（`docs/60-ui-minimalism.md` 把界面上的 `§` 全清了）。
+3. **不许做文档编号引用**：`docs/` 之外出现形如「docs 加两位编号」的引用即红
+   （`docsRef.guard`；注意别把它写成反引号里的示例 —— 地图守卫会把反引号内容当路径去核对）；
+   约束要写进注释，且**自足到不需要翻文档**。界面上的 `§` 同样不许（`uiMinimalism.guard`）。
 4. **一屏一个主操作 / 版面文案 ≤36 字 / 表格 ≤6 列** —— 有守卫（`uiMinimalism.guard`）。
 5. **测试读 i18n 真源**（`zhCN["key"]`），不把中文句子抄进断言。
 6. **`data-testid` 是 e2e 的契约**：可以加，删之前先 `rg` 一遍 `scripts/e2e/smoke.mjs`。

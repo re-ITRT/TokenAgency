@@ -54,9 +54,9 @@
 - 包名**不写反引号**：`repoMap.guard` 会把带 `/` 的反引号 token 当仓库路径核对，而依赖包不在仓库里。
 
 ## OWNER
-- 按 `docs/12-work-breakdown.md` §6 的前端分工：**F1 外壳**（`src/app/**`、`src/stores/**`、`src/shared/**`、`src/theme.ts`）、**F2 看板 + 日志**、**F3 配置类**（服务商 / 模型）、**F4 网络 + 成本 + 设置**。
+- 前端分工：**F1 外壳**（`src/app/**`、`src/stores/**`、`src/shared/**`、`src/theme.ts`）、**F2 看板 + 日志**、**F3 配置类**（服务商 / 模型）、**F4 网络 + 成本 + 设置**。
 - 路由级归属见 `src/app/routes.ts` 的 `owner` 字段（`F1`–`F4`）。
-- 那份编制表的**页面清单已过期**：`channels` / `policies` / `onboarding` 三页在本仓已删除。
+- **已删页面**：`channels` / `policies` / `onboarding` 三页在本仓已不存在。
 - 单个源文件头没有归属标记的一律记 **未标注**。
 
 ## 测试位置

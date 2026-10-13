@@ -45,7 +45,7 @@
 - **不许有**：`tauri`（外壳只依赖网关，反过来不行）。
 
 ## OWNER
-- 整体：`docs/12-work-breakdown.md` §1.2 的 **E5 网关官**（主岗文件范围就是 `crates/ta-gateway/**`）。
+- 整体：**E5 网关官**（主岗文件范围就是 `crates/ta-gateway/**`）。
 - 子包划分（见 `crates/ta-gateway/src/lib.rs` 的模块头）：**G1** `ingress` / `passthrough` / `admin`；**G2** `pipeline` / `dispatch`；**G3** `adapt`；**G4** `trace` / `events` / `meter`。
 - G1–G4 清单之外的三个文件：`crates/ta-gateway/src/probe.rs` / `crates/ta-gateway/src/runtime.rs` / `crates/ta-gateway/src/traits_store.rs` → **未标注**（lib.rs 的 G1–G4 清单里没有它们）。
 

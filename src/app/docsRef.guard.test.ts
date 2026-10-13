@@ -52,7 +52,7 @@ const EXT = new Set([".rs", ".ts", ".tsx", ".mjs", ".js", ".ps1", ".sh", ".yaml"
  * **只许往下调。** 改掉一批引用后，把这两个数字改小；守卫会逼着你确认
  * "确实只减不增"。
  */
-const BASELINE = { files: 229, lines: 2459 };
+const BASELINE = { files: 227, lines: 2454 };
 
 /**
  * `docs/` 篇数的棘轮基线（第 342 轮实测 52 篇）。
@@ -60,7 +60,7 @@ const BASELINE = { files: 229, lines: 2459 };
  * 目标的另一半：文档编号本身就是接口，**篇数不缩，引用就清不干净**。
  * 同样只许往下调；删一篇就把这里调低一格，目标 16。
  */
-const DOCS_BASELINE = { files: 52 };
+const DOCS_BASELINE = { files: 16 };
 
 /** 命中一处引用即算一行。两个形态都要认。 */
 export function countsAsRef(line: string): boolean {
