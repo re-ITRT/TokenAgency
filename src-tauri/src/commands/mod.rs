@@ -1,13 +1,13 @@
 //! IPC 错误信封与命令注册。
 //!
-//! 契约：`docs/10-interface-spec.md` §2.1 的 `IpcError { code, message, details? }`
-//! 与 `docs/11-internal-contracts.md` §5 的错误码总表。
+//! 契约： 的 `IpcError { code, message, details? }`
+//! 与  的错误码总表。
 //!
 //! **只有一个错误类型**：`TaError` → `IpcError`。命令层不做任何错误分类决策，
 //! 否则前端要为每个命令猜一套错误语义。
 
 pub mod app;
-// ---- docs/19 §3：我们网关对外的访问密钥（apikey.rs，独立文件，见该文件模块文档）
+// ---- ：我们网关对外的访问密钥（apikey.rs，独立文件，见该文件模块文档）
 pub mod apikey;
 pub mod catalog;
 pub mod config;
@@ -18,7 +18,7 @@ pub mod log;
 pub mod net;
 // ---- task-16 批次 B：系统集成 / 诊断导出 / 向导 / 托盘控制（settings_ext.rs，独立文件）
 pub mod settings_ext;
-// ---- docs/19 §1.1–§1.3：上游探测与模型导入（upstream.rs，独立文件，见该文件模块文档）
+// ---- §1.3：上游探测与模型导入（upstream.rs，独立文件，见该文件模块文档）
 pub mod upstream;
 pub mod usage;
 
@@ -183,7 +183,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             entity::model_bulk_update,
             entity::channel_delete,
             entity::channel_set_tags,
-            // [docs/55] `channel_bulk_assign_lane` 已删除：线路分配只剩**服务商级**一处，
+            // `channel_bulk_assign_lane` 已删除：线路分配只剩**服务商级**一处，
             //「把一批通道的 lane 改成同一个值」这个动作不再有意义（通道上已经没有 lane 字段）。
             entity::channel_bulk_set_enabled,
             entity::channel_matrix,
@@ -201,14 +201,14 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             entity::pricing_delete,
             entity::pricing_resolve,
             entity::pricing_import_builtin,
-            // ---- docs/19 §1.1–§1.3：上游探测与模型导入（upstream.rs，本组命令只由本文件的作者登记）
+            // ---- §1.3：上游探测与模型导入（upstream.rs，本组命令只由本文件的作者登记）
             upstream::provider_test,
             upstream::model_import_from_provider,
             upstream::model_apply_import,
             // ---- docs/25：模型目录（扫描只记录、勾一下才接入；没有手动添加）
             upstream::provider_model_catalog,
             upstream::provider_model_attach,
-            // [docs/28 §1.4] 「添加服务商就把所有线路建出来」（默认关闭，之后只用滑块启停）
+            // 「添加服务商就把所有线路建出来」（默认关闭，之后只用滑块启停）
             upstream::provider_lines_create_all,
             usage::usage_dashboard,
             usage::usage_query,
@@ -251,16 +251,16 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             net::subscription_groups,
             net::subscription_rules_raw,
             net::subscription_rollback,
-            // 只读：每份订阅的"上次已知流量与更新时间"（docs/18 §1.2 的 (a)）
+            // 只读：每份订阅的"上次已知流量与更新时间"
             net::subscription_traffic,
             net::lane_upsert,
             net::lane_delete,
             net::lane_set_node,
             net::lane_test,
-            // [docs/55] `lane_assignments` / `lane_pick_options` / `lane_reverse_lookup`
+            // `lane_assignments` / `lane_pick_options` / `lane_reverse_lookup`
             // 已删除：它们只服务于"线路级别的分配"（五级继承链），随 `/network/assignments`
             // 整页删除后没有任何调用方。
-            // [docs/28 §1.2] 线路（网络代理）下拉的可选来源：已配置线路 + 订阅节点，
+            // 线路（网络代理）下拉的可选来源：已配置线路 + 订阅节点，
             // 以及"选中一个节点就确保有一条对应线路"（已有则复用）
             net::lane_options,
             net::lane_ensure_for_node,
@@ -274,7 +274,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             net::kernel_generated_config,
             net::kernel_log_tail,
             net::kernel_probe_path,
-            // ---- docs/19 §3：我们网关对外的访问密钥（apikey.rs，本组命令只由本文件的作者登记）
+            // ---- ：我们网关对外的访问密钥（apikey.rs，本组命令只由本文件的作者登记）
             apikey::api_key_list,
             apikey::api_key_create,
             apikey::api_key_set_enabled,
@@ -317,7 +317,7 @@ const TS_HEADER: &str = "\
 //            | (string & {})
 //   Metric:    'requests' | 'cost' | 'cache_hit_rate' | 'avg_latency' | TokenKind
 //
-// 时间一律是 **Unix 毫秒**；\"今天/本周\" 这类聚合按**本地时区**（见 docs/07 §1.3）。
+// 时间一律是 **Unix 毫秒**；\"今天/本周\" 这类聚合按**本地时区**。
 ";
 
 #[cfg(test)]

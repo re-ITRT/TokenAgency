@@ -15,7 +15,7 @@
  *    `src-tauri/src/commands/mod.rs` 的 `collect_commands!` 为准（`commandSurface.guard.test.ts`
  *    机械检查调用方引用），所以这一份只断言**列表/详情页**上没有测试/编辑/删除按钮
  *    —— 两步向导里那个「连通性测试」按钮的接线由 `src/app/providerWizard.test.tsx` 负责。
- * 5. **添加向导（[docs/17 §3.1] + [docs/19 §1]）是真入口**：`provider_upsert` / `credential_upsert` /
+ * 5. **添加向导（+）是真入口**：`provider_upsert` / `credential_upsert` /
  *    `credential_set_secret` 都已在注册表里，所以「添加服务商」（本轮已是**两步向导**，
  *    见 `providerWizard.test.tsx`）、「高级添加」（**原来的单步对话框**，字段 tid 不变）
  *    与「添加密钥」必须是能真填、真发命令、成功后回显**后端返回值**的向导
@@ -146,7 +146,7 @@ function rustCredential(overrides: Record<string, unknown> = {}): unknown {
  * 同一家下的**第二份**凭据（只有旧数据才会出现）。
  *
  * 用来钉住"页面不会因为多了份凭据就退回凭据表/多选"，而是**如实说出**这件事
- * （[docs/28 §1] 硬规则 3：一个服务商一把密钥；要多个账号 = 加多个服务商）。
+ * （硬规则 3：一个服务商一把密钥；要多个账号 = 加多个服务商）。
  */
 function secondRustCredential(): unknown {
   const base = rustCredential() as { credential: Record<string, unknown> };
@@ -313,7 +313,7 @@ describe("读凭据与挂载统计", () => {
   });
 });
 
-// ================================================================ ②b 纯逻辑：这一家的线路（[docs/28 §1]）
+// ================================================================ ②b 纯逻辑：这一家的线路
 
 describe("读线路：只认读得到的列；写载荷**以原始记录为底**", () => {
   it("`channel_list` 的行按 provider 过滤；读不到的列是 undefined（不是默认值）", () => {
@@ -368,7 +368,7 @@ function renderList(overrides: Partial<ProvidersBodyProps> = {}) {
 }
 
 /**
- * 线路区（[docs/28 §1]）的默认 props：**空线路 + 空目录**是一种真实的起点
+ * 线路区的默认 props：**空线路 + 空目录**是一种真实的起点
  * （数据层永远把这一份注入；"读不到"要显式传 `lines: undefined`）。
  */
 function makeLinesProps(overrides: Partial<ProviderLinesProps> = {}): ProviderLinesProps {
@@ -581,7 +581,7 @@ describe("[07 §3.1] 列表页：空 / 加载 / 错误 / 有数据", () => {
     for (const label of ["测试连通性", "编辑", "复制", "停用"]) {
       expect(screen.queryByRole("button", { name: label })).toBeNull();
     }
-    // [docs/21 §1] 删除是本轮新接的写入口：是真按钮、点得到（不是禁用占位）
+    // 删除是本轮新接的写入口：是真按钮、点得到（不是禁用占位）
     const remove = screen.getByTestId("providers-delete");
     expect(remove.tagName).toBe("BUTTON");
     fireEvent.click(remove);
@@ -614,10 +614,10 @@ describe("[07 §3.2] 详情页：目录里没有 / 连接配置不可用 / 有�
   it("后端只给了视图（没有连接配置字段）：整页只读并说清原因，不排一排空占位", () => {
     renderDetail({ id: "p-view", row: readProvider(viewProvider()) });
 
-    // 只读的原因写在最上面（[docs/23] 纪律 2）：覆盖写会用默认值抹掉线上配置
+    // 只读的原因写在最上面（纪律 2）：覆盖写会用默认值抹掉线上配置
     expect(screen.getByTestId("providers-view-only")).toBeTruthy();
     expect(screen.getByText(copy("providers.edit.viewOnly"))).toBeTruthy();
-    // 「连接配置没读到」这句结论仍然一眼可见（[docs/22 §2] 红线第 1 条）
+    // 「连接配置没读到」这句结论仍然一眼可见（红线第 1 条）
     expect(screen.getByTestId("providers-connection-unavailable")).toBeTruthy();
     expect(screen.getByText(copy("providers.connection.unavailable"))).toBeTruthy();
     // 视图里有的字段照常显示（值在只读控件里），但没有"假保存按钮"
@@ -679,7 +679,7 @@ describe("[07 §3.2] 详情页：目录里没有 / 连接配置不可用 / 有�
     const rows = [readCredential(rustCredential()), readCredential(viewCredential())];
     renderDetail({ id: "p-rust", row: readProvider(rustProvider()), credentials: rows });
 
-    // 一个服务商一把密钥（[docs/28 §1] 硬规则 3）：页面上只有**一块**密钥区，没有凭据表
+    // 一个服务商一把密钥（硬规则 3）：页面上只有**一块**密钥区，没有凭据表
     expect(screen.getByTestId("providers-key")).toBeTruthy();
     expect(screen.queryByTestId("providers-credentials-table")).toBeNull();
     expect(screen.getByTestId("providers-key-label").textContent).toBe("自建 · 500万 token/月");
@@ -781,7 +781,7 @@ describe("两条路由都解析到真页面，不再走占位壳", () => {
   });
 });
 
-// ================================================================ ⑥⑦ [docs/17 §3.1] 两个添加向导
+// ================================================================ ⑥⑦ 两个添加向导
 
 /**
  * 记录每次调用入参的 mock：返回 `result`，同时把入参留下来
@@ -834,7 +834,7 @@ async function chooseOption(testId: string, name: RegExp | string): Promise<void
  * 行内的下拉：线路列表里每一条线路都有自己的网络代理下拉，作用域必须收窄到**那一行**，
 
 
-/** 本轮向导该有的控件（[docs/17 §3.1]）。**不许改名**：真机 E2E 按它们驱动。 */
+/** 本轮向导该有的控件。**不许改名**：真机 E2E 按它们驱动。 */
 const PROVIDER_WIZARD_CONTROLS = [
   "providers-add-id",
   "providers-add-name",
@@ -854,13 +854,13 @@ const CREDENTIAL_WIZARD_CONTROLS = [
   "credentials-add-submit",
 ] as const;
 
-describe("[docs/17 §3.1] 高级添加（单步对话框）：真控件 → 真的调 provider_upsert → 显示后端真值", () => {
+describe(" 高级添加（单步对话框）：真控件 → 真的调 provider_upsert → 显示后端真值", () => {
   beforeEach(() => {
     resetWizardSession();
   });
 
   /*
-   * 为什么这里的入口是 `providers-add-advanced-open`：本轮（[docs/19 §1]）`providers-add-open`
+   * 为什么这里的入口是 `providers-add-advanced-open`：本轮`providers-add-open`
    * 改成**两步向导**（`src/app/providerWizard.test.tsx` 验它），而原来的单步对话框**原样保留**
    * 并改挂到「高级添加」入口 —— 字段 tid（`providers-add-*`）一个都没变，
    * 所以下面这些断言一字不改，只换了"点哪个入口"。
@@ -1037,7 +1037,7 @@ describe("[docs/17 §3.1] 高级添加（单步对话框）：真控件 → 真�
   });
 });
 
-// ================================================================ ⑦ [docs/28 §1] 一个服务商一把密钥
+// ================================================================ ⑦ 一个服务商一把密钥
 //
 // 第 73 轮这里验的是「添加密钥」对话框（一次建一份凭据：自己的 id / 标签 / 服务商 / 明文 /
 // 额度上限 / 币种 / 窗口）。**第 80 轮那个对话框整条下线了**：owner 原话「一个服务商肯定就一个
@@ -1054,7 +1054,7 @@ describe("[docs/17 §3.1] 高级添加（单步对话框）：真控件 → 真�
 // 密钥本身的写入口（两步向导第 1 步 `pw-key`、详情页「密钥」块）分别由
 // `providerWizard.test.tsx` 与本节 ⑧ 覆盖。
 
-describe("[docs/28 §1] 一个服务商一把密钥：列表页没有第二个凭据入口", () => {
+describe(" 一个服务商一把密钥：列表页没有第二个凭据入口", () => {
   beforeEach(() => {
     registerBaselineMocks();
   });
@@ -1130,7 +1130,7 @@ describe("[docs/28 §1] 一个服务商一把密钥：列表页没有第二个�
 });
 
 
-// ================================================================ ⑧ [docs/23] 详情页 = 查看 + 编辑一体
+// ================================================================ ⑧ 详情页 = 查看 + 编辑一体
 //
 // 用户第 75 轮原话：「服务商编辑页面不走下一步下一步，直接把所有信息在点开服务商之后提供
 // 可视化编辑界面，相当于编辑和查看一体了，当然不是纯文本编辑」。
@@ -1197,7 +1197,7 @@ function saveButton(): HTMLElement {
 }
 
 /**
- * [docs/28 §1.4] 上游原文的**单行预览**：只截断、不改写。
+ * 上游原文的**单行预览**：只截断、不改写。
  *
  * 原文是"上游真的给了什么"的证据 —— 预览压掉换行只是为了让一行放得下，
  * **不许**挑字段、不许重排、不许加自己的话（那样它就不是证据了）。
@@ -1216,7 +1216,7 @@ describe("rawPreview：单行预览只截断，不改写原文", () => {
     expect(long.slice(0, 40)).toBe(`{"id":"m","note":"${"z".repeat(22)}`);
   });
 });
-describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再走下一步", () => {
+describe(" 详情页 = 查看 + 编辑一体：点开就能改，不再走下一步", () => {
   beforeEach(() => {
     registerBaselineMocks();
     registerMock("provider_list", () => [rustBytedance()]);
@@ -1383,7 +1383,7 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
 
     const KEY = "sk-detail-canary-0007"; // ta-allow-fake-secret —— 假值
     await openDetail();
-    // [docs/30] 极简：**已经存在的凭据不再重复报一遍**（它就在下面那张凭据表里）。
+    // 极简：**已经存在的凭据不再重复报一遍**（它就在下面那张凭据表里）。
     // 那句话只在"这次会新建一份凭据"时才有信息量；这里已有凭据 → 不许再出现。
     expect(screen.queryByText(/写入的凭据/)).toBeNull();
     // 而"写的是哪一把"这个事实仍在页面上（凭据表里有它的 id）
@@ -1427,7 +1427,7 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
   });
 
   /**
-   * 用户第 82 轮的重构（[docs/28 §1.4]）：
+   * 用户第 82 轮的重构：
    * 「添加服务商默认添加所有线路，然后通过滑块来'启用'和'关闭'……直接写在在一个列表里面，
    *  没有添加的线路也可以设置'网络代理'，只是有个滑块控制是否可见」
    *
@@ -1435,7 +1435,7 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
    * 列表里每行 = 上游原文 + 网络代理 + 启用/关闭的滑块；列表头上有**全选**
    * （一条批量命令，不是前端循环）。不再有"勾一下才创建"。
    */
-  it("[docs/28 §1.4] 扫描把清单里的每条线路都建出来（默认关闭）；一个列表里未启用的行也能设代理；全选走批量命令", async () => {
+  it(" 扫描把清单里的每条线路都建出来（默认关闭）；一个列表里未启用的行也能设代理；全选走批量命令", async () => {
     const scan = recordingMock({
       preview_token: "tok-1",
       models: [{ suggested_id: "m-new", upstream_model: "brand-new-model", exists: false }],
@@ -1451,7 +1451,7 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
       channels_created: 0,
     });
     registerMock("channel_bulk_set_enabled", bulk.handler);
-    // [docs/28 §4] 目录里记着**上游原文**（键序都原样）；刻意给一个我们"不认识"的字段，
+    // 目录里记着**上游原文**（键序都原样）；刻意给一个我们"不认识"的字段，
     // 证明页面是把 `raw` 原样画出来的，而不是只挑自己认识的键。
     const UPSTREAM_RAW = {
       id: "brand-new-model",
@@ -1519,10 +1519,10 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
     ).toBe(true);
 
     // **没有添加的线路（未启用）也能设网络代理** —— 用户原话
-    // [docs/29 §2.1] **线路不再有自己的代理**：出口只由服务商决定（同一服务商一个 URL，
+    // **线路不再有自己的代理**：出口只由服务商决定（同一服务商一个 URL，
     // 不同出口 IP 会被上游当成"同账号多地并发"）→ 行里**没有**代理下拉。
     expect(within(offRow).queryByTestId("providers-line-lane")).toBeNull();
-    // [docs/29 §2.1] **列头里也不许再有「网络代理」那一列** —— 第 88 轮只删了行内控件，
+    // **列头里也不许再有「网络代理」那一列** —— 第 88 轮只删了行内控件，
     // 列头漏了一处（替换静默失败，`tsc` 不报），用户第 117 轮看出来的。这条断言就是防它再回来。
     const header = screen.getByTestId("providers-lines-header");
     expect(header.textContent).toContain("名称");
@@ -1554,7 +1554,7 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
     expect(bulk.calls[0]).toEqual({ channel_ids: ["ch-bytedance", "ch-new"], enabled: true });
   });
 
-  it("[docs/28 §4] 目录里没记到上游原文（`{}`）→ 行里如实说「上游没给对象」，不编一个出来", async () => {
+  it(" 目录里没记到上游原文（`{}`）→ 行里如实说「上游没给对象」，不编一个出来", async () => {
     registerMock("provider_model_catalog", () => [
       {
         provider_id: "p-bytedance",
@@ -1583,7 +1583,7 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
     expect(within(panel).getByTestId("providers-line-raw-empty").textContent).toBeTruthy();
   });
 
-  it("[docs/28 §1] 线路列表：一行一条（上游模型名 / 网络代理 / 优先级权重 / 启用），启停真调 channel_set_enabled", async () => {
+  it(" 线路列表：一行一条（上游模型名 / 网络代理 / 优先级权重 / 启用），启停真调 channel_set_enabled", async () => {
     const setEnabled = recordingMock(undefined);
     registerMock("channel_set_enabled", setEnabled.handler);
     registerMock("provider_model_catalog", () => [
@@ -1604,13 +1604,13 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
     await openDetail();
 
     const row = (await screen.findAllByTestId("providers-line-row"))[0]!;
-    // [docs/28 §1.5] 列表行 = 名字 + 网络代理 + 滑块（用户原话："一条就是左边名字，
+    // 列表行 = 名字 + 网络代理 + 滑块（用户原话："一条就是左边名字，
     // 右边选择滑块就好了"）：**id / 优先级权重不在行里**
     expect(within(row).getByTestId("providers-line-upstream").textContent).toBe(BASELINE_MODEL);
     expect(within(row).queryByTestId("providers-line-id")).toBeNull();
     expect(within(row).queryByTestId("providers-line-priority")).toBeNull();
     // 网络代理：这一行**自己的** lane，下拉里显示的是线路名（不是 id）
-    // [docs/29 §2.1] 线路行里不再有代理（list 只放名字 + 滑块）
+    // 线路行里不再有代理（list 只放名字 + 滑块）
     expect(within(row).queryByTestId("providers-line-lane")).toBeNull();
     expect(within(row).getByTestId("providers-line-stale")).toBeTruthy();
     // 启用状态来自配置本身
@@ -1633,7 +1633,7 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
 
 
 
-  it("[docs/28 §3] 移除线路：先确认、写清删的是哪条、channel_delete 没有 force 所以也没有级联按钮", async () => {
+  it(" 移除线路：先确认、写清删的是哪条、channel_delete 没有 force 所以也没有级联按钮", async () => {
     const remove = recordingMock(undefined);
     registerMock("channel_delete", remove.handler);
     registerMock("channel_list", () => [rustChannel()]);
@@ -1641,7 +1641,7 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
     await openDetail();
 
     const row = (await screen.findAllByTestId("providers-line-row"))[0]!;
-    // 「移除线路」在**点开的详情**里（[docs/28 §1.5]：列表行只放名字 + 代理 + 滑块）
+    // 「移除线路」在**点开的详情**里（：列表行只放名字 + 代理 + 滑块）
     fireEvent.click(within(row).getByTestId("providers-line-info"));
     fireEvent.click(within(row).getByTestId("providers-line-remove"));
 
@@ -1661,7 +1661,7 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
     expect(screen.queryByTestId("providers-line-delete-cascade")).toBeNull();
   });
 
-  it("[docs/28 §3] 移除被策略点名引用：原样显示后端原文，且仍然没有级联按钮", async () => {
+  it(" 移除被策略点名引用：原样显示后端原文，且仍然没有级联按钮", async () => {
     registerMock("channel_delete", () => {
       throw new TokenAgencyError({
         code: "TA-5002",
@@ -1684,7 +1684,7 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
     expect(screen.queryByTestId("providers-line-delete-cascade")).toBeNull();
   });
 
-  it("[docs/25] 重新扫描真调 model_import_from_provider，并把「已全部记录」如实说出来", async () => {
+  it(" 重新扫描真调 model_import_from_provider，并把「已全部记录」如实说出来", async () => {
     const scan = recordingMock({
       preview_token: "tok-1",
       models: [{ suggested_id: "m-new", upstream_model: "brand-new-model", exists: false }],
@@ -1702,7 +1702,7 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
     expect(notice.textContent).toContain("2");
   });
 
-  it("[docs/28 §1] 空态与读不到是两件事：目录空 / 没有线路 / 线路清单读不到，各有各的话", async () => {
+  it(" 空态与读不到是两件事：目录空 / 没有线路 / 线路清单读不到，各有各的话", async () => {
     // ① 目录还没扫过 + 这一家一条线路都没有
     // 目录读到了但**是空的** —— 与"读不到"是两件事，页面各说各的话（见下面的 ②）。
     // 不注册这条 mock 的话 `catalog` 是 `undefined`（读不到），落到的是另一条分支。
@@ -1730,11 +1730,11 @@ describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再
   });
 });
 
-// ================================================================ ⑩ [docs/21 §1] 删除服务商 / 凭据
+// ================================================================ ⑩ 删除服务商 / 凭据
 // 为什么这一节全部走**整页**（`renderAt`）而不是只看 `ProvidersBody`：
 // 「删除」的语义一半在展示层（行内按钮 / 多选 / 确认框），一半在数据层
 // （载荷到底是 `{id, force:false}` 还是 `force:true`、成功后失效哪些查询、后端原文怎么摆出来）。
-// 只测展示层的话，"点了到底发了什么"完全不设防 —— 而那恰好是 [docs/21 §1] 的核心。
+// 只测展示层的话，"点了到底发了什么"完全不设防 —— 而那恰好是 的核心。
 
 /**
  * 多选复选框：`data-testid` 挂在 MUI `Checkbox` 的根 `span` 上，真正的 `input` 在它里面。
@@ -1750,7 +1750,7 @@ function selectBoxAt(testId: string, index: number): HTMLInputElement {
   return input as HTMLInputElement;
 }
 
-describe("[docs/21 §1] 服务商删除：先确认、再 force=false、被引用才给级联", () => {
+describe(" 服务商删除：先确认、再 force=false、被引用才给级联", () => {
   beforeEach(() => {
     registerBaselineMocks();
   });
@@ -1791,7 +1791,7 @@ describe("[docs/21 §1] 服务商删除：先确认、再 force=false、被引�
     // 成功后确认框收起来（MUI 的 Dialog 有一个退场过渡，所以要等它真的卸载）
     await waitFor(() => expect(screen.queryByTestId("providers-delete-dialog")).toBeNull());
 
-    // 受影响的查询真的失效（[docs/21 §1.1 第 4 条]）
+    // 受影响的查询真的失效
     for (const key of [qk.providers, qk.credentials, qk.models, qk.channelMatrix]) {
       const hits = invalidate.mock.calls.filter(
         ([filters]) => JSON.stringify(filters?.queryKey) === JSON.stringify(key),
@@ -1929,7 +1929,7 @@ describe("[docs/21 §1] 服务商删除：先确认、再 force=false、被引�
   });
 });
 
-describe("[docs/21 §1] 详情页删除：页头删服务商（凭据表随「一把密钥」下线）", () => {
+describe(" 详情页删除：页头删服务商（凭据表随「一把密钥」下线）", () => {
   beforeEach(() => {
     registerBaselineMocks();
   });
@@ -1976,7 +1976,7 @@ describe("[docs/21 §1] 详情页删除：页头删服务商（凭据表随「�
     expect(calls[1]).toEqual({ id: "p-bytedance", force: true });
   });
 
-  it("[docs/28 §1] 凭据表下线：这一页没有任何凭据多选 / 批量删除 / credential_delete 调用点", async () => {
+  it(" 凭据表下线：这一页没有任何凭据多选 / 批量删除 / credential_delete 调用点", async () => {
     const remove = recordingMock(undefined);
     registerMock("credential_delete", remove.handler);
 
@@ -2007,7 +2007,7 @@ describe("[docs/21 §1] 详情页删除：页头删服务商（凭据表随「�
     expect(remove.calls).toHaveLength(0);
   });
 
-  it("[docs/28 §1] 旧数据里挂了两份凭据：页面如实说，但仍然不退回表格 / 批量删除", async () => {
+  it(" 旧数据里挂了两份凭据：页面如实说，但仍然不退回表格 / 批量删除", async () => {
     registerMock("credential_list", () => [
       boundCredential("c-a", "p-bytedance"),
       boundCredential("c-b", "p-bytedance"),
@@ -2024,19 +2024,19 @@ describe("[docs/21 §1] 详情页删除：页头删服务商（凭据表随「�
   });
 });
 
-// ================================================================ ⑦ [docs/22] 长解释收进问号圆圈
+// ================================================================ ⑦ 长解释收进问号圆圈
 
 /**
- * [docs/22]（用户第 74 轮：「简介好长，好多字……做成一个问号加一个圆圈」）的验收。
+ *（用户第 74 轮：「简介好长，好多字……做成一个问号加一个圆圈」）的验收。
  *
  * 这一节只钉**两件事**：
  * 1. 解释**收走了**：`?` 存在、`aria-label` 是全文（正文一个字都没丢）、那句正文**不再内联**；
- * 2. 红线**没被收走**（[docs/22 §2] 六条）：空态 / 后端原文（TA 码）/ 破坏性后果 / 数值 / 按钮文案
+ * 2. 红线**没被收走**（六条）：空态 / 后端原文（TA 码）/ 破坏性后果 / 数值 / 按钮文案
  *    仍然一眼可见 —— 把错误塞进 tooltip 是"藏问题"，不是排版。
  *
  * 既有用例（含第 73 轮的删除那一批）一条都没动：这里只加断言，不放宽任何东西。
  */
-describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", () => {
+describe(" 长解释收进问号圆圈，红线一律留在版面上", () => {
   beforeEach(() => {
     registerBaselineMocks();
   });
@@ -2062,7 +2062,7 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
     expect(label).toContain(copy("providers.honesty.fields"));
     expect(label).toContain(copy("providers.honesty.mounted"));
     expect(label).toContain("点名称进入详情");
-    // 多句合成一条、一个区块只有一个问号（[docs/22 §3]：一排问号比一排字更糟）
+    // 多句合成一条、一个区块只有一个问号（：一排问号比一排字更糟）
     expect(label).toContain("\n");
     expect(screen.getAllByTestId("providers-table-help")).toHaveLength(1);
 
@@ -2128,7 +2128,7 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
 
     expect(helpLabel("providers-headers-help")).toContain(copy("providers.headers.hint"));
     expect(helpLabel("providers-key-help")).toContain(copy("providers.credentials.secretHint"));
-    // 线路区是这一页的主体（[docs/28 §1]）：它**有**自己的那一个问号
+    // 线路区是这一页的主体：它**有**自己的那一个问号
     expect(helpLabel("providers-lines-help")).toBeTruthy();
     expect(helpLabel("providers-raw-section-help")).toContain("原样显示（未做任何清洗与删减）");
 
@@ -2223,9 +2223,9 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
   });
 });
 
-// ================================================================ [docs/26 §2] 一级界面省略
+// ================================================================ 一级界面省略
 
-describe("[docs/26 §2] 服务商名：省略后两条恢复路径都在（进详情 + 悬停/聚焦提示）", () => {
+describe(" 服务商名：省略后两条恢复路径都在（进详情 + 悬停/聚焦提示）", () => {
   it("长名字整段留在 DOM 里；没溢出时既不挂提示，也不是 Tab 站", () => {
     const name = "自建网关（东京 B 机 · 团队 A 专用 · 仅供白天批处理任务）";
     renderList({ rows: [readProvider(rustProvider({ id: "p-long", name }))] });

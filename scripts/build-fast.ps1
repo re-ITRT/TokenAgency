@@ -1,4 +1,4 @@
-# [docs/46 §293] **迭代用快速构建**：debug profile（比 release 快数倍）+ 自动铺好内核与 GeoIP。
+# **迭代用快速构建**：debug profile（比 release 快数倍）+ 自动铺好内核与 GeoIP。
 #
 # 用法：
 #   pwsh -File scripts/build-fast.ps1            # debug（默认，快）

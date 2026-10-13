@@ -33,7 +33,7 @@ pub struct ModelView {
     pub model: Model,
     pub channel_count: u32,
     pub upstream_models: Vec<String>,
-    /// [docs/46 §304] **对外暴露的信息**（上下文窗口 / 最大输出 / 能力 / `owned_by`）——
+    /// **对外暴露的信息**（上下文窗口 / 最大输出 / 能力 / `owned_by`）——
     /// 与网关 `/v1/models` 用的是**同一个** `ConfigDoc::public_model_info`，
     /// 所以「查看模型信息」面板里显示的就是客户端拿到的那一份。
     pub public_info: PublicModelInfo,
@@ -90,7 +90,7 @@ pub async fn model_list(state: State<'_, AppState>) -> IpcResult<Vec<ModelView>>
         .collect())
 }
 
-/// `channel_list` 的**线上形状**（[docs/28 §2]）：通道自己的字段 + **现算的** `models`。
+/// `channel_list` 的**线上形状**：通道自己的字段 + **现算的** `models`。
 ///
 /// 为什么需要这个包装：`models`（哪些模型在用这条线路）是从 `Model.lines` 翻过来的**派生值**，
 /// 不是配置里存的字段 —— 它是只读的，写命令永远不接受它。`#[serde(flatten)]` 让 JSON 形状
@@ -107,7 +107,7 @@ pub struct ChannelView {
 #[specta::specta]
 pub async fn channel_list(state: State<'_, AppState>) -> IpcResult<Vec<ChannelView>> {
     let d = doc(&state);
-    // [docs/28 §2] `models` 是**按当前配置现算**的反向派生值（哪些模型在用这条线路）。
+    // `models` 是**按当前配置现算**的反向派生值（哪些模型在用这条线路）。
     // 关系的真源是 `Model.lines`；这里只是把它翻过来给界面看 —— 不写回、不持久化。
     Ok(d.channels
         .iter()
@@ -143,7 +143,7 @@ pub async fn lane_list(state: State<'_, AppState>) -> IpcResult<Vec<LaneView>> {
         out.push(LaneView {
             lane: lane.clone(),
             latest,
-            // [docs/55]（第 322 轮）线路只在**服务商**上，所以"有几条通道走这条线"
+            //（第 322 轮）线路只在**服务商**上，所以"有几条通道走这条线"
             // 要按**通道所属服务商**的 lane 来数（原来数的是 `channel.lane`，那个字段已删除）。
             //
             // 语义变化如实说明：以前这是"显式写了这条线的通道数"，
@@ -164,7 +164,7 @@ pub async fn lane_list(state: State<'_, AppState>) -> IpcResult<Vec<LaneView>> {
 ///
 /// 为什么不在这里返回裸 `Subscription`：解析状态（`node_count` / `last_update_ms` / `parser`）
 /// 的真相在**版本存储**里，只有 `net.rs` 那侧的 `VersionKeeper` 够得着；而节点页的硬前置
-/// （[docs/19 §2.3]）就判 `last_update_ms`/`error` —— 少给这两个字段，真机上页面的表现是
+/// 就判 `last_update_ms`/`error` —— 少给这两个字段，真机上页面的表现是
 /// "刷新成功了却说没有解析结果、一个节点都不显示"。实现放在 `net` 侧（订阅域的读路径），
 /// 这里只做命令登记。
 #[tauri::command(rename_all = "snake_case")]
@@ -175,7 +175,7 @@ pub async fn subscription_list(state: State<'_, AppState>) -> IpcResult<Vec<Subs
 
 // ================================================================ 写路径（task-16 批次 A 第 1 组）
 
-/// 配置写路径的**唯一入口**（[docs/02 §4]）：校验 → 事务写库 → 留快照 → 换内存快照。
+/// 配置写路径的**唯一入口**：校验 → 事务写库 → 留快照 → 换内存快照。
 ///
 /// 与 `config_apply` 是同一条路径（同一份 validator、同样的顺序），差别只在"改哪里" ——
 /// 实体级命令不该各自发明一套写库顺序。
@@ -184,7 +184,7 @@ pub async fn subscription_list(state: State<'_, AppState>) -> IpcResult<Vec<Subs
 ///
 /// **为什么是 `pub(crate)`**（第 12 轮由主管放开）：其它命令模块（如 `entity.rs`）的实体写命令
 /// 必须走这**同一条**写路径；私有会让它们各自复制一份"validate → save → snapshot → set_doc"，
-/// 那就是两份写库顺序，将来必然分叉（[docs/13 L21] 同族错误）。
+/// 那就是两份写库顺序，将来必然分叉（同族错误）。
 pub(crate) async fn save_validated(state: &AppState, doc: ConfigDoc, label: &str) -> IpcResult<()> {
     let report = ta_core::config::TaConfigValidator.validate(&doc);
     if !report.ok {
@@ -192,7 +192,7 @@ pub(crate) async fn save_validated(state: &AppState, doc: ConfigDoc, label: &str
     }
     state.config.save(&doc).await?;
     state.config.snapshot(&doc, label).await?;
-    // [docs/46] **内核在跑时，lane 端口表必须跟着配置走**。这条路径原来只 `set_doc`，
+    // **内核在跑时，lane 端口表必须跟着配置走**。这条路径原来只 `set_doc`，
     // 不分配端口、也不同步内核配置源 —— 于是 `catalog.rs:267` 建的「自动」线路没有端口，
     // 生成期校验以 `port_missing` 拦下整份配置（文件不更新）⇒ 「自动」出口在真机上从未生效。
     // 分配失败就 `?` 上去：宁可报错，也不要库里出现一条"没有端口的 lane"。
@@ -202,14 +202,14 @@ pub(crate) async fn save_validated(state: &AppState, doc: ConfigDoc, label: &str
             src.set_doc(doc.clone());
             src.set_ports(ports.clone());
         }
-        // [docs/59] **同一份端口表也要推给网关拨号器**。只喂给内核配置源是不够的：
+        // **同一份端口表也要推给网关拨号器**。只喂给内核配置源是不够的：
         // 拨号器按 lane 查端口，它的表不更新 → 新建的 lane 查不到端口 → TA-3002。
         if let Some(hot) = state.lane_ports() {
             hot.replace(ports);
         }
     }
     state.set_doc(doc);
-    // [docs/59] **最后一步：让运行中的内核真的吃下这份配置。**
+    // **最后一步：让运行中的内核真的吃下这份配置。**
     //
     // 这一条是用户第 326 轮的真机现象（"网络代理只有直连可用"）的次因之一：
     // 上面那几行只把新配置写进了 `GeneratedConfigSource`（**下次**生成 YAML 时才生效），
@@ -234,7 +234,7 @@ fn not_found(what: &str, id: &str) -> IpcError {
     )))
 }
 
-/// 「自动」出口的**标记**：`lane: "auto:<订阅 id>"`（[docs/29 §2.2]，与 `direct:` 同一套约定）。
+/// 「自动」出口的**标记**：`lane: "auto:<订阅 id>"`（与 `direct:` 同一套约定）。
 ///
 /// 为什么用标记 + 在这里解析，而不是让前端先建线路再发 id：
 /// 前端不该成为"这条线路该长什么样（种类 / 组类型 / id 撞了怎么办）"的第二个真相来源 ——
@@ -246,7 +246,7 @@ const AUTO_LANE_PREFIX: &str = "auto:";
 ///
 /// ★ 为什么 id 里带**服务商**而不是订阅：id 里带订阅时，两家服务商挂同一份订阅会**共用一条** lane
 /// ⇒ 各自按自己存的地址（`auto_choice` 是按 provider 存的）重算、写**同一个组** ⇒
-/// 组上的 `now` 变成"最后写的那家"的选择，日志里还会互相打脸（真机实测，[docs/46 §301]）。
+/// 组上的 `now` 变成"最后写的那家"的选择，日志里还会互相打脸（真机实测）。
 /// 非法字符归一成 `-`。
 fn auto_lane_base_id(provider_id: &str) -> String {
     let slug: String = provider_id
@@ -319,7 +319,7 @@ async fn ensure_direct_lane(state: &AppState) -> IpcResult<LaneId> {
 
 /// `provider_upsert`：同 id 覆盖、不存在则新增（幂等，不会写出重复条目）。
 pub async fn upsert_provider(state: &AppState, mut provider: Provider) -> IpcResult<Provider> {
-    // [docs/29 §2.2] `lane: "auto:<订阅>"` → 确保**这家服务商自己的**那条「自动」线路存在，
+    // `lane: "auto:<订阅>"` → 确保**这家服务商自己的**那条「自动」线路存在，
     // 并把**真实 id** 写回去。「当前挂的那条」从库里读（入参里这时还是标记，不是 id）。
     if let Some(sub) =
         provider.lane.as_ref().and_then(|l| l.as_str().strip_prefix(AUTO_LANE_PREFIX))
@@ -333,7 +333,7 @@ pub async fn upsert_provider(state: &AppState, mut provider: Provider) -> IpcRes
             ensure_auto_lane(state, &provider_id, &provider_name, &sub, current.as_ref()).await?,
         );
     } else if provider.lane.as_ref().map(|l| l.as_str()) == Some(DIRECT_LANE_MARKER) {
-        // [docs/29 §2.2] 选「直连」：那条 `kind: direct` 的线路可能还不存在，这里补出来
+        // 选「直连」：那条 `kind: direct` 的线路可能还不存在，这里补出来
         provider.lane = Some(ensure_direct_lane(state).await?);
     }
     let mut doc = (*state.doc()).clone();
@@ -356,7 +356,7 @@ pub async fn provider_upsert(
 
 /// `channel_upsert`：同 id 覆盖、不存在则新增。
 ///
-/// **能力校验**（[docs/17 §2]）：这条线路若会被**已有策略**与同 `model` 的其它线路
+/// **能力校验**：这条线路若会被**已有策略**与同 `model` 的其它线路
 /// 归到一起，而它们的能力声明不一致 → 拒绝（TA-2007，带逐字段差异）。
 ///
 /// 语义刻意**不是**"同 model 的所有线路必须一致"：那样用户就没法先建第一条、再加第二条。
@@ -365,11 +365,11 @@ pub async fn upsert_channel(
     state: &AppState,
     mut channel: ChannelConfig,
 ) -> IpcResult<ChannelConfig> {
-    // [docs/28 §2] 线路**不再写"我是哪个模型的"**：关系在 `Model.lines` 上。
+    // 线路**不再写"我是哪个模型的"**：关系在 `Model.lines` 上。
     // 所以无论调用方发来什么，遗留字段一律清空 —— 否则一个回传上来的老对象会把旧关系又写回去，
     // 而那份关系已经搬进 models 了，那就成了第二份真相源。
     channel.model = String::new();
-    // [docs/46 §303] 这条线路**什么都没声明**时，按上游扫描存下来的原文补齐能力
+    // 这条线路**什么都没声明**时，按上游扫描存下来的原文补齐能力
     // （上游 → 软件保存的信息 → 线路能力 → 网关 `/v1/models` → 客户端，缺的一跳就是这里）。
     // 读不到 / 上游也没说 ⇒ 什么都不补（**不编**）。
     adopt_catalog_hints(state, &mut channel).await;
@@ -396,7 +396,7 @@ pub async fn channel_upsert(
     upsert_channel(&state, channel).await
 }
 
-/// [docs/46 §303] 用**目录里那一行的上游原文**，补齐这条线路没声明过的能力。
+/// 用**目录里那一行的上游原文**，补齐这条线路没声明过的能力。
 ///
 /// * 上游名/服务商对不上、目录里没有这一行、原文里没有我们认得的字段 ⇒ 一个都不动（**不编**）；
 /// * 读目录失败 ⇒ **不补**，按原样写（写线路不该因为目录读不到而失败），但记一条带错误码的日志。
@@ -425,7 +425,7 @@ async fn adopt_catalog_hints(state: &AppState, channel: &mut ChannelConfig) {
         ta_core::domain::upstream_hints::UpstreamModelHints::from_upstream_raw(&row.raw_json);
     let filled = hints.adopt_into(&mut channel.capabilities);
     if filled > 0 {
-        // 计数写进正文：`[docs/14 §5]` 的白名单只管**字段名**，数字放消息里更省事也更好读
+        // 计数写进正文：`` 的白名单只管**字段名**，数字放消息里更省事也更好读
         tracing::info!(
             channel_id = %channel.id,
             provider_id = %channel.provider,
@@ -497,7 +497,7 @@ mod write_tests {
     /// ② 同一个服务商重存 → **复用**，不许越用越多条；
     /// ③ 两家服务商各得一条**不同**的 lane（旧的"按订阅复用"会让两家共用一条 ⇒ 互相覆盖选择）；
     /// ④ 老配置（早先按订阅建的 `lane-<订阅>-auto`）**被继续沿用**，不因规则改了而多出一条、丢掉已选好的出口。
-    /// [docs/46 §303] 新建线路时，按**上游扫描存下来的原文**补齐它没声明过的能力。
+    /// 新建线路时，按**上游扫描存下来的原文**补齐它没声明过的能力。
     ///
     /// 这是"服务商 → 软件（保存信息）→ 本机 `/v1/models` → 客户端"这条链上缺的那一跳：
     /// 原文我们逐字存着（真机上 113/135 行带 `token_limits`），但从没人读 ⇒ 线路能力永远是 0

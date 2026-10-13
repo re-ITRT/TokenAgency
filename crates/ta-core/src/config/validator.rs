@@ -552,7 +552,7 @@ fn check_models(doc: &ConfigDoc, r: &mut ValidationReport) {
 fn check_channels(doc: &ConfigDoc, r: &mut ValidationReport) {
     for (i, c) in doc.channels.iter().enumerate() {
         require_text(&c.id.0, &format!("channels[{i}].id"), "id", r);
-        // [docs/28 §2] **不再要求 `channel.model`**：线路归服务商，可以是"还没有被任何模型使用"
+        // **不再要求 `channel.model`**：线路归服务商，可以是"还没有被任何模型使用"
         // 的独立线路（用户在服务商页把上游模型加成线路，模型要到模型页把线路分配给它）。
         // 遗留字段非空时仍然必须解析得到（见下面的引用检查）—— 老配置里它就是关系的载体。
         require_text(
@@ -732,7 +732,7 @@ fn check_lanes(doc: &ConfigDoc, r: &mut ValidationReport) {
         require_text(&l.id.0, &format!("lanes[{i}].id"), "id", r);
         require_text(&l.name, &format!("lanes[{i}].name"), "name", r);
 
-        // [docs/54] 「订阅里分组」这个概念已被取消（用户第 321 轮："直接放弃订阅里面分组这一概念，
+        // 「订阅里分组」这个概念已被取消（用户第 321 轮："直接放弃订阅里面分组这一概念，
         // 只拿节点"）。v2 → v3 迁移会把老数据转成「自动选择」，所以**迁移之后**还出现这个值
         // 只可能是：① 有人手工改配置写回来的，② 迁移失败留下的。
         // 两种情况都必须点名报错 —— 静默接受会让它继续按 `url-test` 跑（出口 IP 自己乱跳）。
@@ -818,7 +818,7 @@ fn check_references(doc: &ConfigDoc, ix: &Index<'_>, r: &mut ValidationReport) {
             "providers[].id",
             r,
         );
-        // [docs/55] `credentials[].lane` 已删除 → 不再是校验对象（老配置里的值落进 `extra`，
+        // `credentials[].lane` 已删除 → 不再是校验对象（老配置里的值落进 `extra`，
         // 既不解析也不报错）。下面 `channels[].lane` / `policies[].action.use_lane` 同理。
     }
 
@@ -851,8 +851,8 @@ fn check_references(doc: &ConfigDoc, ix: &Index<'_>, r: &mut ValidationReport) {
             "credentials[].id",
             r,
         );
-        // [docs/55] `channels[].lane` 已删除 → 不再是校验对象（见上面凭据那段的说明）。
-        // [docs/28 §2] **遗留字段**：非空时必须解析得到（老配置里它就是"这条线路服务哪个模型"）。
+        // `channels[].lane` 已删除 → 不再是校验对象（见上面凭据那段的说明）。
+        // **遗留字段**：非空时必须解析得到（老配置里它就是"这条线路服务哪个模型"）。
         // 空 = 新写法（线路还没被任何模型使用），合法。
         if !c.model.trim().is_empty() {
             ref_exists(
@@ -865,7 +865,7 @@ fn check_references(doc: &ConfigDoc, ix: &Index<'_>, r: &mut ValidationReport) {
         }
     }
 
-    // ---- 模型 → 线路（[docs/28 §2]：关系的真源在模型侧）
+    // ---- 模型 → 线路（：关系的真源在模型侧）
     for (i, m) in doc.models.iter().enumerate() {
         for (j, line) in m.lines.iter().enumerate() {
             ref_exists(
@@ -909,7 +909,7 @@ fn check_references(doc: &ConfigDoc, ix: &Index<'_>, r: &mut ValidationReport) {
                 r,
             );
         }
-        // [docs/55] `policies[].action.use_lane` 已删除 → 不再是校验对象
+        // `policies[].action.use_lane` 已删除 → 不再是校验对象
         //（老配置里的值落进 `extra`，既不解析也不报错；见上面凭据那段的说明）。
         for (j, c) in p.action.use_channels.iter().enumerate() {
             ref_exists(
@@ -1247,7 +1247,7 @@ mod tests {
         assert_no_error_at(&check(&doc()), "channels[2].credential");
     }
 
-    /// [docs/55]（第 322 轮）`channels[].lane` **已删除** → 老配置里写着它
+    ///（第 322 轮）`channels[].lane` **已删除** → 老配置里写着它
     /// **不是校验对象**：值落进 `ChannelConfig.extra`，既不报"悬空"、也不报"未知字段"。
     ///
     /// 这一条与 [`removed_model_default_lane_is_not_a_reference_to_check`] 同源：
@@ -1266,7 +1266,7 @@ mod tests {
         assert_no_error_at(&report, "channels[1].lane");
     }
 
-    /// [docs/55] `credentials[].lane` 同上：已删除 → 不再是引用、不再报错。
+    /// `credentials[].lane` 同上：已删除 → 不再是引用、不再报错。
     #[test]
     fn removed_credential_lane_is_not_a_reference_to_check() {
         let mut raw = serde_json::to_value(doc()).expect("序列化");
@@ -1281,7 +1281,7 @@ mod tests {
         assert_no_error_at(&report, "credentials[1].lane");
     }
 
-    /// [docs/55] `policies[].action.use_lane` 同上。
+    /// `policies[].action.use_lane` 同上。
     #[test]
     fn removed_policy_use_lane_is_not_a_reference_to_check() {
         let mut raw = serde_json::to_value(doc()).expect("序列化");
@@ -1303,7 +1303,7 @@ mod tests {
         assert_error(&check(&d), "credentials[0].provider", codes::NOT_FOUND);
     }
 
-    /// `Model.default_lane` 已删除（[docs/28 §1.1]：代理是线路的属性，模型不挑代理），
+    /// `Model.default_lane` 已删除（：代理是线路的属性，模型不挑代理），
     /// 所以老配置里写的 `models[].default_lane` **不是**校验对象：它会落进 `Model.extra`
     /// 原样保留、不再有任何引用完整性要求（既不报"悬空"，也不报"未知字段"）。
     #[test]
@@ -1413,7 +1413,7 @@ mod tests {
         d.policies[0].action.pin_sticky = Some(ChannelId::new("ch-nope"));
         d.policies[0].r#match.provider_in = vec![ProviderId::new("p-nope")];
         let report = check(&d);
-        // [docs/55] `use_lane` 已从这条断言里去掉：它不再是字段，也就没有引用可查
+        // `use_lane` 已从这条断言里去掉：它不再是字段，也就没有引用可查
         assert_error(&report, "policies[0].action.pin_sticky", codes::NOT_FOUND);
         assert_error(&report, "policies[0].match.provider_in[0]", codes::NOT_FOUND);
     }
@@ -1623,7 +1623,7 @@ mod tests {
 
     #[test]
     fn lane_kind_requires_matching_fields() {
-        // [docs/54] `subscription_group` 已取消 → 它的"缺 group"这条分支不再适用，
+        // `subscription_group` 已取消 → 它的"缺 group"这条分支不再适用，
         // 改成钉"它本身被明确拒绝"（概念取消 + 该换什么）。
         let mut d = doc();
         assert_eq!(d.lanes.len(), 3, "默认配置：直连 / 自动选择 / 固定节点");
@@ -1650,7 +1650,7 @@ mod tests {
 
     #[test]
     fn lane_port_range_must_fit_lanes() {
-        // [docs/54] 默认配置 3 条线路，但 `direct` **不要端口**（它指内核内置的 DIRECT）
+        // 默认配置 3 条线路，但 `direct` **不要端口**（它指内核内置的 DIRECT）
         // → 恰好需要 2 个端口。所以"不够"要拿 1 个端口来试。
         let mut d = doc();
         assert_eq!(d.net.lanes_needing_port(&d.lanes), 2, "前提：正好 2 条要端口");
@@ -1832,7 +1832,7 @@ mod tests {
         d.proxy_subscriptions[0].enabled = false;
         let report = check(&d);
         assert_clean(&report);
-        // [docs/54] 默认配置 3 条线路：lanes[1] 自动选择 / lanes[2] 固定节点都引用订阅
+        // 默认配置 3 条线路：lanes[1] 自动选择 / lanes[2] 固定节点都引用订阅
         assert_warning(&report, "lanes[1].subscription", codes::DISABLED_REF);
         assert_warning(&report, "lanes[2].subscription", codes::DISABLED_REF);
         // direct lane 不引用订阅 → 不该有警告

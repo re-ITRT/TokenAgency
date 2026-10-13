@@ -37,7 +37,7 @@
 - **dev**：`wiremock`（假内核 REST）、`insta`（YAML 快照）、`tracing-subscriber`（证明子进程日志真的被转发）。
 
 ## OWNER
-`P5`（`src/lib.rs`:3："契约：docs/11-internal-contracts.md §2。**实现由工作包 P5 完成。**"）。
+`P5`（`src/lib.rs`:3："契约：。**实现由工作包 P5 完成。**"）。
 其余文件未标注。
 
 ## 测试位置
@@ -57,7 +57,7 @@
 - 健康检查由 mihomo 自己按生成配置的间隔跑，应用侧**不自建 cron**（间隔见 `src/config_gen.rs`:911）。
 
 ## 已知陷阱（**可选但强烈建议**）
-1. **端口复用不看 bind 探针**：判据是"落库且没分给别的 lane ⇒ 就是我们的端口"（`src/ports.rs`:290 起，[docs/59](../../docs/59-protocol-hub-and-lane-ports.md)）。曾经用 `PortProbe::is_free` 判断能否复用，而那个端口此刻正被**我们自己的 listener** 占着 → 每写一次配置端口整体前移，网关手里的表却还是 boot 那份。
+1. **端口复用不看 bind 探针**：判据是"落库且没分给别的 lane ⇒ 就是我们的端口"。曾经用 `PortProbe::is_free` 判断能否复用，而那个端口此刻正被**我们自己的 listener** 占着 → 每写一次配置端口整体前移，网关手里的表却还是 boot 那份。
 2. `src/ports.rs` 开头 1–12 行的模块头**还写着旧的"bind 试探后复用"**，与 `allocate` 的实现相反 —— 注释级漂移守卫拦不住，读代码别只读文件头。
 3. **引用校验不是可选项**：`listeners[].proxy` 指向不存在的名字时内核照样绑定成功、一声不响；`with_strict_refs(false)` 只是放行，不是修复（`src/config_gen.rs`:434 起）。
 4. **子进程日志必须接管**：provider 文件缺失或为空时内核照常启动、REST 照常通，`level=error` 只写在它自己的 stdout 里（`src/childlog.rs` 文件头、夹具 `tests/fixtures/real-mihomo/emptya.log`）。

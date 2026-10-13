@@ -9,7 +9,7 @@ Tauri 2 的能力（capability）是**白名单**：没写进去的权限，前�
 |---|---|---|
 | `default.json` | `main` | `core:default`、窗口 show/hide/set-focus、`core:event:default`、`opener:default`、`dialog:default`、`notification:default` |
 
-**只有 8 条**（[docs/50](../docs/50-plugin-and-capability-minimization.md) 之后）。曾经多出
+**只有 8 条**。曾经多出
 `fs:default` / `process:default` / `clipboard-manager:default` 三条 —— 那三个插件**只注册、零调用**
 （前端从未 import 过它们），**未使用的权限就是白送的攻击面**。它们已连同插件、Cargo 依赖、
 npm 依赖一起删除。同一轮还删了 `tauri-plugin-shell`（连注册都没有，能力集里本来也没给它）。
@@ -34,7 +34,7 @@ npm 依赖一起删除。同一轮还删了 `tauri-plugin-shell`（连注册都�
 
 * `capabilities_never_grant_the_autostart_plugin` —— 谁把 `autostart:` 加进能力文件，测试立刻红；
 * `capabilities_do_not_grant_shell_by_default` —— 同上，针对 `shell:`；
-* `capabilities_only_grant_registered_plugins`（[docs/50] 新增）—— **通用版**：能力集里每一个
+* `capabilities_only_grant_registered_plugins`（新增）—— **通用版**：能力集里每一个
   `<plugin>:*` 权限都必须对应 `PLUGINS` 里**已注册**的插件（`core:` 放行）。
   这条正是"插件删了、权限忘了删"那个盲区的守卫。
 
@@ -59,4 +59,4 @@ Tauri 自己的 build script **也会**在编译期拒绝未注册插件的权�
 1. 说清楚**为什么**需要（哪个功能、哪个命令、不加会怎样）；
 2. 用**最小作用域**（具体命令 + 具体路径/窗口），不要用 `*`；
 3. 更新上面的表格；
-4. 如果是放开上表中任何一条"故意不给"，先找主管（`docs/12 §1.2` 的范围规定）。
+4. 如果是放开上表中任何一条"故意不给"，先找主管（范围规定）。

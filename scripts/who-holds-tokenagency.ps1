@@ -1,4 +1,4 @@
-# [docs/46 §302] **谁占着 tokenagency.exe？** —— 安装器报「Error opening file for writing」时先跑这个。
+# **谁占着 tokenagency.exe？** —— 安装器报「Error opening file for writing」时先跑这个。
 #
 # 用法：
 #   pwsh -File scripts/who-holds-tokenagency.ps1

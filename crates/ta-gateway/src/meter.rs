@@ -148,7 +148,7 @@ impl MeterCore {
             Ok(handle) => {
                 handle.spawn(async move {
                     if let Err(err) = store.record_usage(record).await {
-                        // [docs/14 §6.2]：报 `TaError` 必带 `code`
+                        //：报 `TaError` 必带 `code`
                         tracing::warn!(
                             request_id = %request_id,
                             code = err.code(),
@@ -299,7 +299,7 @@ impl UsageAccumulator {
 /// **路径口径只有一处**。这里曾经还有一层"信封回退"（去每个顶层对象里再试一次同样的路径），
 /// 理由是 Anthropic 流式的 input 在 `message_start.message.usage` 而不在 `/usage`。
 /// 第 12 轮 E2 把 `/message/usage` 补进了那张表（并把 `normalize_anthropic` 也改成用表），
-/// 于是 `message_start` 在**顶层**就能命中 —— 回退成了死分支，已删（[docs/16] 主管裁决）。
+/// 于是 `message_start` 在**顶层**就能命中 —— 回退成了死分支，已删（主管裁决）。
 /// 留着它的唯一作用是让下一个人以为"路径口径有两处"。
 fn container_of(protocol: Protocol, payload: &Value) -> Option<Value> {
     for path in usage_paths(protocol) {

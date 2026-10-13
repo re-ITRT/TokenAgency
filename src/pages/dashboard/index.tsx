@@ -139,7 +139,7 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
           </ReadinessRow>
 
           {/* 关键：契约里没有"provider 是否加载成功"的判据 → 如实显示未知，不点绿灯。
-              为什么是未知这段解释收进问号圆圈（[docs/22 §2]：这是怎么理解这一维的说明）——
+              为什么是未知这段解释收进问号圆圈（：这是怎么理解这一维的说明）——
               它本来就在 tooltip 里，收进统一件之后多了个看得见的问号与 `aria-label`（读屏也拿得到）。 */}
           <ReadinessRow label={t("dashboard.providerCheck")}>
             <StatusDot status="off" label={t("common.unknown")} />

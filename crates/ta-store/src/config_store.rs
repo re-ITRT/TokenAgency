@@ -1,6 +1,6 @@
 //! 配置存储：`config` 表（一行一实体的 JSON）+ `config_snapshot`（快照 / 回滚）。
 //!
-//! 契约：`docs/11-internal-contracts.md` §1.3、`docs/02-config-and-data-model.md` §3/§4。
+//! 契约：、/§4。
 //!
 //! 设计要点：
 //! - **真源是 SQLite**（02 §4）：YAML 只做导入导出，所以配置以 JSON 落库；
@@ -403,7 +403,7 @@ mod tests {
         let store = SqliteConfigStore::new(pool);
         let doc = store.load().await.unwrap();
         assert!(doc.providers.is_empty());
-        // 版本号只有一个来源（[docs/28 §2] 起是 v2）：别在这里写死字面量
+        // 版本号只有一个来源（起是 v2）：别在这里写死字面量
         assert_eq!(doc.version, ta_core::config::migrate::CURRENT_CONFIG_VERSION);
     }
 }

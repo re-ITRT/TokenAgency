@@ -1,4 +1,4 @@
-//! 内核 REST 客户端。端点清单见 `docs/11-internal-contracts.md` §2.3。
+//! 内核 REST 客户端。端点清单见 。
 //!
 //! 硬性约束：
 //! - 鉴权 `Authorization: Bearer <secret>`；
@@ -19,7 +19,7 @@ use crate::{
     DanglingRef, DelaySample, NodeRef, NodeSource, ProviderEntry, ProvidersSnapshot, ProxyEntry,
 };
 
-/// 测速默认探测 URL。`docs/04` §7.2 建议**优先用该 lane 真实会用到的上游端点**，
+/// 测速默认探测 URL。 建议**优先用该 lane 真实会用到的上游端点**，
 /// 调用方通过 [`KernelRest::with_probe_url`] 覆盖。
 pub const DEFAULT_PROBE_URL: &str = "https://www.gstatic.com/generate_204";
 
@@ -194,7 +194,7 @@ impl KernelRest {
 
     /// `GET /providers/proxies/{key}/healthcheck?url=<probe>` —— 触发**整份订阅**的体检。
     ///
-    /// ★ **为什么不能用 `GET /proxies/{name}/delay` 测 provider 的节点**（[docs/46 §297] 实测，
+    /// ★ **为什么不能用 `GET /proxies/{name}/delay` 测 provider 的节点**（实测，
     /// mihomo v1.19.31）：proxy-provider 的节点**不在 `/proxies` 顶层** —— 顶层只有内核内置的
     /// 8 项（`COMPATIBLE/DIRECT/GLOBAL/PASS/PASS-RULE/REJECT/REJECT-DROP` + 我们建的组）。
     /// 四条命名形式 `/proxies/<name>/delay`、`/proxies/<provider>/<name>/delay`、
@@ -306,7 +306,7 @@ impl KernelRest {
 
 /// 把内核两个端点的响应拼成 [`ProvidersSnapshot`]。纯函数，便于用 fixture 测。
 ///
-/// 三件事按顺序做（[docs/06 §1.6] 7-a ~ 7-d）：
+/// 三件事按顺序做（7-a ~ 7-d）：
 /// 1. `/proxies` 顶层进索引，来源标 [`NodeSource::TopLevel`]；
 /// 2. `/providers/proxies` 里每个 provider 的节点**补进**索引（来源 `Provider(key)`）——
 ///    **顶层优先**，因为 provider 那边还会把组镜射一遍；
@@ -443,7 +443,7 @@ struct ProxiesEnvelope {
 struct ProxyRaw {
     #[serde(rename = "type", default)]
     kind: String,
-    /// ★ 内核给的健康信号。真机上**每个节点与组都有**（[docs/06 §1.6] 附带验证）。
+    /// ★ 内核给的健康信号。真机上**每个节点与组都有**（附带验证）。
     #[serde(default)]
     alive: bool,
     #[serde(default)]
@@ -794,7 +794,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_delays_triggers_healthcheck_then_reads_history() {
-        // ★ [docs/46 §297] 这是「自动」出口测速的**唯一**正确路径：
+        // ★ 这是「自动」出口测速的**唯一**正确路径：
         //   `/proxies/<name>/delay` 对 provider 节点是全 404 的（顶层没有它们）。
         let server = MockServer::start().await;
         Mock::given(method("GET"))

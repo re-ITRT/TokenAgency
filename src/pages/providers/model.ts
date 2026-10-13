@@ -34,7 +34,7 @@
 import type {
   LaneChoiceGroup,
 } from "@/shared/bindings";
-// [docs/52] 读后端原始对象的唯一实现（原先本文件自己写了 asRow/pickStr/pickNum/pickBool）
+// 读后端原始对象的唯一实现（原先本文件自己写了 asRow/pickStr/pickNum/pickBool）
 import { asRow, pickBool, pickNum, pickStr, type Row } from "@/shared/row";
 
 // ================================================================ 服务商
@@ -78,7 +78,7 @@ export type ProviderRow = {
   /**
    * 额外 CA 的**原文**。
    *
-   * 编辑页（[docs/23]）需要它：`provider_upsert` 是整条覆盖写，回写时少这一个键就等于
+   * 编辑页需要它：`provider_upsert` 是整条覆盖写，回写时少这一个键就等于
    * 把用户自己配过的 CA 抹掉。所以读出来、原样带回去 —— 只读展示仍然只用
    * [`tlsExtraCa`] 那个布尔值（"已配置 / 未配置"），不把 PEM 铺在版面上。
    */
@@ -180,7 +180,7 @@ export type CredentialRow = {
 
 
   /**
-   * **多窗口**额度（[docs/24]）：
+   * **多窗口**额度：
    */
 
   /** 契约/mock 才有：这份凭据里是不是明文密钥。 */
@@ -212,7 +212,7 @@ export function readCredential(raw: unknown): CredentialRow {
 /**
  * 整条 credential 的**原始记录**（`credential_list` 那一行里的 `credential`）。
  *
- * 写回时必须以它为底：`credential_upsert` 是整条覆盖写（[docs/24 §3] / [docs/23] 同一条纪律）。
+ * 写回时必须以它为底：`credential_upsert` 是整条覆盖写（/ 同一条纪律）。
  */
 export function credentialRawOf(row: CredentialRow): Row {
   return asRow(row.raw["credential"]);
@@ -269,7 +269,7 @@ export function laneNameOf(
   return lanes.find((l) => l.id === laneId)?.name;
 }
 
-// ================================================================ 网络代理下拉（[docs/28 §1.2]）
+// ================================================================ 网络代理下拉
 
 /**
  * 网络代理下拉的一项。
@@ -331,7 +331,7 @@ export function proxyChoices(
       // 分组名只在**确实是额外信息**时才拼：直连那条的分组名与它自己的名字相同，
       // 无脑拼会得到「直连（本机网络）（直连（本机网络））」。
       //
-      // [docs/58] 「直连」那一项**一律不拼分组名**：它自带的分组就叫「直连（本机网络）」，
+      // 「直连」那一项**一律不拼分组名**：它自带的分组就叫「直连（本机网络）」，
       // 而配置里那条 direct 线路的名字是「直连」—— 拼起来会变成
       // 「直连（直连（本机网络））」（真机截图里就是这么显示的）。直连是**单独一项**，
       // 分组名对它没有任何区分作用。

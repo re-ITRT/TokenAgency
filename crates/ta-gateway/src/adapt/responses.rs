@@ -196,7 +196,7 @@ impl ResponsesAdapter {
                 });
             }
             // 思维链（`encrypted_content` / `summary`）：IR 没有推理内容的表达，
-            // 文本化它就是**编内容**（[docs/03 §6.3]）→ 丢弃并登记。
+            // 文本化它就是**编内容**→ 丢弃并登记。
             "reasoning" => {
                 losses.push(Loss::UnsupportedPart { path: path.into(), kind: "reasoning".into() })
             }
@@ -607,7 +607,7 @@ impl super::ProtocolAdapter for ResponsesAdapter {
         let mut ir = IrResponse {
             id: body.get("id").and_then(Value::as_str).map(str::to_string),
             model: body.get("model").and_then(Value::as_str).map(str::to_string),
-            // [docs/59] 第 330 轮：非流式响应也要带 usage
+            // 第 330 轮：非流式响应也要带 usage
             usage: ir_usage_from_responses(body.get("usage")),
             ..Default::default()
         };
@@ -704,7 +704,7 @@ impl super::ProtocolAdapter for ResponsesAdapter {
                 ("model", json!(ir.model)),
                 ("output", Value::Array(output)),
                 ("incomplete_details", incomplete_details),
-                // [docs/59] 第 330 轮：IR 的响应形态现在**有** usage 了，所以写回去。
+                // 第 330 轮：IR 的响应形态现在**有** usage 了，所以写回去。
                 // （从前这里写着"不写：IR 里没有它" —— 那句话现在不成立了。）
                 ("usage", ir.usage.as_ref().map(responses_usage).unwrap_or(Value::Null)),
             ]),
@@ -796,7 +796,7 @@ impl StreamAdapter for ResponsesAdapter {
                             // ★ 这一帧自带的 `arguments`：上游**一次给全**入参时就在这里
                             //（正常流是空串，入参走后面的
                             //  `response.function_call_arguments.delta` 分片）。
-                            // [docs/59] 第 330 轮之前没有这一格 ⇒ 一次给全的入参**整份丢掉**。
+                            // 第 330 轮之前没有这一格 ⇒ 一次给全的入参**整份丢掉**。
                             input: item
                                 .get("arguments")
                                 .and_then(Value::as_str)
@@ -871,7 +871,7 @@ impl StreamAdapter for ResponsesAdapter {
             IrStreamEvent::ToolUseStart { slot: _, id, name, input } => {
                 // 源协议一次给全入参就写进 `arguments`（它本来就是**字符串化的 JSON**）；
                 // 否则留空串、由后续的 `response.function_call_arguments.delta` 分片接上。
-                // [docs/59] 第 330 轮：从前这一格不存在，Gemini 上游的 `args` 会整份丢掉。
+                // 第 330 轮：从前这一格不存在，Gemini 上游的 `args` 会整份丢掉。
                 let arguments = input.as_ref().map(json_string).unwrap_or_default();
                 vec![StreamFrame::Json(object(vec![
                     ("type", json!("response.output_item.added")),
@@ -1104,7 +1104,7 @@ fn terminal_event_type(reason: &IrStopReason) -> &'static str {
 /// 字段名与 Chat **不同**：`input_tokens` / `output_tokens` / `input_tokens_details.cached_tokens`。
 /// `total_tokens` 不搬（它是 input+output 的可推导量）；`output_tokens_details.reasoning_tokens`
 /// 也不搬（[`IrUsage`] 里没有这一项，细分口径属于 `ta_core::metering`）。
-/// Responses 的 usage 字段表（[docs/59] 第 330 轮：读/写由 `shared` 的表驱动）。
+/// Responses 的 usage 字段表（第 330 轮：读/写由 `shared` 的表驱动）。
 ///
 /// 与 chat/completions **不同名**：`input_tokens` / `output_tokens`（不是
 /// `prompt_tokens` / `completion_tokens`），cached 也在自己的嵌套对象里。

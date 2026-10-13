@@ -8,7 +8,7 @@
 //! - [`TeeAttemptSink`]：生产默认把两者串起来（日志 + 表）。
 //!
 //! 为什么 `PipelineDeps.sink` 是**必需**依赖（不给 `Option`）："接了但没人收"比没接更糟
-//! （[docs/13 §4.5 L10]）—— 尝试链会从指缝里静默消失，日志里一行都不剩。
+//! —— 尝试链会从指缝里静默消失，日志里一行都不剩。
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -37,7 +37,7 @@ impl Clone for LoggingSink {
 #[async_trait]
 impl AttemptSink for LoggingSink {
     async fn on_attempt(&self, record: AttemptRecord) {
-        // 字段名一律取 [docs/14 §5] 白名单里的名字：request_id / channel_id /
+        // 字段名一律取 白名单里的名字：request_id / channel_id /
         // credential_id / lane_id / attempt / status / code / elapsed_ms。
         // **写错名字不会报错**，只会让"按 request_id 筛出一次请求的全部轨迹"静默失效
         // —— 所以这里宁可少写几个字段，也不自造名字。
@@ -55,7 +55,7 @@ impl AttemptSink for LoggingSink {
     }
 }
 
-/// 把请求级 trace 写进 `ta_store::TraceStore`（[docs/12 §4 G4] ①）。
+/// 把请求级 trace 写进 `ta_store::TraceStore`（①）。
 ///
 /// 分工：`on_attempt` **攒**这条请求的尝试链（按 `request_id` 归拢），
 /// `on_request_complete` **落一条** `TraceRecord` 并清掉缓冲。
@@ -131,7 +131,7 @@ impl AttemptSink for TraceStoreSink {
 
         if let Err(err) = self.store.write(record).await {
             // 写 trace 失败**不能**影响已经答复给客户端的响应；但要按契约成对记 code
-            // （[docs/14 §6.2]：报 TaError 必带 `code = e.code()`）。
+            // （：报 TaError 必带 `code = e.code()`）。
             tracing::warn!(
                 request_id = %summary.request_id,
                 code = err.code(),

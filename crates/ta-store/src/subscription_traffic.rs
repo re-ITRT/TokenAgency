@@ -1,4 +1,4 @@
-//! 订阅流量与更新时间（`subscription` 表的 5 个可空列）—— 契约 docs/18 §1.2。
+//! 订阅流量与更新时间（`subscription` 表的 5 个可空列）—— 契约 。
 //!
 //! 为什么需要它：`subscription-userinfo` 响应头只有**拉订阅那一瞬间**可得，而
 //! `/network` 的订阅行要一直显示「更新时间 / 已用 / 总量」。不落库就只能每开一次
@@ -14,7 +14,7 @@
 //! 它 NULL = 从未成功刷新过 → 命令返回 `traffic: null`（而不是"有对象但字段全 null"）。
 //! 所以 `record` 永远写它，`map_traffic` 见它 NULL 就整体判无。
 //!
-//! ⚠️ 已知边界：`docs/11-internal-contracts.md` §4 的 store trait 表里**没有**这一族
+//! ⚠️ 已知边界： 的 store trait 表里**没有**这一族
 //! （那份契约是在"流量可见"这条需求之前冻结的），所以这里给的是具体实现而不是 trait。
 //! 不自己发明契约名 —— 补契约归主管。
 
@@ -44,7 +44,7 @@ pub struct SubscriptionTraffic {
 
 /// `subscription_traffic` 命令的一行。
 ///
-/// `traffic: None` 的语义是**这份订阅从未成功刷新过**（`docs/18` §1.3 的"尚未获取"）。
+/// `traffic: None` 的语义是**这份订阅从未成功刷新过**（"尚未获取"）。
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscriptionTrafficRow {

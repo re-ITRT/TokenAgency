@@ -1,4 +1,4 @@
-//! `ta-store::api_key` 的集成测试 —— **先红后绿**（docs/19 §3）。
+//! `ta-store::api_key` 的集成测试 —— **先红后绿**。
 //!
 //! 为什么单独成文件而不是塞在模块里：这些断言要证明的是"**库里到底存了什么**"
 //! （只存 sha256、明文不落库、`last_used_at` 是 NULL 不是 0），
@@ -233,7 +233,7 @@ async fn api_key_key_hash_is_unique() {
 }
 
 /// `any_enabled`：**"`local_key` 没配时还要不要强制鉴权"的唯一判据**
-/// （`docs/19 §3.3` 的启用条件 + `ta-gateway` 的 `ApiKeyVerifier::any_enabled`）。
+/// （启用条件 + `ta-gateway` 的 `ApiKeyVerifier::any_enabled`）。
 ///
 /// 它错了的后果是两个极端：恒假 → 建了 key 也挡不住人（**建了不生效**）；
 /// 恒真 → 没配任何东西的老用户升级后全部 401。

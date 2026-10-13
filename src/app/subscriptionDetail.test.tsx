@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * [docs/54] **一条订阅的详情页**（`/network/subscriptions/:id`）—— 用户第 321 轮。
+ * **一条订阅的详情页**（`/network/subscriptions/:id`）—— 用户第 321 轮。
  *
  * 用户原话：*"先到网络界面，再去点击一个订阅，里面就可以看到这个订阅的所有节点，
  * 可以打开或者关闭，就和服务商的线路是一样的"* + *"其中自动选择和直连在最上面"* +
@@ -85,7 +85,7 @@ function renderPage(node: React.ReactElement) {
   return renderAt("/", node);
 }
 
-describe("[docs/54] /network/subscriptions/:id 一条订阅的节点开关", () => {
+describe("/network/subscriptions/:id 一条订阅的节点开关", () => {
   const SUB_ID = "sub-jp";
 
   beforeEach(() => {

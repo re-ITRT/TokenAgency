@@ -1,7 +1,7 @@
 //! `usage_*` / `pricing_*`：看板、成本中心查询、CSV 导出。
 //!
-//! 契约：`docs/10-interface-spec.md` §2.2 `usage / 用量与成本中心`、§2.4 `DashboardData`。
-//! 计算全在 `ta-store`（`docs/07` §6），命令层只做转发与参数透传。
+//! 契约： `usage / 用量与成本中心`、§2.4 `DashboardData`。
+//! 计算全在 `ta-store`，命令层只做转发与参数透传。
 
 use tauri::State;
 

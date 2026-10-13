@@ -1,5 +1,5 @@
 /**
- * [docs/30 §1 判据 1] **同一屏里同一个事实不许说两遍** —— 机械守卫。
+ * **同一屏里同一个事实不许说两遍** —— 机械守卫。
  *
  * 为什么需要它：这条判据最容易"看着像做到了、实际没做到"（第 117 轮列头漏删就是例子），
  * 而人工核对 11 个页面等于每轮烧掉半轮预算。这里把它变成机器检查。
@@ -71,7 +71,7 @@ function longLiterals(file: string): Hit[] {
     .map(([text, lines]) => ({ text, lines }));
 }
 
-describe("[docs/30 §1 判据 1] 同一屏不许把同一句话说两遍（机械检查）", () => {
+describe("同一屏不许把同一句话说两遍（机械检查）", () => {
   it("页面里没有近距离重复的长文案", () => {
     const offenders = FILES.filter((file) => !ALLOW.includes(file))
       .map((file) => ({ file, hits: longLiterals(file) }))

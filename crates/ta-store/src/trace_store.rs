@@ -1,6 +1,6 @@
 //! trace 存储：`trace` 表 + 清理 `gc()`。
 //!
-//! 契约：`docs/11-internal-contracts.md` §1.3 + §4.2、`docs/07-ui-pages-and-cost.md` §2。
+//! 契约： + §4.2、。
 //!
 //! 硬约束：
 //! - `body` / `resp_body` / `*_headers` **只存 zstd 压缩 BLOB**；
@@ -163,7 +163,7 @@ pub struct TraceRow {
 pub struct TraceDetail {
     pub row: TraceRow,
     pub attempts: Vec<TraceAttempt>,
-    /// [docs/32] L6：这次请求的**按 kind token 明细**（来自用量表，`usage_request.token_kinds`）。
+    /// L6：这次请求的**按 kind token 明细**（来自用量表，`usage_request.token_kinds`）。
     ///
     /// 由**命令层**填（store 不该知道用量表）：日志的保留期可能比用量短，
     /// 所以这里是 `Option` —— `None` 表示"用量侧没有这笔账"，界面据此显示「—」，
@@ -232,7 +232,7 @@ pub struct LogPage {
     pub has_more: bool,
 }
 
-/// [docs/32] **L1 聚合统计**：总数 / 成功 / 失败 / 平均总耗时。
+/// **L1 聚合统计**：总数 / 成功 / 失败 / 平均总耗时。
 ///
 /// 为什么单独一个类型而不是塞进 `LogPage`：日志页要显示的四张卡（总请求、成功率、失败、平均延迟）
 /// 与"当前这一页的行"是**两次不同的查询** —— 混在一起会让翻页时统计跟着抖。
@@ -299,7 +299,7 @@ pub trait TraceStore: Send + Sync {
     async fn write(&self, t: TraceRecord) -> Result<()>;
     async fn query(&self, q: &LogQuery) -> Result<LogPage>;
 
-    /// [docs/32] L1：按**同一套过滤**聚合出总数 / 成功 / 失败 / 平均耗时。
+    /// L1：按**同一套过滤**聚合出总数 / 成功 / 失败 / 平均耗时。
     ///
     /// `q.search` 非空时**如实拒绝**：正文是压缩 BLOB，SQL 层数不准；
     /// 返回一个偏小的数字比报错更糟（界面会拿它当"真的只有这么多"）。
@@ -828,7 +828,7 @@ impl TraceStore for SqliteTraceStore {
 /// 与 `map_trace_row` **同一口径**的"这次算成功"：2xx/3xx、没有 `error`、且**没有重试**。
 ///
 /// 写成一处常量，是为了"统计卡片"和"列表里的徽章"永远说同一件事
-/// （[docs/32] 的硬要求：不许出现列表说成功、统计说失败）。
+/// （硬要求：不许出现列表说成功、统计说失败）。
 const OK_CONDITION: &str = "(t.status >= 200 AND t.status < 400 AND t.error IS NULL \
      AND json_array_length(COALESCE(t.attempts, '[]')) <= 1)";
 
@@ -1320,7 +1320,7 @@ pub fn shape_summary(shape: &serde_json::Value) -> String {
 ///
 /// 注意 body 是编译后压缩的 BLOB，这里直接对原始字节做匹配 —— 匹配不到才说明
 /// **连压缩前的明文都没有入库的机会**（压缩后仍命中说明脱敏漏了）。
-/// [docs/32] L1 聚合统计的**真库测试**：用真的 SQLite，插入三条不同结果的记录，看四个数对不对。
+/// L1 聚合统计的**真库测试**：用真的 SQLite，插入三条不同结果的记录，看四个数对不对。
 #[cfg(test)]
 mod stats_tests {
     use super::*;

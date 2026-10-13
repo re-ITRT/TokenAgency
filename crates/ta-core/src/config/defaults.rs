@@ -77,7 +77,7 @@ fn gateway() -> GatewayConfig {
             extra: Map::new(),
         },
         metering: MeteringConfig { inject_stream_usage: false, extra: Map::new() },
-        // [docs/59] 下游三种 API 家族默认**全开** —— 升级不改变既有行为；
+        // 下游三种 API 家族默认**全开** —— 升级不改变既有行为；
         // 要收窄由用户在设置页显式勾掉（用户第 326 轮："按需求勾选"）。
         downstream: DownstreamConfig {
             openai_chat: true,
@@ -203,7 +203,7 @@ fn subscriptions() -> Vec<Subscription> {
 fn lanes() -> Vec<Lane> {
     vec![
         Lane::direct("lane-direct", "直连（本机网络）"),
-        // [docs/54] 「自动选择」：这条订阅里**所有启用节点**各自 ping 服务商 URL，
+        // 「自动选择」：这条订阅里**所有启用节点**各自 ping 服务商 URL，
         // 取延迟最低的那条，然后**按地址粘性**（只在连不上 / 手动刷新时才重挑）。
         // 它必须**显式 `select`** —— 否则是 `url-test`，会按自己的 interval 周期性重选，
         // 出口 IP 会自己变（同账号多地并发 = 封号风险）。
@@ -214,7 +214,7 @@ fn lanes() -> Vec<Lane> {
 }
 
 fn providers() -> Vec<Provider> {
-    // [docs/55]（第 322 轮）**线路分配只剩下这一处**：每个服务商一个节点。
+    //（第 322 轮）**线路分配只剩下这一处**：每个服务商一个节点。
     // 这里以前把 lane 写在凭据/通道上（`c-openai-personal` / `ch-relay-b` 各有各的），
     // 那种"同一条线路按凭据走不同出口"的表达能力已经取消 —— 服务商是唯一的粒度。
     vec![
@@ -246,7 +246,7 @@ fn providers() -> Vec<Provider> {
 }
 
 fn credentials() -> Vec<Credential> {
-    // [docs/55] 凭据上**不再有 lane** —— 用哪个节点由它所属的**服务商**决定（见 `providers()`）。
+    // 凭据上**不再有 lane** —— 用哪个节点由它所属的**服务商**决定（见 `providers()`）。
     vec![
         Credential::new(
             "c-openai-personal",
@@ -289,7 +289,7 @@ fn models() -> Vec<Model> {
 }
 
 fn channels() -> Vec<ChannelConfig> {
-    // [docs/55] 通道上**不再有 lane** —— 走哪个节点由它所属的**服务商**决定（见 `providers()`）。
+    // 通道上**不再有 lane** —— 走哪个节点由它所属的**服务商**决定（见 `providers()`）。
     vec![
         ChannelConfig::new(
             "ch-openai-personal",
@@ -328,7 +328,7 @@ fn channel_groups() -> Vec<ChannelGroup> {
         "gpt-4o",
         ["ch-openai-personal", "ch-relay-a", "ch-relay-b"],
     )
-    // 会话粘性 + 未命中时挑 token 用量最少的线路（平均粘性，[docs/48]）
+    // 会话粘性 + 未命中时挑 token 用量最少的线路（平均粘性）
     .with_selector(Selector::BalancedSticky)
     .with_sticky(StickyConfig {
         enabled: true,
@@ -414,13 +414,13 @@ mod tests {
     fn default_doc_matches_example_yaml_semantics() {
         let doc = build_default_doc();
         // 版本号必须与 `config::migrate::CURRENT_CONFIG_VERSION` 一致
-        // （v3 = [docs/54]：放弃「订阅里分组」，改成「自动选择」）
+        // （v3 =：放弃「订阅里分组」，改成「自动选择」）
         assert_eq!(doc.version, crate::config::migrate::CURRENT_CONFIG_VERSION);
         assert_eq!(doc.gateway.listen, "127.0.0.1:8787");
         assert_eq!(doc.gateway.admin_listen, "127.0.0.1:8788");
         assert_eq!(doc.net.default_lane.as_ref().map(|l| l.as_str()), Some("lane-direct"));
         assert_eq!(doc.net.kernel.lane_port_range, [39100, 39299]);
-        // 3 条：直连 / 自动选择 / 固定节点（[docs/54] 之后不再有"订阅自带分组"那条）
+        // 3 条：直连 / 自动选择 / 固定节点（之后不再有"订阅自带分组"那条）
         assert_eq!(doc.lanes.len(), 3);
         assert_eq!(doc.providers.len(), 3);
         assert_eq!(doc.credentials.len(), 4);
@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(doc.system_integration.autostart_mode, AutostartMode::Tray);
         assert_eq!(doc.system_integration.autostart_delay_s, 0);
 
-        // [docs/55] 线路只看服务商那一个节点：ch-claude-official 自己没有 lane 字段了，
+        // 线路只看服务商那一个节点：ch-claude-official 自己没有 lane 字段了，
         // 生效线路来自 **provider.lane**（c-anthropic-personal 上那个残留的 lane 早已不参与判定）。
         let claude = doc.channel("ch-claude-official").unwrap();
         let cred = doc.credential("c-anthropic-personal").unwrap();

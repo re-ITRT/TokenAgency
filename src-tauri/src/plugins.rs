@@ -18,7 +18,7 @@
 //! 3. `window-state` → `notification` → `deep-link` → …… ：其余顺序无强依赖，
 //!    按"越基础越靠前"排。
 //!
-//! # 只注册、零调用的插件一律不留（[docs/50]）
+//! # 只注册、零调用的插件一律不留
 //!
 //! `fs` / `process` / `clipboard-manager` / `shell` 四个插件曾是"注册了但前端一次都没调"
 //! 的状态，而前三个还在 `capabilities/` 里白给了 `fs:default` / `process:default` /
@@ -62,7 +62,7 @@ pub struct PluginSpec {
 /// 数字的来历（**每一减都要有理由，不是随手改**）：
 /// * [12 §5 T2] ③ 原列 12 个；
 /// * 去掉 `tauri-plugin-log` → 11（单一日志路径，见模块文档第 2 条）；
-/// * **[docs/50] 去掉 `fs` / `process` / `clipboard-manager` / `shell` → 7**：
+/// * ** 去掉 `fs` / `process` / `clipboard-manager` / `shell` → 7**：
 ///   这四个**只注册、零调用**，却在 `capabilities/` 里白给了 `fs:default` /
 ///   `process:default` / `clipboard-manager:default` —— 那是攻击面白送。
 ///   （剪贴板功能走的是**浏览器** `navigator.clipboard`，不需要插件；
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn seven_plugins_with_unique_ids() {
         // [12 §5 T2] ③ 原列 12 个 →（去 `tauri-plugin-log`）11 个
-        // →（[docs/50] 去 `fs` / `process` / `clipboard-manager` / `shell` 四个零调用插件）7 个。
+        // →（去 `fs` / `process` / `clipboard-manager` / `shell` 四个零调用插件）7 个。
         // 这个数字是**决策的结果**，不是随手改的常量；改它必须同时改上面的理由。
         assert_eq!(PLUGINS.len(), 7, "插件数量与 [docs/50] 的当前基线不一致");
         let mut ids: Vec<&str> = PLUGINS.iter().map(|p| p.id).collect();
@@ -228,7 +228,7 @@ mod tests {
         }
     }
 
-    /// **通用版的最小权限守卫**（[docs/50]）：能力集里的每一个 `<plugin>:*` 权限，
+    /// **通用版的最小权限守卫**：能力集里的每一个 `<plugin>:*` 权限，
     /// 都必须对应一个**已注册**的插件。
     ///
     /// 为什么需要它：`fs:default` / `process:default` / `clipboard-manager:default` 就是这么

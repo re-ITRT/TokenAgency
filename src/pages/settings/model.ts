@@ -18,13 +18,13 @@
 
 import type { ConfigDoc, LogQuery } from "@/shared/bindings";
 import type { I18nKey } from "@/shared/i18n";
-// [docs/52] 读后端原始对象的唯一实现（原先本文件自己写了 asRow/pickStr/pickNum）
+// 读后端原始对象的唯一实现（原先本文件自己写了 asRow/pickStr/pickNum）
 import { asRow, pickNum, pickStr, type Row } from "@/shared/row";
 
 /**
  * 反序列化后的未知对象（后端可能给出契约之外的形状）。
  *
- * [docs/52] 收敛到 `@/shared/row`。这里**保留一次再导出**：本文件的 `Row` 是
+ * 收敛到 `@/shared/row`。这里**保留一次再导出**：本文件的 `Row` 是
  * 对外类型（`settings/index.tsx` 与测试都在用），删掉会让调用点编译失败。
  * 新代码请直接 `import type { Row } from "@/shared/row"`。
  */
@@ -45,7 +45,7 @@ export const EDITABLE_PATHS: readonly (readonly string[])[] = [
   ["gateway", "max_body_mb"],
   ["gateway", "debug_headers"],
   ["gateway", "expose_models_with_capabilities"],
-  // [docs/59] 下游 API 家族开关（用户第 326 轮需求 2）。
+  // 下游 API 家族开关（用户第 326 轮需求 2）。
   // 三条都过得了上面那两问：它们是**纯配置**（不动 OS），也**没有**专属命令在管它们
   // —— 网关读的就是 `cfg.gateway.downstream`，改了之后随"应用"一起生效。
   ["gateway", "downstream", "openai_chat"],

@@ -36,7 +36,7 @@ pub struct RouteContext {
     /// 凭据 → 剩余比例（0.0–1.0，None = 未知）
     /// 通道 → EWMA 延迟
     pub latency_ms: BTreeMap<ChannelId, u32>,
-    /// 通道 → **时间窗内的 token 用量**（[docs/48 §3]）。平均粘性的"平均"就看它：
+    /// 通道 → **时间窗内的 token 用量**。平均粘性的"平均"就看它：
     /// 未命中粘性时挑这张表里数值最小的线路。
     ///
     /// 缺省（空表）= **不知道**，不是"用量为 0" —— 于是退化为按 `priority` 排。
@@ -88,7 +88,7 @@ pub struct RouteDecision {
     pub pinned: Option<ChannelId>,
     // 这里曾有 `lane_override: Option<LaneId>`（策略级全局线路覆盖）。
     //
-    // [docs/55]（第 322 轮）整条删除：线路分配只剩**服务商级**一处（`Provider.lane`），
+    //（第 322 轮）整条删除：线路分配只剩**服务商级**一处（`Provider.lane`），
     // 再没有任何东西能产生"覆盖"这种决策，留着它就只是一段恒为 `None` 的死管线。
     pub eliminated: Vec<(ChannelId, EliminateReason)>,
 }
@@ -137,14 +137,14 @@ pub trait ChannelSelector: Send + Sync {
     ) -> Option<Selection>;
 }
 
-/// 各线路的 token 用量来源（[docs/48 §4]）。
+/// 各线路的 token 用量来源。
 ///
 /// 为什么是个 trait 而不是直接塞进 `RouteContext`：用量在**库里**，而 `ta-core`
 /// 不依赖任何存储实现。装配方（`src-tauri`）提供一个带 TTL 缓存的实现，
 /// 网关每请求只是**读一份内存快照**。
 ///
 /// **实现方的硬约束**：`used_tokens` 会被**每个请求**调用，它自己必须把结果缓存住
-/// （见 `docs/48 §4`：TTL 默认 30s，过期由第一个请求触发刷新）。
+/// （见 ：TTL 默认 30s，过期由第一个请求触发刷新）。
 /// 在这里每调用一次就查一次库等于把数据库打死，这正是用户明确要求避免的。
 pub trait BalanceSource: Send + Sync {
     /// 时间窗内各线路的累计 token 用量。查不到就是空表 / 缺键 —— **不要**补 0 冒充已知。

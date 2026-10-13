@@ -154,7 +154,7 @@ export function PricingDialog({
     if (target === undefined) return;
     setClearError(null);
     try {
-      // **下标安全**（[docs/21 §1.1 第 5 条]）：删之前重读一次，确认
+      // **下标安全**：删之前重读一次，确认
       //   那个下标上**仍然是**我们看到的这一条。任何增删都会让下标整体平移，
       //   拿旧下标去删会**删错人** —— 这种错是静默的（界面只是少了另一条价）。
       const fresh = await api.pricing.list();

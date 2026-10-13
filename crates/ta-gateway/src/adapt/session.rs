@@ -1,4 +1,4 @@
-//! **跨协议流式的会话层**（[docs/59]）—— 每请求一份状态，把上游 SSE 逐帧转成客户端协议。
+//! **跨协议流式的会话层**—— 每请求一份状态，把上游 SSE 逐帧转成客户端协议。
 //!
 //! # 它负责什么（而且**只**负责这些）
 //!
@@ -144,7 +144,7 @@ fn write_frame(out: &mut Vec<u8>, frame: &StreamFrame) {
     out.extend_from_slice(b"\n\n");
 }
 
-/// 把一个上游字节流包成"翻译过"的字节流（[docs/59]）。
+/// 把一个上游字节流包成"翻译过"的字节流。
 ///
 /// 只在**跨协议**时用；同协议直接原样返回上游流（重编码会引入损失，也白费 CPU）。
 pub fn translate_sse_stream(
@@ -158,7 +158,7 @@ pub fn translate_sse_stream(
         return inner;
     }
     // 日志要带上 `request_id`：这一路是被 axum 在 `handle_request` 的 span **之外** poll 的，
-    // 不显式带着 span，流式路径的告警就会丢掉 `request_id`（[docs/14 §6 G2]）。
+    // 不显式带着 span，流式路径的告警就会丢掉 `request_id`。
     // 用 `in_scope`（同步闭包）而不是 `span.enter()` —— 后者跨 `.await` 会串 span。
     let span = tracing::Span::current();
 
@@ -179,7 +179,7 @@ pub fn translate_sse_stream(
                     }
                     match inner.next().await {
                         Some(Ok(chunk)) => pending = tr.push(&chunk),
-                        // 上游流断了：**原样把错误交给下游**（[docs/11 §5] 的两分法）。
+                        // 上游流断了：**原样把错误交给下游**（两分法）。
                         // 不能在这里补一个"看起来正常"的收尾 —— 那会把断流说成正常结束。
                         Some(Err(err)) => return Some((Err(err), (inner, tr, pending, true))),
                         None => {
@@ -243,7 +243,7 @@ mod tests {
         assert!(out.contains("你") && out.contains("好"), "{out}");
     }
 
-    /// [docs/59] **流必须以 `message_start` 开头**，而 OpenAI 的流里没有这一帧。
+    /// **流必须以 `message_start` 开头**，而 OpenAI 的流里没有这一帧。
     #[test]
     fn anthropic_target_always_opens_with_message_start() {
         let out = openai_to_anthropic(&[sse(&json!({
@@ -331,7 +331,7 @@ mod tests {
         let _ = wrapped;
     }
 
-    /// [docs/59] **不许"等流输出完再给客户端"**（用户第 330 轮问的那件事）。
+    /// **不许"等流输出完再给客户端"**（用户第 330 轮问的那件事）。
     ///
     /// 这是跨协议流式最容易被写坏的地方：一个 `collect` 就能把流式变成"攒完再吐"，
     /// 而**功能测试全都会过**（最终内容一模一样）—— 只有"延迟"这一个维度会坏。
@@ -381,7 +381,7 @@ mod tests {
         assert!(tr.finish().is_empty(), "同协议不许补 [DONE]");
     }
 
-    /// [docs/59] **Gemini 上游的工具入参不许丢**（第 330 轮修的真数据丢失）。
+    /// **Gemini 上游的工具入参不许丢**（第 330 轮修的真数据丢失）。
     ///
     /// Gemini 的 `functionCall.args` 是**完整 JSON 对象**，而 OpenAI 客户端要的是
     /// `tool_calls[].function.arguments` 字符串。从前 IR 的"调用开始"里没有入参这一格，
@@ -423,7 +423,7 @@ mod tests {
         assert!(text.contains("上海"), "分片内容要带过去：{text}");
     }
 
-    /// [docs/59] **Responses 目标的收尾不是 `[DONE]`。**
+    /// **Responses 目标的收尾不是 `[DONE]`。**
     ///
     /// 上游什么都没说就断了时，必须补一个 Responses 的终止帧，且**不能**补 `[DONE]`；
     /// `status` 要如实写 `incomplete` —— 我们确实没等到完成，编一个 `completed` 就是撒谎。
@@ -457,7 +457,7 @@ mod tests {
         assert!(!tail.contains("response.completed"), "上游已经给了终止语义，不该再补一个：{tail}");
     }
 
-    /// [docs/59] **并行工具调用**：两个工具的分片必须落在**不同的块编号**上。
+    /// **并行工具调用**：两个工具的分片必须落在**不同的块编号**上。
     ///
     /// OpenAI 用 `tool_calls[].index` 区分，Anthropic 用 content block `index` ——
     /// 旧实现把两者都写死 `index: 0`，两个调用会挤进同一个块、参数互相污染。

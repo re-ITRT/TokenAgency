@@ -3,7 +3,7 @@
 //! ## 为什么装配只能有一个入口
 //!
 //! 两个地方各自拼一遍依赖，就会出现两套"什么算已装配好"的答案，而且漂移时
-//! 没有任何东西会红（[docs/13 §4.5 L21] 的教训：含糊的接口让两个实现者造出不同的系统）。
+//! 没有任何东西会红（教训：含糊的接口让两个实现者造出不同的系统）。
 //! 所以 `src-tauri` 不自己 new 管线，只调 [`build_runtime`]。
 //!
 //! ## [`LiveRouter`]：路由必须跟着配置换代，而且**一次请求只能用一个代次**
@@ -60,7 +60,7 @@ pub struct RuntimeParts {
     /// 凭据解析器（`"${secret:name}"` / `"${env:VAR}"` → 明文）。入站本地密钥与通道凭据
     /// 共用同一个，避免同一套引用语法两份实现。
     pub secrets: Arc<dyn SecretResolver>,
-    /// API key 验票接缝（[docs/19 §3.3] 的多 key 鉴权）。
+    /// API key 验票接缝（多 key 鉴权）。
     ///
     /// 默认是 `NoApiKeys`（一把 key 都没有 = 不做多 key 鉴权），所以既有装配不用改；
     /// 应用层装它：`RuntimeParts::new(secrets, kernel).with_api_keys(...)`。
@@ -70,7 +70,7 @@ pub struct RuntimeParts {
     /// 尝试记录接收器。
     pub sink: Arc<dyn AttemptSink>,
     /// `None` = 计量还没接上（G4 在途）。**不提供空实现**：静默地"接了但没数据"
-    /// 比没接更糟（[docs/13 §4.5 L10]）。
+    /// 比没接更糟。
     pub meter: Option<Arc<dyn ResponseMeter>>,
     pub ingress: IngressOptions,
 }
@@ -89,7 +89,7 @@ impl RuntimeParts {
         }
     }
 
-    /// 装上 API key 验票器（[docs/19 §3.3]）。装配点就是这里，别在别处再包一层。
+    /// 装上 API key 验票器。装配点就是这里，别在别处再包一层。
     pub fn with_api_keys(mut self, api_keys: Arc<dyn crate::ingress::ApiKeyVerifier>) -> Self {
         self.api_keys = api_keys;
         self
@@ -108,7 +108,7 @@ impl RuntimeParts {
     /// 接上**生产计量器**（G4 ④）：响应 usage → 额度账本 / 价格快照 / `usage` 表。
     ///
     /// 为什么不给空实现、也不默认接上：`meter: None` 的语义是"**计量没接线**"，
-    /// 此时成本中心永远是 0 —— 静默地"接了但没数据"比没接更糟（[docs/13 §4.5 L10]），
+    /// 此时成本中心永远是 0 —— 静默地"接了但没数据"比没接更糟，
     /// 所以由装配方显式调这一句，而不是让 [`build_runtime`] 替它猜。
     ///
     /// **必须在 tokio 运行时里装配**：落库是 `spawn` 出去的。
@@ -122,7 +122,7 @@ impl RuntimeParts {
         self
     }
 
-    /// 接上 trace 表（[docs/12 §4 G4] ①）：sink 变成"**日志 + trace 表**"两份
+    /// 接上 trace 表（①）：sink 变成"**日志 + trace 表**"两份
     /// （已通过 [`RuntimeParts::with_sink`] 注入的 sink 也保留，排在前面）。
     ///
     /// 不接的话只写日志 —— 那样"拿一个 `request_id` 筛出完整轨迹"就只剩应用日志这一路，
@@ -199,7 +199,7 @@ pub struct LiveRouter {
     cfg: Arc<arc_swap::ArcSwap<ConfigDoc>>,
     /// 跨配置换代共享的粘性表（见模块头注释）。
     sticky: Arc<dyn StickyResolver>,
-    /// 各线路的 token 用量来源（平均粘性的依据，[docs/48 §4]）。
+    /// 各线路的 token 用量来源（平均粘性的依据）。
     ///
     /// 放在门面上而不是 HTTP 管线里：**只有这里同时看得见"用量来源"与"选路"**，
     /// 于是"每请求取一次快照"只有一处实现。`None` = 没装配 → 退化为按 priority。
@@ -218,7 +218,7 @@ pub struct LiveRouter {
 /// **装配实现只有一处**：`ta_core::routing::Router::with_sticky`（B1 收口）。
 /// 这里曾经自己拼一遍 index / engine / selector —— 那是两份**手工同步**的装配，
 /// 任何一侧加了新部件两边都不会红，而"策略模拟器 = 真实决策"这个论断会**静默变成假话**
-/// （[docs/13 §4.5 L21]）。现在 `LiveRouter` 只负责"换代即重建 + 一把锁内同代求值"，
+/// 。现在 `LiveRouter` 只负责"换代即重建 + 一把锁内同代求值"，
 /// 装配细节全部交给 ta-core。
 struct Current {
     /// 缓存这一版的 `Arc`：`Arc::ptr_eq` 判定比"指针值"安全（旧分配不会被复用）
@@ -303,7 +303,7 @@ impl RoutingPlanner for LiveRouter {
         // **一把锁内跑完** decide + select：配置换代不可能插进两者之间。
         // `Router::route` 就是 ta-core 的"完整一次路由"，也保证两者用同一个 router 实例。
         let guard = self.current();
-        // 用量快照在这里取**一次**（[docs/48 §4]）：`used_tokens` 自带 TTL 缓存，
+        // 用量快照在这里取**一次**：`used_tokens` 自带 TTL 缓存，
         // 所以这是"每请求拷一份内存 map"，不是"每请求查一次库"。
         // 没装配 → 直接用调用方给的 ctx（`balance` 为空）→ 选路退化为按 priority
         // （**不是**"都没用过"）。
@@ -520,7 +520,7 @@ pub(crate) mod tests {
 
     // 这里曾有 `TwoTierPricing`（"ch-a 贵、ch-b 便宜"的替身），唯一用途是逼出
     // "`cheapest` 选择器到底有没有拿到定价引擎"。选路策略收敛为平均粘性之后
-    // （[docs/48]）选路不再读价格，那个替身与它的用例一起删除。
+    // 选路不再读价格，那个替身与它的用例一起删除。
     // 定价引擎本身仍在：它服务的是**成本计量**（`meter.rs`），与选路无关。
 
     pub(crate) struct FixedKernel(pub(crate) KernelState);
@@ -543,7 +543,7 @@ pub(crate) mod tests {
         doc.models.push(Model::new(MODEL));
         doc.lanes.push(Lane::new("lane-jp", "日本", LaneKind::Direct));
         doc.lanes.push(Lane::new("lane-tokyo", "东京", LaneKind::Direct));
-        // [docs/55] 线路在**服务商**上（`channel.lane` 已删除）
+        // 线路在**服务商**上（`channel.lane` 已删除）
         doc.providers.push(
             Provider::new("p-a", "A", Protocol::Openai, "https://a.example/v1")
                 .with_lane("lane-jp"),
@@ -593,7 +593,7 @@ pub(crate) mod tests {
         })
     }
 
-    /// 固定用量的 [`ta_core::routing::BalanceSource`] 替身（[docs/48 §4]）。
+    /// 固定用量的 [`ta_core::routing::BalanceSource`] 替身。
     ///
     /// 刻意**不含缓存逻辑**：这一层只验"门面有没有把快照喂进选路"，
     /// TTL 缓存的正确性是 `BalanceSource` 实现方自己的测试（`src-tauri`）。
@@ -716,7 +716,7 @@ pub(crate) mod tests {
     /// 这条测试的**理由**（不是"为了覆盖率"）：`with_trace_store` 从未被生产装配调用，
     /// 却也没有任何测试碰它 —— 那意味着"轨迹写不进库"这件事
     /// 既不会编译报错、也不会测试变红，只会在用户发现"日志页查不到请求轨迹"时才暴露
-    /// （[docs/14 §6 G2]/G4 的原始缺口形态）。
+    /// （/G4 的原始缺口形态）。
     ///
     /// 所以分两层钉住：
     /// 1. **行为**：装上之后 `sink` 真的把 `TraceRecord` 交给 store（下面这段）；
@@ -796,7 +796,7 @@ pub(crate) mod tests {
     /// 生产计量器的装配入口：`with_usage_meter` 之后装配里**真的有**计量器。
     ///
     /// 这条挡的是"忘了装配"这类**静默**故障：`meter: None` 不会报任何错，
-    /// 只会让成本中心永远 0（[docs/13 §4.5 L10]）。计量本身对不对由
+    /// 只会让成本中心永远 0。计量本身对不对由
     /// `meter::tests` 与 `pipeline::tests::production_meter_*` 证明。
     #[tokio::test]
     async fn usage_meter_is_wired_through_runtime_parts() {
@@ -811,7 +811,7 @@ pub(crate) mod tests {
     ///
     /// 为什么必须机器证明：`LiveRouter` 曾经自己拼一遍 index / engine / selector。
     /// 只要存在两份装配，"策略模拟器 = 真实决策"就可能悄悄变成假话
-    /// （[docs/13 §4.5 L21]）。现在调用方与实现合一，这条测试把一致性钉成可回归的事实。
+    /// 。现在调用方与实现合一，这条测试把一致性钉成可回归的事实。
     ///
     /// 覆盖四种形态：粘性命中、粘性未命中（priority）、`cheapest`（定价）、无候选模型。
     /// 它们各自逼出**一类参数级漂移**，例如"选择器根本没接上粘性表"（② 会选 ch-a）、
@@ -953,7 +953,7 @@ pub(crate) mod tests {
         );
 
         // ⑤ 平均粘性形态：专盯"用量快照有没有真的传进选择器"这一维。
-        //    这是 `docs/48` 之后唯一会改变选路结果的运行态输入。
+        //    这是  之后唯一会改变选路结果的运行态输入。
         //    用 `ch-a` 已经用掉 5000 token、`ch-b` 为 0 → 未命中粘性时必须选 `ch-b`；
         //    少了这条，门面"取快照"那一步就没人盯着了。
         //
@@ -1004,7 +1004,7 @@ pub(crate) mod tests {
     /// 装配**只能有一处**：生产的 `runtime.rs` 不许再自己拼 index / engine / selector。
     ///
     /// 这是 B1 的机械保证。行为等价测试挡不住"有人把同一段装配又抄一遍，然后**只改一处**"
-    /// —— 那正是 [docs/13 §4.5 L21] 描述的静默分叉。所以这里直接扫自己的源码。
+    /// —— 那正是 描述的静默分叉。所以这里直接扫自己的源码。
     ///
     /// **只扫 `#[cfg(test)]` 之前的生产段**：本文件下面那些测试自己就要
     /// `Router::with_sticky`（参照路由器），把测试段也算进来，守卫会被测试代码喂饱而失效
@@ -1096,7 +1096,7 @@ pub(crate) mod tests {
             Ok(guard) => guard.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         };
-        // [docs/59] 客户端发的是 Anthropic 的 `/v1/messages`，而夹具里的上游是
+        // 客户端发的是 Anthropic 的 `/v1/messages`，而夹具里的上游是
         // `protocol: openai` → **跨协议**，所以真正打出去的是 OpenAI 的端点。
         //
         // 这条断言原来写的是 `…/v1/messages`，等于把"协议不匹配"当成了正确行为

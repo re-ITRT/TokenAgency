@@ -1,6 +1,6 @@
 //! 统一错误类型与错误码。
 //!
-//! **契约**：`docs/11-internal-contracts.md` §5 的错误码总表。
+//! **契约**： 的错误码总表。
 //! 新增错误必须同时更新那张表，否则前端与 CLI 无法识别。
 
 use thiserror::Error;
@@ -35,7 +35,7 @@ pub enum TaError {
     AllChannelsFailed { message: String },
     #[error("跨协议转换会丢失内容，已拒绝转发：{0}")]
     CapabilityLoss(String),
-    /// **同一条路由下的多条线路，上游能力声明不一致**（[docs/17 §2]）。
+    /// **同一条路由下的多条线路，上游能力声明不一致**。
     ///
     /// 这不是"暂时没路由"（那是 2003），而是**配置本身矛盾**：把请求路由到能力不同的
     /// 上游会出现"有时有 vision、有时报错"这种不可预期行为，所以必须在**写入时**拒绝。
@@ -224,7 +224,7 @@ mod tests {
         }
     }
 
-    /// [docs/11 §5] 那一行的**全部四列**都要对（code / type / HTTP / 可重试）。
+    /// 那一行的**全部四列**都要对（code / type / HTTP / 可重试）。
     #[test]
     fn capability_mismatch_row_matches_the_error_table() {
         let err = mismatch();

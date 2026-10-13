@@ -1,4 +1,4 @@
-//! **四个协议适配器共用的工具**（[docs/59] 第 328 轮）。
+//! **四个协议适配器共用的工具**（第 328 轮）。
 //!
 //! # 为什么要有这个模块（这是一次结构修复，不是整理癖）
 //!
@@ -43,7 +43,7 @@ pub(crate) fn part_kind(part: &IrPart) -> &'static str {
 
 /// 图片的**人话描述**（给用户看的那一句）。
 ///
-/// 图片本身**绝不文本化**（[docs/03 §6.3]），所以出问题时用户只能看到这个描述 ——
+/// 图片本身**绝不文本化**，所以出问题时用户只能看到这个描述 ——
 /// 它要够精确定位是哪一张（data URL 给 media type、URL 给前 48 字符）。
 pub(crate) fn describe_image(img: &IrImage) -> String {
     match img {
@@ -151,7 +151,7 @@ pub(crate) fn u64_of(body: &Value, keys: &[&str]) -> Option<u64> {
 ///
 /// # `Some(0)` 不算空
 ///
-/// "上游说 0"与"上游没说"是两回事（[docs/11 §6]）—— 这里只清"什么都没说"，
+/// "上游说 0"与"上游没说"是两回事—— 这里只清"什么都没说"，
 /// 只要有一个字段带了值（哪怕是 0）就原样保留。
 pub(crate) fn non_empty_usage(usage: IrUsage) -> Option<IrUsage> {
     (!usage.is_empty()).then_some(usage)
@@ -159,7 +159,7 @@ pub(crate) fn non_empty_usage(usage: IrUsage) -> Option<IrUsage> {
 
 // ---------------------------------------------------------------- usage 字段表
 
-/// **一个协议的 usage 字段名**（[docs/59] 第 330 轮）。
+/// **一个协议的 usage 字段名**（第 330 轮）。
 ///
 /// # 为什么是表，而不是四个协议各写一对函数
 ///
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(losses.len(), 2, "只该有这两条：{losses:?}");
     }
 
-    /// **每个协议的 5 格 usage 都真的接通了**（[docs/59] 第 330 轮）。
+    /// **每个协议的 5 格 usage 都真的接通了**（第 330 轮）。
     ///
     /// 这是"表驱动"的代价对应的测试：表里声明了某一格，而 `read_usage` / `write_usage`
     /// 忘了实现它，就会变成**静默丢一个数** —— 本地单测还是绿的。

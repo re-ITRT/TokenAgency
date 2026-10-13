@@ -1,8 +1,8 @@
-//! 内核子进程的 stdout/stderr → 我们的日志（[docs/06 §1.6] B4、[docs/14]）。
+//! 内核子进程的 stdout/stderr → 我们的日志（B4）。
 //!
 //! ## 为什么这一层非有不可
 //!
-//! 实测：provider 文件**缺失或为空**时，内核**照常启动、REST 照常通**（[docs/06 §1.6] K2 细化，
+//! 实测：provider 文件**缺失或为空**时，内核**照常启动、REST 照常通**（K2 细化，
 //! 真夹具见 `tests/fixtures/real-mihomo/emptya.log` / `emptyb.log`：`level=error` 之后
 //! 紧接着就是 `RESTful API listening at: …`）。也就是说：
 //!
@@ -21,7 +21,7 @@
 //!   而生产默认是"落 `<appdata>/logs/kernel.log` + 转发进 tracing"两份都要；
 //!   **两份都过脱敏层** —— 内核原文里真的会出现带 token 的订阅 URL（[`KernelLogFileSink`] 有实测证据）;
 //! - **内核原文放 tracing 的 message，不放结构化字段**：logrus 行是**外部系统的自由文本**，
-//!   塞进字段等于让外部数据污染我们的字段契约（[docs/14 §5] 的白名单）；
+//!   塞进字段等于让外部数据污染我们的字段契约（白名单）；
 //!   `code = e.code()` 那套规则管的是**我们自己的** `TaError`，不是内核的行。
 //! - **解析不出来不丢**：级别认不出就按 `info` 记（默认级别可见），`msg=` 没有就整行当 message。
 //!   这一层的取向与整个项目一致：**宁可多一条日志，不可静默少一条。**
@@ -35,7 +35,7 @@
 //! 而 sink 是同步的（写文件 / 写 tracing）。所以如果 sink 变慢（磁盘卡、appender 排队），
 //! 管道被填满，**内核写自己的 stdout 就会被反向卡住**。
 //!
-//! 这与 [docs/14 §9.1]"非阻塞写是硬要求"的精神相左。当前**没有**做有界队列 + 丢弃计数，
+//! 这与"非阻塞写是硬要求"的精神相左。当前**没有**做有界队列 + 丢弃计数，
 //! 理由是：内核输出的速率极低（只在启动/错误/请示时写几行），而"丢日志"与"卡内核"
 //! 两种故障我们都不想要。**这条是已知边界，不是已解决**：一旦真的观测到内核被日志拖慢，
 //! 正确的做法是 `try_send` 到有界 channel + 丢弃计数（让"丢了 N 条"可见），而不是加大缓冲。
@@ -50,7 +50,7 @@ use std::sync::{Arc, Mutex};
 
 use ta_core::error::Result;
 
-/// 内核输出在 tracing 里的 target（[task-8] / [docs/14] 的契约）。
+/// 内核输出在 tracing 里的 target（[task-8] / 的契约）。
 pub const CHILD_LOG_TARGET: &str = "ta_kernel::child";
 
 // ================================================================ 行模型
@@ -214,7 +214,7 @@ pub fn pump_reader<R: Read>(reader: R, stream: ChildStream, sink: &dyn ChildLogS
             Ok(_) => {}
             Err(e) => {
                 // **有意不用 `error =` 字段**（不是漏了）：这是"读子进程管道失败"的 `io::Error`,
-                // 它没有 TA 码可记，也不是业务错误。[docs/14 §6.3] 的 `error_log_guard` 只在出现
+                // 它没有 TA 码可记，也不是业务错误。 的 `error_log_guard` 只在出现
                 // `error =` 字段时才要求配 `code =`；把它提升成结构化字段的收益只是"字段齐全"，
                 // 代价是再开一条 EXEMPT 并让豁免表变长 —— **豁免越多，守卫越软**。
                 // 所以留 message 是有意的；"有意的"与"漏掉的"必须看起来不一样，这条注释就是这个区别。
@@ -274,9 +274,9 @@ impl ChildLogSink for TracingChildSink {
     }
 }
 
-/// 追加进 `<appdata>/logs/kernel.log`（[docs/14 C1]：日志要有确定落点，用户能一键打开）。
+/// 追加进 `<appdata>/logs/kernel.log`（：日志要有确定落点，用户能一键打开）。
 ///
-/// ## ★ 落盘前**必须**过脱敏层（[docs/14 §7.1] 的第二道防线）
+/// ## ★ 落盘前**必须**过脱敏层（第二道防线）
 ///
 /// 这里写的是 [`ChildLogLine::raw`] **经 `ta_core::diag::sanitize::sanitize` 处理之后**的内容，
 /// 而不是逐字节原文 —— **这是一个刻意的取舍，理由是有实测证据的**：
@@ -325,7 +325,7 @@ impl ChildLogSink for KernelLogFileSink {
         let safe = ta_core::diag::sanitize::sanitize(&line.raw);
         let result = match self.file.lock() {
             Ok(mut f) => writeln!(f, "{safe}"),
-            Err(_) => Ok(()), // 锁被毒化：静默放过，不在日志路径上再 panic（[docs/14 §9.2]）
+            Err(_) => Ok(()), // 锁被毒化：静默放过，不在日志路径上再 panic
         };
         if let Err(e) = result {
             // 只抱怨一次：日志写不进去时最不该做的事就是每条都再写一次日志
@@ -366,7 +366,7 @@ impl ChildLogSink for TeeChildLogSink {
 /// 做成工厂而不是固定实例，是因为文件 sink 需要每次 spawn 的 `log_path`
 /// （配置里带路径，而且重启换目录时要跟着换）。
 ///
-/// **返回 `Result`**：默认实现要落 `kernel.log`，而那是 [docs/14 C1] 的硬要求
+/// **返回 `Result`**：默认实现要落 `kernel.log`，而那是 的硬要求
 /// （"出问题时日志文件存在于确定路径，用户能一键打开"）。打不开就**不能继续**
 /// —— 否则 `log_tail` 对缺失文件返回空串，"没有内核日志"与"内核没有输出"变成同一个
 /// 样子，正是 [14] 禁止的混淆。所以这里把失败**往上抛**（调用方会带 `code =` 记下来），
@@ -739,14 +739,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ta-kernel-default-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let sink = DefaultChildLogSinks.sink_for(&dir.join("kernel.log")).expect("应能建出日志");
-        // 打一条不该 panic，且文件被创建（这就是 [docs/14 C1] 的落点）
+        // 打一条不该 panic，且文件被创建（这就是 的落点）
         sink.emit(&parse_child_line(ChildStream::Stdout, "level=info msg=\"hello\""));
         assert!(dir.join("kernel.log").exists(), "默认工厂必须建出 kernel.log");
     }
 
     /// B2（同行评审）：`kernel.log` 打不开时**必须失败**，不能静默退化成"只有 tracing"。
     ///
-    /// 理由：[docs/14 C1] 要求日志有确定落点；而 `log_tail` 对缺失文件返回**空串** ——
+    /// 理由： 要求日志有确定落点；而 `log_tail` 对缺失文件返回**空串** ——
     /// 一旦允许"没有文件"，"没有内核日志"和"内核没有输出"就变成同一个样子，
     /// 正是 [14] 明令禁止的混淆。
     #[test]

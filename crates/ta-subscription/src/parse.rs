@@ -621,9 +621,9 @@ mod tests {
     /// ⚠️ 这个夹具是**合成的** —— `tests/fixtures/clash_airport.yaml` 自己的头部就写着
     /// "域名/密码全是编的，只为测试解析与计数"。
     ///
-    /// **它不是真实机场订阅**，所以 [docs/06 §2.1] 的 **D2（真实形态脱敏样本）仍未闭**。
+    /// **它不是真实机场订阅**，所以 的 **D2（真实形态脱敏样本）仍未闭**。
     /// 名字里带 `synthetic_` 就是为了不让后来人看到 "airport_fixture" 就以为已经闭了 ——
-    /// [docs/13 L19]：从断言反推出来的夹具只能证明"代码与断言自洽"。
+    ///：从断言反推出来的夹具只能证明"代码与断言自洽"。
     #[test]
     fn clash_yaml_synthetic_airport_fixture() {
         let r = parse_clash_yaml(YAML);
@@ -650,14 +650,14 @@ mod tests {
 
     /// **独立**抽出文件里出现过的 `type:` 取值。
     ///
-    /// 刻意不复用解析器的任何东西：这正是 [docs/13 L19] 的判据 ——
+    /// 刻意不复用解析器的任何东西：这正是 的判据 ——
     /// 数字必须能"从文件直接数出来"，独立于实现；否则测试就退化成同义反复。
     fn types_in_text(text: &str) -> std::collections::BTreeSet<String> {
         let re = regex::Regex::new(r#"type:\s*['"]?([a-z0-9][a-z0-9-]*)['"]?"#).expect("正则");
         re.captures_iter(text).map(|c| c[1].to_string()).collect()
     }
 
-    /// [docs/06 §2.1] **D2**：真实机场订阅（脱敏）的解析一致性。
+    /// **D2**：真实机场订阅（脱敏）的解析一致性。
     ///
     /// 夹具是**真实形态**的（`tests/fixtures/real-airport/README.md` 记了来源、脱敏脚本与
     /// 第一版脚本的翻车教训）。**不断言节点数量** —— 数量不代表任何真实值，

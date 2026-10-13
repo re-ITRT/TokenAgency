@@ -1,10 +1,10 @@
-//! `api_key` —— **我们网关对外的访问密钥**（`docs/19-provider-wizard-network-default-and-api-keys.md` §3.1/§3.2）。
+//! `api_key` —— **我们网关对外的访问密钥**（/§3.2）。
 //!
 //! 客户端拿这把 key 去调本机网关（`Authorization: Bearer ta-sk-…` 或 `x-api-key`）。
 //! 表在 `migrations/0004_api_key.sql`，用量落在 **既有**的 `api_key_usage` 表
 //! （`usage_store`），本模块只管 key 这一侧。
 //!
-//! ## 三条不许退化的口径（[docs/19 §3.1]）
+//! ## 三条不许退化的口径
 //!
 //! 1. **只存 `sha256(明文)`**：与"key 永不进 SQLite"的既有纪律同族。明文只在
 //!    [`SqliteApiKeyStore::create`] 的返回值里出现**一次**，之后没有任何取回路径
@@ -32,13 +32,13 @@ use ta_core::error::Result;
 
 use crate::util::{sha256_hex, StoreResultExt};
 
-/// 明文前缀（`docs/19 §3.2` 逐字要求 `ta-sk-`）。
+/// 明文前缀（逐字要求 `ta-sk-`）。
 pub const PLAINTEXT_PREFIX: &str = "ta-sk-";
 
 /// 明文随机段长度：43 位 base62 ≈ 256 bit ≈ 32 字节熵（契约要求 ≥32 字节）。
 const PLAINTEXT_BODY_LEN: usize = 43;
 
-/// `key_prefix` 的展示长度（`docs/19 §3.1`：前 12 字符 + `…`）。
+/// `key_prefix` 的展示长度（：前 12 字符 + `…`）。
 const PREFIX_CHARS: usize = 12;
 
 /// id 的随机段长度（16 位 base62 ≈ 95 bit：本地库里撞 id 的概率可以忽略）。
@@ -211,7 +211,7 @@ impl SqliteApiKeyStore {
 
     /// **库里是否至少有一把启用中的 key**。
     ///
-    /// 它是 `docs/19 §3.3` 那句启用条件的判据（网关的
+    /// 它是  那句启用条件的判据（网关的
     /// `ApiKeyVerifier::any_enabled` 直接转调这里）：
     /// **`gateway.local_key` 为空且这里为假 → 不鉴权**（保持既有行为；
     /// 否则老用户升级后会被自己的网关全部挡在 401 外面）；

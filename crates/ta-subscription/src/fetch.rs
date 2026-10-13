@@ -377,7 +377,7 @@ fn build_outcome(sub: &Subscription, response: RawResponse, now_ms: i64) -> Fetc
             .get("subscription-userinfo")
             .and_then(|v| v.to_str().ok())
             .and_then(parse::parse_userinfo),
-        // ★ 头存在 → `Some`（字段按 docs/18 的规则逐个判 null）；头不存在 → `None`。
+        // ★ 头存在 → `Some`；头不存在 → `None`。
         //   两种情况在 UI 上说法不同，所以这里**不能**把"没给头"也变成 Some(全 None)。
         traffic: response
             .headers

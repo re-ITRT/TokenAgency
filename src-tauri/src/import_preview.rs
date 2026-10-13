@@ -1,4 +1,4 @@
-//! `model_import_from_provider` 预览的**进程内存**缓存（[docs/19 §1.2]）。
+//! `model_import_from_provider` 预览的**进程内存**缓存。
 //!
 //! # 为什么是内存，而不是一张表
 //!
@@ -25,7 +25,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-/// 预览的有效期（5 分钟，[docs/19 §1.2]）。
+/// 预览的有效期（5 分钟）。
 pub const PREVIEW_TTL_MS: i64 = 5 * 60 * 1000;
 
 /// 同时最多保留多少份预览。

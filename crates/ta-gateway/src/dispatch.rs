@@ -2,7 +2,7 @@
 //!
 //! 铁律：**已向客户端写出第一个字节后绝不重试**（只记 `stream_broken`）。
 //!
-//! ## lane 模型（`docs/09 §5.2` / `docs/11 §2.2`）
+//! ## lane 模型（/）
 //!
 //! 每条 lane 在内核里对应一个 `mixed` listener（`127.0.0.1:3910x`，`proxy: "LANE-<id>"`）。
 //! 所以"走哪条线"= **这个请求用哪个本地代理端口**：每个 lane 一个 `reqwest::Client`，
@@ -12,7 +12,7 @@
 //!
 //! 1. **关闭自动解压**（`no_gzip` / `no_brotli` / `no_deflate`）：
 //!    否则 reqwest 会在客户端没发 `accept-encoding` 时**自己加一个**（凭空多一个头 =
-//!    破坏"除 4 处例外一律原样转发"），而且会解压后重编码 body（`docs/10 §1.6`
+//!    破坏"除 4 处例外一律原样转发"），而且会解压后重编码 body（
 //!    明确要求 `content-encoding` **不透明转发**）。
 //! 2. **不跟随重定向**：302 必须原样交给客户端。跟随重定向 = 悄悄改掉上游的响应。
 //! 3. **不用环境变量里的代理**（`direct` lane 用 `no_proxy`）：本产品自己的出网
@@ -92,7 +92,7 @@ impl LanePorts for ta_kernel::PortMap {
     }
 }
 
-/// **可热更新的** lane → 端口表（[docs/59]，第 326 轮）。
+/// **可热更新的** lane → 端口表（第 326 轮）。
 ///
 /// ## 为什么必须有它（用户报的"网络代理只有直连可用"）
 ///
@@ -187,7 +187,7 @@ pub struct KernelDialer {
     options: DialerOptions,
     /// `lane → (建成时用的端口, client)`。
     ///
-    /// [docs/59] 缓存值里**记下端口**：端口表会被热更新（`SharedPorts::replace`），
+    /// 缓存值里**记下端口**：端口表会被热更新（`SharedPorts::replace`），
     /// 而 `reqwest::Client` 的代理是**建死**在里面的 —— 只按 lane 缓存的话，
     /// 端口变了还会拿旧 client 去连旧端口。带上端口，不一致就自动重建。
     clients: Mutex<HashMap<LaneId, (Option<u16>, reqwest::Client)>>,
@@ -238,7 +238,7 @@ impl KernelDialer {
 
     /// 取（或建）该 lane 的 client。`direct` lane 不需要端口。
     ///
-    /// [docs/59] **每次都重新查端口**，并核对该 client 是不是用这个端口建的 ——
+    /// **每次都重新查端口**，并核对该 client 是不是用这个端口建的 ——
     /// 端口表可热更新，缓存不能把旧端口带下去。
     fn client_for(&self, lane: &LaneId) -> Result<reqwest::Client> {
         let port = if is_direct_lane(lane) { None } else { Some(self.require_port(lane)?) };
@@ -264,8 +264,8 @@ impl KernelDialer {
     }
 }
 
-/// `direct` 是保留的 lane id（`docs/02`：线路解析的兜底值就是 `direct`。
-/// [docs/55] 起解析只剩 `provider.lane ?? net.default_lane ?? direct`，但**兜底是 `direct` 没变**）。
+/// `direct` 是保留的 lane id（：线路解析的兜底值就是 `direct`。
+/// 起解析只剩 `provider.lane ?? net.default_lane ?? direct`，但**兜底是 `direct` 没变**）。
 pub fn is_direct_lane(lane: &LaneId) -> bool {
     lane.as_str().eq_ignore_ascii_case("direct")
 }
@@ -344,7 +344,7 @@ impl OutboundDialer for KernelDialer {
 /// 把 reqwest 的失败映射成本项目的错误码：
 /// **连接层失败 → `TA-3002 lane_unavailable`（换 lane）**，
 /// 其它（超时/协议）→ `TA-2005 all_channels_failed`（换通道）。
-/// 这个区分是 `docs/03 §5.1` 的要求：lane 连不上不该把整个通道判死。
+/// 这个区分是  的要求：lane 连不上不该把整个通道判死。
 fn classify_send_error(lane: &LaneId, err: &reqwest::Error) -> TaError {
     if err.is_connect() {
         return TaError::LaneUnavailable { lane: lane.to_string() };
@@ -380,7 +380,7 @@ pub fn into_client_response(upstream: UpstreamResponse) -> axum::response::Respo
     client_response_from_parts(status, headers, body)
 }
 
-/// 上游状态码是否值得换通道（`docs/03 §5.1` 的触发条件映射）。
+/// 上游状态码是否值得换通道（触发条件映射）。
 ///
 /// **429 / 402 / 5xx** 是"这个通道现在不行"；**4xx（其余）是请求本身的问题**，
 /// 换通道只会把同一个错误再演一遍，所以原样透传给客户端。
@@ -418,7 +418,7 @@ pub fn client_response_from_bytes(
 
 /// 极简取消令牌：一置位、多观察者、可 `await`。
 ///
-/// [docs/12 §4 G2] ④ 要求"下游断连 → `CancellationToken` 取消上游"。
+/// ④ 要求"下游断连 → `CancellationToken` 取消上游"。
 /// `tokio_util::sync::CancellationToken` 需要 tokio-util 的 `sync` feature，
 /// 而 workspace 的 `tokio-util` 只开了 `io` / `time`（根 `Cargo.toml` 归主管）；
 /// 这里要的语义很简单（置位 + 唤醒 + 判位），用 `tokio::sync::Notify` 实现等价物，
@@ -505,7 +505,7 @@ impl Drop for CancelOnDropStream {
 ///
 /// **必须区分"正常读完"与"被丢掉"**：axum 在正常收完一个流之后同样会 drop body，
 /// 若把 drop 一律当"客户端断连"，我们就会给每一次成功的流式响应都记一条
-/// "客户端中途断连" —— 假日志比没有日志更坏（[docs/14 §1.2] 的同一条理由）。
+/// "客户端中途断连" —— 假日志比没有日志更坏（同一条理由）。
 pub fn cancel_on_drop(stream: ByteStream) -> (ByteStream, CancelToken) {
     let token = CancelToken::new();
     let wrapped: ByteStream =

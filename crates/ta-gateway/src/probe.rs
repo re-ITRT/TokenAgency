@@ -1,4 +1,4 @@
-//! 面向 UI 的**受控出站探测**（GW-71 / [docs/19 §1.1][§6]）：测试连接、拉上游模型清单。
+//! 面向 UI 的**受控出站探测**（GW-71 /[§6]）：测试连接、拉上游模型清单。
 //!
 //! # 为什么要有这一层，而不是让命令层自己发 HTTP
 //!
@@ -20,7 +20,7 @@
 //!
 //! `ok=false` **不等于**"服务商坏了"：`status=404 && probe="models"` 的语义是
 //! "上游没有这个端点"（很多中转只实现 `/chat/completions`）。界面必须按 `probe` 分档说人话 ——
-//! 把它渲染成"连接失败"会让用户去查网络，方向完全错了（[docs/19 §1.1] 的契约注释）。
+//! 把它渲染成"连接失败"会让用户去查网络，方向完全错了（契约注释）。
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -118,7 +118,7 @@ pub struct ProbeProviderRequest<'a> {
 
 /// 上游 `/models` 里的一条：**清单身份**（`id`）+ 上游原样返回的那个 JSON 对象。
 ///
-/// `raw` 存在的理由（[docs/28 §3]）：线路上记的模型信息 = 扫描时把上游那一条**逐字**记下来 ——
+/// `raw` 存在的理由：线路上记的模型信息 = 扫描时把上游那一条**逐字**记下来 ——
 /// 能读到的字段存，读不到的就没有。只留 `id` 会让"上游当时到底给了什么"永久丢失，
 /// 之后要么编字段、要么再拉一次；两者都不行。
 #[derive(Debug, Clone, PartialEq)]
@@ -185,7 +185,7 @@ impl UpstreamProbe {
         Ok(FetchOutcome { status, headers, body, truncated, latency_ms })
     }
 
-    /// 测试连接。语义见 [docs/19 §1.1]：
+    /// 测试连接。语义见：
     /// 2xx → `ok=true, probe="models"`；**404/405/403 → `probe="models", ok=false`**（"上游没有这个端点"，
     /// 不是"连接失败"）；连不通 → `probe="none"`；给了 `model` 且 `/models` 不可用 → 退一步做最小 chat 探测。
     pub async fn probe_provider(&self, req: ProbeProviderRequest<'_>) -> ProbeResult {
@@ -261,7 +261,7 @@ impl UpstreamProbe {
     /// **绝不拿状态码编清单**：非 2xx 一律 `Err`，`data` 形状不对也 `Err`，
     /// 体被上限截断同样 `Err`（半份清单比报错更坏：用户会以为"上游就这些模型"）。
     ///
-    /// 这版把每条的**原文对象**一起带回来（[docs/28 §3]：扫描要逐字记录上游那一条模型对象）。
+    /// 这版把每条的**原文对象**一起带回来（：扫描要逐字记录上游那一条模型对象）。
     /// 只要名字的调用方用 [`Self::list_upstream_models`]（它是本方法的**薄包装**）——
     /// 解析实现只有一份，测试钉住的也是同一份行为。
     pub async fn list_upstream_models_with_raw(
@@ -948,7 +948,7 @@ mod tests {
         assert_eq!(ids, vec!["b-model", "a-model", "c-model"], "顺序按上游出现顺序，重复要去掉");
     }
 
-    /// [docs/28 §3]：扫描要把上游那一条模型对象**逐字**记下来。
+    ///：扫描要把上游那一条模型对象**逐字**记下来。
     /// 我们没建模的字段（`object` / `owned_by` / `created` / `permission` / 上游自定义字段）
     /// 一个都不许丢、不许改；`preserve_order` 开着时键序也要原样。
     #[tokio::test]

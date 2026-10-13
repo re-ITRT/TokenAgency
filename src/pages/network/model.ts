@@ -41,21 +41,21 @@ import type { SemStatus } from "@/shared/components";
 /**
  * 缺值占位符。
  *
- * **真源已收敛到 [`@/shared/format`]**（[docs/50]：这个字符原先在 7 个文件各写一遍）。
+ * **真源已收敛到 [`@/shared/format`]**（：这个字符原先在 7 个文件各写一遍）。
  * 这里保留一次**再导出**：`./index`、`./assignments`、`./nodes` 三个兄弟模块都是从
  * `./model` 取它的 —— 删掉再导出会让十几个调用点全部编译失败。
  * 新代码请直接 `import { DASH } from "@/shared/format"`。
  */
 export { DASH } from "@/shared/format";
-// [docs/52] 读后端原始对象的唯一实现（原先本文件自己写了 6 个读件）
-// [docs/55] `hasKey` / `pickArr` 随 `readAssignments` 一起不再被本文件使用 —— 去掉导入，
+// 读后端原始对象的唯一实现（原先本文件自己写了 6 个读件）
+// `hasKey` / `pickArr` 随 `readAssignments` 一起不再被本文件使用 —— 去掉导入，
 // 需要它们的模块直接从 `@/shared/row` 取。
 import { asRow, pickBool, pickNum, pickStr } from "@/shared/row";
 import type { Subscription, SubscriptionFormat } from "@/shared/bindings";
 
 // ================================================================ 基础读取件
 //
-// [docs/52] 全部来自 `@/shared/row` —— 这里原来自己写了一份（`asRow` / `hasKey` /
+// 全部来自 `@/shared/row` —— 这里原来自己写了一份（`asRow` / `hasKey` /
 // `pickStr` / `pickNum` / `pickBool` / `pickArr`），而 `asRow` 的口径与
 // `providers/*` 那份**已经不一样了**（这份收数组，那份挡数组）。收敛到一处之后
 // 全仓只有一种口径：**数组不是一行**。
@@ -91,12 +91,12 @@ export function readKernelPath(doc: unknown): string | undefined {
 /**
  * 线路种类（[04 §7.1]）—— **界面认得的词表**。
  *
- * [docs/54] 用户第 321 轮："**直接放弃订阅里面分组这一概念，只拿节点**" ——
+ * 用户第 321 轮："**直接放弃订阅里面分组这一概念，只拿节点**" ——
  * `subscription_group`（订阅里自带的组）**从界面上彻底消失**，所以这里不再是五种。
  * 后端仍然能反序列化老值（否则老配置在迁移前就解析失败），但那是**迁移用的遗留口**，
  * 不是可选项 —— 校验器会把它当配置损坏点名报错。
  *
- * [docs/58]（第 325 轮）之后**没有"类型下拉"了**（手动建线路的界面整块删除），
+ *（第 325 轮）之后**没有"类型下拉"了**（手动建线路的界面整块删除），
  * 但这个词表仍然有职责：`laneKindLabel` 的取值集合与它一一对应，
  * 列表里显示的就是这四种名字；`network.test.tsx` 用它挡住"遗留值悄悄回到选项里"。
  */
@@ -182,17 +182,17 @@ export type SubscriptionRow = {
   /** **已遮蔽**密钥参数的地址（`maskSubscriptionUrl` 是唯一出口）。 */
   url: string;
   /**
-   * [docs/57] **编辑时的回带底稿**：配置里那条订阅本身，但**已剔除 `url`**。
+   * **编辑时的回带底稿**：配置里那条订阅本身，但**已剔除 `url`**。
    *
    * 为什么必须有它：`subscription_upsert` 是**整条覆盖写**（Rust 侧 `*slot = subscription.clone()`），
    * 而表单里没有、也不该有的字段（`user_agent` / `disabled_nodes` / `provider_key` / `extra`…）
    * 一旦不回带，保存就会把它们**重置成类型默认值**。最要命的是 `disabled_nodes`
-   * —— 那是 [docs/54] 逐节点开关的存档，被清空 = 用户关掉的节点**全部被重新打开**，
-   * 而且保存那一刻不报错、还显示"已保存"。这与 [docs/23] 为 `provider_upsert` 根治的是同一个缺陷，
+   * —— 那是 逐节点开关的存档，被清空 = 用户关掉的节点**全部被重新打开**，
+   * 而且保存那一刻不报错、还显示"已保存"。这与 为 `provider_upsert` 根治的是同一个缺陷，
    * 纪律逐字相同：**以原始记录为底，只覆盖用户真的改过的那些键**（见 `./providers/editor.ts`）。
    *
    * 剔除 `url` 的原因见本类型上方的注释：它是**唯一**不能进 DOM 的字段，底稿里也不留它。
-   * 编辑时地址留空 = 不改，由后端保证（[docs/57]）。
+   * 编辑时地址留空 = 不改，由后端保证。
    */
   base: Record<string, unknown>;
   format?: string;
@@ -266,7 +266,7 @@ export function readSubscription(raw: unknown): SubscriptionRow {
   // 解析结果只在**外层**（`SubscriptionView` 把它们放在实体旁边）
   const parsed = wrapped ? outer : {};
 
-  // [docs/57] 编辑回带的底稿 = 实体本身，**剔除 `url`**（它是唯一不能进 DOM 的字段）。
+  // 编辑回带的底稿 = 实体本身，**剔除 `url`**（它是唯一不能进 DOM 的字段）。
   // 注意取的是 `inner`（实体）而不是 `outer`：`outer` 在 `SubscriptionView` 形状下还带着
   // `node_count` / `parser` / `error` 这些**视图字段** —— 把它们发回去会被 Rust 的
   // `#[serde(flatten)] extra` 收下、**写进配置**（配置里凭空多出几个运行时字段）。
@@ -418,7 +418,7 @@ export type SubscriptionDraft = {
   exclude: string;
   enabled: boolean;
   /**
-   * [docs/46 §E] 健康检查地址（**选填**）。
+   * 健康检查地址（**选填**）。
    * 留空 ⇒ **不发这个字段**（Rust 侧 `health_check` 有 `#[serde(default)]`，用后端默认）；
    * 填了 ⇒ 用它替换默认探测目标（无公网环境里指向本机地址，就能测出真实延迟）。
    */
@@ -443,7 +443,7 @@ export function parseOptionalCount(text: string): number | undefined | null {
 export function subscriptionDraftComplete(
   draft: SubscriptionDraft,
   /**
-   * [docs/57] 编辑时 `url` **允许为空**：地址里带 token，界面从不回显原文
+   * 编辑时 `url` **允许为空**：地址里带 token，界面从不回显原文
    *（[`SubscriptionRow.base`]），所以编辑时那个框只能是空的 —— 留空 = 不改地址
    *（由后端保证，同 `credential_set_secret` 的"留空 = 不改密钥"）。新建时仍然必填。
    */
@@ -458,7 +458,7 @@ export function subscriptionDraftComplete(
 }
 
 /**
- * [docs/57] 一行订阅 → **编辑**表单的初始草稿。
+ * 一行订阅 → **编辑**表单的初始草稿。
  *
  * **地址刻意留空**：`row.url` 是遮蔽过的（`token=***`）。把它填进输入框，
  * 用户一保存就会把 `***` 当成真实地址写回配置 —— 那是个"保存成功、下次刷新全挂"的坑。
@@ -483,12 +483,12 @@ export function subscriptionDraftFromRow(row: SubscriptionRow): SubscriptionDraf
 }
 
 /**
- * [docs/57] **编辑**的载荷：以原始记录为底（`base`），只覆盖表单真正管的那些键。
+ * **编辑**的载荷：以原始记录为底（`base`），只覆盖表单真正管的那些键。
  *
  * 与 `subscriptionPayload`（新建）的区别只有两处，两处都是必须的：
  *
  * 1. **带上底稿 `base`** —— 不回带就会把表单里没有的字段重置成类型默认值。
- *    最要命的是 `disabled_nodes`（[docs/54] 逐节点开关）：它被清空 = 用户关掉的节点
+ *    最要命的是 `disabled_nodes`（逐节点开关）：它被清空 = 用户关掉的节点
  *    **全部被重新打开**，而保存那一刻不报错、还显示"已保存"。
  * 2. **地址可以留空**（留空 = 不改）—— 因为界面拿不到明文地址。
  */
@@ -503,7 +503,7 @@ export function subscriptionEditPayload(
   payload["name"] = draft.name.trim();
   payload["format"] = draft.format;
   payload["enabled"] = draft.enabled;
-  // 留空 ⇒ 后端保持原值（[docs/57]）—— 这是**唯一**允许留空的字段
+  // 留空 ⇒ 后端保持原值—— 这是**唯一**允许留空的字段
   payload["url"] = draft.url.trim();
 
   // 数字：草稿已回填真值。清空 = 交回后端默认 → **删掉这个键**（不是发 0）。
@@ -564,7 +564,7 @@ export function subscriptionPayload(draft: SubscriptionDraft): Subscription {
     if (exclude !== "") filter.exclude = exclude;
     payload.filter = filter;
   }
-  // [docs/46 §E] 健康检查地址：**只在用户真填了才发**（留空 = 交给 Rust 的 `#[serde(default)]`）。
+  // 健康检查地址：**只在用户真填了才发**（留空 = 交给 Rust 的 `#[serde(default)]`）。
   // 这里**只放 `url`**，不补 `enabled`/`interval_s`/`tolerance_ms` —— 前端复刻后端默认值
   // 就等于把默认值变成第二个真相源（理由见本函数上方的注释）。
   const healthUrl = draft.healthUrl.trim();
@@ -653,7 +653,7 @@ export function readLane(raw: unknown): LaneRow {
 }
 
 /*
- * [docs/58]（第 325 轮）这里整节是**线路表单**的草稿类型与载荷构造器：
+ *（第 325 轮）这里整节是**线路表单**的草稿类型与载荷构造器：
  * `LaneDraft` / `laneMissingField` / `lanePayload` / `laneDraftFromRow` / `laneEditPayload`。
  *
  * 用户裁决「这个功能好像没有什么用，可以在界面上删了」之后，手动建/改线路的界面整块删除，
@@ -707,7 +707,7 @@ export type ProviderLaneRow = {
 };
 
 /*
- * [docs/55]（第 322 轮）这里曾有 `LANE_SOURCE_LABEL` / `laneSourceLabel` / `ReverseLaneRow` /
+ *（第 322 轮）这里曾有 `LANE_SOURCE_LABEL` / `laneSourceLabel` / `ReverseLaneRow` /
  * `AssignmentView` / `readAssignments` —— 「线路分配」页（`/network/assignments`）的整套读件。
  *
  * 那一页随"放弃线路级别的分配"整页删除（用户："取而代之的，每个服务商统一一个节点"），

@@ -24,7 +24,7 @@
  *
  * # 开关写的是后端已有的命令
  *
- * `subscription_nodes_enabled({ id, nodes, enabled })` 是**批量**的（[docs/52] 那轮已有的命令），
+ * `subscription_nodes_enabled({ id, nodes, enabled })` 是**批量**的（那轮已有的命令），
  * 一次用户动作 = 一次写库 + 一次内核重载；它返回**改完之后**的完整清单，页面直接回填缓存，
  * 所以界面与后端一个字都不会漂。
  *
@@ -60,7 +60,7 @@ function nodeHealth(ok: boolean | null | undefined): LaneHealth {
   return ok ? "ok" : "down";
 }
 
-/** 单元格不换行（规则 4）。**这一页不裁剪**（[docs/26 §2]：详情页只展示、不做省略）——
+/** 单元格不换行（规则 4）。**这一页不裁剪**（：详情页只展示、不做省略）——
  *  长节点名靠 `white-space: nowrap` 保持一行，由外层横向滚动兜住，全文始终在版面上。 */
 const CELL_NOWRAP_SX = { whiteSpace: "nowrap" } as const;
 
@@ -191,7 +191,7 @@ export default function SubscriptionDetailPage() {
          * **写在 `<HelpTip>` 里**的键算成按需展开的说明，多键合并出来的长句会被它保守地误算成
          * 版面文案。这里把 `<HelpTip>` 直接写出来，守卫看到的就是事实：它们真的只在问号里。
          * 外面那层 `Box`（`flexShrink: 0`）与 `PageHeader` 包 `description` 问号用的是同一套样式
-         * （[docs/31 §35]：问号不能被右侧操作区挤掉），所以视觉与改动前一致。
+         * （：问号不能被右侧操作区挤掉），所以视觉与改动前一致。
          */
         badge={
           <Box sx={{ display: "flex", flexShrink: 0 }}>

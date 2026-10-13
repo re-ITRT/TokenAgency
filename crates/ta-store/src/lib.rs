@@ -1,13 +1,13 @@
 //! `ta-store` — SQLite 持久化：配置、账本、trace、粘性、额度状态。
 //!
-//! 契约：`docs/11-internal-contracts.md` §4。
+//! 契约：。
 //!
 //! 实现（P4）：
 //! - [`config_store`] 一行一实体的 JSON 配置真源 + 快照/回滚；
 //! - [`usage_store`] 账本：单事务写入 + 任意维度查询 + 看板 + CSV；
 //! - [`trace_store`] 请求日志：zstd 压缩 BLOB、脱敏、双限清理（retention + max_rows/max_size）；
 //! - [`sticky_store`] / [`health_store`] 会话粘性、健康样本、密钥元数据；
-//! - [`subscription_traffic`] 订阅的"上次已知流量与更新时间"（docs/18 §1.2）。
+//! - [`subscription_traffic`] 订阅的"上次已知流量与更新时间"。
 
 pub mod api_key;
 pub mod auto_choice;

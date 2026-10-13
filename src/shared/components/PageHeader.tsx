@@ -53,12 +53,12 @@ export function PageHeader({ title, description, badge, actions }: PageHeaderPro
           </Typography>
           {badge}
           {/*
-            页头说明**不再铺在版面上**（[docs/22]）：用户嫌"简介好长、好多字"，
+            页头说明**不再铺在版面上**：用户嫌"简介好长、好多字"，
             所以它变成标题右边的一个问号圆圈，悬停/聚焦才展开。
             正文一个字都没丢：`aria-label` 就是全文，测试与读屏都拿得到。
           */}
           {description !== undefined && description !== "" ? (
-            /* [docs/31 §35] 问号不能被挤到右侧操作区下面（`/providers` 三个按钮把左列挤窄时，
+            /* 问号不能被挤到右侧操作区下面（`/providers` 三个按钮把左列挤窄时，
                20px 的圆圈会落进 `actions` 的命中区 → 悬停/聚焦都不出气泡，真机 step22 就是这样红的）。 */
             <Box sx={{ display: "flex", flexShrink: 0 }}>
               <HelpTip text={description} testId="page-header-help" />

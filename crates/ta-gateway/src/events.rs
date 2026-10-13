@@ -37,7 +37,7 @@ pub enum TaEvent {
 
 impl TaEvent {
     /// 事件名，直接用于 `app.emit(name, payload)`。
-    /// **必须与 `docs/10-interface-spec.md` §2.3 逐一对应** —— 前端按名字订阅，写错就静默收不到。
+    /// **必须与  逐一对应** —— 前端按名字订阅，写错就静默收不到。
     pub fn name(&self) -> &'static str {
         match self {
             TaEvent::RequestNew { .. } => "request:new",
@@ -61,7 +61,7 @@ pub trait EventBus: Send + Sync {
 
 // ================================================================ 批量合并实现
 
-/// 批量合并的参数（默认值来自 [docs/14 §6] / 本模块头注释）。
+/// 批量合并的参数（默认值来自 / 本模块头注释）。
 #[derive(Debug, Clone, Copy)]
 pub struct BatchingConfig {
     /// 环形缓冲容量（**在途**事件上限；满了丢最老的并在下次 flush 时记一条 warn）
@@ -261,7 +261,7 @@ mod tests {
         BatchingConfig { capacity, flush_ms: 200, batch_max }
     }
 
-    /// DoD（[docs/12 §4 G4] ②）：**1000 条高频事件必须被合并成有界批次**。
+    /// DoD（②）：**1000 条高频事件必须被合并成有界批次**。
     ///
     /// 断言的是**两个数**：IPC 次数（20）与条目总数（1000）。只断前者会让"丢事件"也通过。
     #[tokio::test]

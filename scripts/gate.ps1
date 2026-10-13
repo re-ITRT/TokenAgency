@@ -5,7 +5,7 @@
 #   scripts/pr.ps1       —— 员工提 PR（临时 index + git commit-tree）也走这里，
 #                            `git commit-tree` 不触发钩子，所以必须显式跑同一份检查
 #
-# 设计原则（照抄自原钩子，理由见 docs/13 L16/L18/L20）：
+# 设计原则：
 #   * **只检查本次提交涉及的东西**，不做全仓库检查 —— 全量检查会被别人未完成的
 #     在途代码挡住，最终逼所有人用 `--no-verify`，那等于门禁失效。
 #   * clippy 必须带 `--no-deps`：它仍然编译依赖（"我错误使用了上游 API"照样抓住），
@@ -31,7 +31,7 @@ param(
     # `git diff --cached`（vs HEAD）把"master 上新增、而分支里还是旧版"的文件
     # 也算成"本次改动"，门禁去给**别人的文件**跑 rustfmt 并红掉（`✘ 格式不合格`），
     # 与它的改动无关却让它的 PR 提不出去。**门禁的作用域必须等于责任的作用域**
-    # （docs/13 L20 的同一条教训，换了个位置又咬了一次）。
+    # 。
     [string]$Against
 )
 
@@ -181,7 +181,7 @@ try {
         }
     } elseif ($hasToml) {
         # ⚠️ 必须带 --all-targets：`cargo check --workspace` 是**非 test** 编译，
-        # `#[cfg(test)]` 里的错误它完全看不见（docs/13 L18）。
+        # `#[cfg(test)]` 里的错误它完全看不见。
         Info '仅 Cargo.toml 变更，跑 cargo check --workspace --all-targets'
         & cargo check --workspace --all-targets --quiet 2>&1 | Out-Host
         if ($LASTEXITCODE -ne 0) { Fail 'workspace 检查未通过（含 test target）' }

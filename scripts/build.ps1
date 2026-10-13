@@ -5,13 +5,13 @@
 # 这个脚本是 W5 的入口，所以它自己必须先是"可信的"：
 #   * `cargo check` 必须带 `--all-targets` —— 不带就是**非 test 编译**，
 #     `#[cfg(test)]` 里的错误（include_str! 路径、类型错）完全看不见。
-#     员工 P5 就是被这个洞藏住了一个坏掉的测试目标（docs/13 L18）。
+#     员工 P5 就是被这个洞藏住了一个坏掉的测试目标。
 #   * 门禁要跟仓库钩子一致（fmt / clippy -D warnings），不能只在 CI 里严格。
 
 param(
     [switch]$SkipFrontend,
 
-    # ⚠️ GPL-3.0（[docs/46] 与 2026-10-13 的许可决策）。
+    # ⚠️ GPL-3.0（与 2026-10-13 的许可决策）。
     #
     # 这里原来写的是"mihomo 是 GPL-3.0，随安装包分发有**传染性**义务"——
     # 那个判断是**偏严的**：mihomo 在本项目里是**独立进程**（`mihomo.exe` + 本地 HTTP 控制口），
@@ -102,7 +102,7 @@ if ($LASTEXITCODE -ne 0) { throw 'cargo test --workspace 未通过' }
 
 Step 5 5 'Tauri 打包（NSIS）'
 if ($NoKernel) {
-    # [docs/46] **GPL-3.0 合规备选**：用一个覆盖配置把 `bundle.resources` 清空，
+    # **GPL-3.0 合规备选**：用一个覆盖配置把 `bundle.resources` 清空，
     # **不修改** `tauri.conf.json`（默认那版仍然内置内核）。用户自备内核时，
     # 把 `mihomo.exe` 放在安装目录旁边即可被 `bundled_kernel_path()` 认出来。
     $overlay = 'tauri.nokernel.conf.json'

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * 「宽度不够就省略」的验收（[docs/26 §2]）—— 四件事必须被机械钉住：
+ * 「宽度不够就省略」的验收—— 四件事必须被机械钉住：
  *
  * 1. **没溢出就不挂 tooltip**：既不该有 `role="tooltip"`，也不该有 `tabIndex`
  *    （否则满屏单元格各挂一层空提示 + 各占一个 Tab 站）；
@@ -125,7 +125,7 @@ function wrap(ui: ReactElement) {
 
 // ================================================================ 1. 没溢出
 
-describe("[docs/26 §2] AutoEllipsis：没溢出 = 没有要恢复的东西", () => {
+describe("AutoEllipsis：没溢出 = 没有要恢复的东西", () => {
   it("没溢出：不渲染 tooltip，也不给 tabIndex（不给表格加一屏 Tab 站）", () => {
     stubBox(120, 120);
     wrap(<AutoEllipsis testId="ae">短文本</AutoEllipsis>);
@@ -162,7 +162,7 @@ describe("[docs/26 §2] AutoEllipsis：没溢出 = 没有要恢复的东西", ()
 
 // ================================================================ 2. 溢出
 
-describe("[docs/26 §2] AutoEllipsis：真溢出才给 tooltip，且键盘也能看到", () => {
+describe("AutoEllipsis：真溢出才给 tooltip，且键盘也能看到", () => {
   it("溢出：ResizeObserver 回调之后才有 tooltip，触发元素 tabIndex=0，悬停看得到全文", async () => {
     const text = "openai/gpt-4o-mini-2024-07-18-preview-upstream";
     wrap(<AutoEllipsis testId="ae-ov">{text}</AutoEllipsis>);
@@ -205,7 +205,7 @@ describe("[docs/26 §2] AutoEllipsis：真溢出才给 tooltip，且键盘也能
 
 // ================================================================ 3. 全文仍在 DOM
 
-describe("[docs/26 §2] 全文必须始终在 DOM 里（省略是 CSS，不是 JS 截断）", () => {
+describe("全文必须始终在 DOM 里（省略是 CSS，不是 JS 截断）", () => {
   it("溢出状态下文本一个字符都不少（读屏/复制/页内搜索都还能用）", async () => {
     const text = "provider-upstream-model-name-that-is-far-too-long-for-any-narrow-window";
     wrap(<AutoEllipsis testId="ae-full">{text}</AutoEllipsis>);
@@ -233,13 +233,13 @@ describe("[docs/26 §2] 全文必须始终在 DOM 里（省略是 CSS，不是 J
 
 // ================================================================ 4. 回归守卫：详情页零用法
 
-describe("[docs/26 §2] 回归守卫：详情页里不许出现 AutoEllipsis", () => {
+describe("回归守卫：详情页里不许出现 AutoEllipsis", () => {
   /**
    * 用户原话：「只限于一级界面……我点开想看详细信息的那种肯定不加」。
    * 这三个文件就是"点进去看详细"的那几个，守卫直接读源码文本 ——
    * 谁把它们也包上省略，这一条立刻红（而不是等到有人抱怨"详情页也看不全了"）。
    *
-   * [docs/55]（第 322 轮）`pages/network/assignments.tsx` 已从那四个里去掉：
+   *（第 322 轮）`pages/network/assignments.tsx` 已从那四个里去掉：
    * 「线路分配」整页删除（用户："线路级别的分配逻辑我们已经放弃了"）。
    */
   const DETAIL_ONLY_FILES = [

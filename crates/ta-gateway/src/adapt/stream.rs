@@ -8,7 +8,7 @@
 //! # 为什么不能像整包那样"解码 → 编码 → 核对"
 //!
 //! 整包可以"缓冲全量 → 解码 → 编码 → 往返核对 → 一次写出"；流式**没有第二次机会**：
-//! 字节一旦推给客户端就收不回来（[docs/01 §"流式请求一旦写出第一个 SSE chunk"]）。
+//! 字节一旦推给客户端就收不回来（["流式请求一旦写出第一个 SSE chunk"]）。
 //! 所以这一层的判据不是"往返核对"，而是**逐事件的语义搬运**：
 //! 一个有内容的事件要么被搬成目标协议的等价事件，要么被**明确丢弃**
 //! （[`translate_stream_event`] 返回 `None`），**绝不造一个"看起来像"的帧**把客户端骗过去
@@ -95,7 +95,7 @@ pub enum IrStreamEvent {
     /// * **Gemini**：`functionCall: {name, args}` 里 `args` 就是**一个完整对象**，
     ///   协议里没有"分片"这个形态。所以 `input: Some(args)`，后面**不会**再有分片。
     ///
-    /// [docs/59] 第 330 轮之前没有这一格，于是 **Gemini 作上游时的工具入参被整份丢掉**
+    /// 第 330 轮之前没有这一格，于是 **Gemini 作上游时的工具入参被整份丢掉**
     /// （解码侧 `IrPart::ToolUse { id, name, .. }` 的 `..` 把它扔了）——
     /// 那是真数据丢失，不是"没实现"。现在它能一路带到目标协议；
     /// 目标协议若只认分片（OpenAI/Anthropic/Responses），编码侧会把它**序列化成一片**发出去。
@@ -146,7 +146,7 @@ impl StreamFrame {
 /// 规范化的**用量片段**。
 ///
 /// 每个字段都是 `Option`：`None` = 上游**没说**，`Some(0)` = 上游**说了 0**。
-/// 这两者混为一谈就是静默少记账（[docs/11 §6] 的同一条口径），所以这里不做"缺省为 0"。
+/// 这两者混为一谈就是静默少记账（同一条口径），所以这里不做"缺省为 0"。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IrUsage {
     /// Anthropic 的 `input_tokens`（**不含**缓存读/写）；
@@ -221,7 +221,7 @@ impl IrUsage {
     /// 所有字段一个都没说（`Some(0)` **不算**空）。
     ///
     /// 它**不能**用来判断"上游给没给 usage"：空对象 `{}` 与根本没有 `usage` 字段都会得到 `true`，
-    /// 而这两件事在账本上不一样（[docs/11 §6]）。要判"给没给"，看 `Option<IrUsage>` 是不是 `None`。
+    /// 而这两件事在账本上不一样。要判"给没给"，看 `Option<IrUsage>` 是不是 `None`。
     pub fn is_empty(&self) -> bool {
         self.fields().iter().all(Option::is_none)
     }
@@ -229,7 +229,7 @@ impl IrUsage {
 
 /// **每请求一份**的编码上下文。
 ///
-/// # 为什么需要它（[docs/59] 第 328 轮）
+/// # 为什么需要它（第 328 轮）
 ///
 /// 适配器是**全局单例**（下面的 `static`），自己存状态会让并发请求串味。
 /// 但流式编码确实需要两类**每请求**状态：
@@ -384,7 +384,7 @@ pub trait StreamAdapter: Send + Sync {
     /// 那不是取舍，那是丢数据。
     fn decode_stream_event(&self, data: &Value) -> Vec<IrStreamEvent>;
 
-    /// 解码这一帧时**丢掉的内容**（[docs/59] 第 328 轮补的通道）。
+    /// 解码这一帧时**丢掉的内容**（第 328 轮补的通道）。
     ///
     /// # 为什么是独立方法，而不是给 `decode_stream_event` 加一个参数
     ///
@@ -398,7 +398,7 @@ pub trait StreamAdapter: Send + Sync {
     /// 例：Anthropic 的 `thinking_delta`（推理正文）、Gemini 的 `thought` part 与未知 part。
     ///
     /// **心跳 / `ping` / 纯元信息不要记**：它们丢了不损失内容，记了就是噪音 ——
-    /// 噪音会把真损失淹没（[docs/11 §6]：留痕是为了可行动，不是为了好看）。
+    /// 噪音会把真损失淹没（：留痕是为了可行动，不是为了好看）。
     fn decode_losses(&self, _data: &Value) -> Vec<Loss> {
         Vec::new()
     }
@@ -854,7 +854,7 @@ mod tests {
         );
     }
 
-    /// [docs/59] **并行工具调用**：源协议用 `index` 区分，目标协议的编号**另外分配**。
+    /// **并行工具调用**：源协议用 `index` 区分，目标协议的编号**另外分配**。
     ///
     /// 这是第 328 轮修掉的缺口：旧实现把目标编号写死 `index: 0`，
     /// 两个并行调用的分片会挤进同一个块、参数互相污染。
@@ -1077,7 +1077,7 @@ mod tests {
         let keepalive = json!({ "choices": [{ "index": 0, "delta": {}, "finish_reason": null }] });
         assert!(js(Protocol::Openai, Protocol::Anthropic, &keepalive).is_empty());
 
-        // 目标协议**有**适配器时，这一帧应当真的产出（[docs/59] 起 Gemini 也有了）
+        // 目标协议**有**适配器时，这一帧应当真的产出（起 Gemini 也有了）
         let text = json!({ "choices": [{ "index": 0, "delta": { "content": "x" } }] });
         let to_gemini = js(Protocol::Openai, Protocol::Gemini, &text);
         assert!(
@@ -1111,7 +1111,7 @@ mod tests {
         assert!(out[0].get("x-upstream-envelope").is_some(), "我们不认识的字段也要在");
     }
 
-    /// [docs/59] **Gemini 永远不会是"客户端协议"** —— `session.rs` 的模块头依赖这条
+    /// **Gemini 永远不会是"客户端协议"** —— `session.rs` 的模块头依赖这条
     /// 不可达性（"往 Gemini 流式发工具入参分片"这条路不可达，所以不为它建缓冲合并机制）。
     ///
     /// 哪天有人加了 `/v1beta/...` 入站路由，`Endpoint` 会多一个变体、`protocol()` 会返回
@@ -1134,7 +1134,7 @@ mod tests {
         );
     }
 
-    /// [docs/59] **解码侧的内容损失必须留痕**（第 328 轮补的通道）。
+    /// **解码侧的内容损失必须留痕**（第 328 轮补的通道）。
     ///
     /// "这一帧没有可搬的东西"（`Other`）与"这一帧里有**内容**被丢掉"是两件事：
     /// 前者是心跳/元信息（丢了不损失什么），后者是**真的少了内容**。

@@ -1,5 +1,5 @@
 /**
- * 访问密钥页 `/api-keys`（[docs/19 §3.4]）—— **我们网关对外的**访问密钥。
+ * 访问密钥页 `/api-keys`—— **我们网关对外的**访问密钥。
  * 客户端拿它调 `127.0.0.1:8787`（与配置里的 `gateway.local_key` 是两条并行的鉴权路径）。
  *
  * 两条**诚实**硬要求（这一页最容易违反，所以写在最上面）：
@@ -14,7 +14,7 @@
  * 另外：`last_used_at_ms` 为 `null` = **从未使用**（显示"从未使用"，**不显示 0/1970**）。
  * `0` 是"确实用过、时间戳是 0"，那是另一件事，不许混。
  *
- * 第三条（[docs/21 §1]）：**删除先二次确认、失败不静默**。单条与批量共用共享的 `ConfirmDelete`；
+ * 第三条：**删除先二次确认、失败不静默**。单条与批量共用共享的 `ConfirmDelete`；
  * 被拒绝时后端原文（含 TA 码）留在确认框里，`api_key_delete` 没有 force 语义 → 不放"强行删除"按钮。
  * 批量是**一次确认 → 逐条调用 → 逐条汇报**（一条失败不中止其余条）。
  *
@@ -55,7 +55,7 @@ import { radius, typography } from "@/theme";
 const USAGE_LIMIT = 50;
 
 /**
- * 一条删除的结果。**逐条如实汇报**：成功说名称，失败说标识 + 后端原文（[docs/21 §1.2]）。
+ * 一条删除的结果。**逐条如实汇报**：成功说名称，失败说标识 + 后端原文。
  */
 type DeleteOutcome = {
   /** 该条的身份（key id）—— 失败时的"标识"就是它。 */
@@ -70,7 +70,7 @@ type DeleteOutcome = {
 /** 一次删除操作的汇报：`batch` = 批量（要额外给"成功 N 条 / 失败 M 条"的一行）。 */
 type DeleteReport = { batch: boolean; items: DeleteOutcome[] };
 
-/** 名称 + id：确认框与结果区都用它写清"删的是哪一个"（[docs/21 §1.1 第 2 条]）。 */
+/** 名称 + id：确认框与结果区都用它写清"删的是哪一个"。 */
 function keyLabel(row: ApiKeyView): string {
   return row.name === "" ? row.id : `${row.name}（${row.id}）`;
 }
@@ -147,7 +147,7 @@ export default function ApiKeysPage() {
    */
   const [created, setCreated] = useState<ApiKeyCreated | undefined>(undefined);
   /**
-   * 删除状态（[docs/21 §1]）：单条与批量**共用同一个确认组件、同一套失败展示**。
+   * 删除状态：单条与批量**共用同一个确认组件、同一套失败展示**。
    * `target` = 正在确认的单条（`null` = 没有）；`batchOpen` = 批量确认框。
    * **确认之前一条命令都不发** —— 旧实现在点「确认」的瞬间就把框关掉了，于是失败时用户
    * 什么也看不到（后端原文被丢掉）；现在失败会把原文留在框里。
@@ -169,7 +169,7 @@ export default function ApiKeysPage() {
   /**
    * 勾选集合。
    *
-   * [docs/52] 性能：这一页原来在 `rows.every(...)` / `rows.some(...)` 和**每一行**的
+   * 性能：这一页原来在 `rows.every(...)` / `rows.some(...)` 和**每一行**的
    * `checked={selected.includes(row.id)}` 里直接扫 `selected` 数组 ——
    * 那是 **O(行数 × 勾选数)**，而且每次渲染都重算。
    * 看这里没有意义地重算正是本仓 `models` / `providers` 两页已经用 `Set` 解决过的问题
@@ -228,7 +228,7 @@ export default function ApiKeysPage() {
   };
 
   /**
-   * 「删除选中」（[docs/21 §1.2]）：**逐条**调用，一条失败**不中止**其余条，
+   * 「删除选中」：**逐条**调用，一条失败**不中止**其余条，
    * 最后如实汇报成功/失败条数 + 失败项的 id 与后端原文 —— 绝不用一句"批量删除成功"盖住部分失败。
    */
   const onDeleteSelected = async (): Promise<void> => {
@@ -378,7 +378,7 @@ export default function ApiKeysPage() {
 
         {/* ③ 列表 */}
         <Panel titleKey="apiKeys.title" testId="api-keys-list-panel">
-          {/* 批量删除（[docs/21 §1.2]）：有行才出现 —— 空列表上摆一排点了没用的控件就是假界面。
+          {/* 批量删除：有行才出现 —— 空列表上摆一排点了没用的控件就是假界面。
               选中数与按钮同排；一条都没选中时按钮进禁用态（功能是**做了的**，禁用不是占位）。 */}
           {rows.length > 0 ? (
             <Stack direction="row" spacing={2} sx={{ alignItems: "center", flexWrap: "wrap" }}>
@@ -448,7 +448,7 @@ export default function ApiKeysPage() {
                       </Box>
                     </TableCell>
                     <TableCell>
-                      {/* [docs/26 §2] 密钥名是用户自己起的，可能很长。
+                      {/* 密钥名是用户自己起的，可能很长。
                           恢复路径：密钥没有详情页 → 悬停/聚焦的 tooltip 就是恢复路径
                           （「前缀」那一列是另一个值，不受影响）。 */}
                       <AutoEllipsis testId="api-key-name-ellipsis" sx={{ maxWidth: 240 }}>
@@ -487,7 +487,7 @@ export default function ApiKeysPage() {
                           variant="outlined"
                           color="error"
                           onClick={() => {
-                            // **只开确认框**：命令在确认之后才发（[docs/21 §1.1 第 2 条]）
+                            // **只开确认框**：命令在确认之后才发
                             setDeleteError(undefined);
                             setTarget(row);
                           }}
@@ -537,7 +537,7 @@ export default function ApiKeysPage() {
           </Typography>
         </Panel>
 
-        {/* 删除结果（[docs/21 §1.2] 的 `api-key-delete-result`）：成功写"已删除 <名称>"；
+        {/* 删除结果（`api-key-delete-result`）：成功写"已删除 <名称>"；
             批量先给成功/失败条数，失败项**逐条**带 id + 后端原文 —— 部分失败绝不盖成"成功"。 */}
         {report === null ? null : (
           <Paper variant="outlined" sx={SECTION_SX} data-testid="api-key-delete-result">
@@ -567,7 +567,7 @@ export default function ApiKeysPage() {
         )}
 
         {/*
-          删除确认（[docs/21 §1 / §2]）：单条与批量共用**同一个**共享组件。
+          删除确认：单条与批量共用**同一个**共享组件。
           - **先确认再发命令**，确认框里写清删的是哪一个（名称 + id）；
           - 失败时后端原文（含 TA 码）留在框里、框**不关**（旧实现先关框 -> 失败彻底静默）；
           - `api_key_delete` 没有 force 语义 → `cascadeAvailable={false}`，不放任何"强行删除"按钮。

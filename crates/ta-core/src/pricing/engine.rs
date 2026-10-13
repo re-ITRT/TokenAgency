@@ -1,6 +1,6 @@
 //! `PricingEngine` 实现：**manual > imported > builtin**，精确匹配优先于通配。
 //!
-//! 规则来源：[07 §6.2](../../../docs/07-ui-pages-and-cost.md)。
+//! 规则来源：[07 §6.2](../../../)。
 //!
 //! # 匹配顺序（可预测、可解释）
 //!
@@ -384,7 +384,7 @@ mod tests {
         approx(p.rates[&TokenKind::Input], 5.0);
     }
 
-    /// [docs/51] 本轮修正的核心：**同一档内，条件多的条目压过条件少的**。
+    /// 本轮修正的核心：**同一档内，条件多的条目压过条件少的**。
     ///
     /// 用户第 318 轮把定价的对象钉成"每一个对外模型"。于是同档内会出现
     /// `{model:"m"}`（本轮唯一的写法）与历史遗留的 `{model:"m", provider:"p"}` 并存。
@@ -457,7 +457,7 @@ mod tests {
         assert!(other.rates.get(&TokenKind::Input).copied().unwrap_or(0.0) != 1.5);
     }
 
-    /// [docs/51] **落库时把 `None` 写成显式 `null`，与"键不存在"完全同构。**
+    /// **落库时把 `None` 写成显式 `null`，与"键不存在"完全同构。**
     ///
     /// 为什么专门钉这一条：真机 e2e 的第一版判据要求落库 JSON 里 `provider` / `credential`
     /// **键都不存在**，跑出来是 `{"model":"…","provider":null,"credential":null}` 就判了红。

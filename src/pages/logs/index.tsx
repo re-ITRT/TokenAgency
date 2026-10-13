@@ -166,7 +166,7 @@ const NO_ROWS: readonly TraceRow[] = [];
 // ================================================================ 小组件
 
 
-// [docs/52] 统计格收敛到共享件（原先本文件自己写了一份）
+// 统计格收敛到共享件（原先本文件自己写了一份）
 
 /** 单条日志行展开后的内容：**轨迹（C4）+ 这一行的原始字段**。 */
 export type LogsRowDetailProps = {
@@ -176,7 +176,7 @@ export type LogsRowDetailProps = {
 };
 
 /**
- * [docs/32] L5 字段表：**只列这一行真的有的东西**。
+ * L5 字段表：**只列这一行真的有的东西**。
  *
  * 列名复用列表列头那批键（`logs.col.*`）——同一个概念不许两种叫法。
  * 值读不到时渲染「—」（`null`），**不猜、不补默认值**（例如没有 `status` 就不显示 200）。
@@ -226,7 +226,7 @@ export function LogsRowDetail({ view, trace }: LogsRowDetailProps) {
         gap: 4,
       }}
     >
-      {/* [docs/32] L5：详情头部 —— 请求 ID + 一键复制。
+      {/* L5：详情头部 —— 请求 ID + 一键复制。
           复制的是**后端给的那个 id**（不是前端拼的），失败就如实说"复制不了"。 */}
       <Stack direction="row" spacing={1} alignItems="center" data-testid="logs-detail-head">
         <Typography variant="body1" sx={{ fontFamily: typography.fontMono }}>
@@ -244,7 +244,7 @@ export function LogsRowDetail({ view, trace }: LogsRowDetailProps) {
         </IconButton>
       </Stack>
 
-      {/* [docs/32] L5：字段表 —— 只显示**这一行真的有**的值，读不到就显示「—」（不猜、不补默认）。
+      {/* L5：字段表 —— 只显示**这一行真的有**的值，读不到就显示「—」（不猜、不补默认）。
           列名复用列表列头同一批 i18n 键，避免同一个概念两种叫法。 */}
       <Box
         data-testid="logs-detail-fields"
@@ -269,7 +269,7 @@ export function LogsRowDetail({ view, trace }: LogsRowDetailProps) {
       {trace}
 
       {/* 原始字段：即使轨迹读不到（保留期外/已清理），这一行的原始字段也必须看得到。
-          「原样显示、未清洗」是**解释** → 收进标题右边的问号（[docs/22 §2]），
+          「原样显示、未清洗」是**解释** → 收进标题右边的问号，
           与 `TracePanel` 里同一个键的渲染位置一致；下面 `pre` 里的原文一个字都没动。 */}
       <Stack spacing={1}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
@@ -305,7 +305,7 @@ export function LogsRowDetail({ view, trace }: LogsRowDetailProps) {
 
 // ================================================================ 展示层（纯 props，便于测"有数据/无数据"）
 
-/** 计数筛选片的三种状态（[docs/32] L2）。 */
+/** 计数筛选片的三种状态（L2）。 */
 export type LogOutcome = "all" | "ok" | "failed";
 
 /** `applied.levels` → 当前是哪一片（片子的高亮状态由它决定，不另存一份状态）。 */
@@ -328,7 +328,7 @@ export const OUTCOME_LEVELS: Record<LogOutcome, readonly Level[]> = {
   failed: ["failed", "retried"],
 };
 
-/** [docs/32] L2 顶部四张卡要的四个数（来自 `log_stats` 命令）。 */
+/** L2 顶部四张卡要的四个数（来自 `log_stats` 命令）。 */
 export type LogStatsView = {
   total: number;
   ok: number;
@@ -373,7 +373,7 @@ export type LogsQueryProps = {
   isLoadingMore: boolean;
   onLoadMore: () => void;
   /**
-   * [docs/32] L2 顶部四张统计卡的数据源（`log_stats` 命令，与查询**同一套过滤**）。
+   * L2 顶部四张统计卡的数据源（`log_stats` 命令，与查询**同一套过滤**）。
    * `null` = 读取失败或搜索模式（存储层拒绝统计）→ 界面显示「读不到」，**不许拿旧数字充数**。
    */
   stats?: LogStatsView | null;
@@ -448,7 +448,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
   const { t } = useTranslation();
   const [clearOpen, setClearOpen] = useState(false);
   /**
-   * [docs/32 §9/§13] L7：记录与留存这一节里的四块（存储 / 模式 / 保留 / 导出）**默认收起**。
+   * L7：记录与留存这一节里的四块（存储 / 模式 / 保留 / 导出）**默认收起**。
    *
    * 折叠只切 `display`，**内容始终挂载** —— 这些是真功能，卸载等于把它们从 DOM 里拿走
    * （第一次尝试用 MUI `Accordion`，它的 `unmountOnExit` 就是这么把测试弄红的）。
@@ -458,7 +458,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
   const [open, setOpen] = useState(false);
   const [clearMode, setClearMode] = useState<ClearMode>("all");
 
-  // [docs/32] L3：右栏显示"当前选中的那一行"。选中状态只有一份（`expanded.requestId`），
+  // L3：右栏显示"当前选中的那一行"。选中状态只有一份（`expanded.requestId`），
   // 这里只把它翻译成行视图 —— 找不到（翻页/筛选变了）就是 `undefined` → 右栏给空态。
   const selectedRow = query.rows.find((row) => row.requestId === expanded.requestId);
 
@@ -494,7 +494,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
               <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
                 {t("logs.filter.range")}
               </Typography>
-              {/* 时间范围做成**分段按钮**（[docs/32]：与截图同一形态）—— 点一下即筛，
+              {/* 时间范围做成**分段按钮**（：与截图同一形态）—— 点一下即筛，
                   与计数片走同一条生效路径；不再需要"先选下拉再按查询"。 */}
               <Stack direction="row" spacing={1} data-testid="logs-range-presets" sx={{ flexWrap: "wrap" }}>
                 {RANGE_PRESETS.map((preset) => (
@@ -574,7 +574,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
         </Stack>
       </Paper>
 
-      {/* ①.5 统计卡（[docs/32] L2）：四个数来自 `log_stats`，与下面的列表同口径。
+      {/* ①.5 统计卡（L2）：四个数来自 `log_stats`，与下面的列表同口径。
           搜索模式下存储层会拒绝统计 → `stats` 是 null → 显示「读不到」而不是旧数字。 */}
       {query.stats === undefined ? null : (
         <Box
@@ -612,7 +612,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
         </Box>
       )}
 
-      {/* ①.6 计数筛选片（[docs/32] L2）：数字与统计卡**同源**，点一下即筛。
+      {/* ①.6 计数筛选片（L2）：数字与统计卡**同源**，点一下即筛。
           「失败」= failed + retried（见 `OUTCOME_LEVELS`），否则片上的数会与列表对不上。 */}
       {query.stats === undefined ? null : (
         <Stack direction="row" spacing={2} data-testid="logs-outcome-chips">
@@ -685,7 +685,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
               <Typography variant="body1">{t("logs.empty.title")}</Typography>
             </Box>
           ) : (
-            /* [docs/32] L3 主从双栏：左列表、右详情。窄屏（xs）回落成上下。 */
+            /* L3 主从双栏：左列表、右详情。窄屏（xs）回落成上下。 */
             <Box
               sx={{
                 display: "grid",
@@ -750,7 +750,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
                             {view.tsMs === undefined ? DASH : formatLocalTime(view.tsMs)}
                           </TableCell>
                           <TableCell sx={{ fontFamily: typography.fontMono }}>
-                            {/* [docs/26 §2] 请求 id 很长（一行一条的排查钥匙）。
+                            {/* 请求 id 很长（一行一条的排查钥匙）。
                                 恢复路径：①展开这一行能看到这条请求的完整轨迹（本页既有入口）；
                                 ②悬停/聚焦的 tooltip。 */}
                             <AutoEllipsis testId="logs-request-id-ellipsis" sx={{ maxWidth: 280 }}>
@@ -758,7 +758,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
                             </AutoEllipsis>
                           </TableCell>
                           <TableCell>
-                            {/* [docs/26 §2] 模型名（带前缀/日期的长名字）。
+                            {/* 模型名（带前缀/日期的长名字）。
                                 恢复路径：展开这一行的轨迹面板里有同一条记录 → 悬停/聚焦的 tooltip。 */}
                             <AutoEllipsis testId="logs-model-ellipsis" sx={{ maxWidth: 200 }}>
                               {view.model ?? DASH}
@@ -767,7 +767,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
                           <TableCell
                             sx={{ fontFamily: typography.fontMono, color: "text.secondary" }}
                           >
-                            {/* [docs/26 §2] 通道 id 是排查"走哪条通道"的钥匙。
+                            {/* 通道 id 是排查"走哪条通道"的钥匙。
                                 恢复路径：展开这一行的轨迹面板 → 悬停/聚焦的 tooltip。 */}
                             <AutoEllipsis testId="logs-channel-ellipsis" sx={{ maxWidth: 200 }}>
                               {view.channel ?? DASH}
@@ -782,14 +782,14 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
                           <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
                             {view.tokens === undefined ? DASH : formatInt(view.tokens)}
                           </TableCell>
-                        {/* [docs/32] L4 花费列：**只用契约给的 cost**，没有就 —（不拿 token 现算） */}
+                        {/* L4 花费列：**只用契约给的 cost**，没有就 —（不拿 token 现算） */}
                         <TableCell align="right" data-testid="logs-row-cost">
                           {view.cost === undefined
                             ? DASH
                             : `${view.cost.currency} ${view.cost.amount.toFixed(6)}`}
                         </TableCell>
                           <TableCell sx={{ maxWidth: 280 }}>
-                            {/* [docs/26 §2.4] **错误原文与 TA 码不省略**（[docs/22 §2] 红线）：
+                            {/* **错误原文与 TA 码不省略**（红线）：
                                 这一格刻意不用 `AutoEllipsis` —— 错误是"必须看得见"的东西，
                                 藏进"…"里就是藏问题。保留下面的原文 + 悬停全文。 */}
                             {view.error === undefined ? (
@@ -817,7 +817,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
                 </Table>
               </Box>
 
-              {/* 右栏详情（[docs/32] L3）：选中哪一行就显示哪一行 —— 与左栏共用同一份选中状态
+              {/* 右栏详情（L3）：选中哪一行就显示哪一行 —— 与左栏共用同一份选中状态
                   （`expanded.requestId`），不另存一份。没选中时给**空态**，不是一片空白。 */}
               <Box data-testid="logs-detail-pane">
                 {selectedRow === undefined ? (
@@ -855,7 +855,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
           <Typography variant="h4">{t("logs.storage.title")}</Typography>
           <HelpTip text={t("logs.storage.scope")} testId="logs-storage-help" />
-          {/* [docs/32 §9/§13] L7：折叠开关。标题行**永远可见** —— 收起的是下面那四块，
+          {/* L7：折叠开关。标题行**永远可见** —— 收起的是下面那四块，
               不是这一节本身；看不见的功能等于没有功能，所以恢复入口就在标题行右侧。 */}
           <IconButton
             size="small"
@@ -869,7 +869,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
           </IconButton>
         </Box>
 
-        {/* [docs/32 §9/§13] L7：四块（存储 / 模式 / 保留 / 导出）默认收起。
+        {/* L7：四块（存储 / 模式 / 保留 / 导出）默认收起。
             这里**只切 `display`**（内容始终挂载，见 `open` 的注释）：
             原先的 `<Stack spacing={4}>` 直接改成这个 Box，是为了不把 200 多行内容重新缩进
             —— "整段搬家 + 行号拼接"正是前两次把 JSX 弄坏的那个操作。 */}
@@ -1031,7 +1031,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
           {/* 导出诊断包（log_export）：真入口。路径由用户填（后端没有任何目录可上报），
               落盘路径以**后端回执**为准 —— 没回执就只说"已请求"，不说"已导出成功"。 */}
           <Stack spacing={2}>
-        {/* [docs/30 §3.16] 导出路径那段的"没有默认路径、界面不替用户猜"是**既有测试钉住的红线**，
+        {/* 导出路径那段的"没有默认路径、界面不替用户猜"是**既有测试钉住的红线**，
             必须内联（第 78 轮曾误判为可收进问号，被测试当场拦下 → 已撤回）。
             本轮只做一件事：**占位符缩短**（59 字的两个示例路径会把输入区挤满）。 */}
         <Typography variant="h4">{t("logs.export.title")}</Typography>
@@ -1179,7 +1179,7 @@ export default function LogsPage() {
   // 第一页：跟随生效条件；事件（request:new / log:append）到达时由事件桥失效后自动重取
   const page = useCommandQuery("log_query", logQueryArgs(applied), qk.logs(fingerprint));
   /**
-   * [docs/32] L2：顶部四张统计卡。与列表**同一套过滤**（后端 `log_stats` 复用同一个 WHERE），
+   * L2：顶部四张统计卡。与列表**同一套过滤**（后端 `log_stats` 复用同一个 WHERE），
    * 所以卡片上的数与列表里的行永远同口径。
    *
    * 搜索模式下后端**如实拒绝**（正文是压缩体，SQL 数不准）→ 这里把 `stats` 置 `null`，
@@ -1406,7 +1406,7 @@ export default function LogsPage() {
             setApplied(draft);
             setExpandedId(null);
           },
-          // [docs/32] L2：计数片的高亮与点击。高亮**从 `applied.levels` 推导**，不另存一份状态
+          // L2：计数片的高亮与点击。高亮**从 `applied.levels` 推导**，不另存一份状态
           // （两份状态迟早不一致）；点片直接进 `applied`，与按「查询」是同一条生效路径。
           outcome: outcomeOf(applied.levels),
           onPickOutcome: (next) => {

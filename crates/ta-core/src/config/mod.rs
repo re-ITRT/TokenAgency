@@ -542,7 +542,7 @@ gateway:
 
     // ------------------------------------------------------------ JSON Schema
 
-    /// [docs/28 §4] `gateway.expose_models_with_capabilities` 是**已删除的旧开关**。
+    /// `gateway.expose_models_with_capabilities` 是**已删除的旧开关**。
     ///
     /// 不变量：老配置带着它必须**仍能解析**（值落进 `gateway.extra` 原样保留，前向兼容纪律），
     /// 但它已经不是结构体字段 —— 新写的配置线上形态里不会出现它，schema 里也不该再宣告它。

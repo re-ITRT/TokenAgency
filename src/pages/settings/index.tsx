@@ -79,7 +79,7 @@ import type {
   Retention,
 } from "@/shared/bindings";
 import { SECTION_SX, Caption, AutoEllipsis, PageHeader, StatItem, StatusDot, HelpTip } from "@/shared/components";
-// [docs/52] 「区块说明放哪儿」的唯一判定（原先本文件自己写了一份，阈值是裸字面量 12）
+// 「区块说明放哪儿」的唯一判定（原先本文件自己写了一份，阈值是裸字面量 12）
 import { sectionHelpMode } from "@/shared/helpTip";
 import { DASH, formatBytes, formatDuration, formatInt, formatLocalTime } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
@@ -154,7 +154,7 @@ async function writeClipboard(text: string): Promise<boolean> {
 // ================================================================ 小组件
 
 
-// [docs/52] 统计格收敛到共享件（原先本文件自己写了一份）
+// 统计格收敛到共享件（原先本文件自己写了一份）
 
 /** 只读一行：标签 + 值。**只读块里不放任何控件**（I2 的机械检查点）。 */
 function ReadonlyRow({ label, value }: { label: string; value: ReactNode }) {
@@ -174,16 +174,16 @@ function ReadonlyRow({ label, value }: { label: string; value: ReactNode }) {
 }
 
 /**
- * 区块说明的呈现方式（[docs/22 §2]）。
+ * 区块说明的呈现方式。
  *
- * [docs/52] 收敛到 `@/shared/helpTip`，这里**保留再导出**：`settings.test.tsx`
+ * 收敛到 `@/shared/helpTip`，这里**保留再导出**：`settings.test.tsx`
  * 是 `import SettingsPage, { sectionHelpMode } from "@/pages/settings"` 这样取的，
  * 直接删掉会让那条测试编译失败。实现只有一份（阈值不再各写一遍）。
  */
 export { sectionHelpMode } from "@/shared/helpTip";
 
 /**
- * 一个区块（[docs/22 §2] 的"区块说明"）。
+ * 一个区块（"区块说明"）。
  *
  * `descriptionKey` 是**这一段是干什么的**那一句：> 12 字符收进标题右边的问号圆圈
  * （`testId` 就是 `<区块 testid>-help`，§3），≤ 12 字符留在版面上。
@@ -896,7 +896,7 @@ export default function SettingsPage() {
           </Stack>
 
           {/*
-            [docs/59] **下游 API 家族开关**（用户第 326 轮需求 2）。
+ **下游 API 家族开关**（用户第 326 轮需求 2）。
 
             三个**独立**的勾选框，不是"选一个" —— 用户原话是"打开关闭形式，按需求勾选"。
             关掉的端点会在网关侧当场明确报错（错误里点出是哪个开关），不会被转发上游。
@@ -1422,7 +1422,7 @@ export default function SettingsPage() {
             </Stack>
           ) : null}
 
-        {/* [docs/30 §3.18] 长页面（1838 行）的主操作固定在底部：照抄 `providers-save-bar` 的 sticky 做法 */}
+        {/* 长页面（1838 行）的主操作固定在底部：照抄 `providers-save-bar` 的 sticky 做法 */}
         <Box
           sx={{ position: "sticky", bottom: 0, zIndex: 1, bgcolor: "background.paper", py: 2 }}
           data-testid="settings-apply-bar"
@@ -1621,7 +1621,7 @@ export default function SettingsPage() {
                     {snapshots.map((snapshot) => (
                       <TableRow key={snapshot.id} data-testid="settings-snapshot-row">
                         <TableCell>
-                          {/* [docs/26 §2] 「标签 · id」两个用户可见值拼在一格，可能很长。
+                          {/* 「标签 · id」两个用户可见值拼在一格，可能很长。
                               恢复路径：①「回滚」按钮开的那张确认框里带着同一个 id（本页既有入口）；
                               ②悬停/聚焦的 tooltip 给完整原文。 */}
                           <AutoEllipsis
@@ -1658,7 +1658,7 @@ export default function SettingsPage() {
         </SectionPaper>
 
         {/* ⑥ 「系统网络信息（只读）」整块**已删除**（用户要求"设置界面的向导关掉"，
-            [docs/19 §2.1] 第 2 条）：内核路径与网络信息的编辑归 `/network` 页，设置页不再有
+ 第 2 条）：内核路径与网络信息的编辑归 `/network` 页，设置页不再有
             这一块，也不再有"展开/收起"这种入口。原来那 12 行只读值（TUN / 系统代理 / 内核
             来源·路径·控制口 / lane 端口段 / dialer / DNS / 默认线路 / 健康间隔）由网络页负责。
             页面的 I2 边界仍然由 model.ts 的 FORBIDDEN_PATHS + setPath() 强制（那个测试还在）。 */}

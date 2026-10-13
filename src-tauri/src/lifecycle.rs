@@ -38,7 +38,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, Window, WindowEvent};
 
 use ta_core::clock::{Clock, SystemClock};
 use ta_core::domain::behavior::MAX_AUTOSTART_DELAY_S;
-/// 启动时要不要把主窗口藏进托盘（[docs/33]）。
+/// 启动时要不要把主窗口藏进托盘。
 ///
 /// **`TA_E2E` 在场时永不隐藏**：真机端到端需要一个**可见**窗口 —— 驱动器只能驱动一个真正
 /// 渲染出来的 WebView；隐藏窗口时它拿到的是**空页面**（真机上表现为"窗口起来了但页面文本为空"，
@@ -644,7 +644,7 @@ pub trait BootDeps: Send + Sync {
     /// 默认实现 = **明确暴露缺口**：网关的生产装配入口由 E5 在 `ta-gateway` 里提供
     /// （`build_runtime` 一类）。在他落地之前，这里如实返回"未接线"，
     /// 编排因而落到 `Degraded` 并把这句原因显示给用户 —— **绝不假装网关已就绪**，
-    /// 也**不在我们这边另造一条装配路径**（两套构造方式必然漂移，见 docs/13 L21）。
+    /// 也**不在我们这边另造一条装配路径**。
     async fn start_gateway(&self) -> Result<(), String> {
         Err(GATEWAY_NOT_WIRED.to_string())
     }
@@ -775,7 +775,7 @@ pub fn on_setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             );
             let _ = window.show();
             let _ = window.set_focus();
-            // [docs/31 §19] **真机 E2E：延迟再显示一次**。
+            // **真机 E2E：延迟再显示一次**。
             //
             // 为什么需要它：驱动器建完会话后，窗口会被 `window-state` 插件（恢复上次会话的
             // 可见性）或托盘逻辑**再次藏起来** —— 真机表现是"会话即刻失效"：

@@ -1,6 +1,6 @@
 //! `settings_ext` —— 系统集成 / 诊断导出 / 首启向导 / 托盘控制这批命令的实现处。
 //!
-//! 契约：`docs/10-interface-spec.md` §2.2（app / config / log / onboarding / secrets / tray）。
+//! 契约：（app / config / log / onboarding / secrets / tray）。
 //! 本文件是**新建的**：既有 `app.rs` / `config.rs` / `log.rs` / `catalog.rs` / `usage.rs`
 //! 属于别的写者，这里不碰它们的行。
 //!
@@ -155,7 +155,7 @@ const AUTOSTART_SECTION: &str = "system_integration";
 
 /// `app_get_autostart` / `app_set_autostart` / `app_repair_autostart` 的返回值。
 ///
-/// 形状与 `docs/10 §2.2` 的 `AutostartState` 逐字段一致；末尾两个字段是**附加**的
+/// 形状与  的 `AutostartState` 逐字段一致；末尾两个字段是**附加**的
 /// （契约之外的诚实补充，前端多两个只读信息，不会破坏既有渲染）：
 ///
 /// * `command_matches`：注册的命令行是否**正好**是当前期望（exe + mode + delay）。
@@ -332,7 +332,7 @@ pub async fn app_repair_autostart(state: State<'_, AppState>) -> IpcResult<Autos
 
 // ================================================================ ② 检查更新
 
-/// `app_check_update` 的返回（`docs/10 §2.2`：`UpdateInfo?`）。
+/// `app_check_update` 的返回（：`UpdateInfo?`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct UpdateInfo {
     pub version: String,
@@ -656,7 +656,7 @@ pub async fn log_export(
     log_export_with_receipt(&state, query, Path::new(&path), log_dir.as_deref()).await
 }
 
-/// `log_export` 的回执（[docs/10 §2.2]）。
+/// `log_export` 的回执。
 ///
 /// **为什么必须回执**：后端会把"目录"解析成
 /// `tokenagency-diagnostic-<时间戳>.zip`（见 [`resolve_export_target`]），
@@ -693,7 +693,7 @@ pub async fn log_export_with_receipt(
 
 // ================================================================ ⑤ 首启向导
 
-/// `onboarding_detect` 的返回（`docs/10 §2.2`：`{ kernel_found, existing_config, suggested_providers }`
+/// `onboarding_detect` 的返回（：`{ kernel_found, existing_config, suggested_providers }`
 /// + 两个附加字段：找内核时实际看过的位置，用户能据此看出"为什么没找到"）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct OnboardingDetect {
@@ -846,7 +846,7 @@ pub struct OnboardingSubscription {
     pub url: String,
 }
 
-/// `onboarding_apply` 的入参（`docs/10 §2.2` 的 `OnboardingInput`）。
+/// `onboarding_apply` 的入参（`OnboardingInput`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct OnboardingInput {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1098,7 +1098,7 @@ pub async fn onboarding_apply(
     apply_onboarding(&state, store.as_ref(), input).await
 }
 
-/// `onboarding_test_all` 的一行（`docs/10 §2.2` 的 `ConnectivityRow`）。
+/// `onboarding_test_all` 的一行（`ConnectivityRow`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct ConnectivityRow {
     pub credential_id: String,

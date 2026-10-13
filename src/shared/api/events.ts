@@ -5,7 +5,7 @@ import type { EventNameValue, EventPayload } from "@/shared/bindings";
 import { isTauri } from "./client";
 
 /**
- * 事件名常量。**必须与 `docs/10-interface-spec.md` §2.3 以及 Rust 侧
+ * 事件名常量。**必须与  以及 Rust 侧
  * `ta_gateway::events::TaEvent::name()` 一致**（`satisfies` 会在写错时让 tsc 报错）。
  *
  * 载荷类型在 `@/shared/bindings`（与 Rust `TaEvent` 变体字段一一对应）——

@@ -1,13 +1,13 @@
 //! 网关装配：把 `src-tauri` 的运行时状态接到 `ta-gateway` 的**唯一装配入口**上。
 //!
-//! 依据 [docs/12 §5 T2] ⑤ 与 [docs/10 §1.1]：网关是启动编排里的一个阶段，
-//! **装配只走 E5 的 `build_runtime`**，本文件不自己拼管线（[docs/13 L21]：
+//! 依据 ⑤ 与：网关是启动编排里的一个阶段，
+//! **装配只走 E5 的 `build_runtime`**，本文件不自己拼管线（：
 //! 两条装配路径必然漂移，而且漂移时不报错）。
 //!
 //! # 本文件提供什么
 //!
 //! `ta-gateway` 的 `GatewayDeps` / `RuntimeParts` 里有 4 个接缝需要宿主实现，
-//! 它们在这里落地（每一个都必须是**真的**，空实现会让功能静默失效 —— [docs/13 L10]）：
+//! 它们在这里落地（每一个都必须是**真的**，空实现会让功能静默失效 ——）：
 //!
 //! | 接缝 | 实现 | 为什么不能糊 |
 //! |---|---|---|
@@ -81,7 +81,7 @@ impl GatewayStore for UsageStoreGateway {
     }
 }
 
-/// `BalanceSource`：**时间窗内各线路的 token 用量**，平均粘性的"平均"依据（[docs/48 §4]）。
+/// `BalanceSource`：**时间窗内各线路的 token 用量**，平均粘性的"平均"依据。
 ///
 /// # 为什么必须缓存（用户明确要求"让数据库压力不是那么大"）
 ///
@@ -282,11 +282,11 @@ impl KernelProbe for KernelProbeAdapter {
 
 /// `EventBus` → Tauri `emit`。
 ///
-/// 事件名只有一个来源：[`TaEvent::name()`]（[docs/10 §2.3] 的 10 个名字由 `EVENT_NAMES`
-/// 抄成常量并由测试钉住）。[docs/13 L2] 的教训：`request_new` vs `request:new`
+/// 事件名只有一个来源：[`TaEvent::name()`]（10 个名字由 `EVENT_NAMES`
+/// 抄成常量并由测试钉住）。 的教训：`request_new` vs `request:new`
 /// 这种错**编译全过、运行全静默**，所以名字必须有测试守着。
 ///
-/// **载荷形状**：`request:new` 按 [docs/10 §2.3] 发**批量数组**；其余变体发
+/// **载荷形状**：`request:new` 按 发**批量数组**；其余变体发
 /// `TaEvent` 自身序列化后的对象。**已知缺口**：`usage:tick` 的
 /// `{ today }` 形状与 `TaEvent::UsageTick` 的字段不完全一致（`ta-gateway`
 /// 侧只有 `today_tokens` / `today_cost`），这需要和 E5 对齐后再改载荷，
@@ -343,9 +343,9 @@ pub fn event_payload(e: &TaEvent) -> serde_json::Value {
 /// 只会在真机上表现成"功能静默失效"。两个已知的失效形态：
 ///
 /// * `with_api_keys` 少写一句 → 网关静默退化成 `NoApiKeys`（既不强制鉴权、也不认任何 api key），
-///   真机上只表现为"访问密钥建了也挡不住人"（[docs/19 §3.3]）；
+///   真机上只表现为"访问密钥建了也挡不住人"；
 /// * `with_trace_store` 少写一句 → 请求轨迹**一条都不落库**，真机上表现为
-///   "前端日志页与 `ta trace` 查不到任何请求"（[docs/14 §6 G2]/G4）。
+///   "前端日志页与 `ta trace` 查不到任何请求"（/G4）。
 ///   `with_trace_store` 自己的文档写着"生产装配应当接上"，而它此前**既没被调用、也没有测试** ——
 ///   正是那种"没人接"的原始缺口形态。
 ///
@@ -383,7 +383,7 @@ impl GatewayBoot {
     ///
     /// 闸门来自**唯一装配路径**：`build_runtime` 把同一个 `Arc<GatewayGate>` 同时交给
     /// 运行时与 `IngressState`，所以本层只是把它取出来交给命令层 ——
-    /// **不在 ingress 外面另包一层准入逻辑**（那会是第二条请求路径，[docs/13 L21]）。
+    /// **不在 ingress 外面另包一层准入逻辑**（那会是第二条请求路径）。
     pub fn gate(&self) -> Arc<ta_gateway::ingress::GatewayGate> {
         self.runtime.gate.clone()
     }
@@ -392,7 +392,7 @@ impl GatewayBoot {
     ///
     /// 为什么必须能取出来（而不是"装配完就丢掉"）：命令层要发 HTTP 只能走
     /// `GatewayDeps.dialer` —— `src-tauri` 不依赖 `reqwest`，另开一条出站路径会**绕过线路策略**
-    /// （[docs/12 §5 T2]）。`app_status` 的"网关状态"也要靠 `AppState.gateway` 是否存在
+    /// 。`app_status` 的"网关状态"也要靠 `AppState.gateway` 是否存在
     /// （`gateway_ready()`），否则状态会撒谎。
     ///
     /// 取回的是**同一个对象**：`assemble` 把 deps 交给 `build_runtime` 之后，运行时仍持有
@@ -401,14 +401,14 @@ impl GatewayBoot {
         self.runtime.deps.clone()
     }
 
-    /// 按 [docs/12 §5 T2] 的"唯一装配入口"装配（不自己拼管线）。
+    /// 按 的"唯一装配入口"装配（不自己拼管线）。
     pub fn assemble(app: AppHandle<tauri::Wry>, state: &AppState, ports: PortMap) -> Self {
         let doc = state.doc();
 
         // 出站拨号器：**必须**用 E5 的助手（每 lane 一个 client、关自动解压、
         // 不跟随重定向 —— 这些是透传保真的一部分）
         //
-        // [docs/59] 端口表用**可热更新**的 `SharedPorts`（不是裸 `PortMap` 的快照）：
+        // 端口表用**可热更新**的 `SharedPorts`（不是裸 `PortMap` 的快照）：
         // 端口是运行期才分配的，而拨号器原来拿的是 boot 那一刻的冻结副本 ——
         // 于是 boot 之后新建的 lane（「自动」/ 订阅节点）查不到端口 → TA-3002，
         // 真机表现就是"只有直连能出网"。句柄同时交给 `AppState`，
@@ -426,7 +426,7 @@ impl GatewayBoot {
             events,
             clock: state.clock.clone(),
             pricing: Arc::new(PricingEngineImpl::new(&doc.pricing)),
-            // 平均粘性的用量来源（[docs/48 §4]）：带 30s TTL + 24h 窗口，
+            // 平均粘性的用量来源：带 30s TTL + 24h 窗口，
             // 于是"每请求取快照"不会变成"每请求查库"。
             balance: Some(Arc::new(SqliteBalanceSource::new(
                 state.usage.clone(),
@@ -438,10 +438,10 @@ impl GatewayBoot {
         //
         // 装配入参只有一处（[`runtime_parts`]）：它与"验票器接没接上"必须可断言 ——
         // 少写一句 `.with_api_keys(...)` 会**静默**退化成 `NoApiKeys`，
-        // 在真机上的表现是"访问密钥建了也挡不住人"（[docs/19 §3.3]）。
+        // 在真机上的表现是"访问密钥建了也挡不住人"。
         let parts = runtime_parts(state);
 
-        // [docs/59] **计量接线**（第 330 轮修）。`with_usage_meter` 早就写好了、
+        // **计量接线**（第 330 轮修）。`with_usage_meter` 早就写好了、
         // 文档也写着"生产装配应当显式调它"，但**从来没有人调用** ⇒ `meter: None`
         // ⇒ `usage_request` 表恒为空 ⇒ 成本中心永远是 0、日志详情里的
         // "Token 与成本"没有数据可显示。
@@ -621,7 +621,7 @@ mod tests {
         AppState::bootstrap(dir.join("db.sqlite")).await.expect("开库")
     }
 
-    /// [docs/19 §3.3] 的接线：**装上的是真 store，不是 `NoApiKeys`**。
+    /// 的接线：**装上的是真 store，不是 `NoApiKeys`**。
     ///
     /// 两边都断言（反向 + 正向）：空库时 `any_enabled` 必须是假（否则老用户全 401）；
     /// 建一把之后必须是真，且明文能换回它的 id（`NoApiKeys` 的 `verify` 恒 `None`，
@@ -642,7 +642,7 @@ mod tests {
         assert!(verifier.verify("ta-sk-别的").await.unwrap().is_none());
     }
 
-    /// [docs/59] 第 330 轮真机 bug 的复现与修复：**配置说 meta，store 说 off ⇒ 一条都不落库**。
+    /// 第 330 轮真机 bug 的复现与修复：**配置说 meta，store 说 off ⇒ 一条都不落库**。
     ///
     /// 真机证据（用户 DB）：`store_setting` 里 `('trace.mode', '"off"')`，
     /// 而配置里是 `request_log.mode: meta` —— 两个真相源，没人同步。
@@ -686,7 +686,7 @@ mod tests {
         );
     }
 
-    /// [docs/59] **装配入参必须真的接上验票器 / trace 表 / 计量器**。
+    /// **装配入参必须真的接上验票器 / trace 表 / 计量器**。
     ///
     /// 上面的行为测试直接调 `api_key_verifier`，所以把 `assemble` 里那一句改回内联
     /// `RuntimeParts::new(...)` 它照样绿 —— 而"没人接"正是这个缺口的原始形态。
@@ -703,7 +703,7 @@ mod tests {
             production.contains(".with_api_keys("),
             "装配入参必须装上 API key 验票器（docs/19 §3.3：少这一句 = 建了 key 也挡不住人）"
         );
-        // [docs/50] 第二处同类缺口：`with_trace_store` 的文档写着"生产装配应当接上"，
+        // 第二处同类缺口：`with_trace_store` 的文档写着"生产装配应当接上"，
         // 但它此前**从未被调用、也没有任何测试** ⇒ 请求轨迹一条都不落库，
         // 真机上只表现为"日志页查不到请求"，编译与测试全绿。
         // 这一句和上面那句是**同一个模式**，所以放在一起守。
@@ -713,7 +713,7 @@ mod tests {
              前端日志页与 `ta trace` 都查不到；行为验证见 ta-gateway 的 \
              `with_trace_store_really_writes_records_to_the_store`）"
         );
-        // [docs/59] 第 330 轮两处**同类**缺口（都是"功能代码写好、但没人调用"）：
+        // 第 330 轮两处**同类**缺口（都是"功能代码写好、但没人调用"）：
         //
         // 1. `with_usage_meter` 从来没被调用 ⇒ `usage_request` 恒为空 ⇒
         //    成本中心永远是 0、日志详情里的"Token 与成本"没有数据；
@@ -738,9 +738,9 @@ mod tests {
         );
     }
 
-    /// [docs/10 §2.3] 的 10 个事件名，**逐字**与 `TaEvent::name()` 对齐。
+    /// 的 10 个事件名，**逐字**与 `TaEvent::name()` 对齐。
     ///
-    /// 这条测试存在的唯一理由：[docs/13 L2] ——
+    /// 这条测试存在的唯一理由： ——
     /// `request_new` vs `request:new` 这种错**编译全过、运行全静默**。
     const DOC_EVENT_NAMES: [&str; 10] = [
         "request:new",
@@ -889,7 +889,7 @@ mod tests {
         panic!("等不到快照里 {channel} = {want}（最后一次：{:?}）", src.used_tokens());
     }
 
-    /// [docs/48 §4]：用量快照**一个 TTL 周期最多查一次库**，不是每请求查一次 ——
+    ///：用量快照**一个 TTL 周期最多查一次库**，不是每请求查一次 ——
     /// 这正是用户要求的"让数据库压力不是那么大"。
     ///
     /// 验法不靠数 SQL 条数，而靠**行为证据**：刷新是异步的，所以

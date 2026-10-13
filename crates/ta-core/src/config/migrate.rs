@@ -51,7 +51,7 @@ impl std::error::Error for MigrationError {}
 pub type MigrationStep = fn(ConfigDoc) -> Result<ConfigDoc, MigrationError>;
 
 /// v1 → v2：把"线路属于哪个模型"（`ChannelConfig.model`）搬成"模型要用哪几条线路"
-/// （`Model.lines`）—— [docs/28 §2] 的关系翻转。
+/// （`Model.lines`）—— 的关系翻转。
 ///
 /// **为什么必须迁移**：老库里每条 channel 行都写着 `"model": "gpt-4o"`，而模型行没有 `lines`。
 /// 不搬的话，翻转后的读路径（按 `Model.lines` 找线路）在新库里**一条线路都找不到** ——
@@ -95,7 +95,7 @@ fn v1_to_v2(mut doc: ConfigDoc) -> Result<ConfigDoc, MigrationError> {
 ///   而 `url-test` 会按自己的 interval **周期性重测重选** —— 出口 IP 会自己变，
 ///   正是用户要避免的（同账号多地并发 = 封号风险）；
 /// * 给上显式 `select` 之后，它就是 [`crate::domain::Lane::automatic`] 的「自动选择」：
-///   按地址粘性、只在连不上或手动刷新时才重挑（[docs/29 §2.2]）。
+///   按地址粘性、只在连不上或手动刷新时才重挑。
 ///
 /// 于是用户体验是"**升级后那条线路还在，而且从'会自己乱跳'变成了'粘住'**"——
 /// 这不是退让，是把一个机场语义换成了我们自己的、行为更可预期的语义。
@@ -264,7 +264,7 @@ mod tests {
         assert!(err.message.contains("迁移步骤"), "实际：{}", err.message);
     }
 
-    /// **关系翻转的真迁移**：老配置里 `channels[].model` → `models[].lines`（[docs/28 §2]）。
+    /// **关系翻转的真迁移**：老配置里 `channels[].model` → `models[].lines`。
     ///
     /// 这是本轮最重要的一条测试：不迁移的话，翻转后的读路径在新库里一条线路都找不到。
     #[test]
@@ -359,7 +359,7 @@ mod tests {
         assert!(semantic_eq(&current, &round_tripped), "已达最新版本 → 原样返回");
     }
 
-    // ---------------------------------------------------------------- v2 → v3（[docs/54]）
+    // ---------------------------------------------------------------- v2 → v3
 
     /// **「放弃订阅里分组」的真迁移**（用户第 321 轮）。
     ///

@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * [docs/53] **`TA-5001` 必须把"是哪一处"说出来** —— 第 320 轮用户真机报的 bug。
+ * **`TA-5001` 必须把"是哪一处"说出来** —— 第 320 轮用户真机报的 bug。
  *
  * # 用户看到的是什么
  *
@@ -53,7 +53,7 @@ function configInvalidWithDetails(count: number): TokenAgencyError {
   });
 }
 
-describe("[docs/53] errorMessage：TA-5001 要说清是哪一处", () => {
+describe("errorMessage：TA-5001 要说清是哪一处", () => {
   it("带 details 时，路径与说明都出现在同一句话里", () => {
     const text = errorMessage(configInvalidWithDetails(1));
     expect(text).toContain("[TA-5001]");

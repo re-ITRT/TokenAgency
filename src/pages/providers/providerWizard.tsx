@@ -1,5 +1,5 @@
 /**
- * `/providers` 的**两步向导**（[docs/19 §1 流程 A]）—— 点 `providers-add-open` 进来的就是这个。
+ * `/providers` 的**两步向导**—— 点 `providers-add-open` 进来的就是这个。
  *
  * 为什么要有它：原来的「添加服务商」是单步表单（服务商 + 凭据 + 密钥一次填完），
  * 而用户要的流程是"下一步 → 下一步"：先把**这家服务商**配好（顺带测一下通不通），
@@ -15,7 +15,7 @@
  *    不进错误消息、不上屏。
  * 3. **`data-testid` 挂在容器上**（MUI 的 TextField / Select 不吃它，直接写会 TS2353），
  *    真机 E2E 与单测都按 `[data-testid="X"] input` 命中同一形状。
- * 4. **一个服务商一把密钥**（[docs/28 §1] 硬规则 3）：第 1 步只有一个 `pw-key` 输入框，
+ * 4. **一个服务商一把密钥**（硬规则 3）：第 1 步只有一个 `pw-key` 输入框，
  *    一次运行只发出**一条** `credential_upsert`（id 恒为 `<provider>-default`）与至多一条
  *    `credential_set_secret`；要两个账号 → 再加一条服务商、取不同名字（提示在
  *    `pw-key-multiple-help`）。
@@ -35,7 +35,7 @@
  * 复用 [`LinesSection`] 而不是在这里再画一遍：两处一旦各画一套，行为迟早分叉
  * （这一轮要修的正是"向导和详情页操作逻辑不一样"）。
  *
- * **这里不创建模型**（[docs/28 §1] 硬规则 1，owner 原话"模型是不自动创建的，是等待用户去分配的"）：
+ * **这里不创建模型**（硬规则 1，owner 原话"模型是不自动创建的，是等待用户去分配的"）：
  * 建的是**线路**，模型由用户在模型页把线路分配给它时才出现。
  */
 
@@ -118,7 +118,7 @@ const K = {
 /*
  * 本轮删掉的三个**死声明**（键与声明一起下线，见映射文件的 delete 列表）：
  * · `providers.wizard.defaultLane` / `.defaultLaneHint` —— 第 1 步已经没有"新建线路默认代理"
- *   这个控件（[docs/29 §2.1]：代理只属于服务商），这两条 88 字的说明从来没画到版面上，
+ *   这个控件（：代理只属于服务商），这两条 88 字的说明从来没画到版面上，
  *   留着只会让下一个读代码的人以为界面上还有那一项；
  * · `providers.lines.laneChanged` —— 键在 zh-CN 里本来就不存在（线路级代理撤掉时漏删的声明）。
  */
@@ -157,11 +157,11 @@ export type ProviderTwoStepWizardProps = {
 };
 
 /**
- * 两步向导（[docs/19 §1]）—— **只管"新增服务商"**。
+ * 两步向导—— **只管"新增服务商"**。
  *
  * 第 72 轮曾让详情页的「编辑」以编辑模式打开同一个向导；用户第 75 轮明确要求
  * 「编辑页面不走下一步下一步，点开服务商之后直接给可视化编辑界面」→ 编辑已经搬到详情页
- * 本身（[docs/23]），这里那套编辑分支连同"只发 4 个字段的覆盖写"一起删掉了
+ * 本身，这里那套编辑分支连同"只发 4 个字段的覆盖写"一起删掉了
  * （它正是"改个名字会抹掉鉴权 / 超时 / TLS / 附加头"那个数据丢失缺陷的载体）。
  */
 export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoStepWizardProps) {
@@ -171,7 +171,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
 
   /**
    * 会话（草稿 / 当前步 / 已落库的那一份）活在**模块级 store** 里：点 `pw-proxy`
-   * 去 `/network` 会把整个页面卸载掉，草稿必须比组件活得久（[docs/19 §1.4]）。
+   * 去 `/network` 会把整个页面卸载掉，草稿必须比组件活得久。
    */
   const [session, setSession] = useState<WizardSession>(() => readWizardSession());
   useEffect(() => {
@@ -214,7 +214,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   const [lineNotice, setLineNotice] = useState<string | undefined>(undefined);
 
   /**
-   * [docs/28 §1.2] 第 1 步选的新建线路**默认网络代理**（`""` = 没选过 → 用 `net.default_lane`
+   * 第 1 步选的新建线路**默认网络代理**（`""` = 没选过 → 用 `net.default_lane`
    * → 直连那条 lane）。它只影响**新建**的线路；建完之后每行还能各自改。
    */
 
@@ -313,7 +313,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
    * 「测试连接」：**非必填**，但一旦按下就真调 `provider_test`。
    *
    * 服务商还没落库时，先老老实实落一次库（并且把这件事说出来），再探测 ——
-   * 绝不静默产生持久化副作用（主管裁决，[docs/19 §1.3]）。
+   * 绝不静默产生持久化副作用（主管裁决）。
    */
   const runTest = (): void => {
     setSubmitted(true);
@@ -337,7 +337,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   };
 
   /**
-   * [docs/29 §2.2] 第 1 步那个代理下拉的选项来源：`lane_list`（所有已配置线路）
+   * 第 1 步那个代理下拉的选项来源：`lane_list`（所有已配置线路）
    * + 启用的订阅（「自动」，一份订阅一个）。与详情页用**同一个** `providerLaneChoices` ——
    * 两处顺序不许不一样，否则用户会觉得"换个入口就变了"。
    */
@@ -407,7 +407,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
       try {
         const result = await api.model.importFromProvider(id);
         setPreview(result);
-        // [docs/29 §2.1] **不带 lane**：代理只属于服务商，向导不写线路级代理
+        // **不带 lane**：代理只属于服务商，向导不写线路级代理
         const created = await api.model.createAllLines(id, null);
         setLinesCreated({ created: created.created, total: created.total });
         await Promise.all([
@@ -423,7 +423,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   };
 
   /**
-   * [docs/27 §1.5] 进第 2 步**自动扫一次**（用户："向导添加线路的时候也不用手动点击扫描线路了，
+   * 进第 2 步**自动扫一次**（用户："向导添加线路的时候也不用手动点击扫描线路了，
    * 直接默认扫描，过程中显示正在扫描"）。
    *
    * 只在这一步的**首次**进入时自动跑（`autoScanned` 记住跑过没有）：用户点了「重新扫描」之后
@@ -479,7 +479,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   };
 
   const close = (): void => {
-    // 取消 = 停止继续，**不回滚**已经落库的服务商 / 凭据 / 线路（[docs/19 §1.3]）；
+    // 取消 = 停止继续，**不回滚**已经落库的服务商 / 凭据 / 线路；
     // 只把界面草稿清干净，免得下次打开带着上一次的残值与旧回显。
     resetWizardSession();
     setSubmitted(false);
@@ -512,7 +512,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
       case "ok":
         return t("providers.wizard.testOk", { ms: formatInt(probeResult.latency_ms) });
       case "no-endpoint":
-        // 上游没有 /models ≠ 连不通（[docs/19 §1.1]）
+        // 上游没有 /models ≠ 连不通
         return t("providers.wizard.testNoEndpoint");
       case "failed":
         return probeFailureText(probeResult);
@@ -603,7 +603,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
             </Stack>
 
             {/**
-             * [docs/29 §2.2] **为服务商选代理**（用户第 112 轮：这一项必须存在于"添加"向导，
+             * **为服务商选代理**（用户第 112 轮：这一项必须存在于"添加"向导，
              * 且能看到**所有网络代理**以及「自动」「直连」）。
              *
              * 选项与详情页用的是**同一个** `providerLaneChoices`（顺序也一致）：
@@ -620,7 +620,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
             />
 
             {/* 明文密钥：type=password，只进密钥仓库（成功后立刻从草稿里抹掉）。
-                **一个服务商就一把密钥**（[docs/28 §1] 硬规则 3）：所以这里没有"粘贴多行 →
+                **一个服务商就一把密钥**（硬规则 3）：所以这里没有"粘贴多行 →
                 展开成 N 份凭据"那套东西，一次运行只会发出**一条** `credential_upsert`。
                 旁边的问号说明"想要两个账号怎么办"（`providers.key.multipleHint`：再加一条服务商、
                 取不同名字）。 */}
@@ -653,7 +653,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
               >
                 {t("onboarding.test.title")}
               </Button>
-              {/* 按钮旁边的说明：测试**不是必填**（[docs/19 §1.1]） */}
+              {/* 按钮旁边的说明：测试**不是必填** */}
               <Caption>{t("providers.wizard.testOptional")}</Caption>
               {/* 测试结果：成功显示后端给的延迟；404/models 说"上游没有这个端点"；其余原样显示后端原文 */}
               {testText !== undefined ? (
@@ -677,12 +677,12 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
           /* ---------------------------------------------------------------- 第 2 步 */
           <Box data-testid="pw-step2-scroll" sx={SCROLL_SX}>
             <Stack spacing={4} data-testid="provider-wizard-step2">
-              {/* 已落库这件事必须说出来：关掉向导不会撤销它们（[docs/19 §1.3]） */}
+              {/* 已落库这件事必须说出来：关掉向导不会撤销它们 */}
               <Typography variant="body1" data-testid="pw-saved-notice">
                 {t("providers.wizard.savedNotice")}
               </Typography>
 
-              {/* [docs/28 §1 第 1 条]：**这里建的是线路，模型不会自动创建**。 */}
+              {/*：**这里建的是线路，模型不会自动创建**。 */}
               <Typography variant="body1" data-testid="pw-step2-why">
                 {t(K.step2Why)}
               </Typography>
@@ -708,7 +708,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
               ) : null}
 
               {/*
-                第 2 步的正文 = 详情页那一节（[docs/28 §1.4] 用户第 82 轮："一个列表"）。
+                第 2 步的正文 = 详情页那一节（用户第 82 轮："一个列表"）。
                 扫描按钮的 testid 在这里是历史上的 `pw-scan`（E2E 与单测都按它命中）；
                 向导里**没有**删除入口（新增流程不删东西）→ 不传 `onRemove`，也不画那个按钮。
               */}
@@ -729,7 +729,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
                 scanLabel={t("providers.wizard.scan")}
               />
 
-              {/* 指路：线路建好了，**模型要用户自己去模型页分配线路**（[docs/28 §1 第 1 条]）。 */}
+              {/* 指路：线路建好了，**模型要用户自己去模型页分配线路**。 */}
               <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
                 <Button
                   variant="outlined"
@@ -759,7 +759,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
       </DialogContent>
 
       {/**
-       * [docs/28 §1.7] **主操作放在对话框的固定按钮区**（`DialogActions` 不参与内容滚动）：
+       * **主操作放在对话框的固定按钮区**（`DialogActions` 不参与内容滚动）：
        * 第 2 步的线路列表可以很长，把「完成」摆在列表末尾等于让用户先滚到底才能收尾。
        * 取消 / 下一步 / 完成 —— 三个按钮永远看得见。
        */}

@@ -1,7 +1,7 @@
 //! `${secret:name}` / `${env:VAR}` 引用解析、明文识别。
 //!
-//! 契约：`docs/11-internal-contracts.md` §1.4（`resolve_ref` 签名冻结）、
-//! 语法：`docs/02-config-and-data-model.md` §5。
+//! 契约：（`resolve_ref` 签名冻结）、
+//! 语法：。
 //!
 //! ```text
 //! "${secret:openai-personal}"  ->  SecretRef::Keyring { name }

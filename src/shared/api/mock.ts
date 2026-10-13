@@ -299,7 +299,7 @@ const subscriptions: SubscriptionView[] = [
 
 const models: ModelView[] = [
   {
-    // [docs/28 §2] 关系在模型侧：这个 mock 模型"用"的是下面两条线路
+    // 关系在模型侧：这个 mock 模型"用"的是下面两条线路
     // （`channel_list` / `channel_matrix` 里的 ch-bytedance / ch-commandcode）。
     model: {
       id: MODEL,
@@ -311,7 +311,7 @@ const models: ModelView[] = [
     },
     channel_count: 2,
     upstream_names: [MODEL],
-    // [docs/46 §304] 对外暴露的信息（后端算好的一份；mock 里给两条线路"都声明过"的样子，
+    // 对外暴露的信息（后端算好的一份；mock 里给两条线路"都声明过"的样子，
     // 数字取最小值、能力取并集 —— 与 `ConfigDoc::public_model_info` 同一口径）
     public_info: {
       context_window: 131072,
@@ -420,7 +420,7 @@ const matrix: MatrixView = {
   ],
 };
 
-// [docs/55] 这里曾有一份 `assignments: LaneAssignment[]` 的 mock（`lane_assignments` 的载荷）。
+// 这里曾有一份 `assignments: LaneAssignment[]` 的 mock（`lane_assignments` 的载荷）。
 // 那条命令与 `LaneAssignment` 类型都删除了（线路分配只剩服务商级一处），
 // 所以这份"每条通道走哪条线、来自哪一级"的假数据也一并删除 —— 留着它只会在
 // mock 场景里继续制造"还有五级继承"的错觉。
@@ -515,7 +515,7 @@ export function registerBaselineMocks(): void {
   mockCommand("policy_list", () => policies);
   mockCommand("channel_matrix", () => matrix);
   mockCommand("lane_list", () => lanes);
-  // [docs/55] 不再 mock `lane_assignments` / `lane_pick_options` / `lane_reverse_lookup`：
+  // 不再 mock `lane_assignments` / `lane_pick_options` / `lane_reverse_lookup`：
   // 那三条命令已经从契约里删除，mock 里留着它们会与契约对不上（而且 mock 的意义就是
   // "让页面在没有后端时也能跑" —— 没有页面再调它们了）。
   mockCommand("lane_ensure_direct", () => ({
@@ -670,11 +670,11 @@ export function registerBaselineMocks(): void {
   ]);
 
   /**
-   * 服务商模型目录（[docs/25]）：默认**空目录**（"还没扫过"）。
+   * 服务商模型目录：默认**空目录**（"还没扫过"）。
    *
    * 为什么基线要有这一条：详情页把它当成"扫描记录 = 建线路的候选"在读，
    * 少了它整页会走进「读不到目录」那条分支（`catalog === undefined`），
-   * 而"还没扫过"和"读不到"在界面上是**两句不同的话**（[docs/28 §1]）。
+   * 而"还没扫过"和"读不到"在界面上是**两句不同的话**。
    * 基线给空数组 = 未扫过；要测"读不到"的用例自己注册一个抛错的 mock。
    */
   mockCommand("provider_model_catalog", () => []);
@@ -716,7 +716,7 @@ function baselineConfigDoc(): ConfigDoc {
         backoff: "exponential",
       },
       metering: { inject_stream_usage: false },
-      // [docs/59] 下游 API 家族开关：mock 与 ta-core 的默认值保持一致（**全开**）
+      // 下游 API 家族开关：mock 与 ta-core 的默认值保持一致（**全开**）
       downstream: { openai_chat: true, openai_responses: true, anthropic_messages: true },
     },
     request_log: {

@@ -66,12 +66,12 @@
 ## 关键数据流 / 边界
 - 请求链：`crates/ta-gateway/src/ingress.rs`（分类 → 鉴权 → 限流 → 快照）→ `crates/ta-gateway/src/pipeline.rs`（hints → 策略 → 选线路/通道）→ `build_prepared_request`（定点改写）→ `crates/ta-gateway/src/dispatch.rs`（经 lane 出站）→ 响应回来走 `meter` 落账 + `trace` 记录。
 - **协议适配**只在跨协议时进场：`crates/ta-gateway/src/adapt/mod.rs` 把客户端请求译进 `IrRequest`、把上游响应译回客户端协议；**同协议走 RAW 零改动透传**，不碰 IR。流式那条路在 `crates/ta-gateway/src/adapt/stream.rs`（按事件翻译，不许攒整条流）。
-- **本地作答**：`/v1/models`（含不带 `/v1` 的形态）不再透传上游，直接用我们自己的模型回答 —— 见 `crates/ta-gateway/src/ingress.rs` 里 `models_response` / `models_list_body` 一带（依据 [docs/28](../../docs/28-lines-belong-to-providers.md) §4）。
+- **本地作答**：`/v1/models`（含不带 `/v1` 的形态）不再透传上游，直接用我们自己的模型回答 —— 见 `crates/ta-gateway/src/ingress.rs` 里 `models_response` / `models_list_body` 一带。
 - 边界：网关**不碰 UI、不直接读写文件**；持久化只经 `GatewayStore`（实现由 `crates/ta-store` 提供）；出网**只有** `OutboundDialer` 一条路（线路策略就在它后面）。
 
 ## 已知陷阱
 - **全透传只许在 `crates/ta-gateway/src/passthrough.rs` 定点改写**：在 `crates/ta-gateway/src/pipeline.rs` 自己拼头/拼 body 就是把这条铁律交给第二个人守（必然漂移）。
 - `crates/ta-gateway/src/adapt/` 里的 `stream_is_out_of_band` 是废弃路径，Gemini 永不是客户端协议 —— 别为不可达场景加代码（有守卫钉住）。
 - `meter: None` 是合法装配（计量没接上），但生产装配必须给 `Some(...)`：`None` 会让"有数据"变成假的。
-- `header_diff` 正常必须为空；非空 = 网关自己动了客户端的头（[docs/14-observability.md](../../docs/14-observability.md)）。
-- `request_id` 是贯穿全链路的关联 id：排查时用它追日志行，字段名受 `docs/14-observability.md` §5 白名单约束，别随手新造字段名。
+- `header_diff` 正常必须为空；非空 = 网关自己动了客户端的头。
+- `request_id` 是贯穿全链路的关联 id：排查时用它追日志行，字段名受  白名单约束，别随手新造字段名。

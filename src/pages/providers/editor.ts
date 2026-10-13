@@ -1,5 +1,5 @@
 /**
- * 服务商详情页「查看 + 编辑一体」的**纯逻辑**（[docs/23]）——没有 JSX、没有 React、没有 IPC。
+ * 服务商详情页「查看 + 编辑一体」的**纯逻辑**——没有 JSX、没有 React、没有 IPC。
  *
  * ## 为什么要有这一层
  *
@@ -34,7 +34,7 @@
  */
 
 import type { LaneChoiceGroup, ProviderInput, Protocol } from "@/shared/bindings";
-// [docs/52] 读后端原始对象的唯一实现（原先本文件自己写了一份 asRow）
+// 读后端原始对象的唯一实现（原先本文件自己写了一份 asRow）
 import type { Row } from "@/shared/row";
 import { asRow } from "@/shared/row";
 
@@ -273,7 +273,7 @@ export function protocolChoices(
 /**
  * 服务商级「网络代理」下拉的选项。
  *
- * # 顺序（[docs/54]，用户第 321 轮）
+ * # 顺序（用户第 321 轮）
  *
  * 用户原话：*"设置服务商的网络的时候，默认直连，然后可以选择我配置好的节点，
  * 其中自动选择和直连在最上面"*。所以顺序是：
@@ -297,13 +297,13 @@ export function providerLaneChoices(
   autoLabel = "自动选择",
 ): ProxyChoice[] {
   /**
-   * [docs/29 §2.2] 「自动选择」出口。值是**标记** `auto:<订阅 id>`，由后端 `provider_upsert`
+   * 「自动选择」出口。值是**标记** `auto:<订阅 id>`，由后端 `provider_upsert`
    * 解析成一条合格的线路（`subscription_auto` + **显式 `select`** —— 那才是"ping 一轮挑最低延迟 +
    * 按地址粘住"）。
    *
-   * [docs/58]（用户第 325 轮："自动选择:xx订阅"）：**订阅名一律带上**。
+   *（用户第 325 轮："自动选择:xx订阅"）：**订阅名一律带上**。
    * 原来只在"多于一份订阅"时才带名字，于是单份订阅的选项只写「自动」—— 用户看不出
-   * 它用的是哪份订阅，而他原话就是要把订阅名写出来。名字本身不是秘密（[docs/26 §2]）。
+   * 它用的是哪份订阅，而他原话就是要把订阅名写出来。名字本身不是秘密。
    */
   const auto: ProxyChoice[] = subscriptions.map((sub) => ({
     value: `auto:${sub.id}`,
@@ -314,7 +314,7 @@ export function providerLaneChoices(
    * 其余选项来自 **`lane_options`**（[`proxyChoices`]）：直连 → 不指定（继承）→
    * 已配置线路 + **订阅里的每个节点**。
    *
-   * [docs/58] 这里以前接的是 `lane_list`（**只有已配置的线路**）——
+   * 这里以前接的是 `lane_list`（**只有已配置的线路**）——
    * 那是用户第 325 轮报的 bug 的根因："我已经添加了订阅和节点，但是在服务商那边选节点还是
    * 啥也没看到"。节点只有在 `lane_options` 里才有（后端 `compute_lane_choices` 会把
    * 已采纳版本的节点逐个列出来）。
@@ -323,7 +323,7 @@ export function providerLaneChoices(
 }
 
 /**
- * [docs/58] 把下拉选中的值**解析成真正要写进 `provider.lane` 的东西**。
+ * 把下拉选中的值**解析成真正要写进 `provider.lane` 的东西**。
  *
  * 三种值直接原样交给后端，因为"这条线路该长什么样"的判断在后端只有一份：
  * * `""` → 「不指定（继承）」（`buildProviderPayload` 会把它变成显式 `null`）；

@@ -6,8 +6,8 @@
 //! 之后改价不得追溯改写历史成本（见 [`ResolvedPrice::to_snapshot`] /
 //! [`ResolvedPrice::from_snapshot`]）。
 //!
-//! 规格来源：[07 §6](../../../docs/07-ui-pages-and-cost.md)（成本中心）、
-//! [11 §1.2](../../../docs/11-internal-contracts.md)（`PricingEngine` 契约）。
+//! 规格来源：[07 §6](../../../)（成本中心）、
+//! [11 §1.2](../../../)（`PricingEngine` 契约）。
 
 pub mod builtin;
 pub mod engine;
@@ -222,7 +222,7 @@ pub fn plan_fee_period_ms(window: PlanFeeCycle) -> Option<i64> {
 
 /// 固定套餐费按周期摊销到"已经过去 `elapsed_ms`"的金额。
 ///
-/// **不摊进单次请求**（见 [07 §6.2](../../../docs/07-ui-pages-and-cost.md)）：
+/// **不摊进单次请求**：
 /// 单次请求只记按量成本，套餐费单独一行展示。
 pub fn amortize_plan_fee(fee: &PlanFeeResolved, window: PlanFeeCycle, elapsed_ms: i64) -> Money {
     match plan_fee_period_ms(window) {

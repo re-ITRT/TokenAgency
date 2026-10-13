@@ -1,10 +1,10 @@
 //! 健康样本（`health_sample`，保留 24h）与密钥元数据（`secret_meta`）。
 //!
-//! 契约：`docs/11-internal-contracts.md` §1.3（`HealthStore` append/series/latest、
+//! 契约：（`HealthStore` append/series/latest、
 //! `SecretMetaStore` upsert/list/touch）。
 //!
 //! **硬约束**：`secret_meta` 只存元数据 —— 表里没有 value 列，
-//! key 的真值永远在系统钥匙串 / 加密文件（`docs/02` §5）。
+//! key 的真值永远在系统钥匙串 / 加密文件。
 
 use async_trait::async_trait;
 use sqlx::{Row, SqlitePool};

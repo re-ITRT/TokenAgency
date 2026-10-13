@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * [docs/19 §1] `/providers` 的**两步向导**（流程 A）验收。
+ * `/providers` 的**两步向导**（流程 A）验收。
  *
  * 这一份测的是**用户点得到的那条路**，所以每一条都尽量按真机 E2E 的方式驱动：
  * 开的入口是 `providers-add-open` → 第 1 步 `provider-wizard-step1` → `pw-*` →
@@ -14,11 +14,11 @@
  * 3. **明文只进密钥仓库**：`pw-key` 的明文只允许出现在 `credential_set_secret` 的入参里；
  *    这里用一个假金丝雀值证明它不在服务商/凭据载荷里，也不在页面上（真机上那是密钥泄漏）。
  *
- * 命令接线（[docs/19 §1.3]）：`provider_upsert` → `credential_upsert`（id = `<provider>-default`）
+ * 命令接线：`provider_upsert` → `credential_upsert`（id = `<provider>-default`）
  * → 填了密钥才 `credential_set_secret`；扫描 `model_import_from_provider`；
  * **创建线路** `model_apply_import`。
  *
- * **[docs/28 §1] 第 2 步建的是「线路」，不是「模型」**（owner 原话："创建完服务商和线路之后，
+ * ** 第 2 步建的是「线路」，不是「模型」**（owner 原话："创建完服务商和线路之后，
  * 模型是不自动创建的，是等待用户去分配的"）。这一份测试因此多钉三件事：
  *
  * * 第 2 步的标题 / 说明 / 按钮 / 结果区**不再说"模型会被创建"**（`pw-step2-why`、
@@ -52,7 +52,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   registerBaselineMocks();
-  // 草稿活在模块级 store 里（[docs/19 §1.4] 要求"去 /network 再回来草稿还在"）：
+  // 草稿活在模块级 store 里（要求"去 /network 再回来草稿还在"）：
   // 每条用例从干净状态开始，否则上一条的草稿会串到下一条。
   resetWizardSession();
 });
@@ -67,7 +67,7 @@ afterEach(() => {
 const KEY = "sk-plaintext-canary-0001"; // ta-allow-fake-secret —— 假值
 
 /**
- * [docs/28] 第 2 步新用的文案键 → 文本。
+ * 第 2 步新用的文案键 → 文本。
  *
  * 这 10 个键由主管补进 `src/shared/i18n/**`（本任务的写作用域**不含 i18n**）。键还没落地时
  * `t(key)` 原样返回键名 —— 所以这里**不写死中文**，而是问 i18n 要同一份资源：
@@ -97,7 +97,7 @@ function typeInto(testId: string, value: string): void {
 /**
  * 读「本服务商已有的线路」行里那条代理的展示文案。
  *
- * [docs/28 §1 第 2 条] 之后它不是下拉而是**只读展示**（代理是线路的属性，编辑口在服务商详情页的
+ * 之后它不是下拉而是**只读展示**（代理是线路的属性，编辑口在服务商详情页的
  * 「编辑线路」里；向导里**不许**出现可写的代理下拉），所以断言的是文案而不是 combobox 的值。
  * 旧的 `selectTextOf` / `chooseOption` 两个下拉 helper 随那次改动一起删掉了 ——
  * 留着没人用的 helper 只会让下一个读代码的人以为还有下拉可点。
@@ -132,7 +132,7 @@ function NetworkStub() {
 
 /**
  * `/models` 的替身：只为了断言"`pw-goto-models` 真的把人送到模型页"
- * （[docs/28 §1 第 1 条]：线路建完之后，模型要用户自己去**分配**线路）。
+ * （：线路建完之后，模型要用户自己去**分配**线路）。
  */
 function ModelsStub() {
   const location = useLocation();
@@ -204,13 +204,13 @@ async function gotoStep2(name = "My Gateway"): Promise<void> {
 // ================================================================ ⓪ 第 1 步的本地预检（纯函数）
 
 /**
- * 预检必须认识"**本会话已经落库的那一份**"（[docs/19 §1.1 / §1.3]）。
+ * 预检必须认识"**本会话已经落库的那一份**"。
  *
  * `pw-test` 是**先落库再探测**的，落库之后明文从草稿里被抹掉、`provider_list` 里出现了
  * 自己刚建的那一份。预检看不见这两件事时，「测试连接 → 下一步」这条明文路径会被自己
  * 刚建的东西挡住（"名称已经被占用" + "密钥必填"），永远进不了第 2 步 —— 真机上抓到过。
  */
-describe("[docs/19 §1.1] 第 1 步预检要区分'本会话已落库的那一份'与'别人的东西'", () => {
+describe(" 第 1 步预检要区分'本会话已落库的那一份'与'别人的东西'", () => {
   const draft = {
     name: "My Gateway",
     protocol: "openai",
@@ -246,7 +246,7 @@ describe("[docs/19 §1.1] 第 1 步预检要区分'本会话已落库的那一�
 
 // ================================================================ ① 第 1 步：真控件
 
-describe("[docs/19 §1.1] 第 1 步：服务商信息", () => {
+describe(" 第 1 步：服务商信息", () => {
   it("从 providers-add-open 进的是两步向导；第 1 步的控件一个不少，密钥是 password", async () => {
     await openWizard();
 
@@ -349,7 +349,7 @@ describe("[docs/19 §1.1] 第 1 步：服务商信息", () => {
 
 // ================================================================ ② 测试连接（先落库再探测）
 
-describe("[docs/19 §1.1 / §1.3] pw-test：先真落库（并说出来），再真调 provider_test", () => {
+describe(" pw-test：先真落库（并说出来），再真调 provider_test", () => {
   it("还没落库时点 pw-test：provider_upsert → credential_upsert → credential_set_secret，并显示 pw-saved-notice", async () => {
     const order: string[] = [];
     const { provider, credential, secret } = registerUpsertMocks();
@@ -519,7 +519,7 @@ describe("[docs/19 §1.1 / §1.3] pw-test：先真落库（并说出来），再
 
 // ================================================================ ③ 第 2 步：结构与「本服务商已有的线路」
 
-// ================================================================ ③ 第 2 步：一个列表（[docs/28 §1.4]）
+// ================================================================ ③ 第 2 步：一个列表
 
 /**
  * 用户第 82 轮的重构原话：
@@ -530,7 +530,7 @@ describe("[docs/19 §1.1 / §1.3] pw-test：先真落库（并说出来），再
  * 都建出来，**默认关闭**）+ 每行（上游原文 / 网络代理 / 启用滑块）+ 全选。
  * 这里钉住"一个列表"这件事本身，以及**旧的"勾一下才创建"控件一个都不许再出现**。
  */
-describe("[docs/28 §1.4] 第 2 步：一个列表（扫描即全部建出、滑块控制启停、每行都能设代理）", () => {
+describe(" 第 2 步：一个列表（扫描即全部建出、滑块控制启停、每行都能设代理）", () => {
   /** 一条线路（`channel_list` 的一行）：字段给全，用来钉"整条覆盖写不丢字段"。 */
   function channelLine(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     return {
@@ -622,7 +622,7 @@ describe("[docs/28 §1.4] 第 2 步：一个列表（扫描即全部建出、滑
     expect(screen.getByTestId("pw-step2-scroll")).toBeTruthy();
     // 扫描按钮（历史 testid `pw-scan`）+ 完成 / 指路
     expect(screen.getByTestId("pw-scan").textContent).toBe(copy("providers.wizard.scan"));
-    // [docs/28 §1.7] **主操作不参与滚动**：长列表时「完成」必须还在（所以它放在对话框的
+    // **主操作不参与滚动**：长列表时「完成」必须还在（所以它放在对话框的
     // 固定按钮区，不在 `pw-step2-scroll` 那个滚动容器里）。
     expect(screen.getByTestId("pw-finish").textContent).toBe(copy("providers.wizard.finish"));
     expect(within(screen.getByTestId("pw-step2-scroll")).queryByTestId("pw-finish")).toBeNull();
@@ -639,7 +639,7 @@ describe("[docs/28 §1.4] 第 2 步：一个列表（扫描即全部建出、滑
     expect(screen.queryByTestId("pw-scan-row")).toBeNull();
   });
 
-  it("[docs/28 §1.4] 扫描 = 记录目录 + 把清单里的每条线路都建出来（两条命令，入参逐字）", async () => {
+  it(" 扫描 = 记录目录 + 把清单里的每条线路都建出来（两条命令，入参逐字）", async () => {
     const { scan, createAll } = registerStep2Backend();
 
     await gotoStep2();
@@ -648,7 +648,7 @@ describe("[docs/28 §1.4] 第 2 步：一个列表（扫描即全部建出、滑
     await waitFor(() => expect(scan.calls).toHaveLength(1));
     expect(scan.calls[0]).toEqual({ provider_id: "my-gateway", prefix_filter: undefined });
     await waitFor(() => expect(createAll.calls).toHaveLength(1));
-    // [docs/29 §2.1] **不带 lane**：代理只属于服务商（同一服务商一个 URL），向导不写线路级代理
+    // **不带 lane**：代理只属于服务商（同一服务商一个 URL），向导不写线路级代理
     expect(createAll.calls[0]).toEqual({ provider_id: "my-gateway", lane: null });
 
     // 「重新扫描」再走一轮（真命令，不是本地拼）
@@ -661,7 +661,7 @@ describe("[docs/28 §1.4] 第 2 步：一个列表（扫描即全部建出、滑
     expect(notice.textContent).toContain("2");
   });
 
-  it("[docs/28 §1.4] 每行 = 上游原文 + 网络代理 + 启用滑块；**未启用**的行也能设代理", async () => {
+  it(" 每行 = 上游原文 + 网络代理 + 启用滑块；**未启用**的行也能设代理", async () => {
     registerStep2Backend([{ enabled: false }, { id: "ch-2", upstream_model: "m-2", enabled: true }]);
 
     await gotoStep2();
@@ -681,9 +681,9 @@ describe("[docs/28 §1.4] 第 2 步：一个列表（扫描即全部建出、滑
         .checked,
     ).toBe(true);
     // **没有添加的线路（未启用）也能设网络代理** —— 用户原话
-    // [docs/29 §2.1] **线路不再有自己的代理**（出口只由服务商决定）→ 行里没有代理控件
+    // **线路不再有自己的代理**（出口只由服务商决定）→ 行里没有代理控件
     expect(within(offRow).queryByTestId("providers-line-lane")).toBeNull();
-    // [docs/28 §1.5] **列表是清单，不是每条一张卡片**（用户原话："一条就是左边名字，
+    // **列表是清单，不是每条一张卡片**（用户原话："一条就是左边名字，
     // 右边选择滑块就好了"）：行里**不许**显示上游原文 / 线路 id / 优先级权重；它们都在
     // 点开的详情里。先证明"列表干净"，再点开证明"详情看得到"。
     expect(within(offRow).queryByTestId("providers-line-raw-json")).toBeNull();
@@ -714,11 +714,11 @@ describe("[docs/28 §1.4] 第 2 步：一个列表（扫描即全部建出、滑
   });
 
 
-  it("[docs/28 §1 第 1 条] 向导里没有任何路径会创建模型；也没有删除线路的入口", async () => {
+  it(" 向导里没有任何路径会创建模型；也没有删除线路的入口", async () => {
     const { scan, createAll } = registerStep2Backend();
     const upsertModel = recordingMock({});
     registerMock("model_upsert", upsertModel.handler);
-    // 另一条会建 `Model` 的命令（[docs/25] 的"接入"）：向导里也不许出现
+    // 另一条会建 `Model` 的命令（"接入"）：向导里也不许出现
     const attach = recordingMock({});
     registerMock("provider_model_attach", attach.handler);
 
@@ -769,7 +769,7 @@ describe("[docs/28 §1.4] 第 2 步：一个列表（扫描即全部建出、滑
     expect(err.textContent).toContain("上游连不上");
   });
 
-  it("[docs/27 §1.5] 进第 2 步就自动扫描：扫描期间只有真实的 pending 文案", async () => {
+  it(" 进第 2 步就自动扫描：扫描期间只有真实的 pending 文案", async () => {
     registerUpsertMocks();
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {
@@ -811,14 +811,14 @@ describe("[docs/28 §1.4] 第 2 步：一个列表（扫描即全部建出、滑
   });
 });
 
-// ================================================================ ⑥ [docs/22] 长解释收进问号圆圈
+// ================================================================ ⑥ 长解释收进问号圆圈
 
-describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", () => {
+describe(" 长解释收进问号圆圈，红线一律留在版面上", () => {
   it("第 1 步红线仍内联：非必填说明、密钥字段语义、按钮文案；唯一问号是密钥那条", async () => {
     await openWizard();
     const step1 = within(screen.getByTestId("provider-wizard-step1"));
 
-    // [docs/29 §2.1] 第 1 步不再有"新建线路默认代理"（代理只属于服务商）→ 问号只剩密钥那一条。
+    // 第 1 步不再有"新建线路默认代理"（代理只属于服务商）→ 问号只剩密钥那一条。
     // 其余红线**内联**。
     expect(
       step1.getAllByTestId(/-help$/).map((el) => el.getAttribute("data-testid")),
@@ -880,12 +880,12 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
     );
     // 按钮文案永远留在按钮上
     expect(screen.getByTestId("pw-scan").textContent).toBe(copy("providers.wizard.scan"));
-    // [docs/28 §1.7] **主操作不参与滚动**：长列表时「完成」必须还在（所以它放在对话框的
+    // **主操作不参与滚动**：长列表时「完成」必须还在（所以它放在对话框的
     // 固定按钮区，不在 `pw-step2-scroll` 那个滚动容器里）。
     expect(screen.getByTestId("pw-finish").textContent).toBe(copy("providers.wizard.finish"));
     expect(within(screen.getByTestId("pw-step2-scroll")).queryByTestId("pw-finish")).toBeNull();
     expect(screen.getByTestId("pw-cancel").textContent).toBe(copy("common.cancel"));
-    // 扫到几条 + 跳过了几条都在版面上；上游原文在**点开的详情**里（[docs/28 §1.5]）
+    // 扫到几条 + 跳过了几条都在版面上；上游原文在**点开的详情**里
     expect((await screen.findByTestId("providers-model-notice")).textContent).toContain("1");
     const skipped = screen.getByText(copyCount("providers.wizard.scanSkipped", 1));
     expect(skipped).toBeTruthy();

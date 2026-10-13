@@ -339,7 +339,7 @@ impl super::ProtocolAdapter for AnthropicAdapter {
         let mut ir = IrResponse {
             id: body.get("id").and_then(Value::as_str).map(str::to_string),
             model: body.get("model").and_then(Value::as_str).map(str::to_string),
-            // [docs/59] 第 330 轮：非流式响应也要带 usage（客户端要读 `message.usage`）
+            // 第 330 轮：非流式响应也要带 usage（客户端要读 `message.usage`）
             usage: ir_usage_from_anthropic(body.get("usage")),
             ..Default::default()
         };
@@ -385,7 +385,7 @@ impl super::ProtocolAdapter for AnthropicAdapter {
                 ("model", json!(ir.model)),
                 ("content", Value::Array(blocks)),
                 ("stop_reason", json!(stop_reason)),
-                // [docs/59] 第 330 轮：把 IR 里的 usage 写回去（客户端会读 `message.usage`）
+                // 第 330 轮：把 IR 里的 usage 写回去（客户端会读 `message.usage`）
                 ("usage", ir.usage.as_ref().map(anthropic_usage).unwrap_or(Value::Null)),
             ]),
             losses,
@@ -409,7 +409,7 @@ impl super::ProtocolAdapter for AnthropicAdapter {
 /// 由调用方用 [`IrUsage::merge`] 合并。只在其中一处取值，流式请求的输入或输出 token
 /// **必丢其一** —— 而且是静默地丢：流已经发出去了，账本只会少记。
 ///
-/// # 容器帧归这里（[docs/59] 第 328 轮）
+/// # 容器帧归这里（第 328 轮）
 ///
 /// Anthropic 的流**必须**以 `message_start` 开头、以 `message_stop` 收尾，而别的协议
 /// （OpenAI 没有 `message_start`、Gemini 什么都不发）形状完全不同。所以
@@ -582,7 +582,7 @@ impl StreamAdapter for AnthropicAdapter {
             }
             IrStreamEvent::Stop { reason, usage } => {
                 let mut frames = Vec::new();
-                // ★ **收尾前必须先关掉还开着的块**（[docs/59] 第 328 轮修）。
+                // ★ **收尾前必须先关掉还开着的块**（第 328 轮修）。
                 //
                 // Anthropic 的顺序是 `content_block_stop` → `message_delta` → `message_stop`。
                 // 漏掉关块，客户端会认为最后一个 `content_block_start` 后面缺了
@@ -634,7 +634,7 @@ impl StreamAdapter for AnthropicAdapter {
     /// * `signature_delta` —— 推理块的签名（跟上面成对，缺了它内容不完整）；
     /// * `citations_delta` —— 引用片段。
     ///
-    /// 它们**不是心跳**：丢的是内容，必须留痕（[docs/11 §6]）。
+    /// 它们**不是心跳**：丢的是内容，必须留痕。
     /// 反过来 `ping` / `content_block_stop` / `message_stop` **不记** ——
     /// 那些是流程帧，记了就是噪音，会把真损失淹没。
     fn decode_losses(&self, data: &Value) -> Vec<Loss> {
@@ -759,7 +759,7 @@ fn anthropic_message_start(
 ///
 /// `cache_creation.ephemeral_5m/1h` 的细分**不在这里展开**：那是 Anthropic 独有的计费维度
 /// （OpenAI 的 usage 形状里根本没有），口径归一化是 `ta_core::metering` 的活。
-/// Anthropic 的 usage 字段表（[docs/59] 第 330 轮：读/写由 `shared` 的表驱动）。
+/// Anthropic 的 usage 字段表（第 330 轮：读/写由 `shared` 的表驱动）。
 ///
 /// * Anthropic 的 `input_tokens` **不含**缓存读/写（与 OpenAI 的 `prompt_tokens` 口径不同）；
 /// * `reasoning` 是**空**的 —— Anthropic 的 usage 形状里没有"思考 token"这一格。

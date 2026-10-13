@@ -1,4 +1,4 @@
-//! `api_key_*`：**我们网关对外的访问密钥**（`docs/19-...-and-api-keys.md` §3.2）。
+//! `api_key_*`：**我们网关对外的访问密钥**。
 //!
 //! 五条命令：`api_key_list` / `api_key_create` / `api_key_set_enabled` / `api_key_delete` /
 //! `api_key_usage`。存储全在 `ta_store::api_key`（本层只做参数校验、错误映射、
@@ -95,7 +95,7 @@ pub async fn api_key_usage_rows(
     Ok(rows)
 }
 
-// ================================================================ IPC 命令面（[docs/10 §2.2]）
+// ================================================================ IPC 命令面
 
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]

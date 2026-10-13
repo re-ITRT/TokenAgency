@@ -1,4 +1,4 @@
-# 不变量自动检查（docs/09-architecture-design.md §1.2）
+# 不变量自动检查
 #
 #   I1 入口唯一      —— 只监听 127.0.0.1，没有任何 0.0.0.0
 #   I2 系统网络零副作用 —— 启停前后系统代理 / 路由表 / DNS 逐字段一致
@@ -28,7 +28,7 @@ $ErrorActionPreference = "Stop"
 
 # 我们自己的进程名（出现这些名字的监听才算"我们的"）
 $OurProcesses = @("tokenagency", "mihomo", "clash-meta", "clash")
-# 允许监听的回环端口（内核 REST + lane 入站落在 39100-39299，见 docs/11 §2）
+# 允许监听的回环端口
 $AllowedLoopback = @(8787, 8788, 39090)
 $LanePortRange = @(39100, 39299)
 
@@ -88,7 +88,7 @@ function Get-OurProcesses {
     return @($rows | ForEach-Object { "$($_.ProcessName)#$($_.Id)" } | Sort-Object)
 }
 
-# 开机自启动条目（docs/09 §1.2 E5：唯一会写 OS 状态的功能，列为观察项）
+# 开机自启动条目
 #
 # 语义：**允许它存在**（那是用户开的），但任何变化都必须能在应用日志里
 # 找到对应的用户操作。所以 Compare 模式只报告，Run 模式视为违规

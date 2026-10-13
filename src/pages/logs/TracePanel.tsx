@@ -27,7 +27,7 @@ import { formatInt, formatLatency, formatLocalTime } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 
 /**
- * [docs/32] L6：token 分项的**界面名字**。契约给的是 kind 的机器名（`input` / `output` …），
+ * L6：token 分项的**界面名字**。契约给的是 kind 的机器名（`input` / `output` …），
  * 界面一律翻成人话；**认不出的 kind 就显示 kind 原文**（不猜、也不隐藏 —— 后端加了新 kind，
  * 用户当场就能看见它，而不是被悄悄吞掉）。
  */
@@ -241,7 +241,7 @@ export function TracePanel({ detail, isLoading, error, onRetry }: TracePanelProp
 
   return (
     <Stack spacing={4} data-testid="logs-trace">
-      {/* 面板说明收进标题右边的问号圆圈（[docs/22 §2]：这一段是"这块是什么"的解释）；
+      {/* 面板说明收进标题右边的问号圆圈（：这一段是"这块是什么"的解释）；
           下面的字段值、尝试链、TA 码、耗时一个都不动 —— 那些是事实，不是简介 */}
       <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
         <Typography variant="h4">{t("logs.trace.title")}</Typography>
@@ -341,7 +341,7 @@ export function TracePanel({ detail, isLoading, error, onRetry }: TracePanelProp
         ) : null}
       </Box>
 
-      {/* [docs/32] L6：按 kind 的 **Token 消耗表**（来自用量表 `usage_request.token_kinds`）。
+      {/* L6：按 kind 的 **Token 消耗表**（来自用量表 `usage_request.token_kinds`）。
           它在 traces 之外的账本里，所以可能**没有**（日志保留期比用量长）→ 那时如实说「没有这份记录」，
           **绝不**拿上面的总数去凑分项（那是编数）。 */}
       <Stack spacing={2} data-testid="logs-token-kinds">
@@ -444,7 +444,7 @@ export function TracePanel({ detail, isLoading, error, onRetry }: TracePanelProp
       ) : null}
 
       {/* ⑤ 原始字段：后端返回的整条记录，原样打印（UI 不替用户过滤证据）。
-          「原样显示、未清洗」是**解释** → 收进标题右边的问号（[docs/22 §2]）；
+          「原样显示、未清洗」是**解释** → 收进标题右边的问号；
           下面 `pre` 里那份原文一个字都没动，`extraKeys` 那行（数据）照旧留在版面上。 */}
       <Stack spacing={1}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>

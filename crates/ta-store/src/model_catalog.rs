@@ -1,12 +1,12 @@
-//! 服务商**模型目录**（`provider_model_catalog`）—— 扫描记录下来的上游模型（[docs/25]）。
+//! 服务商**模型目录**（`provider_model_catalog`）—— 扫描记录下来的上游模型。
 //!
 //! # 为什么它是一张**观察**表，而不是配置的一部分
 //!
 //! "这家服务商提供过哪些模型"是**上游告诉我们的**（一次真实扫描的结果），会随上游漂移；
 //! 而"我要用哪些模型"是**用户意图**（配置里的 `Model` + 通道）。
 //! 把观察塞进配置真源就是第二份真相源：扫描一次要整份配置重写 + 两份快照，
-//! 而且 `config_export_yaml` 会把几百个上游模型名一起导出（[docs/25 §0]）。
-//! 所以目录落 SQLite，与 `api_key` / `health_sample` 同类（[docs/02 §4]）。
+//! 而且 `config_export_yaml` 会把几百个上游模型名一起导出。
+//! 所以目录落 SQLite，与 `api_key` / `health_sample` 同类。
 //!
 //! # 三条关键语义
 //!
@@ -18,13 +18,13 @@
 //! 3. **没有"手动添加"**（用户明确要求）：目录里的每一行都必须来自一次真实扫描，
 //!    否则"目录 = 上游真实提供了什么"这条不变量就失效了，而自动化全建在它上面。
 //! 4. **原文逐字留**：`raw_json` 存的是上游 `/models` 里那一条（`data[i]`）的**完整对象**
-//!    （[docs/28 §3]"扫描时把上游那一条模型对象原样记下来，能读到的字段逐字存"），
+//!    （"扫描时把上游那一条模型对象原样记下来，能读到的字段逐字存"），
 //!    不是我们挑出来的字段、更不是重新拼的。上游没给的字段一个都不编：非对象/缺失落 `{}`。
 //!    这样用户能看到上游真的声明了什么，给模型填能力时有可核对的来源，
 //!    而 `/v1/models` 返回**我们的**模型时也不必拿目录去"二次创作"。
 //!
 //! 迁移：`0006_provider_model_catalog.sql` + `0007_provider_model_catalog_raw.sql`
-//! （只增不改，[docs/11 §4.1]）。
+//! （只增不改）。
 
 use async_trait::async_trait;
 use sqlx::{Row, SqlitePool};
@@ -46,7 +46,7 @@ pub struct ModelCatalogRow {
     ///
     /// 为什么是整份对象而不是几个字段：上游给什么我们不知道（`owned_by` / `created` /
     /// `permission` / `context_length` / 中转自造字段……），只挑认识的存，
-    /// 剩下的一辈子都找不回来。用户要看的是"上游真的声明了什么"（[docs/27 §1.4]）。
+    /// 剩下的一辈子都找不回来。用户要看的是"上游真的声明了什么"。
     ///
     /// **不是对象、或压根没有 → `{}`**：我们**不补字段**（补一个 `object: "model"`
     /// 就把"上游声明过什么"变成了我们的猜测）。读出来也永远是一个 JSON 对象。
@@ -80,7 +80,7 @@ pub trait ModelCatalogStore: Send + Sync {
     async fn upsert(&self, row: &ModelCatalogRow) -> Result<()>;
     /// 把这家的全部行标成"本次没见过"（重扫的第一步），返回影响行数。
     async fn mark_all_unseen(&self, provider_id: &str) -> Result<u64>;
-    /// 清掉本次没返回的行（[docs/25 §2.1]），返回被删的 `upstream_model` 清单。
+    /// 清掉本次没返回的行，返回被删的 `upstream_model` 清单。
     ///
     /// `keep` = **不能删**的那些（调用方传"这家还接着通道的上游名"）：
     /// 用户接过的行留着并标成"本次未返回"，让用户自己决定。
@@ -123,7 +123,7 @@ fn empty_object() -> serde_json::Value {
 /// 库里那一段文本 → 上游原文对象。
 ///
 /// **只接受 JSON 对象**：不是对象（数组/字符串/数字/null）、或者文本根本不是 JSON，
-/// 一律得到 `{}` —— 宁可"我们什么都没记到"，也**绝不补字段**（[docs/28 §3]）。
+/// 一律得到 `{}` —— 宁可"我们什么都没记到"，也**绝不补字段**。
 /// 读路径不报错：一行坏数据不该让整份目录读不出来（那会让界面空得莫名其妙）。
 fn parse_raw_object(text: &str) -> serde_json::Value {
     match serde_json::from_str::<serde_json::Value>(text) {
@@ -350,7 +350,7 @@ mod tests {
     /// 读回来逐字段相同、且**文本也相同**（键序没被重排）。
     ///
     /// 为什么这条是这一轮的核心：只留 `suggested_id` 的话，用户永远看不到上游声明了什么，
-    /// 给模型填能力时也没有可核对的来源 —— 那就只能编字段（[docs/28 §3] 明令禁止）。
+    /// 给模型填能力时也没有可核对的来源 —— 那就只能编字段（明令禁止）。
     #[tokio::test]
     async fn upsert_round_trips_the_upstream_object_verbatim() {
         let (store, path) = fresh("raw").await;

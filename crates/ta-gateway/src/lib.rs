@@ -1,8 +1,8 @@
 //! `ta-gateway` — 本地网关本体：入站、全透传、路由管线、分发、协议适配、trace。
 //!
-//! 契约：`docs/10-interface-spec.md` §1、`docs/11-internal-contracts.md` §1.7。
+//! 契约：、。
 //!
-//! 所有权划分（见 `docs/12-work-breakdown.md`）：
+//! 所有权划分（见）：
 //! - **G1** `ingress` / `passthrough` / `admin`
 //! - **G2** `pipeline` / `dispatch`
 //! - **G3** `adapt`
@@ -31,7 +31,7 @@ pub struct GatewayDeps {
     pub events: std::sync::Arc<dyn crate::traits::EventBus>,
     pub clock: std::sync::Arc<dyn ta_core::clock::Clock>,
     pub pricing: std::sync::Arc<dyn ta_core::pricing::PricingEngine>,
-    /// 各线路的 token 用量（平均粘性的"平均"依据，[docs/48 §4]）。
+    /// 各线路的 token 用量（平均粘性的"平均"依据）。
     ///
     /// `None` = 没装配 → 选路退化为按 `priority`（**不是**当成"都没用过"）。
     /// 实现方负责缓存（每个请求调一次 `used_tokens`），见 `ta_core::routing::BalanceSource`。

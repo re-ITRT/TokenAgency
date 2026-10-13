@@ -1,6 +1,6 @@
 //! 用量存储：`usage_request` / `usage_daily` / `api_key_usage`。
 //!
-//! 契约：`docs/11-internal-contracts.md` §1.3 + §4.3、`docs/07-ui-pages-and-cost.md` §6。
+//! 契约： + §4.3、。
 //!
 //! 硬约束：
 //! - `usage_daily.token_kind` 是**行维度**（不是列）→ 新增 token 类型无需改表；
@@ -45,7 +45,7 @@ pub const DEFAULT_LIMIT: u32 = 1000;
 
 // ================================================================ 查询 DTO
 
-/// 分组维度（`docs/10-interface-spec.md` §2.2 的 `UsageQuery.group_by`）。
+/// 分组维度（`UsageQuery.group_by`）。
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,7 +110,7 @@ impl GroupDim {
 ///
 /// **serde 同样是手写的**（下方 `impl Serialize/Deserialize`），理由与 specta 一样：
 /// derive 出来的是 Pascal（`"Requests"` / `{"Tokens":"input_cached"}`），
-/// 而契约（[docs/10 §2.2]）与前端发的是 snake_case 字符串 ——
+/// 而契约与前端发的是 snake_case 字符串 ——
 /// 真机上 `usage_query` / `usage_export_csv` 因此报 `unknown variant 'requests'`
 /// （`/dashboard` 不吃 metrics 才躲过）。线上形态只有一种，就是 [`Metric::key`]。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -455,7 +455,7 @@ pub trait UsageStore: Send + Sync {
     /// 一次请求的账：`usage_request` INSERT + `usage_daily` UPSERT（按 token_kind 展开多行）
     /// ，**同一个事务**。
     async fn record(&self, rec: UsageRecord) -> Result<()>;
-    /// [docs/32] L6：取某次请求的**按 kind token 明细**（`usage_request.token_kinds`）。
+    /// L6：取某次请求的**按 kind token 明细**（`usage_request.token_kinds`）。
     ///
     /// `None` = 这次请求**没有用量记录**（日志保留期比用量长、或那笔还没落账）——
     /// 调用方据此显示「—」，**绝不用日志里的总 token 去凑一张分项表**。
@@ -651,7 +651,7 @@ impl SqliteUsageStore {
 
     // -------------------------------------------------- 平均粘性的用量快照
 
-    /// **时间窗内各线路的 token 累计**（平均粘性的"平均"依据，[docs/48 §4]）。
+    /// **时间窗内各线路的 token 累计**（平均粘性的"平均"依据）。
     ///
     /// 为什么走 `usage_request` 而不是 `usage_daily`：汇总表的维度是
     /// `(day, credential_id, provider_id, model, client, token_kind)`，**没有 `channel_id`** ——
@@ -1633,7 +1633,7 @@ mod token_kinds_tests {
     use super::*;
     use ta_core::types::{RequestId, TokenKind};
 
-    /// [docs/32] L6：按 request_id 取**按 kind 的 token 明细**。
+    /// L6：按 request_id 取**按 kind 的 token 明细**。
     ///
     /// 三条断言对应界面的三条路：有记录 → 显示分项；没记录 → 「—」（不是 0）；
     /// 存量数据解不开 → 如实报错（不假装"没有用量"）。
@@ -1727,7 +1727,7 @@ mod tests {
 
     /// ★ `Metric` 的**线上形态必须是 snake_case 字符串**。
     ///
-    /// 依据 [docs/10 §2.2]（`metrics: ("requests"|"cost"|…|TokenKind)[]`）与本文件
+    /// 依据（`metrics: ("requests"|"cost"|…|TokenKind)[]`）与本文件
     /// `Metric` 上方那段注释。derive 出来的形态是 Pascal（`"Requests"`），
     /// 真机上 `usage_query` / `usage_export_csv` 就是因为这个直接报
     /// `unknown variant 'requests'` —— `/dashboard` 不吃 metrics 才躲过。

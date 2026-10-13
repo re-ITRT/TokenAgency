@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | `Clock` / `SystemClock` / `ManualClock` / `FixedClock` | `crates/ta-core/src/clock.rs` | 时钟注入点；"无 IO"的关键，测试用 `ManualClock` 推进时间 |
 | `TaError` / `Result` / `FieldError` | `crates/ta-core/src/error.rs` | 全项目错误类型；`code()` 的 `TA-xxxx` 本身就是接口契约 |
-| `Protocol` / `TokenKind` / `TokenUsage` / `Money` / `UsageSource` / `UsageRecord` / `LogMode` / `Retention` / `RequestSummary` | `crates/ta-core/src/types.rs` | 跨 crate 的基础类型（词汇表见 `docs/11-internal-contracts.md`） |
+| `Protocol` / `TokenKind` / `TokenUsage` / `Money` / `UsageSource` / `UsageRecord` / `LogMode` / `Retention` / `RequestSummary` | `crates/ta-core/src/types.rs` | 跨 crate 的基础类型（词汇表见） |
 | `ConfigDoc` / `Provider` / `Credential` / `Lane` / `Model` / `ChannelConfig` / `Policy` / `Subscription` / `NetConfig` | `crates/ta-core/src/domain/mod.rs` | 用户配置的实体与根对象（真源）；`ConfigDoc` 的 `extra` 保留未知字段 |
 | `from_yaml` / `to_yaml` / `from_json` / `to_json` / `validate` / `semantic_eq` / `default_doc` / `config_json_schema` | `crates/ta-core/src/config/mod.rs` | 配置 IO 与校验；`config_json_schema` 是前端类型生成的输入 |
 | `ValidationReport` / `ConfigValidator` / `TaConfigValidator` / `validate_doc` | `crates/ta-core/src/config/validator.rs` | 校验结果与字段级错误路径（`channels[2].credential` 这种） |
@@ -35,7 +35,7 @@
 - **上游 crate**：**没有** —— `Cargo.toml` 里没有任何本 workspace 依赖（叶子 crate）。
 - **关键第三方**：`serde` / `serde_json` / `serde_yaml_ng`（配置模型与读写）、`schemars`（JSON Schema）、`thiserror`（`TaError`）、`regex`（策略里的正则条件）、`chrono`（时间窗口）、`tracing`（唯一被允许的"I/O 味"）。
 - **可选**：`specta` feature 才带 `specta` / `specta-typescript`，用于把领域类型导出成前端 TS 类型；默认构建不带。
-- **不许有**：`tokio` / `axum` / `reqwest` / `tauri` —— 出现任何一个就是边界破了（[docs/09](../../docs/09-architecture-design.md)）。
+- **不许有**：`tokio` / `axum` / `reqwest` / `tauri` —— 出现任何一个就是边界破了。
 
 ## OWNER
 - 固定编制：`domain` / `config` → **E1 领域官**；`routing` / `sticky` / `pricing` / `metering` → **E2 决策官**。
@@ -46,7 +46,7 @@
 | --- | --- |
 | 单元测试 | `crates/ta-core/src/**` 内联 `#[cfg(test)]`：29 个文件，共 401 条 `#[test]`（本 crate 无 `tokio`，全部是同步测试） |
 | 集成测试 | `crates/ta-core/tests/` 下 7 个守卫/契约文件 + 1 个共享工具模块（见下） |
-| 守卫 | `crates/ta-core/tests/log_field_guard.rs`（`tracing` 字段名必须来自 `docs/14-observability.md` §5 白名单）；`crates/ta-core/tests/error_log_guard.rs`（记 `TaError` 必须同时记 `code`）；`crates/ta-core/tests/metered_usage_guard.rs`（`MeteredUsage` 字面构造只许出现在 `crates/ta-core/src/metering/`）；`crates/ta-core/tests/example_config_guard.rs`（`config.example.yaml` 必须与类型语义一致，落 `extra` 即红）；`crates/ta-core/tests/command_surface_guard.rs`（命令面与归档锚点一致）；`crates/ta-core/tests/command_arg_case_guard.rs`（`#[tauri::command]` 必须显式 `rename_all = "snake_case"`） |
+| 守卫 | `crates/ta-core/tests/log_field_guard.rs`（`tracing` 字段名必须来自  白名单）；`crates/ta-core/tests/error_log_guard.rs`（记 `TaError` 必须同时记 `code`）；`crates/ta-core/tests/metered_usage_guard.rs`（`MeteredUsage` 字面构造只许出现在 `crates/ta-core/src/metering/`）；`crates/ta-core/tests/example_config_guard.rs`（`config.example.yaml` 必须与类型语义一致，落 `extra` 即红）；`crates/ta-core/tests/command_surface_guard.rs`（命令面与归档锚点一致）；`crates/ta-core/tests/command_arg_case_guard.rs`（`#[tauri::command]` 必须显式 `rename_all = "snake_case"`） |
 
 集成测试文件逐个说明：
 - `crates/ta-core/tests/example_config_guard.rs` —— 示例配置能读通、无静默落 `extra` 的字段、序列化幂等。

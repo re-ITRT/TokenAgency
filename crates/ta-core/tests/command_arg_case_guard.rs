@@ -5,7 +5,7 @@
 //! `tauri-macros 2.6.3` 的 `WrapperAttributes::default()` 里写死了
 //! `argument_case: ArgumentCase::Camel`（见该 crate `src/command/wrapper.rs`）——
 //! 也就是说，Rust 侧参数 `delay_s: u64` 在 **IPC 入参对象里被查找的 key 是 `delayS`**。
-//! 而本项目的契约（`docs/10`）、`src/shared/bindings.ts` 的 `CommandMap`、
+//! 而本项目的契约、`src/shared/bindings.ts` 的 `CommandMap`、
 //! `src/shared/api/commands.ts` 门面**全部是 snake_case**，前端发出的就是 `delay_s`。
 //!
 //! 后果：**凡是有多词参数的命令，真机上直接报缺 key**（单个词的参数不受影响，

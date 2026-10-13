@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * [docs/52] `@/shared/row` 的验收 —— 以及**一次真实漂移的收口**。
+ * `@/shared/row` 的验收 —— 以及**一次真实漂移的收口**。
  *
  * # 这一组测试为什么必须存在
  *
@@ -25,7 +25,7 @@ import { describe, expect, it } from "vitest";
 
 import { asRow, hasKey, pickArr, pickBool, pickNum, pickRows, pickStr } from "@/shared/row";
 
-describe("[docs/52] asRow：只有普通对象才算「一行」", () => {
+describe("asRow：只有普通对象才算「一行」", () => {
   it("普通对象原样返回（含嵌套）", () => {
     const row = { a: 1, nested: { b: 2 } };
     expect(asRow(row)).toBe(row);
@@ -50,7 +50,7 @@ describe("[docs/52] asRow：只有普通对象才算「一行」", () => {
   });
 });
 
-describe("[docs/52] pick*：读不到就是 undefined，绝不编默认值", () => {
+describe("pick*：读不到就是 undefined，绝不编默认值", () => {
   it("pickStr 跳过空串与非字符串", () => {
     expect(pickStr({ a: "", b: "x" }, "a", "b")).toBe("x");
     expect(pickStr({ a: 1, b: null }, "a", "b")).toBeUndefined();

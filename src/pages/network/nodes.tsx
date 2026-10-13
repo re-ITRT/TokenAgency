@@ -86,7 +86,7 @@ function hasParsedOutcome(row: SubscriptionRow | undefined): boolean {
 /**
  * **单元格一律不换行**（规则 4，与 `/network` 那张表同一条口径）。
  *
- * **这一页刻意不做视觉裁剪**（[docs/26 §2] 的回归守卫管着这个文件：节点清单属于
+ * **这一页刻意不做视觉裁剪**（回归守卫管着这个文件：节点清单属于
  * "点进去看详细"的那一类，**只展示不裁剪**）。所以长值靠 `white-space: nowrap` 保持一行、
  * 由外层 `overflowX: auto` 横向滚动 —— 全文始终在版面上，一个字符都不省。
  */
@@ -291,7 +291,7 @@ function NodeListSection() {
                 </Typography>
               ) : (
                 <Stack spacing={2}>
-                  {/* 批量动作条：计数**只留数字**（[docs/30 §1] 极简：同一句话不在这里再说一遍），
+                  {/* 批量动作条：计数**只留数字**（极简：同一句话不在这里再说一遍），
                       两个动作各说清改哪一半；一条都没选中时按钮进禁用态（功能是做了的，禁用不是占位）。 */}
                   <Stack
                     direction="row"
@@ -395,7 +395,7 @@ function NodeListSection() {
                                 </Box>
                               </TableCell>
                               {/* 节点名 / 组名来自订阅：**原样显示**，一个字符都不改（[15 §2.2]）。
-                                  这一页不裁剪（[docs/26 §2] 的回归守卫）：长名字靠 nowrap 保持一行。 */}
+                                  这一页不裁剪（回归守卫）：长名字靠 nowrap 保持一行。 */}
                               <TableCell sx={CELL_NOWRAP_SX}>{node.name}</TableCell>
                               <TableCell sx={{ ...CELL_NOWRAP_SX, fontFamily: typography.fontMono }}>
                                 {node.type}
@@ -589,7 +589,7 @@ export function NodesBody({ lanes, lanesLoading, lanesError, onRetry }: NodesBod
       {/* ③ 每条线路声明的节点来源（配置里的字面值，原样） */}
       <SectionPaper
         title={t("network.nodes.declared.title")}
-        // description 与 hint 说的是同一件事（"原样显示 + 只读"）→ 合成**一个**问号（[docs/22 §3]）。
+        // description 与 hint 说的是同一件事（"原样显示 + 只读"）→ 合成**一个**问号。
         // 为什么自己构造 `<HelpTip>` 而不是传 `description="…"`（渲染结果一样）：
         // 极简守卫只把**字面量就写在 `<HelpTip … />` 里**的键算成按需展开的说明，
         // 多键合并出来的长句会被它保守地误算成版面文案（见 `SectionPaper` 的 `help` prop 注释）。
@@ -668,7 +668,7 @@ export default function NodesPage() {
           t("network.zeroSideEffect.body"),
         )}
         actions={
-          // 「线路分配」那一页整页删除了（[docs/55]）→ 那个按钮一并去掉（点了会落到不存在的路由）
+          // 「线路分配」那一页整页删除了→ 那个按钮一并去掉（点了会落到不存在的路由）
           <Button variant="outlined" component={Link} to="/network">
             {t("network.backToOverview")}
           </Button>

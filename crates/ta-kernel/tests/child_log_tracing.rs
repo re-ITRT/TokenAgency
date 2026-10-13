@@ -1,8 +1,8 @@
-//! 证据测试（[docs/06 §1.6] B4）：**内核子进程的 stdout/stderr 必须进我们的 tracing**。
+//! 证据测试（B4）：**内核子进程的 stdout/stderr 必须进我们的 tracing**。
 //!
 //! ## 为什么这条测试值得存在
 //!
-//! 实测（[docs/06 §1.6] K2 细化、本目录 `emptya.log` / `emptyb.log`）：
+//! 实测（K2 细化、本目录 `emptya.log` / `emptyb.log`）：
 //! provider 文件**缺失或为空**时，内核**照常启动、REST 照常通**，只在**它自己的**
 //! `level=error` 里说了一句 `initial proxy provider … error: file doesn't have any proxy`
 //! （`emptyb.log:8`），紧接着 `emptyb.log:9` 就是 `RESTful API listening at: …`。
@@ -20,7 +20,7 @@
 //!
 //! 真行直接从真夹具里取（`fixtures/real-mihomo/*.log`），不手写 —— 它同时证明
 //! 两件事："我们读得到真输出" + "我们解得对"（只测 parser 是证明不了前者的）。
-//! 依据 [docs/13 L19]：夹具是断言的**输入**。
+//! 依据：夹具是断言的**输入**。
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use ta_kernel::childlog::CHILD_LOG_TARGET;
 use ta_kernel::process::{KernelProcessConfig, ProcessSpawner, SystemSpawner};
 
-/// 契约来自 [task-8] / [docs/14]：内核输出的 tracing target。
+/// 契约来自 [task-8] /：内核输出的 tracing target。
 /// 这里**同时**持有字面量与库里的常量，并断言两者相等 ——
 /// 常量被改错时这条测试会红（否则"测试与实现一起漂移"就没人发现）。
 const CHILD_TARGET: &str = "ta_kernel::child";
@@ -63,7 +63,7 @@ impl Capture {
     }
 
     /// 有界等待某段文字出现。管道是本机的，10s 已远超必要；
-    /// 用等待而不是 sleep 固定时长，是为了在慢机器上也不 flake（[docs/13 L23]）。
+    /// 用等待而不是 sleep 固定时长，是为了在慢机器上也不 flake。
     async fn wait_for(&self, needle: &str) -> bool {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -217,7 +217,7 @@ async fn child_stdout_and_stderr_reach_tracing_with_the_child_target() {
         "没有尾随换行的最后一行丢了 —— 而崩溃原因往往正是最后那一行"
     );
 
-    // ---- 断言 5：文件那一份没被牺牲（[docs/14 C1]：日志要有确定落点）
+    // ---- 断言 5：文件那一份没被牺牲（：日志要有确定落点）
     let kernel_log = std::fs::read_to_string(dir.join("kernel.log")).expect("kernel.log 应存在");
     assert!(
         kernel_log.contains("initial proxy provider missing-provider error"),

@@ -65,7 +65,7 @@ impl RoutingIndex {
             idx.channels.insert(c.id.clone(), c.clone());
         }
 
-        // [docs/28 §2] `channels_of_model` 的**唯一真源是 `Model.lines`**（模型侧持有关系，
+        // `channels_of_model` 的**唯一真源是 `Model.lines`**（模型侧持有关系，
         // 一条线路可以服务多个模型）：
         //
         // * 键用**模型的规范 id**（而不是线路自己写的那串名字）—— 这也顺手修掉一个既有缺陷：
@@ -144,7 +144,7 @@ impl RoutingIndex {
 
     /// 该通道的生效 lane：`provider.lane → net.default_lane`。
     ///
-    /// [docs/55]（第 322 轮）收敛：用户裁决"线路级别的分配逻辑我们已经放弃了，
+    ///（第 322 轮）收敛：用户裁决"线路级别的分配逻辑我们已经放弃了，
     /// 取而代之的，**每个服务商统一一个节点**"。所以这里只看**这条通道所属的服务商**，
     /// 通道自己与凭据上的覆盖字段已经整条删除。
     ///
@@ -239,7 +239,7 @@ policies:
         assert_eq!(idx.group_for_model("gpt-4o").unwrap().id.as_str(), "grp-gpt-4o");
         assert!(idx.group_for_model("claude-sonnet-4-5").is_none());
 
-        // [docs/55] 生效线路只看服务商那一处。这个 fixture 里 ch-2 的 provider 配的是 lane-jp
+        // 生效线路只看服务商那一处。这个 fixture 里 ch-2 的 provider 配的是 lane-jp
         //（老配置里 credential 上也有 lane，但那个字段已经不参与判定了）
         let ch2 = idx.channel(&ChannelId::from("ch-2")).unwrap();
         assert_eq!(idx.resolve_lane(ch2).unwrap().as_str(), "lane-jp");

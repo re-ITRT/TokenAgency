@@ -45,7 +45,7 @@ pub fn frontend_source_files() -> Vec<SourceFile> {
     out
 }
 
-/// 读一个仓库内文件（守卫要读 docs/14 与源码）。
+/// 读一个仓库内文件。
 pub fn read_repo_file(rel: &str) -> Option<String> {
     std::fs::read_to_string(repo_root().join(rel)).ok()
 }

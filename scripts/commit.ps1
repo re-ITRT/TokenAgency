@@ -1,10 +1,10 @@
 # TokenAgency 提交入口 —— 每个员工用**自己的身份**提交，且**只能提交自己范围内的文件**
 #
 # 为什么要有这个脚本（两个真实痛点）：
-#   1. 主管排查"谁动了 X"时，之前只能靠文件时间戳**推断**，结果推错了人（docs/13 L17）。
+#   1. 主管排查"谁动了 X"时，之前只能靠文件时间戳**推断**，结果推错了人。
 #      不同提交身份能从根上解决：`git log --format='%an'` 直接出答案。
 #   2. 越界修改（改了不属于自己的文件）以前只能靠人工看 diff。
-#      这里把 docs/13 §1.2 的编制表变成**机械检查** —— 路径不在你的范围内直接拒绝。
+#      这里把  的编制表变成**机械检查** —— 路径不在你的范围内直接拒绝。
 #
 # 用法：
 #   pwsh -File scripts/commit.ps1 -As E4 -Paths crates/ta-subscription -MessageFile msg.txt -AgentId <id>
@@ -66,7 +66,7 @@ if ($Message -and $MessageFile) {
 # ---------------------------------------------------------------- 身份与文件范围
 #
 # **唯一真相源在 scripts/_team.ps1**（commit.ps1 与 pr.ps1 共用同一份）。
-# 原来这里自带一份、docs/13 §1.2 又抄一份，两处不一致让 E1 每提交一次前端
+# 原来这里自带一份、 又抄一份，两处不一致让 E1 每提交一次前端
 # 都要 `-Override`。同一事实有两个真相源，就会漂移。
 . "$PSScriptRoot\_team.ps1"
 
@@ -76,7 +76,7 @@ if ($Message -and $MessageFile) {
 # （scripts/pr.ps1），由主管评审后合并。
 #
 # 起因是真实的痛：员工直提让"在途的半成品"落在 main 上 —— E2 写 diag 的那段时间
-# ta-core 编不过，E4/E5/E3 全被挡住一轮（docs/13 L16）；而且 main 因此没有评审点，
+# ta-core 编不过，E4/E5/E3 全被挡住一轮；而且 main 因此没有评审点，
 # 变成"谁的活干到哪算哪"，而不是"过审的东西"。
 if ($As -ne 'lead' -and $As -ne 'mech') {
     Write-Host ""
@@ -135,7 +135,7 @@ if ($outside.Count -gt 0) {
 # 该目录下所有脏文件都收了，包括别人的在途工作。
 #
 # 所以这里把"每个人的独占范围"变成机械检查：只要待提交的文件落在**别人**的
-# 独占范围里，就必须显式 `-Override "原因"`。契约文件（如 `docs/14` +
+# 独占范围里，就必须显式 `-Override "原因"`。契约文件（如  +
 # `diag/fields.rs` 必须同改）会命中这条，那就堂堂正正写理由 —— 这正是它存在的意义。
 if ($As -eq 'lead') {
     $willStage = @(git status --porcelain --untracked-files=all -- $Paths 2>$null | ForEach-Object {

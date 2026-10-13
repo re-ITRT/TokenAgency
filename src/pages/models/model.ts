@@ -1,7 +1,7 @@
 /**
- * 模型目录页（[07 §4] / [docs/28]）的**纯逻辑层** —— 页面组件只做渲染，整形与判定都在这里，便于单测。
+ * 模型目录页（[07 §4] /）的**纯逻辑层** —— 页面组件只做渲染，整形与判定都在这里，便于单测。
  *
- * ## 关系翻转后，这一页要知道的第一件事（[docs/28 §1–§2]）
+ * ## 关系翻转后，这一页要知道的第一件事
  *
  * 线路（原「通道」）**归服务商**：在服务商详情页里创建/编辑（一个上游模型 + 网络代理 + 启用/权重）。
  * 模型**不自动创建** —— 用户在模型页**分配**线路，`Model.lines: ChannelId[]` 是关系的**唯一真源**；
@@ -15,7 +15,7 @@
  *    **不按前缀匹配、不做模糊匹配，也不猜一个名字**。
  * 2. **线路的展示名不是 id**：`上游模型（服务商 · 网络代理）`。服务商名来自 `provider_list`、
  *    代理名来自 `lane_list`；哪一层查不到就**回落 id**（与 `providers/detail` 同一条纪律：不编名字）。
- * 3. **没有"给模型挑网络代理"这回事**（[docs/28 §1.2]）：代理是**线路**的属性，只在服务商页的
+ * 3. **没有"给模型挑网络代理"这回事**：代理是**线路**的属性，只在服务商页的
  *    「编辑线路」里改。所以本文件里没有、也不会有 `Model.default_lane` 的读写路径。
  *
  * ## 契约与实现的偏差（事实，逐条标了出处；与 `pages/logs/model.ts` 同一套纪律）
@@ -36,7 +36,7 @@
 /**
  * 缺值占位符。
  *
- * **真源已收敛到 [`@/shared/format`]**（[docs/50]：这个字符原先在 7 个文件各写一遍）。
+ * **真源已收敛到 [`@/shared/format`]**（：这个字符原先在 7 个文件各写一遍）。
  * 这里保留一次**再导出**，因为本页的兄弟模块（`./index`）是从 `./model` 取它的 ——
  * 删掉再导出会让 4 个调用点全部编译失败，而那属于"为了整洁去动无关的引用面"。
  * 新代码请直接 `import { DASH } from "@/shared/format"`。
@@ -59,7 +59,7 @@ import type {
 /**
  * 一条被模型**使用**的线路（行里「使用的线路」一格的一行）。
  *
- * `credential` 不在里面：`[docs/28 §1.3]` 一个服务商一把密钥，凭据退化成服务商的 1:1 附件，
+ * `credential` 不在里面：`` 一个服务商一把密钥，凭据退化成服务商的 1:1 附件，
  * 模型页要回答的是"这个模型走哪几条线路"，凭据是服务商页的事。
  */
 export type ModelLineRef = {
@@ -84,7 +84,7 @@ export type ModelRowView = {
   order: number | undefined;
   expose: boolean;
   /**
-   * 模型级总开关（[docs/48 §5]）。`false` = 彻底停用：网关不列出它、调用它直接 404。
+   * 模型级总开关。`false` = 彻底停用：网关不列出它、调用它直接 404。
    *
    * 与 `expose` 的分工：`expose` 管"列不列进 `/v1/models`"，`enabled` 管"能不能用"。
    * 列上把两者**分开显示** —— 一个是"藏起来"、一个是"关掉"，混在一列会看不出区别。
@@ -100,13 +100,13 @@ export type ModelRowView = {
   /** 契约 `model.lines` 里**真的在 `channel_list` 里查到**的线路。 */
   lines: readonly ModelLineRef[];
   /**
-   * [docs/46 §304] **对外暴露的信息**（上下文窗口 / 最大输出 / 能力 / `owned_by`），
+   * **对外暴露的信息**（上下文窗口 / 最大输出 / 能力 / `owned_by`），
    * 后端一次算好（与网关 `/v1/models` 同一个函数），这里只带不重算。
    */
   publicInfo: PublicModelInfo;  /** 契约点了名、`channel_list` 里却找不到的线路 id（悬空引用；**一个都不许悄悄丢**）。 */
   missingLines: readonly string[];
   /**
-   * 契约里的那个模型**原样**（[docs/28 §1]「编辑」用它灌草稿）。
+   * 契约里的那个模型**原样**（「编辑」用它灌草稿）。
    *
    * 为什么留整份而不只留 id/字段：`model_upsert` 是**整条覆盖写**，编辑时必须"以原始记录为底"
    * —— 少带一个字段就是静默抹掉它（别名 / 分组 / 顺序 / expose / 甚至将来新增的字段）。
@@ -234,7 +234,7 @@ export function readModelRow(view: ModelView, lookup: ChannelsLookup): ModelRowV
     enabled: view.model.enabled !== false,
     reportedLines: view.channel_count,
     upstreamNames: upstreamNamesOf(view),
-    // [docs/46 §304] 对外暴露的信息由后端一次算好（网关 `/v1/models` 用的是同一个函数），
+    // 对外暴露的信息由后端一次算好（网关 `/v1/models` 用的是同一个函数），
     // 这里**原样带过去**，不在前端重算一遍（两份口径必然漂）。
     publicInfo: view.public_info,
     priced: pricedOf(view),
@@ -253,7 +253,7 @@ export function readModelRows(
 }
 
 /**
- * 添加模型时的**候选线路** = `channel_list` 全部（[docs/28 §2]：一条线路可以服务多个模型，
+ * 添加模型时的**候选线路** = `channel_list` 全部（：一条线路可以服务多个模型，
  * 所以这里不排除任何一条）。排序按 `服务商 → 上游模型 → 线路 id`，结果稳定可测 ——
  * 用户是在**好几个服务商**的线路里挑，顺序稳定才找得到。
  */
@@ -402,11 +402,11 @@ export function filterModels(rows: readonly ModelRowView[], query: string): Mode
   });
 }
 
-// ================================================================ 添加模型（[docs/28 §3] / [docs/17 §3.2]）
+// ================================================================ 添加模型（/）
 //
 // 这一页做的是**分配**：把一个新模型指定给若干条**已经存在**的线路（≥1）。
 // 线路本身在服务商页创建/编辑（含网络代理），所以这里既没有"新建线路"，
-// 也没有任何"给模型选网络代理"的控件（[docs/28 §1.2]）。
+// 也没有任何"给模型选网络代理"的控件。
 
 /**
  * 添加模型表单的草稿。**全部按"用户输入的原样"存**（`aliases` 是逗号分隔的字符串、
@@ -422,7 +422,7 @@ export type ModelDraft = {
   order: string;
   expose: boolean;
   /**
-   * 模型级总开关（[docs/48 §5]）。**不在这个草稿里编辑** —— 它是列表上的一个直接开关，
+   * 模型级总开关。**不在这个草稿里编辑** —— 它是列表上的一个直接开关，
    * 不是"编辑模型"对话框里的一个字段。
    *
    * 为什么仍要在这个草稿类型里带它：`model_upsert` 是**整条覆盖写**，
@@ -433,7 +433,7 @@ export type ModelDraft = {
   lines: readonly string[];
 };
 
-/** [docs/17 §3.2] 规定的 id 形态。 */
+/** 规定的 id 形态。 */
 export const MODEL_ID_RE = /^[a-z0-9][a-z0-9._-]*$/i;
 
 export const EMPTY_MODEL_DRAFT: ModelDraft = {
@@ -443,7 +443,7 @@ export const EMPTY_MODEL_DRAFT: ModelDraft = {
   order: "0",
   expose: true,
   // 新建的模型默认**开着**：`enabled` 是给"暂时下线一个已有模型"用的，
-  // 创建即停用没有使用场景（[docs/48 §5]）。
+  // 创建即停用没有使用场景。
   enabled: true,
   lines: [],
 };
@@ -485,7 +485,7 @@ export function parseLineIds(ids: readonly string[]): string[] {
  * 至少一条线路）加一条 order 非负整数。权威判定仍在后端 —— `model_upsert` 的错误
  *（TA 码 + details）原样显示，本地预检不替代它。
  *
- * "至少一条线路"是**本地挡下来的硬规则**（[docs/28 §2]：零条线路的模型对外可调用却必然失败），
+ * "至少一条线路"是**本地挡下来的硬规则**（：零条线路的模型对外可调用却必然失败），
  * 所以它是"一次都不发"的那一类 issue，不是警告。
  */
 export function validateModelDraft(
@@ -519,7 +519,7 @@ export function validateModelDraft(
  * 草稿 → 契约的 `Model`：`group` 空串 → `null`（那是契约允许的"没有分组"），
  * `lines` = 勾选的线路 id（**至少一条**，由 `validateModelDraft` 挡在前面）。
  *
- * 这里**不写 `default_lane`**（[docs/28 §1.2]：没有"给模型挑网络代理"这回事）。
+ * 这里**不写 `default_lane`**（：没有"给模型挑网络代理"这回事）。
  */
 export function draftToModel(draft: ModelDraft): Model {
   const group = draft.group.trim();
@@ -535,7 +535,7 @@ export function draftToModel(draft: ModelDraft): Model {
 }
 
 /**
- * 已有模型 → 草稿（[docs/28 §1]：**「等用户去分配」不能只发生在创建那一刻**）。
+ * 已有模型 → 草稿（：**「等用户去分配」不能只发生在创建那一刻**）。
  *
  * 为什么必须有这条反向映射：线路是**先有服务商、后有模型**；用户新建一条线路之后，
  * 要给一个**已经存在**的模型加线路，否则只能"删了模型重建"——那会连带丢掉别名、

@@ -5,7 +5,7 @@
  * # 为什么要废除这套引用制度
  *
  * 它已经腐烂了，而且是**静默地**烂：
- *   * 代码里引用 `docs/24`，但 `docs/24-*.md` **根本不存在**；
+ *   * 代码里引用 ，但  **根本不存在**；
  *   * 两处文档都声称"MIT 全文已登记在 `THIRD_PARTY_NOTICES.md`"，
  *     而那个文件里**从来没有过那段全文** —— 义务被指向了，却从没落下来。
  *
@@ -52,7 +52,7 @@ const EXT = new Set([".rs", ".ts", ".tsx", ".mjs", ".js", ".ps1", ".sh", ".yaml"
  * **只许往下调。** 改掉一批引用后，把这两个数字改小；守卫会逼着你确认
  * "确实只减不增"。
  */
-const BASELINE = { files: 224, lines: 1647 };
+const BASELINE = { files: 127, lines: 564 };
 
 /**
  * `docs/` 篇数的棘轮基线（第 342 轮实测 52 篇）。
@@ -91,9 +91,15 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 /** 扫全仓，返回 { files, lines, worst }。 */
-function scanRepo(): { files: number; lines: number; worst: Array<[number, string]> } {
+function scanRepo(): {
+  files: number;
+  lines: number;
+  scanned: number;
+  worst: Array<[number, string]>;
+} {
   let files = 0;
   let lines = 0;
+  let scanned = 0;
   const worst: Array<[number, string]> = [];
   for (const dir of SCAN_DIRS) {
     for (const p of walk(join(ROOT, dir))) {
@@ -106,6 +112,7 @@ function scanRepo(): { files: number; lines: number; worst: Array<[number, strin
       } catch {
         continue;
       }
+      scanned += 1;
       const n = countRefLines(text);
       if (n > 0) {
         files += 1;
@@ -115,7 +122,7 @@ function scanRepo(): { files: number; lines: number; worst: Array<[number, strin
     }
   }
   worst.sort((a, b) => b[0] - a[0]);
-  return { files, lines, worst };
+  return { files, lines, scanned, worst };
 }
 
 describe("[docsRef] docs/NN 引用制度的棘轮", () => {
@@ -158,11 +165,13 @@ describe("[docsRef] docs/NN 引用制度的棘轮", () => {
     expect(lines, why).toBeLessThanOrEqual(BASELINE.lines);
   });
 
-  it("基线不是空转（扫到的规模必须远大于 0，否则说明扫描路径写错了）", () => {
-    const { files, lines } = scanRepo();
-    // 防"对着空集断言而恒绿"：路径写错时 files/lines 会变成 0，上一条反而更容易通过。
-    expect(lines, "只扫到 0 处引用 —— 扫描路径或排除规则多半写错了").toBeGreaterThan(1000);
-    expect(files).toBeGreaterThan(100);
+  it("扫描确实覆盖了仓库（防空转）", () => {
+    const { scanned, lines } = scanRepo();
+    // 防空转**不能**用"引用数 > 某个阈值"：本目标就是把引用降到 0，
+    // 那种断言会在接近 0 时自己红（实测：降到 500 以下就误报过一次）。
+    // 该防的是"扫描路径或排除规则写错，导致一个文件都没扫到"。
+    expect(scanned, "一个文件都没扫到 —— 扫描路径或排除规则写错了").toBeGreaterThan(200);
+    expect(lines, "引用数不可能是负数").toBeGreaterThanOrEqual(0);
   });
 
   it("docs/ 的文件数不得超过棘轮基线（目标 ≤16）", () => {

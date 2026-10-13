@@ -1,6 +1,6 @@
 //! `config_*`：配置读 / 校验 / 应用 / 导入导出 / 历史与回滚。
 //!
-//! 契约：`docs/10-interface-spec.md` §2.2 `config / 配置`、`docs/02` §4（真源是 SQLite）。
+//! 契约： `config / 配置`、（真源是 SQLite）。
 //!
 //! 写路径的形状（[02 §4]）：校验 → 事务写库 → 留快照 → 换内存快照。
 //! **网关/内核的重新加载不在这里**：那是 G2/T2 的编排（命令层只回答
@@ -22,7 +22,7 @@ pub struct ApplyResult {
     pub applied: bool,
     pub restart_required: bool,
     pub kernel_reload: bool,
-    /// 本次调用**真新建**的通道数（[docs/20 §1.1]）。
+    /// 本次调用**真新建**的通道数。
     ///
     /// 只有 `model_apply_import` 会给出非 0 值：它不只是往模型目录塞一行，还要把模型
     /// **接到**这个服务商上（建 `ch-<provider>-<credential>-<model>` 这条线）。
@@ -61,7 +61,7 @@ pub async fn config_apply(state: State<'_, AppState>, doc: ConfigDoc) -> IpcResu
     }
     state.config.save(&doc).await?;
     state.config.snapshot(&doc, "apply").await?;
-    // [docs/59] `request_log.*` 是**配置里的**字段，而真正管写入的是 trace store 的
+    // `request_log.*` 是**配置里的**字段，而真正管写入的是 trace store 的
     // `store_setting` —— 两份真相源。改完配置必须同步一次，否则用户改了日志设置
     // 却看不出任何变化（第 330 轮那个"日志一条都没有"就是这么来的）。
     crate::commands::log::sync_request_log_settings(&state, &doc).await?;

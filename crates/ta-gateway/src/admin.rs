@@ -1,8 +1,8 @@
 //! 管理 API（8788，仅 CLI）。**工作包 G1 负责实现**。
 //!
-//! 只暴露自动化需要的子集，见 `docs/10-interface-spec.md` §3。
+//! 只暴露自动化需要的子集，见 。
 //! **不做** Provider/Credential/Model/Channel/Policy 的写操作 —— 那些是"设计决策"，
-//! 走 GUI（`docs/10 §3` 末尾）；CLI 只做只读 + 少数运维动作。
+//! 走 GUI（末尾）；CLI 只做只读 + 少数运维动作。
 //!
 //! ## 两处刻意的设计
 //!
@@ -159,7 +159,7 @@ impl AdminState {
     }
 }
 
-/// 构建管理 API 路由（`docs/10 §3` 的子集）。
+/// 构建管理 API 路由（子集）。
 pub fn router(state: Arc<AdminState>) -> Router {
     Router::new()
         .route("/status", get(h_status))
@@ -233,7 +233,7 @@ async fn h_status(State(state): State<Arc<AdminState>>, req: Request) -> Respons
         return response;
     }
     let cfg = state.cfg.load_full();
-    // 生效策略 = 第一个 enabled 的（`docs/10 §2.2 app_status`）
+    // 生效策略 = 第一个 enabled 的
     let active_policy_id =
         cfg.enabled_policies_in_order().first().map(|p| p.id.as_str().to_string());
     let body = json!({
@@ -383,7 +383,7 @@ async fn h_log_detail(
         return response;
     }
     match state.backend.log_detail(&id).await {
-        // **已裁决语义（2026-09-21，见 docs/10 §3）**：记录不存在 → 200 + `null`。
+        // **已裁决语义**：记录不存在 → 200 + `null`。
         // 理由：错误码表是冻结契约，为它新增一码要走广播；而 `null` 在 JSON 里
         // 无歧义（不会和"空记录"混淆），管理 API 也只服务我们自己的 UI/CLI。
         Ok(None) => {

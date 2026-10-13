@@ -1,6 +1,6 @@
 //! 策略模拟器：**"如果现在来这样一个请求，会怎么走？"**
 //!
-//! 这是 UI 的杀手功能（`docs/03` §8）：用户改一条规则之前能立刻看到后果。
+//! 这是 UI 的杀手功能：用户改一条规则之前能立刻看到后果。
 //!
 //! 两条硬要求：
 //! 1. **纯函数**：`simulate(doc, hints, ctx)` 不依赖任何外部可变状态；
@@ -23,7 +23,7 @@ use crate::types::*;
 
 // ================================================================ 输入
 
-/// `policy_simulate` 的入参（`docs/10-interface-spec.md` §2.2 `SimulateInput`）。
+/// `policy_simulate` 的入参（`SimulateInput`）。
 ///
 /// 后四个字段是对 TS 契约的**扩展**（TS 里没有）：把"当前运行态"也喂进来，
 /// 模拟器才能回答"官方这条正在冷却时会走谁"。
@@ -43,7 +43,7 @@ pub struct SimulateInput {
     /// 毫秒时间戳；不传则用当前时间（`time_window` 会读它）
     #[serde(default)]
     pub now: Option<i64>,
-    /// 各线路在时间窗内的 token 用量（[docs/48 §3]）。空 = 不知道 → 按 priority 排。
+    /// 各线路在时间窗内的 token 用量。空 = 不知道 → 按 priority 排。
     #[serde(default)]
     pub balance: BTreeMap<String, i64>,
     #[serde(default)]
@@ -103,7 +103,7 @@ fn header_lookup_raw<'a>(headers: &'a BTreeMap<String, String>, name: &str) -> O
 
 // ================================================================ 输出
 
-/// `policy_simulate` 的返回（严格对应 `docs/10` §2.2 的 `SimulateResult` TS 定义）。
+/// `policy_simulate` 的返回（严格对应  的 `SimulateResult` TS 定义）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SimulateResult {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -235,7 +235,7 @@ fn build_result(
     // 预计出口：生效 lane + 该通道的 EWMA 延迟（节点是内核运行态，纯函数拿不到）
     let lane = selection.and_then(|s| {
         let ch = router.index.channel(&s.channel)?;
-        // [docs/55]：线路只看服务商那一个节点（策略级覆盖已随 `lane_override` 一起删除）
+        //：线路只看服务商那一个节点（策略级覆盖已随 `lane_override` 一起删除）
         let lane_id = router.index.resolve_lane(ch)?;
         let name = router
             .index

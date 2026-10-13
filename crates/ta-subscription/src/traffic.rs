@@ -1,7 +1,7 @@
 //! `subscription-userinfo` 响应头 → 流量 / 到期（**未知一律 null，绝不用 0 冒充**）。
 //!
-//! 契约：[docs/18 §1](../../../docs/18-subscription-traffic-and-optional-network.md)、
-//! [docs/10 §2.2](../../../docs/10-interface-spec.md) 的 `SubscriptionTraffic`。
+//! 契约：(../../../)、
+//!(../../../) 的 `SubscriptionTraffic`。
 //!
 //! 这个头是 Clash 生态的约定：单位**字节**，`expire` 是 **Unix 秒**。
 //!
@@ -11,8 +11,8 @@
 //!
 //! ★ **为什么不复用 [`crate::SubUserinfo`]**：那个类型的字段是 `u64`，解析时"缺失 / 非法"
 //! 一律塞 0。而 0 在这套语义里是一个**合法的观测值**（机场真的可能报 `upload=0`）——
-//! 混在一起之后，UI 永远分不清"没用过"和"不知道"，那正是 docs/18 §1.2 明令禁止的。
-//! `SubUserinfo` 继续服务版本留档（docs/11 §3 的字段形状），本类型只服务"给用户看"这条链。
+//! 混在一起之后，UI 永远分不清"没用过"和"不知道"，那正是  明令禁止的。
+//! `SubUserinfo` 继续服务版本留档，本类型只服务"给用户看"这条链。
 //!
 //! 红先绿后的证据留在测试里：先按旧口径（`parse_userinfo`）接线，下面五处断言一起红，
 //! 报的都是同一件事 ——`left: Some(0)` / `right: None`（**拿 0 冒充未知**）；

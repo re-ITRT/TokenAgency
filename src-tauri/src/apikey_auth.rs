@@ -46,12 +46,12 @@ impl ApiKeyAuthenticator {
 impl ApiKeyVerifier for ApiKeyAuthenticator {
     /// **库里有没有 key（不论启用与否）** —— "没配 `local_key` 时还要不要强制鉴权"的判据。
     ///
-    /// 为什么不能只问"有没有**启用中**的"（[docs/46] 抓到的真缺陷）：用户把唯一一把 key **停用**后，
+    /// 为什么不能只问"有没有**启用中**的"（抓到的真缺陷）：用户把唯一一把 key **停用**后，
     /// "启用中的数量"变成 0 → 网关**回退到"没有 key ⇒ 不鉴权"** → 带/不带凭据一律放行 ——
     /// 用户按"停用"想立刻止血，反而把鉴权整个关掉了。
     ///
     /// 正确语义：**建过 key 就必须带 key**；全停用 = 谁都不许用（fail closed）。
-    /// 只有"一把 key 都没有"的全新用户保持既有行为（不鉴权，[docs/19 §3.3]）。**不缓存**。
+    /// 只有"一把 key 都没有"的全新用户保持既有行为（不鉴权）。**不缓存**。
     async fn any_enabled(&self) -> Result<bool> {
         Ok(!self.keys.list().await?.is_empty())
     }
@@ -166,7 +166,7 @@ mod tests {
         store.set_enabled(&created.key.id, false).await.unwrap();
         assert!(
             auth.any_enabled().await.unwrap(),
-            "[docs/46] 全停用 → **仍然**必须鉴权（否则停用最后一把 key 会把鉴权整个关掉）"
+            "全停用 → **仍然**必须鉴权（否则停用最后一把 key 会把鉴权整个关掉）"
         );
     }
 
@@ -193,7 +193,7 @@ mod tests {
 
     /// 明文**不进日志**：断言那条 warn 的字段形态（`code` + `error`），
     /// 且源码里没有任何一处把 token 格式化进日志/消息。
-    /// 源码级断言比"我保证"可靠（`docs/14 §11`：日志文件是要被分享出去的）。
+    /// 源码级断言比"我保证"可靠（：日志文件是要被分享出去的）。
     #[test]
     fn the_warn_site_never_formats_the_token() {
         let src = include_str!("apikey_auth.rs");

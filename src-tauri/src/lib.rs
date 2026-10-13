@@ -35,7 +35,7 @@ pub mod autostart;
 pub mod boot;
 pub mod commands;
 pub mod gateway;
-// ---- docs/19 §1.2：`model_import_from_provider` 的进程内存预览缓存（不落库）
+// ---- ：`model_import_from_provider` 的进程内存预览缓存（不落库）
 pub mod import_preview;
 pub mod lifecycle;
 pub mod logging;
@@ -71,7 +71,7 @@ pub fn run() {
         return;
     }
 
-    // 7 个插件统一注册（顺序有理由，见 plugins.rs；只注册不使用的插件一律不留，见 [docs/50]）
+    // 7 个插件统一注册（顺序有理由，见 plugins.rs；只注册不使用的插件一律不留，见）
     let builder = plugins::register(tauri::Builder::default());
     // T1：命令注册。同一个 builder 既生成 Tauri handler，也用于导出 TS 绑定，
     // 所以"命令清单"只有一处（漏登记会在绑定文件里露馅）。
@@ -93,7 +93,7 @@ pub fn run() {
             //
             //    所以这里把该环境变量**并进**窗口参数：设了才并，没设就与原来一字不差 ——
             //    生产环境不会设它，因此这是一个**只在测试里生效**的透传缝，不是产品开关。
-            // [docs/31 §28] **窗口建不出来要吵，不许静默退出**。
+            // **窗口建不出来要吵，不许静默退出**。
     //
     // 真机 E2E 排查花了 15 轮的根因之一就是这里：窗口创建失败会一路 `?` 到 `setup` 以外，
     // 进程**安静地退出**，日志停在"网关已装配"那一行 —— 现场只剩下"应用启动后自己没了"。
@@ -108,7 +108,7 @@ pub fn run() {
             // 1) 生命周期：解析启动参数 / 托盘模式隐藏窗口 / 注册退出守卫与通知中心
             lifecycle::on_setup(&handle)?;
             // 2) 托盘：先用占位数据源亮起来（换真数据是 T2 的独立接缝）
-            // [docs/31 §29] **托盘装不上不许把整个应用拖死**。
+            // **托盘装不上不许把整个应用拖死**。
     //
     // 真机实测（受限环境）：`tray::init` 返回 `托盘图标 error: 拒绝访问。(os error 5)`，
     // 原来这个 `?` 让 `setup` 失败 → Tauri panic → 进程退出（exit code 0xC0000409），
@@ -125,7 +125,7 @@ pub fn run() {
             let app_state = tauri::async_runtime::block_on(state::AppState::bootstrap(&db_path))?;
             tracing::info!(db = %db_path.display(), "数据库就绪");
 
-            // 3.5) [docs/59] **把配置里的 `request_log.*` 同步进 trace store**。
+            // 3.5) **把配置里的 `request_log.*` 同步进 trace store**。
             //
             // 必须在这里（服务对外之前）：配置说 `mode: meta` 而 store 的
             // `store_setting.trace.mode` 还躺着一条古老的 `"off"` 时，
@@ -139,7 +139,7 @@ pub fn run() {
             ) {
                 tracing::warn!(
                     code = %err.code,
-                    // 人话嵌进消息里：`message` **不在** [docs/14 §5] 的白名单里，
+                    // 人话嵌进消息里：`message` **不在** 的白名单里，
                     // 而它也确实不该进契约（给人看的，不是给筛子用的）。
                     // `log_field_guard` 会当场拦下白名单外的字段名 —— 它拦得对。
                     "同步 request_log 设置到 trace store 失败：日志可能不落库（{}）",
@@ -211,7 +211,7 @@ pub fn run() {
             app.manage(holder.clone());
 
             // 托盘换成"真实就绪驱动"的数据源：图标只在编排真就绪时变绿
-            // 同理：换数据源失败也只是"托盘状态不更新"，不该让启动失败（[docs/31 §29]）
+            // 同理：换数据源失败也只是"托盘状态不更新"，不该让启动失败
     if let Err(e) = tray::set_source(&handle, Arc::new(boot::PhaseTraySource::new(holder.clone()))) {
         tracing::warn!(error = %e, "托盘数据源切换失败：托盘状态可能不刷新");
     }
@@ -236,7 +236,7 @@ pub fn run() {
                 );
             });
 
-            // [docs/29 §2.3] 订阅**自动更新**：算到期（第一步）→ 真刷新（第二步）。
+            // 订阅**自动更新**：算到期（第一步）→ 真刷新（第二步）。
             //
             // 第二步**不重写刷新链路**，只是调用它（`auto_refresh_subscription`，`force = false`）：
             // 下载 / 校验 / 坏更新拦下并保留上一版 / 版本裁剪 / 记流量，全都还是那一套 ——
@@ -260,7 +260,7 @@ pub fn run() {
                             // 这一步现在**诚实**的前提已经满足：到点判断与内层 `refresh_one`
                             // 用的是**同一套钟**（版本元数据的 `fetched_at_ms`），
                             // 所以 `ok: true` 真的意味着"拉到了并采纳了"，不再出现
-                            // "内层跳过却报成功"（那一版已撤回，见 [docs/29 §2.3]）。
+                            // "内层跳过却报成功"（那一版已撤回，见）。
                             //
                             // 一条失败不影响其余条：逐条记成败，最后一并说出来 ——
                             // 绝不在这里写"全部成功"，那会在部分失败时撒谎。
@@ -271,7 +271,7 @@ pub fn run() {
                                 match commands::net::auto_refresh_subscription(&state, id).await {
                                     Ok(r) if r.ok => {
                                         ok += 1;
-                                        // [docs/29 §2.2] **C 期触发点①：订阅更新后重算「自动」出口**
+                                        // **C 期触发点①：订阅更新后重算「自动」出口**
                                         // （`manual = false` → 粘性优先：上次那条还在就沿用）。
                                         // 订阅换了一批节点、上次那条 IP 没了 → 这里才会重挑。
                                         autos += commands::net::reapply_auto_after_refresh(&state, id).await;

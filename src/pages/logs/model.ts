@@ -36,7 +36,7 @@ import type {
   TraceDetail,
   TraceRow,
 } from "@/shared/bindings";
-// [docs/52] 读后端原始对象的唯一实现（原先这里自己写了 pickStr/pickNum/pickBool 三份）
+// 读后端原始对象的唯一实现（原先这里自己写了 pickStr/pickNum/pickBool 三份）
 import { pickBool, pickNum, pickStr, type Row } from "@/shared/row";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -475,7 +475,7 @@ export type TraceView = {
   /** `undefined` = 记录里没有这一项（未知）。 */
   headerDiff?: HeaderDiffView;
   /**
-   * [docs/32] L6：按 kind 的 token 明细（来自用量表）。
+   * L6：按 kind 的 token 明细（来自用量表）。
    * `undefined`/`null` = **用量账本里没有这次请求**（日志保留期可能比用量长）→ 界面如实说"没有"。
    */
   tokenKinds?: Record<string, number> | null;

@@ -1,4 +1,4 @@
-//! 内核进程生命周期。契约：`docs/11-internal-contracts.md` §2.1。
+//! 内核进程生命周期。契约：。
 //!
 //! | 阶段 | 约定 |
 //! |---|---|
@@ -41,7 +41,7 @@ use crate::{KernelController, KernelState, KernelStatus, ProvidersSnapshot};
 pub struct KernelProcessConfig {
     /// `net.kernel.path`（`provider: external` 时由用户提供）
     pub program: PathBuf,
-    /// 默认 `["-d", <work_dir>, "-f", <config_path>]`（`docs/11` §2.1）
+    /// 默认 `["-d", <work_dir>, "-f", <config_path>]`
     pub args: Vec<String>,
     /// `-d` 的工作目录（`<appdata>/kernel`）
     pub work_dir: PathBuf,
@@ -245,7 +245,7 @@ impl PumpProgress {
 ///
 /// **stdout/stderr 不走 `Stdio::from(file)`**：那样内核的输出只落文件，一行都到不了我们的
 /// `tracing` —— 于是"内核自己在 `level=error` 说了原因，而我们的日志里什么都没有"
-/// （[docs/06 §1.6] B4；真夹具 `emptya.log` / `emptyb.log` 就是这个场景）。
+/// （B4；真夹具 `emptya.log` / `emptyb.log` 就是这个场景）。
 /// 现在两条管道由 [`crate::childlog`] 的读取线程逐行接管，再交给可注入的 sink。
 pub struct SystemSpawner {
     children: Mutex<BTreeMap<u32, ManagedChild>>,
@@ -374,7 +374,7 @@ impl ProcessSpawner for SystemSpawner {
     async fn spawn(&self, cfg: &KernelProcessConfig) -> Result<u32> {
         cfg.validate()?;
         std::fs::create_dir_all(&cfg.work_dir)?;
-        // 每次 spawn 按当前 log_path 造 sink（默认会把 kernel.log 建出来 —— [docs/14 C1] 的落点）。
+        // 每次 spawn 按当前 log_path 造 sink（默认会把 kernel.log 建出来 —— 的落点）。
         // **打不开就失败**：不能静默退化成"只有 tracing"（那样 log_tail 的空串会同时表示
         // "没有日志文件"和"内核没输出"，[14] 明确禁止这种混淆）。
         let sink = self.log_sinks.sink_for(&cfg.log_path)?;
@@ -962,7 +962,7 @@ impl KernelSupervisor {
             KernelState::Failed
         } else {
             tracing::warn!(failures = i.consecutive_failures, code = e.code(), error = %e, "内核启动失败，将退避重启");
-            // [docs/46] **让失败自己说话**：`ConfigInvalid` 的 Display 只有一句"配置校验失败"，
+            // **让失败自己说话**：`ConfigInvalid` 的 Display 只有一句"配置校验失败"，
             // 看不到是哪个字段 —— 真机排查时这一条信息决定"改数据"还是"改代码"。
             if let TaError::ConfigInvalid { errors } = &e {
                 for f in errors {
@@ -1241,7 +1241,7 @@ impl KernelSupervisor {
 
     // ---------------------------------------------------------------- 额外能力
 
-    /// 读 `<appdata>/logs/kernel.log` 的尾部 N 行（`docs/11` §2.3）
+    /// 读 `<appdata>/logs/kernel.log` 的尾部 N 行
     pub fn log_tail(&self, lines: u32) -> Result<String> {
         tail_file(&self.cfg.log_path, lines)
     }
@@ -2362,7 +2362,7 @@ net:
             PathBuf::from("C:/appdata/kernel").join("kernel.generated.yaml")
         );
         assert_eq!(cfg.log_path, PathBuf::from("C:/appdata/logs").join("kernel.log"));
-        // docs/11 §2.1 的启动命令：-d <work_dir> -f <config_path>
+        //  的启动命令：-d <work_dir> -f <config_path>
         assert_eq!(cfg.args.len(), 4);
         assert_eq!(cfg.args[0], "-d");
         assert_eq!(cfg.args[1], "C:/appdata/kernel");

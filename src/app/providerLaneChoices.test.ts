@@ -1,5 +1,5 @@
 /**
- * 服务商级代理下拉的**选项构造**（[docs/29 §2.2]、[docs/58]）。
+ * 服务商级代理下拉的**选项构造**（）。
  *
  * ## 这一组现在钉的核心是"节点必须真的出现在选项里"
  *
@@ -66,7 +66,7 @@ const SUB_GROUP: LaneChoiceGroup = {
   ],
 };
 
-describe("[docs/58] 服务商级代理下拉：自动（每份订阅一个）→ 直连 → 继承 → 线路与节点", () => {
+describe("服务商级代理下拉：自动（每份订阅一个）→ 直连 → 继承 → 线路与节点", () => {
   it("顺序：每份订阅一个「自动」在前，然后直连、继承，最后是线路与订阅节点", () => {
     const options = providerLaneChoices(
       [DIRECT_GROUP, SUB_GROUP],
@@ -158,7 +158,7 @@ describe("[docs/58] 服务商级代理下拉：自动（每份订阅一个）→
     ]);
     expect(options[0]?.label).toBe("自动选择");
   });
-it("[docs/58] 已配置的 direct 线路**不会**被拼成「直连（直连（本机网络））」", () => {
+it("已配置的 direct 线路**不会**被拼成「直连（直连（本机网络））」", () => {
     // 真机截图里出现过这个双括号：direct 线路名叫「直连」，而它的分组叫「直连（本机网络）」。
     const options = providerLaneChoices(
       [

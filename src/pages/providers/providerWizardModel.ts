@@ -1,5 +1,5 @@
 /**
- * `/providers` **两步向导**（[docs/19 §1]）的纯逻辑与草稿 store。
+ * `/providers` **两步向导**的纯逻辑与草稿 store。
  *
  * 分三层（与 `./wizard.ts` 同一纪律：能纯函数化的都纯函数化，好在单测里钉住）：
  *
@@ -7,18 +7,18 @@
  *    由名称派生的 provider id、凭据（`<provider>-default`）的载荷。明文密钥**不进这里**
  *    —— 它只从组件状态直接交给 `credential_set_secret`。
  * 2. **模块级草稿 store**：`/network?from=provider-wizard` 来回一趟会卸载页面，
- *    所以草稿放在页面 state 之外（[docs/19 §1.4] 明确允许并**要求**有一测试证明它保留）。
+ *    所以草稿放在页面 state 之外（明确允许并**要求**有一测试证明它保留）。
  *    store 里只有这一步的输入，没有任何密钥以外的敏感数据；明文密钥**从不清日志、从不上屏**。
  * 3. **第 2 步的派生**：这个服务商**已经有哪些线路**（`channel_matrix` 的 cell + 凭据归属）、
  *    每条线路当前生效的网络代理，以及 `ProbeResult` 该说哪句人话。
  *
- * **[docs/28 §1] 之后第 2 步建的是「线路」，不是「模型」**：模型由用户在模型页**分配**线路才出现，
+ * ** 之后第 2 步建的是「线路」，不是「模型」**：模型由用户在模型页**分配**线路才出现，
  * 扫描/导入**不会**顺手建模型。所以这里的派生量全是线路视角 —— 线路的身份 = **上游模型名**
  * （线路没有逻辑名、没有别名），派生值里**不出现**"逻辑模型"。
  * 历史包袱：`addedModelsOf`（按逻辑模型聚合）仍被服务商详情页 import 着，所以留着没删；
  * 向导自己已经不再用它（它会把两件事说成一件：加了几个模型 ≠ 接了几条线路）。
  *
- * 为什么"名字 → id"是派生的而不是让用户填：本轮的步骤 1 只有 4 个字段（[docs/19 §1.1]），
+ * 为什么"名字 → id"是派生的而不是让用户填：本轮的步骤 1 只有 4 个字段，
  * 用户给的是"显示名称"；`provider.id` 是引用完整性要用的稳定标识，所以由名称**确定性**派生
  * （同一名称永远得到同一个 id，不会每次点下一步都新建一条），并在界面上如实显示派生结果。
  */
@@ -37,7 +37,7 @@ import { providerPayload, type ProviderDraft, type WizardIssue } from "./wizard"
 
 // ================================================================ 第 1 步：草稿与校验
 
-/** 步骤 1 的四个字段（[docs/19 §1.1]）。`key` 是**明文**：只进密钥仓库，不进任何载荷。 */
+/** 步骤 1 的四个字段。`key` 是**明文**：只进密钥仓库，不进任何载荷。 */
 export type Step1Draft = {
   name: string;
   protocol: Protocol;
@@ -45,7 +45,7 @@ export type Step1Draft = {
   /** 明文 API Key。只允许出现在 `credential_set_secret` 的入参里。 */
   key: string;
   /**
-   * [docs/29 §2.2] 这家服务商的代理（用户第 112 轮："为服务商选线路要存在于添加向导，
+   * 这家服务商的代理（用户第 112 轮："为服务商选线路要存在于添加向导，
    * 且能看到所有网络代理以及自动、直连"）。
    *
    * 值可能是**标记**：`direct:`（直连）/ `auto:<订阅 id>`（自动）/ 空串（不指定、走继承）/
@@ -63,10 +63,10 @@ export const EMPTY_STEP1_DRAFT: Step1Draft = {
   lane: "direct:",
 };
 
-/** [docs/17 §3.1] 的 id 规则（`provider.id` 必须满足它，否则后端会拒）。 */
+/** 的 id 规则（`provider.id` 必须满足它，否则后端会拒）。 */
 const ID_PATTERN = /^[a-z][a-z0-9-]*$/;
 
-/** [docs/17 §3.1] 的 base_url 规则。 */
+/** 的 base_url 规则。 */
 const URL_PATTERN = /^https?:\/\//;
 
 /** 现有的服务商（`provider_list` 的并集形状：`id` 与 `name` 两边都有）。 */
@@ -75,8 +75,8 @@ export type ExistingProviders = { ids: readonly string[]; names: readonly string
 /**
  * 本会话**已经真的落库**的那一份（`pw-next` 或落库式 `pw-test` 成功后写入）。
  *
- * 为什么要记住 `name` 与 `secretStored`：`pw-test` 按 [docs/19 §1.3] 是**先落库再探测**的，
- * 落库之后 (a) 明文 key 立刻从草稿里抹掉（[docs/19 §1.1] 的纪律：明文只进密钥仓库），
+ * 为什么要记住 `name` 与 `secretStored`：`pw-test` 按 是**先落库再探测**的，
+ * 落库之后 (a) 明文 key 立刻从草稿里抹掉（纪律：明文只进密钥仓库），
  * (b) `provider_list` 刷新后**自己刚建的那一份**出现在清单里。不把这两件事告诉校验，
  * 用户按「填名称/地址/key → 测试连接 → 下一步」这条**明文路径**走就会被自己刚建的东西挡住
  * （"名称已经被占用" + "密钥必填"），永远进不了第 2 步 —— 这是真机上抓到过的缺陷。
@@ -95,7 +95,7 @@ function excludeOwnEntry(existing: ExistingProviders, saved?: SavedInSession): E
 /**
  * 名称是否被占用。
  *
- * 与**现有 `name` 及 `id` 都去重**（[docs/19 §1.1]）：名字直接撞上某个 id 时，
+ * 与**现有 `name` 及 `id` 都去重**：名字直接撞上某个 id 时，
  * 用户看到的是"这个名字已经有人用了"，而不是一个只有懂 id 规则的人才看得懂的报错。
  *
  * `saved` = 本会话已经落库的那一份：**它自己不算重名**（见 [`SavedInSession`]）。
@@ -165,7 +165,7 @@ export function validateStep1(
   if (baseUrl === "") issues.push({ field: "baseUrl", message: "wizard.required" });
   else if (!URL_PATTERN.test(baseUrl)) issues.push({ field: "baseUrl", message: "wizard.invalidUrl" });
 
-  // 密钥必填（[docs/19 §1.1] 的"必填"）：没有密钥的服务商在真机上连不通，
+  // 密钥必填（"必填"）：没有密钥的服务商在真机上连不通，
   // 与其让用户以为配好了，不如在这里说清楚。
   //
   // **例外**：本会话已经把明文写进密钥仓库了（`pw-test` 落库后明文会被抹掉），
@@ -196,7 +196,7 @@ export function step1ProviderPayload(draft: Step1Draft, providerId: string): Pro
     protocol: draft.protocol,
     baseUrl: draft.baseUrl.trim(),
     lane: draft.lane.trim(),
-    // 步骤 1 不暴露鉴权细节（[docs/19 §1.1] 只有 4 个字段）→ 一个都不带，
+    // 步骤 1 不暴露鉴权细节（只有 4 个字段）→ 一个都不带，
     // 交给 Rust 的 `#[serde(default)]`（见 `serdeDefault.guard.test.ts`）。
     authScheme: "bearer",
     authHeader: "",
@@ -205,7 +205,7 @@ export function step1ProviderPayload(draft: Step1Draft, providerId: string): Pro
   return providerPayload(providerDraft);
 }
 
-/** 凭据 id：`<provider>-default`（[docs/19 §1.3] 指定的那一份）。 */
+/** 凭据 id：`<provider>-default`（指定的那一份）。 */
 export function defaultCredentialId(providerId: string): string {
   return `${providerId}-default`;
 }
@@ -217,7 +217,7 @@ export function defaultCredentialId(providerId: string): string {
  * - `quota` / `guard` / `tags` / `enabled` 在 Rust 侧都有 `serde(default)`，**一个都不带**；
  * - `label` 用用户给的显示名称（用户数据原样，不另造文案）。
  * - `credentialId` 只在**编辑模式**下被显式给出：那时要写的是这家服务商**已有的那把**凭据
- *   （例如 `c-bytedance`），而不是凭空新造一个 `<provider>-default`（[docs/20 §4]）。
+ *   （例如 `c-bytedance`），而不是凭空新造一个 `<provider>-default`。
  */
 export function defaultCredentialPayload(
   providerId: string,
@@ -236,10 +236,10 @@ export function defaultCredentialPayload(
 
 /**
  * 向导会话。**活在模块里**，所以 `/network` 来回一趟（页面卸载再挂载）也丢不了草稿
- * —— 这是 [docs/19 §1.4] 的硬要求，不是顺手缓存。
+ * —— 这是 的硬要求，不是顺手缓存。
  *
  * 只有**新增**一种模式：编辑已有服务商不再是"下一步 / 下一步"的向导，而是详情页本身
- * （[docs/23]：用户第 75 轮要求"点开服务商之后直接给可视化编辑界面，编辑和查看一体"）。
+ * （：用户第 75 轮要求"点开服务商之后直接给可视化编辑界面，编辑和查看一体"）。
  * 所以第 72 轮那套 `mode: "edit"` / `startEditSession` 已经被删掉 —— 留着会是一条
  * 没人走、也没人测的路径，而它当年正是"只发 4 个字段、覆盖写抹掉连接配置"那个缺陷的载体。
  */
@@ -326,7 +326,7 @@ export function addedModelsOf(
  * 后端已经是"一个通道一行"（`build_channel_matrix` 遍历 `doc.channels` 逐条 push），
  * 所以这里**不聚合**：一条线路就是一行 —— 聚合回逻辑模型正是本轮要拆掉的那件事。
  *
- * [docs/28 §1]：线路里只有"一个上游模型（名字 + 扫描记录的模型信息）、网络代理、启用与否"，
+ *：线路里只有"一个上游模型（名字 + 扫描记录的模型信息）、网络代理、启用与否"，
  * 逻辑名归模型页。所以这一行里**没有** `modelId`：
  * 界面上只要出现"逻辑模型"，就等于在说"模型也一起建了"。
  */
@@ -339,7 +339,7 @@ export type ExistingLineRow = {
    * 后端解析好的**生效**网络代理（`channel.effective_lane` 已经沿
    * `channel → credential → provider → net.default_lane` 走过一遍）；`null` = 直连。
    *
-   * 界面**不重算**这条继承链：重算一遍就是第二个真相源（[docs/28 §1 第 2 条]：代理是线路的属性，
+   * 界面**不重算**这条继承链：重算一遍就是第二个真相源（：代理是线路的属性，
    * 它在哪生效由后端说了算）。
    */
   laneId: LaneId | null;
@@ -369,7 +369,7 @@ export function existingLinesOf(
 }
 
 /**
- * 这家服务商**已经有线路**的那些上游模型名 —— 扫描结果的勾选判据（[docs/28 §1]）。
+ * 这家服务商**已经有线路**的那些上游模型名 —— 扫描结果的勾选判据。
  *
  * 为什么判据是"上游模型名"而不是"逻辑模型 id"：线路的身份就是上游模型名，而扫描**不再建模型**，
  * 所以 `ImportPreview.exists`（全局有没有这个逻辑模型）在第 2 步已经没有意义 ——
@@ -385,7 +385,7 @@ export function wiredUpstreamModelsOf(lines: readonly ExistingLineRow[]): Set<st
 }
 
 /**
- * `config_get().net.default_lane` —— 也就是 [docs/19 §1.4] 里用户在 `/network` 上
+ * `config_get().net.default_lane` —— 也就是 里用户在 `/network` 上
  * 挑的"新建服务商的默认代理"。第 1 步没选（字段缺失 / null）就是 `null` = 直连。
  *
  * 入参写成 `unknown`：真机与测试给的都是**部分**配置树，页面只读这一条路径。
@@ -399,7 +399,7 @@ export function defaultLaneOf(configDoc: unknown): LaneId | null {
 }
 
 /*
- * [docs/55]（第 322 轮）这里曾有 `LaneChoice` / `directLaneIdOf` / `laneChoices` /
+ *（第 322 轮）这里曾有 `LaneChoice` / `directLaneIdOf` / `laneChoices` /
  * `laneValue` / `lanePatch` 五个导出 —— 它们都建立在 `LanePickOption`（`lane_pick_options`
  * 的返回类型）之上，而那条命令随"放弃线路级别的分配"删除了。
  *
@@ -411,7 +411,7 @@ export function defaultLaneOf(configDoc: unknown): LaneId | null {
 // ================================================================ 探测结果 → 人话
 
 /**
- * `ProbeResult` 该归到哪一档（[docs/19 §1.1]）。
+ * `ProbeResult` 该归到哪一档。
  *
  * `status=404 && probe="models"` **不是**"连不通"：上游只是没有 `/models` 端点。
  * 这一条是主管明确要求的裁决，所以它是一个可被单测钉住的纯函数，不是组件里的 if。
@@ -436,14 +436,14 @@ export function probeFailureText(result: ProbeResult): string {
 // ================================================================ 扫描结果的勾选默认值
 
 /**
- * 「全选」的语义：**这家服务商还没有这条线路**的所有行（[docs/25] + [docs/28 §1]）。
+ * 「全选」的语义：**这家服务商还没有这条线路**的所有行（+）。
  *
  * 为什么不再是 `exists === false`：`ImportPreview.exists` 判的是**全局**有没有这个逻辑模型
  * （`doc.find_model`），于是"这个模型别家接过了、这家还没接"在向导里**永远勾不上**
  * （复选框被 disable）—— 那是个真实的洞。判据是"**这家**接了没有"。
  *
  * 为什么判据收在**上游模型名**上：第 2 步建的是线路，线路的身份就是上游模型名
- * （[docs/28 §1]：线路没有逻辑名），而扫描不会再建模型 —— 逻辑模型 id 在这里没有承载物了。
+ * （：线路没有逻辑名），而扫描不会再建模型 —— 逻辑模型 id 在这里没有承载物了。
  */
 export function selectAllIds(
   preview: ImportPreview | undefined,

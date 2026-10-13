@@ -1,6 +1,6 @@
 //! 会话粘性的**策略**实现：key 派生、命中、释放、复活。
 //!
-//! key 派生顺序严格按 `StickyConfig.key`（默认见 `docs/03` §3.2）：
+//! key 派生顺序严格按 `StickyConfig.key`（默认见）：
 //! `header:x-session-id → header:x-conversation-id → metadata.user_id → body_hash → fallback:client_ip+ua`。
 //!
 //! `body_hash` 用 `derive_body_hash`（首条 system + 首条 user 前 512 字符）——

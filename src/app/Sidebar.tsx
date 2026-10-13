@@ -53,7 +53,7 @@ export function Sidebar() {
   const activeKey = matchRoute(location.pathname)?.key;
 
   /**
-   * [docs/56] 侧边栏按**分组**画。
+   * 侧边栏按**分组**画。
    *
    * `navSections()` 在"同组的项不连续 / 组名没登记顺序"时返回 `null` —— 那是**契约错误**，
    * `routes.test.tsx` 会当场红。这里兜底成"不分组的一份清单"：宁可少画几条线，
@@ -72,7 +72,7 @@ export function Sidebar() {
         display: "flex",
         flexDirection: "column",
         minHeight: 0,
-        // [docs/26 §1.4] **不给宽度加过渡**：宽度是布局属性，折叠时整壳每一帧都要重排，
+        // **不给宽度加过渡**：宽度是布局属性，折叠时整壳每一帧都要重排，
         // 而允许动画的只有 opacity / transform / stroke-dashoffset / 进度条 width。
         // 折叠本来就是一次瞬时状态切换，加过渡只换来掉帧。
       }}
@@ -117,14 +117,14 @@ export function Sidebar() {
 
       <List dense sx={{ flex: 1, minHeight: 0, overflowY: "auto", py: 1 }}>
         {sections.map((section, index) => {
-          // [docs/56] 组名只在**展开**时画：折叠态里 40px 宽的栏放不下一个字，
+          // 组名只在**展开**时画：折叠态里 40px 宽的栏放不下一个字，
           // 硬塞会把图标挤歪（那比"少一个组名"糟得多）。折叠态靠 `Tooltip` 不受影响。
           const heading =
             section.groupKey !== undefined && !collapsed ? t(section.groupKey) : undefined;
           return (
             <Fragment key={section.groupKey ?? "__ungrouped__"}>
               {/*
-                [docs/56] 分组之间加一条**细线**，不是大间距 ——
+ 分组之间加一条**细线**，不是大间距 ——
                 [15 §3.3] 的间距刻度里，`mt` 最多只能给 24px，而"同类相邻、异类分开"靠
                 一条 1px 线比靠留白更明确（同屏也给不出更大的间距）。
                 第一条前面不加线（与上面的品牌区分隔线重复会显得像两段）。

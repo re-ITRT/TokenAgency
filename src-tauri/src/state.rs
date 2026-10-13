@@ -1,8 +1,8 @@
 //! 应用运行时状态（Tauri 的 `State<AppState>`）。
 //!
-//! 设计约束（`docs/10-interface-spec.md` §2.1、`docs/12-work-breakdown.md` §5 T1）：
+//! 设计约束（T1）：
 //! - **命令层只做转发**，所有依赖从 `AppState` 取，不各自持有全局变量；
-//! - 配置的真源是 SQLite（`docs/02` §4），内存里只放一份**热读快照**（`ArcSwap`），
+//! - 配置的真源是 SQLite，内存里只放一份**热读快照**（`ArcSwap`），
 //!   避免每个命令都去查库；写路径由 `SqliteConfigStore` 负责事务与快照。
 //!
 //! 谁会往这里注入东西：
@@ -63,23 +63,23 @@ pub struct AppState {
     pub sticky: Arc<SqliteStickyStore>,
     pub health: Arc<SqliteHealthStore>,
     pub secret_meta: Arc<SqliteSecretMetaStore>,
-    /// 我们网关对外的访问密钥（`docs/19 §3`）。
+    /// 我们网关对外的访问密钥。
     ///
     /// 与 `secret_meta` 是两件事：那个记的是**上游凭据**的元数据，
     /// 这个是我们**发出去**的 key（只存 sha256）。网关的多 key 鉴权也用它
     /// （`crate::apikey_auth`），所以必须挂在 `AppState` 上而不是每个命令各造一份。
     pub api_keys: Arc<SqliteApiKeyStore>,
-    /// 服务商**模型目录**（[docs/25]）：扫描记录下来的上游模型（观察数据，落 SQLite）。
+    /// 服务商**模型目录**：扫描记录下来的上游模型（观察数据，落 SQLite）。
     ///
     /// 与 `import_previews` 的区别正是这一轮要修的事：预览是"这次扫描的结果"（内存、5 分钟），
     /// 目录是"这家扫描到过什么"（**活得比进程久**）。用户在服务商里勾一个没勾过的模型时，
     /// 靠的就是它 —— 而不是让他再扫一遍。
     ///
     /// 不进配置真源：目录会随上游漂移，写进配置就是第二份真相源
-    /// （与 `api_key` / 健康样本同类，见 [docs/02 §4]）。
+    /// （与 `api_key` / 健康样本同类，见）。
     pub model_catalog: Arc<SqliteModelCatalogStore>,
 
-    /// `model_import_from_provider` 扫描结果的**进程内存**预览缓存（[docs/19 §1.2]）。
+    /// `model_import_from_provider` 扫描结果的**进程内存**预览缓存。
     ///
     /// 为什么挂在 `AppState` 上而不是每个命令各造一份：`preview_token` 是在
     /// `model_import_from_provider` 里发的、在 `model_apply_import` 里取的 ——
@@ -111,7 +111,7 @@ pub struct AppState {
     /// 把"暂停"读成"失联"会让托盘显示成故障。
     pub gateway_gate: RwLock<Option<Arc<ta_gateway::ingress::GatewayGate>>>,
 
-    /// [docs/59] **可热更新的 lane → 内核 listener 端口表**（与拨号器读的**同一个**对象）。
+    /// **可热更新的 lane → 内核 listener 端口表**（与拨号器读的**同一个**对象）。
     ///
     /// 为什么必须有这个槽位：端口是运行期才分配的，而拨号器原来拿的是 boot 那一刻的冻结副本
     /// —— 于是 boot 之后新建的 lane（「自动」/ 订阅节点）在拨号器里查不到端口 →
@@ -129,7 +129,7 @@ impl AppState {
         let started_at_ms = clock.now_ms();
 
         let config = Arc::new(SqliteConfigStore::with_clock(db.clone(), Arc::clone(&clock)));
-        // [docs/28 §2] 关系翻转的**配置迁移**：老库的 `channels[].model` 要在载入时搬进
+        // 关系翻转的**配置迁移**：老库的 `channels[].model` 要在载入时搬进
         // `models[].lines`，否则翻转后的读路径（按 `lines` 找线路）在老库上一条线路都找不到。
         //
         // 迁移发生在**启动时**、而不是每个读路径里：`migrate()` 之后立刻落库（版本号也被写下去），
@@ -173,12 +173,12 @@ impl AppState {
         })
     }
 
-    /// 默认库位置：`<数据根>/db.sqlite`（`docs/02` §4）。
+    /// 默认库位置：`<数据根>/db.sqlite`。
     pub fn default_db_path() -> Result<PathBuf> {
         Ok(Self::app_data_root()?.join("db.sqlite"))
     }
 
-    /// 数据根的**唯一解析口**：`TA_DATA_DIR` 覆盖 > `<AppData>/TokenAgency`（`docs/02` §4）。
+    /// 数据根的**唯一解析口**：`TA_DATA_DIR` 覆盖 > `<AppData>/TokenAgency`。
     ///
     /// **为什么需要覆盖口**：端到端验证要用 `tauri-driver` 驱动**真的界面**（真 IPC、真库），
     /// 必须能在完全不碰用户真实数据的前提下跑完整链路。而 Windows 上 `dirs::data_dir()`
@@ -210,7 +210,7 @@ impl AppState {
     }
 
     pub fn set_doc(&self, doc: ConfigDoc) {
-        // [docs/46] **内核的"配置真源"必须跟着变**。它在 `boot.rs` 里只 `clone` 了一份开机的 doc
+        // **内核的"配置真源"必须跟着变**。它在 `boot.rs` 里只 `clone` 了一份开机的 doc
         // （那时还没有订阅、没有自动线路）；不更新的话，内核永远按那份旧配置生成 ——
         // 实测表现就是 `proxy-groups: []`、「自动」出口没有可 `set_select` 的目标。
         // 它的声明注释本来就写着"配置变更后要 `set_doc`/`set_ports`"，这里是把那句话接上线。
@@ -265,7 +265,7 @@ impl AppState {
         self.gateway_gate.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// [docs/59] 装配时把**可热更新**的端口表句柄存进来（与拨号器读的是同一个对象）。
+    /// 装配时把**可热更新**的端口表句柄存进来（与拨号器读的是同一个对象）。
     pub fn set_lane_ports(&self, ports: Arc<ta_gateway::dispatch::SharedPorts>) {
         *self.lane_ports.write().unwrap_or_else(|e| e.into_inner()) = Some(ports);
     }

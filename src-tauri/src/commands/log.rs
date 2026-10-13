@@ -1,6 +1,6 @@
 //! `log_*`：请求日志查询、详情、模式/保留期、存储统计、清理。
 //!
-//! 契约：`docs/10-interface-spec.md` §2.2 `log / 请求日志`、`docs/07` §2。
+//! 契约： `log / 请求日志`、。
 //!
 //! 注意（主管裁决 D2）：`filters.status = "retried"` 依赖尝试链，而 `LogMode::Off`
 //! 时不落 trace。**实现保留**，UI 需在 off 模式下禁用该筛选项并提示。
@@ -14,7 +14,7 @@ use ta_core::domain::ConfigDoc;
 use ta_core::types::LogMode;
 use ta_store::{ConfigStore, TraceLimits, TraceStore, UsageStore};
 
-/// [docs/59] 把配置里的 `request_log.*` **同步进 trace store**（第 330 轮修）。
+/// 把配置里的 `request_log.*` **同步进 trace store**（第 330 轮修）。
 ///
 /// # 为什么必须有这一步（它修的是一个真机 bug）
 ///
@@ -76,7 +76,7 @@ pub async fn log_query(
     Ok(state.trace.query(&q).await?)
 }
 
-/// [docs/32] **L1 聚合统计**：总数 / 成功 / 失败 / 平均总耗时。
+/// **L1 聚合统计**：总数 / 成功 / 失败 / 平均总耗时。
 ///
 /// 与 `log_query` **同一套过滤**（都走 `TraceStore`），所以筛选片与列表不会说两套话。
 /// 搜索模式下存储层会**如实拒绝**（正文是压缩体，SQL 数不准）——把错误原样传上去，
@@ -99,7 +99,7 @@ pub async fn log_get_trace(
     let Some(mut detail) = state.trace.get(&request_id).await? else {
         return Ok(None);
     };
-    // [docs/32] L6：把**按 kind 的 token 明细**一并带回去（它在用量表里，不在这张 trace 表里）。
+    // L6：把**按 kind 的 token 明细**一并带回去（它在用量表里，不在这张 trace 表里）。
     //
     // 为什么在这里补而不是在 store 层：trace 与 usage 是两张表、两条保留期，
     // `trace_store` 不该知道用量表的存在。查不到就是 `None` → 界面显示「—」，

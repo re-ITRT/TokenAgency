@@ -1,11 +1,11 @@
 //! 协议适配（IR 路径）· **工作包 G3**
 //!
 //! 直通优先：**同协议转发永不走这里**（RAW 路径只做定点 patch，零改动）。
-//! 只有客户端协议 ≠ 上游协议时才用 IR（[ADR-03]、[docs/10 §1.2]）。
+//! 只有客户端协议 ≠ 上游协议时才用 IR（[ADR-03]）。
 //!
 //! # 这一层的两条硬纪律
 //!
-//! 1. **无法映射就拒绝，绝不文本化**（[docs/03 §6.3]、[docs/06 A2]）。图片映射不过去时返回
+//! 1. **无法映射就拒绝，绝不文本化**（）。图片映射不过去时返回
 //!    `TA-2006`（415），**绝不允许**用 `"[image]"` 之类的文本顶替 —— 那会把用户"干成瞎子"，
 //!    而且上游还会回 200，用户永远发现不了。
 //! 2. **每一处损失都必须登记**（[`Loss`]）。转换函数不返回"改好的 JSON 就完事"，
@@ -21,10 +21,10 @@
 //!
 //! # 已知的有意不对称
 //!
-//! * **请求方向**：有损失就拒发（上游**根本没被问过**，[docs/06 A2] 要的就是这个）。
+//! * **请求方向**：有损失就拒发（上游**根本没被问过**， 要的就是这个）。
 //! * **响应方向**：上游已经答复了，这里**永不拒绝** —— 拒绝等于把上游的答案整份丢掉，
 //!   比"翻译后带损失地交出去"更糟。响应侧的损失只**记日志**（`translate_response` 返回 losses）。
-//! * **跨协议流式**：**[docs/59] 第 326 轮起已支持**。请求方向由本模块转（与响应无关），
+//! * **跨协议流式**：** 第 326 轮起已支持**。请求方向由本模块转（与响应无关），
 //!   响应方向是 SSE，逐帧走 [`session::translate_sse_stream`]（切帧 → IR → 目标协议）。
 //!   上面那条不对称（请求有损就拒、响应从不拒）在流式下同样成立。
 
@@ -71,7 +71,7 @@ pub trait ProtocolAdapter: Send + Sync {
     /// 编码给客户端的响应。响应方向不拒绝，所以把丢掉的东西**返回出来**给调用方记日志。
     fn encode_response(&self, ir: &IrResponse) -> (Value, Vec<Loss>);
 
-    /// **这个协议的 `stream` 标记是不是写在 body 之外？**（[docs/59]）
+    /// **这个协议的 `stream` 标记是不是写在 body 之外？**
     ///
     /// 默认 `false`：绝大多数协议把 `stream: true` 放在 body 里，往返核对**必须比它**。
     ///
@@ -90,7 +90,7 @@ static ANTHROPIC: anthropic::AnthropicAdapter = anthropic::AnthropicAdapter;
 static RESPONSES: responses::ResponsesAdapter = responses::ResponsesAdapter;
 static GEMINI: gemini::GeminiAdapter = gemini::GeminiAdapter;
 
-/// [docs/59 §2] 「边缘 N 种、内部 1 种」：**每加一种协议 = 加一个适配器**，
+/// 「边缘 N 种、内部 1 种」：**每加一种协议 = 加一个适配器**，
 /// 不动已有代码，也不需要 N×N 对转换器。加 `Gemini` 时照着同样三步做即可
 /// （解码 + 编码 + 在下面这张表里加一行）。
 ///
@@ -159,7 +159,7 @@ pub fn translate_request(
 
     let ir = src.decode_request(&value);
     let mut losses = ir.losses.clone();
-    // [docs/59] 跨协议 + `stream: true` **不再在拨号前拒绝**。
+    // 跨协议 + `stream: true` **不再在拨号前拒绝**。
     //
     // 原来这里推一条 `Loss::UnsupportedStreaming`（致命）把整条请求打回，理由是"响应方向
     // 是 SSE 状态机、还没写"。现在状态机在 [`session`] 里：上游 SSE 逐帧
@@ -552,7 +552,7 @@ mod tests {
         assert!(message.contains("content/1"), "要给出精确位置：{message}");
         assert!(!message.contains("[image]"), "**绝不允许**文本化图片");
 
-        // `warn` 也不行：不能编码的损失**任何模式**都拒绝（[docs/03 §6.3]）
+        // `warn` 也不行：不能编码的损失**任何模式**都拒绝
         let err = translate_request(
             Protocol::Openai,
             Protocol::Anthropic,
@@ -636,7 +636,7 @@ mod tests {
         assert!(sent.get("presence_penalty").is_none(), "丢掉的东西不该出现在目标请求里");
     }
 
-    /// [docs/59] 跨协议 + 流式：**第 326 轮起不再在拨号前拒绝**。
+    /// 跨协议 + 流式：**第 326 轮起不再在拨号前拒绝**。
     ///
     /// 原来这一条断言的是"拒绝"（TA-2006），理由是响应方向是 SSE 状态机、还没写。
     /// 现在状态机在 [`session`] 里（上游 SSE 逐帧切帧 → IR → 目标协议），
@@ -769,7 +769,7 @@ mod tests {
         assert!(fatal_losses(&[]).is_empty());
     }
 
-    /// [docs/59] 第 330 轮：**非流式响应的 usage 也要跨协议带过去**。
+    /// 第 330 轮：**非流式响应的 usage 也要跨协议带过去**。
     ///
     /// 从前 `IrResponse` 里没有 usage 这一格，于是翻译过的非流式响应交出的是
     /// **空的用量** —— OpenAI 客户端看到 `usage: null`、Anthropic 客户端连
@@ -803,14 +803,14 @@ mod tests {
         assert_eq!(sent["usage"]["completion_tokens"], json!(2), "{sent}");
     }
 
-    /// [docs/59] 「边缘 N 种、内部 1 种」的**可用性表**。
+    /// 「边缘 N 种、内部 1 种」的**可用性表**。
     ///
     /// 加一个适配器就要改这张表 —— 它是"哪几种协议之间真的能转"的唯一声明。
     /// 缺适配器的组合必须**显式拒绝**（`TA-2006`），而不是静默把源协议的 body 发给目标协议：
     /// 那是**必然**的 400，而用户会以为是我们坏了。
     #[test]
     fn protocol_pair_availability_is_declared_not_guessed() {
-        // [docs/59] **三种适配器都齐了** ⇒ 任意两种协议之间都能走 IR 中转。
+        // **三种适配器都齐了** ⇒ 任意两种协议之间都能走 IR 中转。
         // 这张表就是「边缘 N 种」那句话的可执行版本：加/删一个适配器，它立刻变红。
         for (a, b) in [
             (Protocol::Openai, Protocol::Anthropic),

@@ -1,4 +1,4 @@
-//! [docs/17 §2]「**能力一致才可路由**」的纯判定层。
+//!「**能力一致才可路由**」的纯判定层。
 //!
 //! 为什么要有这一层：同一个对外模型可以由多条线路服务（Ollama 一条、CommandCode 一条）。
 //! 只有当两家上游**暴露的能力完全一致**时，把它们放在同一条路由后面才是等价的；
@@ -8,7 +8,7 @@
 //! * **拒绝在命令层**（`policy_upsert` / `channel_upsert`）：它们调用这里，把差异变成
 //!   `TaError::CapabilityMismatch`（TA-2007）与结构化 `details`。
 //!
-//! 比较规则（[docs/17 §2]，**逐条**都有测试）：
+//! 比较规则（**逐条**都有测试）：
 //! 1. 逐字段相等：`vision` / `tools` / `reasoning` / `context_tokens` / `max_output_tokens`；
 //! 2. `modalities` **先排序去重**再比（`["text","image"]` 与 `["image","text","image"]` 相等）；
 //! 3. `max_output_tokens` 的 `None` **只等于** `None` —— "未声明"不等于"无所谓"，
@@ -29,7 +29,7 @@ pub fn normalized_modalities(caps: &ChannelCapabilities) -> Vec<String> {
     out
 }
 
-/// 两份能力声明是否完全一致（[docs/17 §2] 的三条规则）。
+/// 两份能力声明是否完全一致（三条规则）。
 pub fn capabilities_equal(a: &ChannelCapabilities, b: &ChannelCapabilities) -> bool {
     a.vision == b.vision
         && a.tools == b.tools
@@ -160,7 +160,7 @@ pub fn policy_channel_ids(doc: &ConfigDoc, policy: &Policy) -> Vec<String> {
 
 /// 一组线路里，**服务同一个逻辑模型**的线路能力必须一致；返回每一处不一致（一致的组不出现）。
 ///
-/// [docs/28 §2] 分组口径：**按模型**——但一个模型要用哪些线路由 `Model.lines` 决定
+/// 分组口径：**按模型**——但一个模型要用哪些线路由 `Model.lines` 决定
 /// （一条线路可以同时服务多个模型，所以它可能落在**多个**组里）。
 /// 遗留字段 `channel.model` 仍然参与分组（迁移前的配置靠它）。
 ///
@@ -169,7 +169,7 @@ pub fn capability_mismatches_for_channels(
     doc: &ConfigDoc,
     channel_ids: &[String],
 ) -> Vec<CapabilityMismatchDetail> {
-    // 哪些模型用到了这批线路里的每一条（[docs/28 §2] 的真源是 `Model.lines`）
+    // 哪些模型用到了这批线路里的每一条（真源是 `Model.lines`）
     let mut model_of: Vec<(String, String, ChannelCapabilities)> = Vec::new(); // (model, channel, caps)
     for id in channel_ids {
         let Some(channel) = doc.channels.iter().find(|c| c.id.as_str() == id.as_str()) else {

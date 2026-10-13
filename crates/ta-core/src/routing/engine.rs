@@ -1,6 +1,6 @@
 //! 策略求值：**有序规则表，首个命中即生效，不做叠加。**
 //!
-//! 求值流程（见 `docs/03-routing-and-policy.md` §2）：
+//! 求值流程（见）：
 //!
 //! ```text
 //! for policy in enabled policies, priority asc:
@@ -11,7 +11,7 @@
 //! 唯一允许"叠加"的是**单条规则内部**的收窄动作：
 //! `exclude_channels` / `require_tag` / `exclude_tag` 组合生效。
 //!
-//! 另一个硬约束（`docs/03` §6.1）：**默认不过滤**。标签只有在某条规则显式写了
+//! 另一个硬约束：**默认不过滤**。标签只有在某条规则显式写了
 //! `require_tag` / `exclude_tag` 时才参与淘汰；"未标注"的通道永远照发。
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,7 +38,7 @@ pub struct EngineOptions {
     pub strict_lane_check: bool,
     /// `on_no_candidate: error` 且策略没写 `error_code` 时用的兜底 HTTP 状态码。
     ///
-    /// 默认 415：`docs/11` §5 的错误表里 `TA-2003 tokenagency_no_viable_channel` 对应 HTTP 415，
+    /// 默认 415： 的错误表里 `TA-2003 tokenagency_no_viable_channel` 对应 HTTP 415，
     /// `config.example.yaml` 的 `pol-skip-nonvision` 也是写的 `error_code: 415` ——
     /// 因此 `error_code` 字段语义是**HTTP 状态码**，不是 TA-xxxx 里的数字。
     pub no_viable_channel_status: u16,
@@ -161,10 +161,10 @@ impl PolicyEngineImpl {
 
         // 7. pin_sticky：用户显式钉住一个通道 → 强制进候选（运行态不可用则忽略）
         let pinned = action.and_then(|a| a.pin_sticky.clone());
-        // [docs/55] `action` 不再传进来：`apply_pin` 只用它读 `use_lane`，那个字段已删除
+        // `action` 不再传进来：`apply_pin` 只用它读 `use_lane`，那个字段已删除
         let pinned = self.apply_pin(pinned, ctx, &mut candidates, &mut eliminated);
 
-        // 选路策略现在只有一种（[docs/48]）：不再由策略覆盖，也不再由组逐字段指定 ——
+        // 选路策略现在只有一种：不再由策略覆盖，也不再由组逐字段指定 ——
         // 全部落到 `BalancedSticky`。这里不再读 `action.selector`（该字段已删除），
         // `group.selector` 仍然读出来只是为了**如实反映配置**（老配置里可能是历史取值，
         // 反序列化时已统一成 `BalancedSticky`）。
@@ -275,7 +275,7 @@ impl PolicyEngineImpl {
             }
         }
 
-        // 线路：**只看服务商那一个节点**（[docs/55]：policy/channel/credential 三级覆盖已删）
+        // 线路：**只看服务商那一个节点**（：policy/channel/credential 三级覆盖已删）
         let lane = idx.resolve_lane(ch);
         if let Some(l) = lane {
             if !idx.lanes.contains_key(&l) {
@@ -326,7 +326,7 @@ impl PolicyEngineImpl {
                 return None;
             }
         }
-        // 线路：**只看服务商那一个节点**（[docs/55]：policy/channel/credential 三级覆盖已删）
+        // 线路：**只看服务商那一个节点**（：policy/channel/credential 三级覆盖已删）
         let lane = self.index.resolve_lane(ch);
         if let Some(l) = lane {
             if ctx.lane_health.get(&l) == Some(&false) {
@@ -340,7 +340,7 @@ impl PolicyEngineImpl {
     }
 
     /// 内置默认 failover：来自 `gateway.retry`，流式请求自动降到更少的尝试次数
-    /// （`docs/03` §5.2）。
+    /// 。
     fn builtin_failover(&self, hints: &RouteHints) -> FailoverPolicy {
         let mut f: FailoverPolicy =
             serde_json::from_value(serde_json::json!({})).unwrap_or_else(|_| FailoverPolicy {
@@ -1222,7 +1222,7 @@ policies:
         assert!(dec2.candidates.contains(&ChannelId::from("ch-c")));
     }
 
-    /// 策略里的 `selector` 键**已经下线**（[docs/48]）：老配置里还留着它，
+    /// 策略里的 `selector` 键**已经下线**：老配置里还留着它，
     /// 必须**不报错、不生效**（被 `PolicyAction.extra` 吸收），而同一段里**其它**字段照旧生效。
     ///
     /// 这条用例同时钉住两件事，缺一不可：兼容性（解析不失败）与"已下线"（不再改选路）。
@@ -1342,7 +1342,7 @@ policies:
         assert_eq!(ids(&dec), vec!["ch-a", "ch-b"]);
     }
 
-    /// [docs/55]（第 322 轮）策略级 `use_lane` **已删除**：老配置里写着它，也**不再有任何作用**。
+    ///（第 322 轮）策略级 `use_lane` **已删除**：老配置里写着它，也**不再有任何作用**。
     ///
     /// 这是"放弃线路级别分配"的反回归闸门 —— 它与旧断言（策略覆盖会变成
     /// `RouteDecision.lane_override`）**方向相反**，所以必须显式钉住"它不生效"，
@@ -1364,7 +1364,7 @@ policies:
         assert_eq!(ids(&dec), vec!["ch-a", "ch-b", "ch-c"]);
     }
 
-    /// [docs/55] 生效线路只看服务商 → **服务商那条线路 down 就全部淘汰**。
+    /// 生效线路只看服务商 → **服务商那条线路 down 就全部淘汰**。
     ///
     /// 旧版本这条测试靠 `policy.use_lane` 把线路钉到 `lane-jp`；那条路已经删了，
     /// 所以改成直接给两个服务商配 `lane: lane-jp` —— 这才是现在唯一能让它成立的方式。

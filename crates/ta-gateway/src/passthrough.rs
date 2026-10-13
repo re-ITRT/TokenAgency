@@ -4,7 +4,7 @@
 //! **禁止**用 `#[derive(Deserialize)]` 定义请求体结构——那会静默吞掉未知字段，
 //! 也就是"把视觉干成瞎子"的根因。
 //!
-//! ## 实现纪律（docs/03 §7.2 / docs/10 §1.3）
+//! ## 实现纪律
 //!
 //! - 头：`HeaderMap` **整体复制**，再定点增删改；**绝不白名单式重建**
 //!   （白名单就是 `x-stainless-*` / `anthropic-beta` 被吞的地方）。
@@ -66,7 +66,7 @@ pub const HOP_BY_HOP_HEADERS: &[&str] = &[
     "proxy-connection",
 ];
 
-/// 鉴权头：这三个是"换成通道凭据的 key"的例外（docs/10 §1.3）。
+/// 鉴权头：这三个是"换成通道凭据的 key"的例外。
 pub const AUTH_HEADERS: [&str; 3] = ["authorization", "x-api-key", "api-key"];
 
 /// `diff_headers` 的豁免名单：契约允许变化的头。
@@ -79,7 +79,7 @@ const SANCTIONED_CHANGES: &[&str] =
 /// `HeaderMode::Allowlist` 用的白名单。
 ///
 /// ⚠️ 白名单**一定会吞字段**，所以默认永远是 `Pass`；这个模式只是给
-/// "想确认自己没被强制全透传"的用户一个开关（docs/03 §7 / `HeaderMode` 文档）。
+/// "想确认自己没被强制全透传"的用户一个开关。
 const ALLOWLIST: &[&str] = &[
     "accept",
     "accept-encoding",
@@ -452,7 +452,7 @@ fn set_path_at(cursor: &mut Value, parts: &[&str], value: Value) -> bool {
 /// 例：`https://api.anthropic.com/v1` + `/v1/messages` → `.../v1/messages`
 /// （取 base 末尾与 path 开头的最长公共段并去掉 path 的那一段；否则会拼成 `/v1/v1/...`）。
 ///
-/// **版本段按"槽位"相等**（[docs/46 §305]，真机踩过）：客户端路径永远是 `/v1/...`（OpenAI 兼容
+/// **版本段按"槽位"相等**（真机踩过）：客户端路径永远是 `/v1/...`（OpenAI 兼容
 /// 客户端的硬约定），而服务商的 `base_url` 常常**自己就带 API 根**，版本号还不一定叫 `v1`：
 /// `https://ark.cn-beijing.volces.com/api/coding/v3`。按"字符串完全相同"去重会拼成
 /// `/api/coding/v3/v1/chat/completions` —— 上游没有这个路径，**火山实测返回 404**，
@@ -475,7 +475,7 @@ pub fn join_upstream_url(base_url: &str, path: &str, query: Option<&str>) -> Str
     let path_segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
     // 最长公共段：base 的末尾 k 段 == path 的开头 k 段
-    // （版本段按"槽位"相等：`v3` 与 `v1` 都算版本段 —— 见上面的注释与 [docs/46 §305]）
+    // （版本段按"槽位"相等：`v3` 与 `v1` 都算版本段 —— 见上面的注释与）
     let max_k = base_segments.len().min(path_segments.len());
     let mut overlap = 0;
     for k in 1..=max_k {
@@ -1018,7 +1018,7 @@ pub(crate) mod tests {
 
     #[test]
     fn patch_body_normalizes_number_literals_when_it_must_rewrite() {
-        // **已知且被测的有界偏离**（主管裁决 2026-09-21，记录于 docs/03 §7.2）：
+        // **已知且被测的有界偏离**：
         // patch 生效时整份 body 会被重新序列化，`serde_json` 会把数字字面量规范化
         // （`0.70` → `0.7`）。这是刻意接受的边界，**不是 bug**：
         //   - 只有"确实要改 model / body_patch"的请求才会走到这里；
@@ -1041,7 +1041,7 @@ pub(crate) mod tests {
         // 客户端自己发的 `x-tokenagency-model`（选模型提示）**仍然原样转发**：
         // 铁律是"除 4 处例外一律原样转发"，它**不是第 5 处例外**。
         // 若将来发现某个上游会拒绝我们命名空间的头，必须**走契约变更**
-        // （docs/10 §1.3 的例外表）才能把它加进去 —— 不允许在实现里偷偷改。
+        // 才能把它加进去 —— 不允许在实现里偷偷改。
         let policy = FullPassthrough::new();
         let cfg = cfg_with(provider(), channel());
         let mut client = HeaderMap::new();
@@ -1211,7 +1211,7 @@ pub(crate) mod tests {
             join_upstream_url("https://api.anthropic.com/v1", "/v1/messages", None),
             "https://api.anthropic.com/v1/messages"
         );
-        // [docs/46 §305] **真机踩过的那条**：火山 Ark 的 base 带自己的 API 根（`/api/coding/v3`），
+        // **真机踩过的那条**：火山 Ark 的 base 带自己的 API 根（`/api/coding/v3`），
         // 客户端路径是 `/v1/chat/completions` —— 版本段按槽位去重，不能拼成 `.../v3/v1/...`
         // （上游没有这个路径，实测 404，客户端只看到 `404 status code (no body)`）。
         assert_eq!(

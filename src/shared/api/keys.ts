@@ -31,19 +31,19 @@ export const qk = {
   provider: (id: string) => ["providers", id] as const,
   credentials: ["credentials"] as const,
   models: ["models"] as const,
-  /** 服务商模型目录（[docs/25]）：扫描记录下来的上游模型 + "接入了没有"。 */
+  /** 服务商模型目录：扫描记录下来的上游模型 + "接入了没有"。 */
   providerModelCatalog: (id: string) => ["providers", id, "model-catalog"] as const,
   channels: ["channels"] as const,
   channelMatrix: ["channels", "matrix"] as const,
   groups: ["groups"] as const,
   policies: ["policies"] as const,
   lanes: ["lanes"] as const,
-  // [docs/55] `laneAssignments` / `lanePickOptions` 两个 key 已删除：
+  // `laneAssignments` / `lanePickOptions` 两个 key 已删除：
   // 对应的命令与页面都没了（线路分配只剩服务商级一处）。
-  /** [docs/28 §1.2] 线路（网络代理）下拉的全部来源：已配置线路 + 订阅节点。 */
+  /** 线路（网络代理）下拉的全部来源：已配置线路 + 订阅节点。 */
   laneChoices: ["lanes", "choices"] as const,
   subscriptions: ["subscriptions"] as const,
-  /** 网关对外的访问密钥（[docs/19 §3.4]）：创建/启停/删除都会失效这一条。 */
+  /** 网关对外的访问密钥：创建/启停/删除都会失效这一条。 */
   apiKeys: ["apiKeys"] as const,
 
   // 用量 / 成本 / 日志
@@ -96,7 +96,7 @@ export const EVENT_INVALIDATIONS: Record<EventNameValue, readonly (readonly unkn
   "usage:tick": [qk.dashboardPrefix, ["usage"]],
   // 通道状态（冷却/耗尽）：矩阵与看板的通道健康
   "channel:state": [qk.channels, qk.dashboardPrefix],
-  // 线路健康：线路列表 + 看板（[docs/55] 分配视图已删除，`qk.laneAssignments` 那个 key 也没了）
+  // 线路健康：线路列表 + 看板（分配视图已删除，`qk.laneAssignments` 那个 key 也没了）
   "lane:health": [qk.lanes, qk.dashboardPrefix],
   "kernel:status": [qk.kernelStatus, qk.appStatus],
   // 配置变了：几乎所有领域资源都可能变

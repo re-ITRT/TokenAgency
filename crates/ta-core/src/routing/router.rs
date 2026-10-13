@@ -37,7 +37,7 @@ pub struct RouterOptions {
     /// **等出现第二个"只在某一路径生效"的字段时再拆 options**，一个字段不值得拆。
     pub clock: Arc<dyn Clock>,
     // 这里曾有 `pricing: Option<Arc<dyn PricingEngine>>` —— 供 `cheapest` 选择器算单价。
-    // 选路策略收敛为唯一一种「平均粘性」之后（[docs/48]），选路**不再读价格**：
+    // 选路策略收敛为唯一一种「平均粘性」之后，选路**不再读价格**：
     // 排序依据是 token 用量（`RouteContext.balance`）与 priority。
     // 该字段整条删除 —— 留一个没人读的定价引擎只会让下一个人以为"选路还看钱"。
     // 定价引擎本身没消失：**成本计量**（`ta-gateway` 的 `Meter`）照旧用它，那与选路无关。
@@ -70,7 +70,7 @@ impl Router {
     /// **不能**把它清零。`LiveRouter` 每次换代都要重建前三件套，但必须注入**同一份**粘性表。
     /// 如果这里不接受外部 sticky，网关就只能自己再拼一遍这套装配 —— 于是出现两份
     /// **手工同步**的装配：任何一侧加了新部件两边都不会红，而"策略模拟器 = 真实决策"
-    /// 这个论断会**静默变成假话**（[docs/13 §4.5 L21] 那类"含糊处长出两套系统"）。
+    /// 这个论断会**静默变成假话**（那类"含糊处长出两套系统"）。
     ///
     /// `opts.clock` 只在 [`Router::new`] 造内部粘性表时用到；外部注入时那份解析器自带时钟。
     pub fn with_sticky(
@@ -328,7 +328,7 @@ policies:
     /// 路径产出相同"。效果在夹具里不可见的部件需要**自己的一格探针**。目前：
     ///
     /// - **已有探针**：`selector.sticky_write`（本测试的两轮夹具）。
-    ///   这里曾有第二格 `opts.pricing` —— `docs/48` 把选路策略收敛为唯一一种之后，
+    ///   这里曾有第二格 `opts.pricing` ——  把选路策略收敛为唯一一种之后，
     ///   选路不再读价格，`RouterOptions.pricing` 整条删除，那格探针随之消失
     ///   （不是漏了，是它盯的东西没了）。
     /// - **已知未覆盖（具名残留）**：`engine.local_offset_minutes`（只影响 `time_window`
@@ -383,7 +383,7 @@ policies:
                 );
                 assert_eq!(da.eliminated, db.eliminated, "淘汰集与原因不同（session={session}）");
                 assert_eq!(da.pinned, db.pinned, "pin 不同（session={session}）");
-                // [docs/55] `lane_override` 已删除 → 不再是一条可比对的决策字段
+                // `lane_override` 已删除 → 不再是一条可比对的决策字段
                 assert_eq!(
                     da.on_no_candidate, db.on_no_candidate,
                     "无候选时的动作不同（session={session}）"

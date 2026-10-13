@@ -20,7 +20,7 @@ export const en: Record<I18nKey, string> = {
 
   // ---------------------------------------------------------------- nav
   "nav.dashboard": "Overview",
-  // [docs/56] sidebar section headings
+  // sidebar section headings
   "navGroup.setup": "Setup",
   "navGroup.records": "Records",
   "navGroup.system": "System",
@@ -83,7 +83,7 @@ export const en: Record<I18nKey, string> = {
   "delete.selectedCount": "{{count}} selected",
   "delete.title.provider": "Delete provider",
   "delete.title.model": "Delete model",
-  // These 4 keys keep the `channels.` prefix but are NOT used by the deleted page ([docs/49]):
+  // These 4 keys keep the `channels.` prefix but are NOT used by the deleted page ():
   // the models page (group toggle / inherited-lane note), the provider detail column header,
   // and the provider wizard's provider field all use them.
   "channels.add.provider": "Provider",
@@ -322,7 +322,7 @@ export const en: Record<I18nKey, string> = {
   "error.backHome": "Back to overview",
 
 
-  // ---------------------------------------------------------------- settings (docs/07 §7 / 09 §1.2)
+  // ---------------------------------------------------------------- settings ( / 09 §1.2)
   "settings.description":
     "Gateway, startup, tray, log storage and configuration.",
   "settings.openConfigDir": "Open config folder",
@@ -506,7 +506,7 @@ export const en: Record<I18nKey, string> = {
   "settings.issue.sampleRate": "Sample rate must be between 0 and 1.",
   "settings.issue.delay": "Startup delay must be between 0 and 300 seconds.",
 
-  // ---------------------------------------------------------------- first-run wizard (docs/12 §6 F4 / 05 §2.4)
+  // ---------------------------------------------------------------- first-run wizard ( F4 / 05 §2.4)
 
   "onboarding.provider.secret": "Key",
 
@@ -516,7 +516,7 @@ export const en: Record<I18nKey, string> = {
 
 
 
-  // ---------------------------------------------------------------- providers (docs/07 §3)
+  // ---------------------------------------------------------------- providers ()
   "providers.description":
     "Which providers are configured, and whether they still work.",
   "providers.refresh": "Refresh",
@@ -656,7 +656,7 @@ export const en: Record<I18nKey, string> = {
   "providers.catalog.notRead": "Could not read the model catalog.",
   "providers.catalog.rescanning": "Scanning the upstream…",
 
-  // ---------------------------------------------------------------- network (docs/04 §5–§8 / 12 §6 F4)
+  // ---------------------------------------------------------------- network (§8 / 12 §6 F4)
   // The trailing "does not change system network state" is gone from the page description:
   // the `network-zero-side-effect` block right below says exactly that, and it is the red line
   // that must stay visible. "read-only" was stale too — the page has upsert forms.
@@ -731,7 +731,7 @@ export const en: Record<I18nKey, string> = {
     "The URL is submitted only on save or preview; the list shows the masked form.",
   "network.subscriptions.write.urlKeepHint":
     "The URL carries a key and is not shown here: leave it empty to keep it, or type a new one to replace it.",
-  // [docs/46 §E] Health-check URL: optional; empty = backend default (a public URL).
+  // Health-check URL: optional; empty = backend default (a public URL).
   // Pointing it at a locally reachable target lets real latencies be measured offline.
   "network.subscriptions.write.healthUrl": "Health-check URL (optional)",
   "network.subscriptions.write.healthUrlHint":
@@ -834,11 +834,11 @@ export const en: Record<I18nKey, string> = {
   "network.nodes.declared.col.filter": "Narrowing regex",
   "network.nodes.declared.col.subscription": "Subscription",
 
-  // [docs/55] The whole `network.assignments.*` block (~90 keys) was deleted with the page
+  // The whole `network.assignments.*` block (~90 keys) was deleted with the page
   // (`/network/assignments`, "Lane assignments"): the five-level inheritance chain it showed
   // has only two meaningful levels left, so keeping it would suggest levels are still tunable.
 
-  // ---------------------------------------------------------------- cost center (docs/07 §6)
+  // ---------------------------------------------------------------- cost center ()
   "cost.description":
     "Usage and cost trends and detail, exportable as CSV.",
   "cost.refresh": "Refresh",
@@ -923,11 +923,11 @@ export const en: Record<I18nKey, string> = {
   "cost.col.tokens": "Tokens",
   "cost.col.cost": "Spend",
 
-  // ---------------------------------------------------------------- model catalogue (docs/07 §4)
+  // ---------------------------------------------------------------- model catalogue ()
   "models.description":
     "Logical model catalog: aliases, upstream mapping, pricing, channel references.",
   "models.summary.title": "Overview",
-  // Add wizard ([docs/17 §3.2]). Fixed testids: models-add-* — real-machine E2E drives them.
+  // Add wizard (). Fixed testids: models-add-* — real-machine E2E drives them.
   "models.add.open": "Add model",
   "models.lines.title": "Lines in use",
   "models.lineToggle.onTitle": "Enable this line?",
@@ -949,7 +949,7 @@ export const en: Record<I18nKey, string> = {
   "models.edit.idFixed": "The id cannot change: it is the public model name.",
   "models.edit.submit": "Save",
   "models.info.readonly": "Read-only",
-  // [docs/46 §304] What `/v1/models` exposes to clients (one aggregation on the backend)
+  // What `/v1/models` exposes to clients (one aggregation on the backend)
   "models.info.public": "Exposed to clients",
   "models.info.public.context": "Context window",
   "models.info.public.maxOutput": "Max output tokens",
@@ -1095,7 +1095,7 @@ export const en: Record<I18nKey, string> = {
   "network.nodes.emptyGroup": "This subscription has no nodes yet.",
   // Node-level enable / disable (user round 202): header select-all + two bulk actions
   "network.nodes.selectAll": "Select all",
-  // The count is just a number ([docs/30 §1] minimal UI: no "N selected" wording)
+  // The count is just a number ( minimal UI: no "N selected" wording)
   "network.nodes.selectedCount": "{{count}}",
   "network.nodes.enableSelected": "Enable selected",
   "network.nodes.disableSelected": "Disable selected",
@@ -1129,7 +1129,7 @@ export const en: Record<I18nKey, string> = {
   "apiKeys.usageEmpty": "No usage recorded yet",
   "providers.add.advanced": "Advanced",
 
-  // ---- provider detail: basics + lines (docs/28 §1)
+  // ---- provider detail: basics + lines ()
   "providers.lines.title": "Lines",
   "providers.lines.hint":
     "Scanning creates a line for every upstream model (off by default); assign models on the models page.",

@@ -466,7 +466,7 @@ pub async fn reapply_auto_after_refresh(state: &AppState, subscription_id: &str)
 /// "上次那条到底量到了没有"（误判一次就换一次出口 IP，正是用户要避免的）。
 const AUTO_PROBE_WAIT_MS: u64 = 15_000;
 
-/// 「自动」出口探测的**两个坐标**（）。
+/// 「自动」出口探测的**两个坐标**。
 ///
 /// * `provider_key`：去哪家 provider 取延迟表 —— **必须是内核 `proxy-providers` 上的 key**
 ///   （`config_gen::provider_key`，不是订阅 id）；

@@ -3,7 +3,7 @@
 //! # 为什么需要 IR
 //!
 //! 同协议转发**永不走这里**（RAW 路径：只做定点 patch，零改动）。IR 只在
-//! 客户端协议 ≠ 上游协议时作为**降级路径**（[ADR-03]、[docs/10 §1.2]）。
+//! 客户端协议 ≠ 上游协议时作为**降级路径**（[ADR-03]）。
 //!
 //! # 规范形态（canonical form）—— 往返核对的基准
 //!
@@ -26,7 +26,7 @@
 //!
 //! 解码只认**文档化的形状**，其它一律登记成 [`Loss`]（见 [`crate::adapt::loss`]），
 //! **绝不静默丢**。这里也**不用** `#[derive(Deserialize)]` 去解析请求体：
-//! 强类型反序列化会让未知字段直接蒸发（[docs/03 §7.2]），而这正是要核对的东西。
+//! 强类型反序列化会让未知字段直接蒸发，而这正是要核对的东西。
 
 use serde_json::{json, Map, Value};
 
@@ -130,7 +130,7 @@ pub struct IrResponse {
     pub model: Option<String>,
     pub parts: Vec<IrPart>,
     pub stop_reason: Option<IrStopReason>,
-    /// **用量**（[docs/59] 第 330 轮补）。
+    /// **用量**（第 330 轮补）。
     ///
     /// # 为什么响应方向也需要它
     ///

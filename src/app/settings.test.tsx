@@ -212,7 +212,7 @@ async function waitForConfig(): Promise<HTMLElement> {
 
 // ================================================================ ① I2：只展示，不改系统设置
 
-  it("[docs/30 §3.18] 校验并应用固定在底部（长页面 1838 行）", () => {
+  it("校验并应用固定在底部（长页面 1838 行）", () => {
     renderPage();
     const bar = document.querySelector('[data-testid="settings-apply-bar"]');
     expect(bar).toBeTruthy();
@@ -260,7 +260,7 @@ describe("[I2] 设置页只展示系统网络信息，不提供任何改系统�
     renderPage();
     await waitForConfig();
 
-    // 用户要求「设置界面的向导关掉」（[docs/19 §2.1] 第 2 条）：内核路径改由 /network 直接编辑，
+    // 用户要求「设置界面的向导关掉」（第 2 条）：内核路径改由 /network 直接编辑，
     // 所以设置页里不再有这一块，连"展开"这种入口都不留。
     expect(screen.queryByTestId("settings-section-advanced")).toBeNull();
     expect(screen.queryByTestId("settings-advanced-toggle")).toBeNull();
@@ -613,7 +613,7 @@ describe("[配置] 校验通过才应用，校验不通过一次都不调用 con
     validateResult = { nonsense: true };
     renderPage();
     await waitForConfig();
-    // [docs/28 §4] `settings-field-exposeModels` 这个死开关已删除；改用仍然存在的
+    // `settings-field-exposeModels` 这个死开关已删除；改用仍然存在的
     // `settings-field-debugHeaders` 制造"草稿被改过"的局面（本用例只关心"校验形状读不出来"）。
     fireEvent.click(within(screen.getByTestId("settings-field-debugHeaders")).getByRole("checkbox"));
     fireEvent.click(screen.getByTestId("settings-apply"));
@@ -778,17 +778,17 @@ describe("设置页模型层（纯函数）", () => {
   });
 });
 
-// ================================================================ ⑦ 长篇说明收进「问号圆圈」（[docs/22]）
+// ================================================================ ⑦ 长篇说明收进「问号圆圈」
 
 /**
- * [docs/22 §2] 的机械验收：
+ * 的机械验收：
  *
  * - 区块说明 **> 12 字符** → 收进 `<区块 testid>-help`，`aria-label` 就是全文，版面上不再有那段字；
  * - 一个区块**最多一个**问号（§3：一排问号比一排字更糟）；
  * - §2 的红线（读不到 / 未读取 / 校验失败原文 / 破坏性后果 / 数值）**仍然内联** ——
  *   把错误信息塞进 tooltip 是"藏问题"，不是"排版"。
  */
-describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () => {
+describe("长篇说明收进问号圆圈，红线留在版面上", () => {
   /**
    * 每个区块只收一条"这一段是干什么的"的说明。
    *
@@ -933,9 +933,9 @@ describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () 
   });
 });
 
-// ================================================================ [docs/26 §2] 一级界面省略
+// ================================================================ 一级界面省略
 
-describe("[docs/26 §2] 快照「标签 · id」：省略后全文仍在 DOM", () => {
+describe("快照「标签 · id」：省略后全文仍在 DOM", () => {
   it("长标签整段留在 DOM 里；没溢出时一个提示都不挂（回滚确认框里还有同一个 id）", async () => {
     const label = "apply · 生产环境 · 手动改过网关监听与日志上限的那一次";
     const id = "snap-2026-07-18T10-00-00Z-long-id";
@@ -957,7 +957,7 @@ describe("[docs/26 §2] 快照「标签 · id」：省略后全文仍在 DOM", (
 });
 
 /**
- * [docs/59] **下游 API 家族开关**（用户第 326 轮需求 2）。
+ * **下游 API 家族开关**（用户第 326 轮需求 2）。
  *
  * 用户原话："可以在设置页面选择我们下游是统一成 OPENAI 的两种还是 Anthropic 的"，
  * 补一句"是打开关闭形式，按需求勾选"。所以这里钉的是：

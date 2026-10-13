@@ -1,6 +1,6 @@
 //! `ta-kernel` — mihomo sidecar 的进程管理、配置生成、REST 控制、lane 端口分配。
 //!
-//! 契约：`docs/11-internal-contracts.md` §2。**实现由工作包 P5 完成。**
+//! 契约：。**实现由工作包 P5 完成。**
 //!
 //! 这里**绝不**做任何系统级网络设置：不写系统代理、不改路由表、不装 TUN。
 
@@ -59,7 +59,7 @@ pub struct ProvidersSnapshot {
     pub providers: Vec<ProviderEntry>,
     /// ★ **节点索引**：`/proxies` 顶层 **∪** `/providers/proxies` 里各 provider 的节点。
     ///
-    /// 这一层非有不可（[docs/06 §1.6] 7-c）：**provider 提供的节点不出现在 `/proxies` 顶层**，
+    /// 这一层非有不可（7-c）：**provider 提供的节点不出现在 `/proxies` 顶层**，
     /// 却出现在组的 `all` 里。只用 `/proxies` 的键去解析 `all` 会得到悬空引用，
     /// UI 的线路下拉就会缺节点（或直接报错）。
     ///
@@ -131,7 +131,7 @@ impl NodeRef {
     pub fn is_lane_target(&self) -> bool {
         match self.builtin() {
             Some(b) => b.is_selectable(),
-            // 非内置：组与真实节点都可以（组可以，见 docs/04 §7.1 的 subscription_group）
+            // 非内置：组与真实节点都可以
             None => true,
         }
     }
@@ -144,7 +144,7 @@ pub struct DanglingRef {
     pub name: String,
 }
 
-/// 内核内置的伪节点（[docs/06 §1.6] 7-d）。
+/// 内核内置的伪节点（7-d）。
 ///
 /// 真机上它们**混在 `/proxies` 里**与用户节点一起返回；不分类就会被 UI 当用户节点显示。
 /// 匹配按**名字**（内核保留这些名字），大小写无关。
@@ -205,7 +205,7 @@ pub struct ProxyEntry {
     /// 要判"是不是组"用 [`ProxyEntry::is_group`]（大小写无关），要判内建用
     /// [`ProxyEntry::builtin`]。
     pub kind: String,
-    /// ★ 内核给的健康信号（[docs/06 §1.6] 附带验证：每个节点与组都有）。
+    /// ★ 内核给的健康信号（附带验证：每个节点与组都有）。
     pub alive: bool,
     pub now: Option<String>,
     /// 组的可选成员（**未解析**：里面可能有只有 provider 才知道的名字，
@@ -279,7 +279,7 @@ pub struct ProviderEntry {
 impl ProviderEntry {
     /// `updatedAt` 是**文件 mtime**（而不是拉取时刻）。
     ///
-    /// 实测（[docs/06 §1.6]）：`vehicleType: File` 的 provider 报的 `updatedAt`
+    /// 实测：`vehicleType: File` 的 provider 报的 `updatedAt`
     /// `23:42:34` **早于**同一次 spike 里内核的启动时刻 `23:53:42` —— 所以它是文件的 mtime。
     /// 远程 provider 才是拉取时刻。UI 说"最后更新时间"时必须按这个区分。
     pub fn updated_at_is_file_mtime(&self) -> bool {
@@ -313,11 +313,11 @@ pub trait KernelController: Send + Sync {
     /// `PUT /proxies/{group}` —— 组内切节点
     async fn set_node(&self, group: &str, node: &str) -> Result<()>;
     /// 把某条 lane 对应的组切到指定节点（`select` 组）—— 上层只认 lane，
-    /// 「lane → 内核组名」的映射是内核层的细节（见 `docs/04` §8.2 的线路下拉/托盘切换）。
+    /// 「lane → 内核组名」的映射是内核层的细节（见  的线路下拉/托盘切换）。
     async fn set_select(&self, lane: &LaneId, node: &str) -> Result<()>;
     /// `GET /proxies/{name}/delay`
     async fn delay_of(&self, name: &str, timeout_ms: u64) -> Result<u32>;
-    /// **provider 里节点的延迟只能这样测**（[docs/46 §297] 实测）：先
+    /// **provider 里节点的延迟只能这样测**（实测）：先
     /// `GET /providers/proxies/{key}/healthcheck?url=<probe>` 触发整份订阅体检，
     /// 再读 `GET /providers/proxies/{key}` 里每个节点的 `history[].delay`。
     ///
@@ -345,6 +345,6 @@ pub trait KernelConfigGen: Send + Sync {
     /// 失败"（那句话已被实测证伪）：K4(d) 实测 mihomo v1.19.31 **根本不校验**，
     /// 指向不存在的名字也照样绑定成功、启动零报错，只在**请求到达时**才在它自己的日志里报
     /// `[Metadata] parse failed: proxy … not found`（客户端 502）。
-    /// 所以**生成期的引用校验是我们唯一的防线**（[docs/06 §1.6] K4d，`docs/11 §2.2` 的更正）。
+    /// 所以**生成期的引用校验是我们唯一的防线**（K4d， 的更正）。
     fn generate(&self, doc: &ta_core::domain::ConfigDoc, ports: &PortMap) -> Result<String>;
 }

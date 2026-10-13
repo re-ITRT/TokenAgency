@@ -12,7 +12,7 @@ use crate::adapt::ir::{
 use crate::adapt::loss::Loss;
 use crate::adapt::stream::{EncodeCtx, IrStreamEvent, IrUsage, Slot, StreamAdapter, StreamFrame};
 
-/// OpenAI 官方接受的数据 URL 图片格式（[docs/03 §6.3] 的映射表）。
+/// OpenAI 官方接受的数据 URL 图片格式（映射表）。
 pub(crate) const IMAGE_MEDIA_TYPES: &[&str] =
     &["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"];
 
@@ -133,7 +133,7 @@ impl OpenaiAdapter {
         IrPart::ToolUse { id, name, input }
     }
 
-    /// 内容：字符串或块数组。`detail` 是**文档化的可忽略项**（[docs/03 §6.3]：`detail` ↔ 忽略）。
+    /// 内容：字符串或块数组。`detail` 是**文档化的可忽略项**（：`detail` ↔ 忽略）。
     fn decode_content(
         &self,
         content: Option<&Value>,
@@ -406,7 +406,7 @@ impl super::ProtocolAdapter for OpenaiAdapter {
         let mut ir = IrResponse {
             id: body.get("id").and_then(Value::as_str).map(str::to_string),
             model: body.get("model").and_then(Value::as_str).map(str::to_string),
-            // [docs/59] 第 330 轮：非流式响应也要带 usage —— 不带的话，客户端看到的是
+            // 第 330 轮：非流式响应也要带 usage —— 不带的话，客户端看到的是
             // `usage: null`（上游明明给了）。**计费不读它**（账本读上游原始字节）。
             usage: ir_usage_from_openai(body.get("usage")),
             ..Default::default()
@@ -491,7 +491,7 @@ impl super::ProtocolAdapter for OpenaiAdapter {
                 ("object", json!("chat.completion")),
                 ("model", json!(ir.model)),
                 ("choices", json!([{ "index": 0, "message": message, "finish_reason": finish }])),
-                // [docs/59] 第 330 轮：把 IR 里的 usage 写回客户端。
+                // 第 330 轮：把 IR 里的 usage 写回客户端。
                 // IR 没有就传 `Value::Null` —— `object()` 会**丢掉 null 键**，所以
                 // 结果是"这一格不写"，而不是写一个 `null`（"上游没说" ≠ "上游说了 0"）。
                 ("usage", ir.usage.as_ref().map(openai_usage).unwrap_or(Value::Null)),
@@ -510,7 +510,7 @@ impl super::ProtocolAdapter for OpenaiAdapter {
 /// [`EncodeCtx`] 持有，否则并发请求之间会串味 —— 那类 bug 只在线上并发时出现，
 /// 本地单请求测不出来。
 ///
-/// # 一帧可以产出**多个**事件（[docs/59] 第 328 轮）
+/// # 一帧可以产出**多个**事件（第 328 轮）
 ///
 /// 旧签名返回 `Option<IrStreamEvent>`，逼着这一层"一帧里只能挑一件事搬"：
 /// 真实上游的末帧常常同时带内容与 `finish_reason`（`delta.content` 的最后一截
@@ -528,7 +528,7 @@ impl StreamAdapter for OpenaiAdapter {
         else {
             // `stream_options.include_usage` 的**末帧**：`choices` 是空数组，只有 usage。
             // ★ 这一帧是流式请求 output_tokens 的唯一来源，丢了它账本只能去估算
-            //   （[docs/11 §6] 铁律：不猜不估算）。`usage: null` 不算数据 ——
+            //   （铁律：不猜不估算）。`usage: null` 不算数据 ——
             //   "上游说没有"和"上游说 0"是两回事。
             return match usage {
                 Some(usage) => vec![IrStreamEvent::Stop { reason: None, usage: Some(usage) }],
@@ -715,7 +715,7 @@ impl StreamAdapter for OpenaiAdapter {
     /// OpenAI 家族的收尾是 `data: [DONE]` —— 一个**字面量**，不是 JSON。
     ///
     /// 从前它由会话层硬编码补（`if to == Anthropic {…} else {[DONE]}`），
-    /// [docs/59] 第 328 轮起收尾形状归目标适配器：会话层不认识任何协议。
+    /// 第 328 轮起收尾形状归目标适配器：会话层不认识任何协议。
     /// 已经发过就不再补（一次流只能有一个终止帧）。
     fn close_stream(&self, ctx: &mut EncodeCtx) -> Vec<StreamFrame> {
         if ctx.is_closed() {
@@ -763,7 +763,7 @@ fn openai_finish_reason(reason: &IrStopReason) -> Value {
     }
 }
 
-/// OpenAI 家族的 usage 字段表（[docs/59] 第 330 轮：读/写由 `shared` 的表驱动）。
+/// OpenAI 家族的 usage 字段表（第 330 轮：读/写由 `shared` 的表驱动）。
 ///
 /// * `total_tokens` **不搬** —— 它是 prompt+completion 的可推导量，搬它反而要在目标协议里
 ///   维护一个可能对不上的和；
@@ -851,7 +851,7 @@ fn encode_content(parts: &[IrPart]) -> Value {
 
 // ---------------------------------------------------------------- 公共检查/取值
 //
-// [docs/59] 第 328 轮：这些函数原来就住在这里，然后 `anthropic.rs` / `responses.rs` /
+// 第 328 轮：这些函数原来就住在这里，然后 `anthropic.rs` / `responses.rs` /
 // `gemini.rs` 都写着 `use crate::adapt::openai::{…}`。那是一处**依赖方向错误**：
 // `openai.rs` 是协议适配器、不是工具库；三个兄弟协议依赖它，意味着改一个取值辅助
 // 会牵动另外三个协议，而且新写协议的人不可能想到通用约束住在**兄弟协议**里。
@@ -887,7 +887,7 @@ mod tests {
         }
     }
 
-    /// ★ [docs/59] 第 328 轮的核心：**一帧里同时有内容与 `finish_reason` 时，两个事件都要解出来**。
+    /// ★ 第 328 轮的核心：**一帧里同时有内容与 `finish_reason` 时，两个事件都要解出来**。
     ///
     /// 旧签名返回 `Option<IrStreamEvent>`，这种帧只能二选一 —— 要么丢掉最后一块文字
     /// （用户少看见一段话），要么丢掉终止判定（客户端一直等下一条）。把 `decode_stream_event`
@@ -1059,7 +1059,7 @@ mod tests {
             "只有 usage 的末帧必须落成 Stop.usage（reason 不许编）"
         );
         // `usage: null` 是"上游说没有"，**不是**"上游说 0" ⇒ 搬不出事件。
-        // 统一规则（[docs/59]）：**认得出是协议帧、但这一帧没有可搬的内容 → `Other`**；
+        // 统一规则：**认得出是协议帧、但这一帧没有可搬的内容 → `Other`**；
         // 空 `Vec` 留给"根本不是协议帧"（非对象载荷）。
         assert_eq!(
             openai().decode_stream_event(&json!({ "choices": [], "usage": null })),
@@ -1126,7 +1126,7 @@ mod tests {
 
     /// ★ `close_stream`：OpenAI 家族的收尾是**字面量** `[DONE]`（不是 JSON），而且只能发一次。
     ///
-    /// [docs/59] 第 328 轮之前它由会话层硬编码补；现在归目标适配器 ——
+    /// 第 328 轮之前它由会话层硬编码补；现在归目标适配器 ——
     /// 会话层因此不认识任何协议。把 `close_stream` 改成返回空/返回 JSON，这条立刻红。
     #[test]
     fn close_stream_emits_the_done_literal_exactly_once() {

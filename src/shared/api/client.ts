@@ -1,11 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 
 /**
- * 与 Rust 侧 `IpcError`（docs/10-interface-spec.md §2.1）一一对应的错误形状。
+ * 与 Rust 侧 `IpcError`一一对应的错误形状。
  * 所有 IPC 命令都返回 `Result<T, IpcError>`。
  */
 export type IpcError = {
-  code: string; // 错误码，见 docs/11-internal-contracts.md §5（TA-xxxx）
+  code: string; // 错误码，见 （TA-xxxx）
   message: string;
   details?: unknown;
 };

@@ -1,6 +1,6 @@
 //! `app_*`：应用状态、目录、可粘贴的接入信息。
 //!
-//! 契约：`docs/10-interface-spec.md` §2.2 `app / 应用`。
+//! 契约： `app / 应用`。
 
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use crate::commands::{IpcError, IpcResult};
 use crate::state::AppState;
 use ta_store::HealthStore;
 
-/// 内核状态（形状对齐 `ta_kernel::KernelStatus`，见 `docs/10` §2.2）。
+/// 内核状态（形状对齐 `ta_kernel::KernelStatus`，见）。
 ///
 /// 为什么这里不复用 `ta_kernel::KernelStatus`：它还没实现 `specta::Type`（那是 P5 的 crate）。
 /// T1b 会切到真类型；**字段名与语义现在就是最终形状**，避免前端做二次迁移。

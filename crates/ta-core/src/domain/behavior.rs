@@ -16,7 +16,7 @@ use serde_json::Map;
 
 use super::*;
 use crate::types::*;
-// [docs/46 §303] 上游声明过的能力（`super::*` 只带出 `domain` 本层的项，子模块要显式引）
+// 上游声明过的能力（`super::*` 只带出 `domain` 本层的项，子模块要显式引）
 use super::upstream_hints::UpstreamModelHints;
 
 // ================================================================ glob
@@ -71,7 +71,7 @@ impl Model {
     /// 新模型默认是**开着**的：`enabled` 是给"暂时下线一个已有模型"用的开关，
     /// 创建即停用没有使用场景。
     ///
-    /// [docs/28 §2]：模型由用户在模型页"**分配**"线路时才有线路（创建服务商/线路**不**自动建模型）。
+    ///：模型由用户在模型页"**分配**"线路时才有线路（创建服务商/线路**不**自动建模型）。
     /// 空 `lines` 会被校验器拒绝保存（模型至少一条线路），所以真正的创建路径必须带上线路
     /// （[`Model::with_lines`]）。
     pub fn new(id: impl Into<String>) -> Self {
@@ -86,7 +86,7 @@ impl Model {
         }
     }
 
-    /// 带线路创建 —— 模型页"分配线路"就是它（[docs/28 §2]）。
+    /// 带线路创建 —— 模型页"分配线路"就是它。
     pub fn with_lines<I, S>(mut self, lines: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -110,7 +110,7 @@ impl Model {
         self
     }
 
-    /// 这个模型是不是要用这条线路（[docs/28 §2]：关系由模型侧持有）。
+    /// 这个模型是不是要用这条线路（：关系由模型侧持有）。
     pub fn uses_line(&self, channel: &ChannelId) -> bool {
         self.lines.iter().any(|l| l == channel)
     }
@@ -126,17 +126,17 @@ impl Model {
     }
 }
 
-// ================================================================ 模型 ↔ 线路（[docs/28 §2]）
+// ================================================================ 模型 ↔ 线路
 //
 // 关系由**模型侧**持有（`Model.lines`），一条线路可以服务多个模型。下面两个函数是**唯一**的
 // 解析口径，所有"这个模型用哪些线路 / 这条线路被哪些模型用"的问题都必须走它们，
 // 不许各处各写一遍 `c.model == m.id`（那正是翻转前那种一处一处漂移的来源）。
 
 impl ConfigDoc {
-    /// 这个模型要用哪些线路（[docs/28 §2]）。
+    /// 这个模型要用哪些线路。
     ///
     /// * **真源**：`model.lines`；
-    /// * **遗留兜底**：`ChannelConfig.model`（v1 老配置；[docs/28 §4] 的 S2 会删掉这个字段）。
+    /// * **遗留兜底**：`ChannelConfig.model`（v1 老配置； 的 S2 会删掉这个字段）。
     ///   兜底让"从旧导出直接导入"的文件也不会瞬间没有线路可用。
     ///
     /// 顺序按 `channel_order`（`doc.channels` 的配置顺序），去重。
@@ -163,7 +163,7 @@ impl ConfigDoc {
             .collect()
     }
 
-    /// 这个模型**对外暴露的信息**（[docs/46 §304]）—— 网关 `/v1/models` 与模型页面板的**唯一**口径。
+    /// 这个模型**对外暴露的信息**—— 网关 `/v1/models` 与模型页面板的**唯一**口径。
     ///
     /// * 数字取各线路声明过的**最小值**（一条都没声明 ⇒ `None`：不编 0、显示「未声明」）；
     /// * 能力标签取**并集**（有一条线路支持就算支持）；
@@ -211,7 +211,7 @@ impl ConfigDoc {
         }
     }
 
-    /// [docs/46 §303] 把**上游声明过的**能力补进这家服务商下"还什么都没声明"的线路上。
+    /// 把**上游声明过的**能力补进这家服务商下"还什么都没声明"的线路上。
     ///
     /// 链条：上游 `/models` →（扫描）我们逐字存的原文 → **这一步** → 线路能力 →
     /// 网关 `/v1/models` → 客户端（「获取上下文窗口」那一栏）。少了这一步，客户端永远是空的。
@@ -298,7 +298,7 @@ impl Lane {
         lane
     }
 
-    /// **「自动」出口**（[docs/29 §2.2]，用户第 88 轮）：整份订阅里挑一个，**但由我们接管选择**。
+    /// **「自动」出口**（用户第 88 轮）：整份订阅里挑一个，**但由我们接管选择**。
     ///
     /// 为什么不是 [`Self::subscription_auto`]：那种组的类型默认/继承 `url-test`，
     /// 而 `url-test` 会**按自己的 interval 周期性重测重选** —— 出口 IP 自己就变了，
@@ -306,7 +306,7 @@ impl Lane {
     ///
     /// 所以「自动」= `subscription_auto` + **显式 `select`**：选谁由 TokenAgency 按
     /// [`ta_subscription::choose_auto_export`] 决定并写 `set_select`，内核不再自己重选，
-    /// 粘性（[docs/29 §2.2]）才可能成立。
+    /// 粘性才可能成立。
     ///
     /// 显式写 `group_type` 还有第二个作用：**压过订阅自己建议的组类型**
     /// （`effective_group_type` 里显式值优先），否则机场在订阅里写 `url-test` 就把我们又推回去了。
@@ -320,7 +320,7 @@ impl Lane {
 
     /// **遗留**：`kind: subscription_group`——直接用订阅里自带的组。
     ///
-    /// [docs/54]（用户第 321 轮）之后**界面上不再有入口产生它**，v2 → v3 迁移会把老数据转成
+    ///（用户第 321 轮）之后**界面上不再有入口产生它**，v2 → v3 迁移会把老数据转成
     /// [`Self::automatic`]。构造函数保留是为了让迁移/老 fixture 仍能造出这种形状来测"会被拒"，
     /// **产品代码不该再调用它**。
     pub fn subscription_group(
@@ -390,7 +390,7 @@ impl Lane {
     ///
     /// `subscription_group` 仍然在这里返回 `group`（保持老数据能被描述清楚），
     /// 但它在 **v3 之后是非法值** —— 「放弃订阅里分组」那条裁决由
-    /// [`crate::config::validator::check_lanes`] 直接点名报错（[docs/54]）。
+    /// [`crate::config::validator::check_lanes`] 直接点名报错。
     pub fn missing_kind_field(&self) -> Option<&'static str> {
         match self.kind {
             LaneKind::Direct => None,
@@ -504,7 +504,7 @@ impl Credential {
         }
     }
 
-    // `with_lane` 已随 `Credential.lane` 一起删除（[docs/55]：线路分配只剩服务商级）
+    // `with_lane` 已随 `Credential.lane` 一起删除（：线路分配只剩服务商级）
 
     pub fn with_tags<I, S>(mut self, tags: I) -> Self
     where
@@ -531,7 +531,7 @@ impl ChannelConfig {
     /// 新通道：`enabled = true`，`priority = 100`、`weight = 10`（与 serde 默认值一致）。
     pub fn new(
         id: impl Into<ChannelId>,
-        // `model` 是**过渡期遗留参数**（[docs/28 §2]）：老配置里"这条线路属于哪个模型"。
+        // `model` 是**过渡期遗留参数**：老配置里"这条线路属于哪个模型"。
         // 新建线路请传 `""` —— 关系已经翻到 `Model.lines` 上，由模型页"分配"线路时建立。
         model: impl Into<String>,
         provider: impl Into<ProviderId>,
@@ -555,7 +555,7 @@ impl ChannelConfig {
         }
     }
 
-    // `with_lane` 已随 `ChannelConfig.lane` 一起删除（[docs/55]：线路分配只剩服务商级）
+    // `with_lane` 已随 `ChannelConfig.lane` 一起删除（：线路分配只剩服务商级）
 
     pub fn with_priority(mut self, priority: i32) -> Self {
         self.priority = priority;
@@ -587,7 +587,7 @@ impl ChannelConfig {
 
     /// 线路解析（**不含**隐含 `direct`）：`provider.lane ?? net.default_lane`。
     ///
-    /// [docs/55]（第 322 轮）收敛：用户裁决"线路级别的分配逻辑我们已经放弃了，
+    ///（第 322 轮）收敛：用户裁决"线路级别的分配逻辑我们已经放弃了，
     /// 取而代之的，**每个服务商统一一个节点**"。所以这里只剩两级 ——
     /// 服务商自己选的那一个，以及全局默认兜底。
     ///
@@ -643,7 +643,7 @@ impl<'a> LaneResolution<'a> {
 
 /// 完整线路解析（含 `direct` 兜底）：`provider.lane ?? net.default_lane ?? direct`。
 ///
-/// [docs/55]（第 322 轮）：用户裁决"线路级别的分配逻辑我们已经放弃了，
+///（第 322 轮）：用户裁决"线路级别的分配逻辑我们已经放弃了，
 /// 取而代之的，**每个服务商统一一个节点**"。
 ///
 /// 所以签名从五个形参**收敛到两个**：`policy_lane` / `channel` / `credential` 那三级
@@ -651,7 +651,7 @@ impl<'a> LaneResolution<'a> {
 /// 留着一个永远不读的形参，下一个人会以为"是不是这里漏了什么"。
 /// 唯一的调用点（`ta-gateway/src/pipeline.rs`）也一并改掉了。
 ///
-/// 依据 [04 §8.1]（已按 [docs/55] 更正）。
+/// 依据 [04 §8.1]（已按 更正）。
 pub fn resolve_lane<'a>(provider: Option<&'a Provider>, net: &'a NetConfig) -> LaneResolution<'a> {
     match provider.and_then(|p| p.lane.as_ref()).or(net.default_lane.as_ref()) {
         Some(lane) => LaneResolution::Lane(lane),
@@ -781,7 +781,7 @@ impl PolicyAction {
         self.use_group.as_ref() == Some(group)
     }
 
-    // `references_lane` 已随 `use_lane` 一起删除（[docs/55]：线路分配只剩服务商级）
+    // `references_lane` 已随 `use_lane` 一起删除（：线路分配只剩服务商级）
 
     /// 是否点名/排除了某个通道（`use_channels` / `exclude_channels` / `pin_sticky`）。
     pub fn references_channel(&self, channel: &ChannelId) -> bool {
@@ -1198,7 +1198,7 @@ mod tests {
         assert_eq!(lane.missing_kind_field(), Some("filter"));
     }
 
-    /// [docs/55]（第 322 轮）**线路分配收敛的唯一判据**：只剩 `provider.lane ?? net.default_lane`。
+    ///（第 322 轮）**线路分配收敛的唯一判据**：只剩 `provider.lane ?? net.default_lane`。
     ///
     /// 用户裁决："线路级别的分配逻辑我们已经放弃了，取而代之的，每个服务商统一一个节点"。
     ///
@@ -1310,7 +1310,7 @@ mod tests {
     fn net_port_capacity() {
         let net = doc().net;
         assert_eq!(net.lane_port_capacity(), 200);
-        // [docs/54] 默认配置 3 条线路里，direct 不要端口 → 2 条需要端口
+        // 默认配置 3 条线路里，direct 不要端口 → 2 条需要端口
         assert_eq!(net.lanes_needing_port(&doc().lanes), 2);
     }
 
@@ -1367,7 +1367,7 @@ mod tests {
         assert_eq!(MAX_AUTOSTART_DELAY_S, 300);
     }
 
-    /// [docs/46 §304] 对外暴露的信息：数字取**最小**、能力取**并集**、`owned_by` 取第一条线路的服务商。
+    /// 对外暴露的信息：数字取**最小**、能力取**并集**、`owned_by` 取第一条线路的服务商。
     ///
     /// 这一份同时喂给网关 `/v1/models` 与模型页「查看模型信息」面板 —— 两处必须一模一样。
     #[test]
@@ -1409,7 +1409,7 @@ mod tests {
         assert_eq!(info.owned_by, "tokenagency");
     }
 
-    /// [docs/46 §303] 上游声明 → 线路能力：**只补没声明的**，用户填过的一个都不动。
+    /// 上游声明 → 线路能力：**只补没声明的**，用户填过的一个都不动。
     #[test]
     fn adopt_upstream_hints_fills_only_undeclared_channels() {
         let mut doc = ConfigDoc::default();

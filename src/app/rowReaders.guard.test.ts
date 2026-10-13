@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * 守卫：**「读后端原始对象」的四个读件只许有一份实现**（[docs/52]）。
+ * 守卫：**「读后端原始对象」的四个读件只许有一份实现**。
  *
  * # 为什么需要机械守卫
  *
@@ -39,7 +39,7 @@ const READERS = ["asRow", "pickStr", "pickNum", "pickBool", "pickArr", "hasKey",
  * 同一轮收敛的**其它**重复件：名字 → 唯一允许定义它的文件。
  *
  * 这些不像读件那样"有 15 份、还已经漂了"，但性质一样：**写 N 遍就会各自演化**。
- * 上一轮（[docs/50]）收的 `Caption` / `DASH` / `SECTION_SX` / `SwitchControl` 就是同一批教训，
+ * 上一轮收的 `Caption` / `DASH` / `SECTION_SX` / `SwitchControl` 就是同一批教训，
  * 而那一轮**没有配守卫** —— 于是同一个毛病又长回来了（见下面 `asRow` 那 15 份）。
  * 所以这次把清单和守卫一起交。
  */
@@ -87,7 +87,7 @@ function reExports(text: string, name: string): boolean {
   return new RegExp(`^\\s*export\\s*\\{[^}]*\\b${name}\\b[^}]*\\}`, "m").test(text);
 }
 
-describe("[docs/52] 读后端原始对象的实现只有一份", () => {
+describe("读后端原始对象的实现只有一份", () => {
   it("除 `src/shared/row.ts` 外，任何源码都不许再定义这些读件", () => {
     const offenders: string[] = [];
     for (const file of walk(SRC)) {

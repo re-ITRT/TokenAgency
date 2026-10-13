@@ -1,10 +1,10 @@
 /**
- * `/providers` 的**添加服务商**（[docs/17 §3.1] 的「高级添加」单步对话框）的纯逻辑：
+ * `/providers` 的**添加服务商**（「高级添加」单步对话框）的纯逻辑：
  * 草稿 → 本地预检 → 命令入参。
  *
  * 第 80 轮把这里的**凭据草稿**（`CredentialDraft` / `credentialPayload` / 额度三件套）
  * 整段删掉了：原来它们只服务「添加密钥」对话框，而那个对话框已下线
- * （[docs/28 §1] 硬规则 3：**一个服务商一把密钥**；要两个账号 → 再加一条服务商、取不同名字）。
+ * （硬规则 3：**一个服务商一把密钥**；要两个账号 → 再加一条服务商、取不同名字）。
  * 密钥的写入口只剩两步向导第 1 步与详情页「密钥」块，都不需要"另造一份凭据 id"的能力。
  *
  * 为什么单独一层（而不是全塞进 `.tsx`）：这个对话框最容易写错的三件事都能在这里被单测钉死 ——
@@ -13,7 +13,7 @@
  *    （与设置页 `config_validate`、线路页 `channelDraftIssues` 同一纪律）。
  * 2. **不替后端编默认值**：`ProviderInput` 的可选字段在 Rust 侧都有 `#[serde(default)]`
  *    （`crates/ta-core/src/domain/mod.rs`）—— 用户没填的，载荷里**一个都不放**。
- * 3. **重名在本地就挡住**：显示名称是用户区分"同一家的不同账号"的抓手（[docs/28 §1]）。
+ * 3. **重名在本地就挡住**：显示名称是用户区分"同一家的不同账号"的抓手。
  *
  * 文案一律用既有的 i18n 键（`wizard.*` / `providers.wizard.nameTaken`）；本层只返回**键**，
  * 不返回句子。
@@ -45,10 +45,10 @@ export const DEFAULT_AUTH_SCHEME: AuthScheme = "bearer";
 /** 本地预检能点名的一条错。`message` 是既有 i18n 键，页面直接 `t(message)`。 */
 export type WizardIssue = { field: string; message: I18nKey };
 
-/** [docs/17 §3.1] 的 id 规则：小写字母开头，其余只许小写字母 / 数字 / 短横线。 */
+/** 的 id 规则：小写字母开头，其余只许小写字母 / 数字 / 短横线。 */
 const ID_PATTERN = /^[a-z][a-z0-9-]*$/;
 
-/** [docs/17 §3.1] 的 base_url 规则。 */
+/** 的 base_url 规则。 */
 const URL_PATTERN = /^https?:\/\//;
 
 // ================================================================ 添加服务商
@@ -63,7 +63,7 @@ export type ProviderDraft = {
   authHeader: string;
   authPrefix: string;
   /**
-   * [docs/29 §2.2] 代理（值可能是标记：`direct:` / `auto:<订阅>` / 空串 / 线路 id）。
+   * 代理（值可能是标记：`direct:` / `auto:<订阅>` / 空串 / 线路 id）。
    * `undefined` = 这次不动它（高级对话框不暴露代理）；`""` = 显式清空（走继承）。
    */
   lane?: string;
@@ -80,7 +80,7 @@ export const EMPTY_PROVIDER_DRAFT: ProviderDraft = {
 };
 
 /**
- * 现有的服务商：**id 与显示名称各自去重**（[docs/17 §3.1] + [docs/28 §1]）。
+ * 现有的服务商：**id 与显示名称各自去重**（+）。
  *
  * 形状与两步向导的 `ExistingProviders`（`providerWizardModel.ts`）同义，只是这里不区分
  * "本会话刚落库的那一份"——高级添加对话框不落库，没有这一档。
@@ -95,7 +95,7 @@ export type ExistingProviderRefs = {
  *
  * 顺序 = 用户填写的顺序；返回空数组才允许发命令。
  *
- * **名称为什么也要去重**（[docs/28 §1] 硬规则 3）：一个服务商一把密钥，所以"同一家的第二个
+ * **名称为什么也要去重**（硬规则 3）：一个服务商一把密钥，所以"同一家的第二个
  * 账号"的唯一表达方式是**第二条服务商**，而用户正是靠名字区分它们的（owner 原话："取不同名字"）。
  * 两条同名记录在界面上分不出谁是谁 —— 这不是后端该拒的错，是本地就该拦下的输入。
  * 文案复用两步向导那一条 `providers.wizard.nameTaken`（不另造句子、不自己编 TA 码）。
@@ -142,7 +142,7 @@ export function providerPayload(draft: ProviderDraft): ProviderInput {
   };
 
   /**
-   * [docs/29 §2.2] 代理（用户第 112 轮：向导里要能为服务商选线路，且能看到
+   * 代理（用户第 112 轮：向导里要能为服务商选线路，且能看到
    * 直连 / 自动 / 所有已配置线路）。值是**标记**（`direct:` / `auto:<订阅>`）或线路 id，
    * 由后端 `provider_upsert` 解析成真实线路 —— 前端不建线路、不编 id。
    *
@@ -172,7 +172,7 @@ export function providerPayload(draft: ProviderDraft): ProviderInput {
 // 这里原来住着「添加密钥」的整套纯逻辑：`CredentialDraft` / `EMPTY_CREDENTIAL_DRAFT` /
 // `sanitizeAmount` / `parseOptionalAmount` / `credentialSecretRef` / `validateCredentialDraft` /
 // `credentialPayload`（带 `quota: { limit, currency, window }`）。
-// 第 80 轮连同那个对话框一起删掉（[docs/28 §1] 硬规则 3：**一个服务商一把密钥**）。
+// 第 80 轮连同那个对话框一起删掉（硬规则 3：**一个服务商一把密钥**）。
 //
 // 为什么不留作"以后可能用得上"：它们唯一的用途是"让用户自己给凭据起 id、自己选挂在哪个
 // 服务商下"—— 也就是"同一家挂多份凭据"这条路。留着这段代码，下一个人接回一个入口就能复活

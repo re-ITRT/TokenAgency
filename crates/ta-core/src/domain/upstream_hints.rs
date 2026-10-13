@@ -1,4 +1,4 @@
-//! [docs/46 §303] **上游声明过的能力** —— 从扫描存下来的原文里读出来，供我方线路"认领"。
+//! **上游声明过的能力** —— 从扫描存下来的原文里读出来，供我方线路"认领"。
 //!
 //! 为什么要有这一层（用户原话「服务商 → 软件（软件保存信息）↔ 本机访问 没有打通」）：
 //!
@@ -9,7 +9,7 @@
 //!     "modalities": { "input_modalities": ["text"] },
 //!     "features": { "tools": { "function_calling": true } } }
 //!   ```
-//! * 我们**逐字存了**这段原文（`provider_model_catalog.raw_json`，[docs/28 §3]「原文逐字留」），
+//! * 我们**逐字存了**这段原文（`provider_model_catalog.raw_json`，「原文逐字留」），
 //!   但**从来没读过** ⇒ 线路的能力一直是默认值（`context_tokens = 0`）⇒ 网关
 //!   `/v1/models` 无话可说 ⇒ 客户端（DeepSeek Harness 的「获取可用模型」）那一栏永远是空的。
 //!

@@ -4,7 +4,7 @@
 # W0 那版是我手写的，结果被员工实测抓出三处硬错误（读不通）+ 一批静默落进 extra 的失效字段。
 # 手写必然漂移，所以改成生成。
 #
-# 语义解释（字段是什么意思）不放在 YAML 里，放 docs/02-config-and-data-model.md
+# 语义解释（字段是什么意思）不放在 YAML 里，放 
 # —— 机器要解析的东西让它保持机器友好，人要读的说明写在文档里。
 #
 # 用法: pwsh -File scripts/gen-example-config.ps1

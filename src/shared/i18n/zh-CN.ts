@@ -20,7 +20,7 @@ export const zhCN = {
 
   // ---------------------------------------------------------------- 导航（[05 §2] 的用户语言，不暴露内部概念）
   "nav.dashboard": "概览",
-  // [docs/56] 侧边栏分组标题（第 323 轮重新排序时加的）。
+  // 侧边栏分组标题（第 323 轮重新排序时加的）。
   // 组名的唯一职责是让"这几项是一类"由**结构**说出来，不靠用户从位置上猜。
   "navGroup.setup": "配置",
   "navGroup.records": "记录",
@@ -30,7 +30,7 @@ export const zhCN = {
   "nav.models": "模型目录",
   "nav.network": "网络",
   "nav.networkNodes": "节点列表",
-  // [docs/54] 一条订阅的详情页（从网络页点订阅行进来）
+  // 一条订阅的详情页（从网络页点订阅行进来）
   "nav.networkSubscription": "订阅详情",
   "nav.cost": "成本中心",
   "nav.logs": "请求日志",
@@ -68,7 +68,7 @@ export const zhCN = {
   "common.unknown": "未知",
   "common.delete": "删除",
   "common.deleteSelected": "删除选中",
-  // ---------------------------------------------------------------- 删除（[docs/21]）
+  // ---------------------------------------------------------------- 删除
   "delete.body": "删除后无法撤销。确认删除以下对象？",
   "delete.consequences": "会连带删除 / 影响：",
   // 没有 force 语义的实体（订阅 / 线路）：列出来的引用不是"会被连带删掉"，而是**会拦住这次删除**。
@@ -86,7 +86,7 @@ export const zhCN = {
   "delete.selectedCount": "已选 {{count}} 条",
   "delete.title.provider": "删除服务商",
   "delete.title.model": "删除模型",
-  // 这 4 个键**名字带 `channels.` 前缀，但用的不是被删的那一页**（[docs/49] 删页时差点误删）：
+  // 这 4 个键**名字带 `channels.` 前缀，但用的不是被删的那一页**（删页时差点误删）：
   // 模型目录的分组标题与「继承」说明、服务商详情页的列头、服务商向导的服务商字段都在用它们。
   // 教训：按**前缀**批量删键是错的 —— 必须逐键确认引用方（当时只匹配了单点键，漏了双点键）。
   "channels.add.provider": "服务商",
@@ -101,7 +101,7 @@ export const zhCN = {
   "cost.pricing.col.output": "输出价",
   "cost.pricing.col.cached": "缓存读价",
   "cost.pricing.col.source": "来源",
-  // [docs/51] 第 318 轮：成本中心**只做显示**，价格配置搬到模型页。
+  // 第 318 轮：成本中心**只做显示**，价格配置搬到模型页。
   // 这两句必须常驻版面上（不收进问号）：用户原来就在这里点「添加定价」，
   // 不说清楚它搬到哪儿了，等于把入口藏起来。
   "cost.pricing.readonly": "本页只显示。要新增或修改价格，请到「模型」页对那个模型定价。",
@@ -392,7 +392,7 @@ export const zhCN = {
   "settings.storage.stats": "占用",
   "settings.storage.toLogs": "到请求日志页查询",
   "settings.storage.noExport": "日志导出在「日志页」。",
-  // 只说结论：理由（后端没有读取接口、不是猜的）与保留期那行是同一句，同一屏里说一遍就够（[docs/30 §1]）
+  // 只说结论：理由（后端没有读取接口、不是猜的）与保留期那行是同一句，同一屏里说一遍就够
   "settings.storage.modeUnknown": "当前模式：未读取",
   "settings.storage.modeWritten": "本次会话已把记录模式写为 {{mode}}。",
   "settings.storage.retentionWritten": "本次会话已把保留期写为 {{value}}。",
@@ -607,7 +607,7 @@ export const zhCN = {
   "network.gotoNodes": "节点列表",
   "network.backToOverview": "返回网络",
 
-  // [docs/54] 一条订阅的详情页（/network/subscriptions/:id）
+  // 一条订阅的详情页（/network/subscriptions/:id）
   "network.subscription.description":
     "这份订阅的全部节点，每个节点可以打开或关闭。关掉的节点不再参与「自动选择」，也不会被固定节点线路选中。",
   "network.subscription.notFound": "配置里没有这份订阅（{{id}}）：它可能刚被删掉。",
@@ -652,9 +652,9 @@ export const zhCN = {
   "network.subscriptions.col.actions": "操作",
   "network.subscriptions.row.refresh": "刷新",
   "network.subscriptions.row.delete": "删除",
-  // [docs/57] 每行的「编辑」：打开预填的编辑对话框（第 324 轮）
+  // 每行的「编辑」：打开预填的编辑对话框（第 324 轮）
   "network.subscriptions.row.edit": "编辑",
-  // [docs/57] 区块里的「添加订阅」：表单不再常驻，这是它的两个入口之一
+  // 区块里的「添加订阅」：表单不再常驻，这是它的两个入口之一
   "network.subscriptions.write.open": "添加订阅",
   "network.subscriptions.write.editTitle": "编辑订阅",
   "network.subscriptions.row.refreshHint":
@@ -668,11 +668,11 @@ export const zhCN = {
   "network.subscriptions.write.url": "订阅地址",
   "network.subscriptions.write.urlHint":
     "地址只在保存或预览时提交；列表里显示的是遮蔽后的地址。",
-  // [docs/57] 编辑态专用：地址里带 token，界面**从不回显原文**（唯一出口是遮蔽函数），
+  // 编辑态专用：地址里带 token，界面**从不回显原文**（唯一出口是遮蔽函数），
   // 所以编辑时那个框永远是空的 —— 留空 = 不改（由后端保证），填了才替换。
   "network.subscriptions.write.urlKeepHint":
     "地址带密钥，这里不回显：留空 = 不改地址，填了才替换。",
-  // [docs/46 §E] 健康检查地址：选填，留空=后端默认（出厂默认是公网地址）。
+  // 健康检查地址：选填，留空=后端默认（出厂默认是公网地址）。
   // 填本机可达的地址，就能在没有公网的环境里也测出真实延迟（E 期真机验证需要它）。
   "network.subscriptions.write.healthUrl": "健康检查地址（选填）",
   "network.subscriptions.write.healthUrlHint":
@@ -704,7 +704,7 @@ export const zhCN = {
   "network.lanes.title": "线路",
   "network.lanes.description":
     "每条线路指向什么（直连 / 自动选择 / 固定节点 / 正则筛选），以及最近一次健康样本。",
-  // [docs/58] 手动建线路的界面删除之后，空态必须**指出去哪儿建** ——
+  // 手动建线路的界面删除之后，空态必须**指出去哪儿建** ——
   // 否则一块"什么都没有、也没有按钮"的区域就是一条死路。
   "network.lanes.empty":
     "还没有线路：到服务商页选一个「网络代理」就会建出来。",
@@ -721,7 +721,7 @@ export const zhCN = {
   "network.lanes.col.health": "健康",
   "network.lanes.col.actions": "操作",
   "network.lanes.row.delete": "删除",
-  // [docs/57] 每行的「编辑」+ 区块里的「添加线路」（表单改为按需出现）
+  // 每行的「编辑」+ 区块里的「添加线路」（表单改为按需出现）
   "network.lanes.row.setNode": "节点",
   "network.lanes.row.setNodeSubmit": "钉住",
   "network.lanes.row.setNodeHint":
@@ -775,7 +775,7 @@ export const zhCN = {
   "network.nodes.declared.col.filter": "收窄正则",
   "network.nodes.declared.col.subscription": "订阅",
 
-  // [docs/55]（第 322 轮）删掉整块 `network.assignments.*`（约 90 个键）。
+  //（第 322 轮）删掉整块 `network.assignments.*`（约 90 个键）。
   //
   // 那一页（`/network/assignments`「线路分配」）随"放弃线路级别的分配"整页删除：
   // 它展示的五级继承链只剩两级还有意义，留着只会让人以为还有级别可调。
@@ -864,7 +864,7 @@ export const zhCN = {
   "models.description":
     "逻辑模型目录：别名、上游映射、定价、通道引用。",
   "models.summary.title": "概览",
-  // 添加向导（[docs/17 §3.2]）。testid 固定：models-add-*，真机 E2E 按它们驱动。
+  // 添加向导。testid 固定：models-add-*，真机 E2E 按它们驱动。
   "models.add.open": "添加模型",
   "models.add.title": "添加模型",
   "models.add.id": "模型 id",
@@ -915,7 +915,7 @@ export const zhCN = {
   "models.loading": "读取模型目录…",
   "models.col.expose": "对外暴露",
   "models.col.enabled": "启用",
-  // [docs/51] 定价入口（在模型页；成本中心只做显示）
+  // 定价入口（在模型页；成本中心只做显示）
   "models.price.open": "定价",
   "models.price.openEdit": "改价",
   "models.price.title": "为这个模型定价",
@@ -996,7 +996,7 @@ export const zhCN = {
   "network.nodes.emptyGroup": "这份订阅里还没有节点。",
   // 节点级启用 / 关闭（用户第 202 轮）：表头全选 + 两个批量动作
   "network.nodes.selectAll": "全选",
-  // 计数只有数字（[docs/30 §1] 极简：不留「已选 N 条」那种话，数字本身就是全部信息）
+  // 计数只有数字（极简：不留「已选 N 条」那种话，数字本身就是全部信息）
   "network.nodes.selectedCount": "{{count}}",
   "network.nodes.enableSelected": "启用所选",
   "network.nodes.disableSelected": "关闭所选",
@@ -1032,7 +1032,7 @@ export const zhCN = {
 
 
 
-  // ================================================================ 删除（[docs/21 §1]）
+  // ================================================================ 删除
   "delete.consequence.laneChannels": "当前走这条线路的 {{value}} 条通道",
   "delete.consequence.modelLinesUntouched":
     "{{value}} 条线路用着它，不会被删；要删线路请去服务商页。",
@@ -1041,10 +1041,10 @@ export const zhCN = {
   "delete.title.lane": "删除线路",
   "delete.title.subscription": "删除订阅",
 
-  // ================================================================ 模型页（[docs/28 §2]）
+  // ================================================================ 模型页
   "models.info.open": "查看模型信息",
   "models.info.readonly": "只读",
-  // [docs/46 §304] 对外暴露的信息：客户端在 /v1/models 里看到的那一份（后端只有一份聚合口径）
+  // 对外暴露的信息：客户端在 /v1/models 里看到的那一份（后端只有一份聚合口径）
   "models.info.public": "对外暴露的信息",
   "models.info.public.context": "上下文窗口",
   "models.info.public.maxOutput": "最大输出 token",
@@ -1072,7 +1072,7 @@ export const zhCN = {
   "models.lines.pick": "选择线路（至少一条）",
   "models.lines.required": "至少要选一条线路：模型没有线路就永远路由不到任何地方",
 
-  // ================================================================ 服务商：模型目录（[docs/25]）
+  // ================================================================ 服务商：模型目录
   "providers.catalog.empty":
     "还没有记录，先扫描一次。",
   "providers.catalog.goDetail": "去服务商详情",
@@ -1083,7 +1083,7 @@ export const zhCN = {
   "providers.catalog.rawTitle": "上游原文（扫描记录下来的那一条，我们不改写）",
   "providers.catalog.rawEmpty": "上游那一条不是 JSON 对象（或这次没记到）—— 我们不会替它编一个。",
 
-  // ================================================================ 服务商详情页 = 编辑器（[docs/23]）
+  // ================================================================ 服务商详情页 = 编辑器
   "providers.edit.clean": "没有改动",
   "providers.edit.dirty": "有未保存的改动",
   "providers.edit.headerAdd": "增加一行",
@@ -1104,7 +1104,7 @@ export const zhCN = {
     "连接配置没读到：整页只读，不会覆盖线上已有的值。",
   "providers.section.basic": "基础数据",
 
-  // ================================================================ 服务商：基础数据 + 线路（[docs/28 §1]）
+  // ================================================================ 服务商：基础数据 + 线路
   "providers.lines.title": "线路",
   "providers.lines.hint":
     "扫描会建出上游清单每条线路（默认关闭）；模型到模型页分配。",
@@ -1129,7 +1129,7 @@ export const zhCN = {
     "要两个账号就再加一条服务商、取不同名字 —— 一个服务商就是一把密钥。",
 
 
-  // ================================================================ 向导第 2 步 = 创建线路（[docs/28 §1]）
+  // ================================================================ 向导第 2 步 = 创建线路
   "providers.wizard.step2.title": "第 2 步：创建线路",
   "providers.wizard.gotoModels": "去模型页分配线路",
   "providers.wizard.step2.why":

@@ -5,7 +5,7 @@
 //! 全部轨迹"这个能力就**部分失效**了，且失效时不会有任何提示。
 //! 这类约定必须机械检查，不能靠自觉。
 //!
-//! 白名单来源：`docs/14-observability.md` §5.1–§5.4（`fields.rs` 的常量与它对齐，
+//! 白名单来源：–§5.4（`fields.rs` 的常量与它对齐，
 //! 由本文件里的 `canonical_fields_match_the_doc` 守着）。
 
 mod common;

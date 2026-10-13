@@ -1,7 +1,7 @@
 # 更新日志
 
 本项目的里程碑记录。**每个条目都必须写清"到什么程度"**，而不是只写"完成了什么" ——
-因为"写完代码"和"验证过"是两件事（[docs/13](docs/13-team-and-delivery.md) 的评审协议就是这么定的）。
+因为"写完代码"和"验证过"是两件事。
 
 ---
 
@@ -31,14 +31,14 @@
   （从自身映像读 `RT_MANIFEST` 并断言声明了 Common-Controls 6.0）。
 - **顺带证明的事**：`cargo:rustc-link-arg-tests` **覆盖不到** lib 单元测试 harness
   （其 target kind 是 `lib` 而非 `[[test]]`）—— 实测过，这也是必须走"让 tauri-build 闭嘴"
-  这条路的原因。详见 [docs/06 §11.1](docs/06-roadmap-and-risks.md)。
+  这条路的原因。详见()。
 
 **门禁一解开，立刻抓出一个真 bug**
 
 - `plugins::tests::twelve_plugins_with_unique_ids` 断言 12，而 `PLUGINS` 早已是 11
   —— 数字停在"移除 `tauri-plugin-log`"之前。已改为 11，并把它升级成
   **带理由的守卫**：新增 `no_second_logging_system`，同时禁止 `PLUGINS` 与
-  `Cargo.toml` 重新引入 `tauri-plugin-log`（两套日志系统 [docs/14 §1.1]）。
+  `Cargo.toml` 重新引入 `tauri-plugin-log`（两套日志系统）。
 - **教训**：被绕过的门禁不会变绿，只会积累。第一个跑起来的测试就是红的。
 
 ### `scripts/gen-bindings.ps1`：一次真实事故 —— "只是想看看"把 105 条契约写坏了
@@ -128,12 +128,12 @@ cargo fmt     --all --check                            → exit 0
 
 - T2（托盘、插件注册、生命周期、开机自启动）已提交：自启动漂移逻辑复用 `ta-core` 的纯函数、
   `state()` 只读不写、测试用临时注册表键不污染用户真实启动项。
-- **移除 `tauri-plugin-log`**：它与 `tracing_subscriber` 是两套并行日志系统（[docs/14 §1.1]）。
+- **移除 `tauri-plugin-log`**：它与 `tracing_subscriber` 是两套并行日志系统。
   之前用 `.skip_logger()` 只是压住 panic，问题仍在。
 
 **视觉契约（用户直接要求）**：
 
-- 新增 [docs/15-visual-design.md](docs/15-visual-design.md)：高级极简、**emoji 零容忍**。
+- 新增()：高级极简、**emoji 零容忍**。
 - 唯一例外：**用户数据里的 emoji 原样呈现**（真实机场组名就是 `🚀 节点选择`）。
   规则是"我们永不自己产生 emoji"，而不是"禁止 emoji"。
 - 已清理 `tray.rs` 里的全部 emoji（菜单项、tooltip、额度状态）。
@@ -201,8 +201,8 @@ TS 侧因此拿到 `header_diff?: HeaderDiff | null`，而不是 `any`。
 | 2 | **事件桥接**：`TaEvent` 10 个变体，前端一个都收不到 | 未接线 |
 | 3 | **启动编排**：`BootOrchestrator::run` 从未被调用 → 内核不会被拉起 | 未接线 |
 | 4 | ~~绑定导出的第二个冲突~~ | ✅ **已解决**（见下） |
-| 5 | ~~`tokenagency` 的 lib 测试目标无法运行（`STATUS_ENTRYPOINT_NOT_FOUND`）~~ | ✅ **已解决**（v0.2.1-w2fix，见 [docs/06 §11.1](docs/06-roadmap-and-risks.md)） |
-| 6 | 前端 F1 视觉重做（按 [docs/15](docs/15-visual-design.md)） | 未开始 |
+| 5 | ~~`tokenagency` 的 lib 测试目标无法运行（`STATUS_ENTRYPOINT_NOT_FOUND`）~~ | ✅ **已解决** |
+| 6 | 前端 F1 视觉重做 | 未开始 |
 | 7 | W5 打包与三条不变量验收 | 未开始 |
 
 ### 门禁状态（v0.2.0-w2 基线实测）

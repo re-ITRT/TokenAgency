@@ -42,7 +42,7 @@
 //! `usageMetadata` 是**累积**的（后一帧覆盖前一帧，最后一帧最完整 —— 见
 //! `ir_usage_from_gemini`）。真实抓包里"最后一块文字 + `finishReason` + usage"
 //! 常常**挤在同一帧**里，所以 [`StreamAdapter::decode_stream_event`] 返回的是**一串**事件
-//! （[docs/59] 第 328 轮）：这一帧会解出 `[TextDelta, Stop]` **两个**事件，顺序是
+//! （第 328 轮）：这一帧会解出 `[TextDelta, Stop]` **两个**事件，顺序是
 //! 先内容、后收尾。旧签名（`Option<IrStreamEvent>`）在这里只能二选一 ——
 //! 那不是取舍，那是丢数据：丢一块文字是用户看得见的内容损失，
 //! 丢一帧 stop/usage 则让客户端永远等不到终止判定。
@@ -63,7 +63,7 @@
 //!   协议里没有"入参分片"这种形态 ⇒ [`IrStreamEvent::ToolInputDelta`] 在 Gemini 方向
 //!   无处安放：这里发 0 帧（发半个 JSON 就是编一个上游不会发的形状）但**留痕**。
 //!   **这不丢数据**：Gemini 作上游时入参是**一次给全**的，走
-//!   [`IrStreamEvent::ToolUseStart`] 的 `input` 字段（[docs/59] 第 330 轮之前那一格不存在，
+//!   [`IrStreamEvent::ToolUseStart`] 的 `input` 字段（第 330 轮之前那一格不存在，
 //!   整个 `args` 会静默消失）。反向（别的协议 → Gemini）才走分片，而那条路
 //!   **不可达**：Gemini 永远不会是客户端协议（见 `session.rs` 模块头）。
 //! * **流式 `functionCall` 的槽位**：Gemini 的 part 没有序号，适配器又是无状态的，
@@ -152,7 +152,7 @@ fn has_meaning(value: &Value) -> bool {
 
 /// 一个 `Part`（Gemini 的 parts 是 oneof：`text` / `inlineData` / `functionCall`…）。
 ///
-/// 认不出来就登记损失并返回 `None`：**不猜**它是文本（[docs/03 §6.3]：
+/// 认不出来就登记损失并返回 `None`：**不猜**它是文本（：
 /// 映射不过去的内容绝不用一段文字顶替 —— 客户端会以为自己看见了原文）。
 fn decode_part(part: &Value, path: &str, losses: &mut Vec<Loss>) -> Option<IrPart> {
     let Some(obj) = part.as_object() else {
@@ -554,7 +554,7 @@ impl super::ProtocolAdapter for GeminiAdapter {
         ta_core::types::Protocol::Gemini
     }
 
-    /// [docs/59] **Gemini 的 `stream` 不在 body 里，在路径里**
+    /// **Gemini 的 `stream` 不在 body 里，在路径里**
     /// （`…:generateContent` vs `…:streamGenerateContent?alt=sse`）。
     ///
     /// 不声明这一条，编码方向会永远报一条**假**的 `RoundTrip /stream` 损失 ——
@@ -836,7 +836,7 @@ impl super::ProtocolAdapter for GeminiAdapter {
                 .and_then(Value::as_str)
                 .or_else(|| body.get("model").and_then(Value::as_str))
                 .map(str::to_string),
-            // [docs/59] 第 330 轮：非流式响应也要带 usage（Gemini 叫 `usageMetadata`）
+            // 第 330 轮：非流式响应也要带 usage（Gemini 叫 `usageMetadata`）
             usage: ir_usage_from_gemini(body.get("usageMetadata")),
             ..Default::default()
         };
@@ -885,7 +885,7 @@ impl super::ProtocolAdapter for GeminiAdapter {
             ir.parts = decode_parts(Some(parts), "/candidates/0/content/parts", &mut ir.losses);
         }
         // 候选级元信息（`safetyRatings` / `citationMetadata` / `groundingMetadata` / `logprobsResult`…）：
-        // IR 表达不了 ⇒ **逐项**登记，绝不静默吞（[docs/03 §6.3] 的同一条纪律）
+        // IR 表达不了 ⇒ **逐项**登记，绝不静默吞（同一条纪律）
         if let Some(map) = candidate.as_object() {
             for (k, v) in map {
                 if !has_meaning(v) || KNOWN_CANDIDATE.contains(&k.as_str()) {
@@ -967,7 +967,7 @@ impl super::ProtocolAdapter for GeminiAdapter {
                 ("candidates", json!([candidate])),
                 ("modelVersion", ir.model.as_ref().map(|m| json!(m)).unwrap_or(Value::Null)),
                 ("responseId", ir.id.as_ref().map(|id| json!(id)).unwrap_or(Value::Null)),
-                // [docs/59] 第 330 轮：把 IR 里的 usage 写回去（Gemini 叫 `usageMetadata`）
+                // 第 330 轮：把 IR 里的 usage 写回去（Gemini 叫 `usageMetadata`）
                 ("usageMetadata", ir.usage.as_ref().map(gemini_usage).unwrap_or(Value::Null)),
             ]),
             losses,
@@ -1035,7 +1035,7 @@ fn check_parts(parts: &[IrPart], path: &str, in_tool_result: bool, losses: &mut 
 ///
 /// * 收尾靠**最后一个带 `finishReason` 的 chunk**（没有 `data: [DONE]`）；
 /// * `usageMetadata` 是**累积**的（见 `ir_usage_from_gemini`）；
-/// * **一帧可以产出多个事件**（[docs/59] 第 328 轮）：收尾帧常常是
+/// * **一帧可以产出多个事件**（第 328 轮）：收尾帧常常是
 ///   "最后一块文字 + `finishReason` + `usageMetadata`" 挤在一起 ⇒ 解出 `[TextDelta, Stop]`。
 impl StreamAdapter for GeminiAdapter {
     fn decode_stream_event(&self, data: &Value) -> Vec<IrStreamEvent> {
@@ -1093,7 +1093,7 @@ impl StreamAdapter for GeminiAdapter {
                         events.push(IrStreamEvent::TextDelta { slot: Slot::Text(0), text })
                     }
                     // ★ **`functionCall.args` 是完整对象**，而 IR 的"调用开始"现在带得动它
-                    //   （[docs/59] 第 330 轮加的 `input`）—— 从前这一格不存在，
+                    //   （第 330 轮加的 `input`）—— 从前这一格不存在，
                     //   于是 Gemini 上游的工具入参**整份丢掉**。
                     //   槽位只能是"这一帧里的第几个 functionCall"：part 没有序号，
                     //   适配器又是无状态的（跨帧的相认需要每请求状态，会话层才有）。
@@ -1114,7 +1114,7 @@ impl StreamAdapter for GeminiAdapter {
         }
         // 收尾帧：Gemini 用**最后一个带 finishReason 的 chunk**收尾（没有 `data: [DONE]`）。
         // ★ 与内容**同帧**时两个事件都要返回（顺序：先内容、后 Stop）—— 这正是
-        //   [docs/59] 第 328 轮把签名从 `Option` 改成 `Vec` 的原因。
+        // 第 328 轮把签名从 `Option` 改成 `Vec` 的原因。
         if let Some(reason) =
             field(candidate, "finishReason", "finish_reason").and_then(Value::as_str)
         {
@@ -1236,7 +1236,7 @@ impl StreamAdapter for GeminiAdapter {
 
     /// **解码侧的内容损失**：思维链（`thought: true`）与认不出的 part。
     ///
-    /// 这两样是**内容**被丢掉，不是心跳 —— 不留痕就是静默丢数据（[docs/11 §6] 的口径）。
+    /// 这两样是**内容**被丢掉，不是心跳 —— 不留痕就是静默丢数据（口径）。
     /// 从前 `decode_part` 已经把损失记进了一个局部 vec，而那个 vec 在返回时被丢了；
     /// 通道补上之后它才真的有出口。
     ///
@@ -1276,7 +1276,7 @@ fn gemini_candidate_part(part: Value) -> Value {
 /// `totalTokenCount` **故意不搬**：IR 没有它的槽位，而它 = prompt + candidates + **思考 token**，
 /// 塞进任何现有字段都是**编一个对不上的数**。`thoughtsTokenCount` / `toolUsePromptTokenCount`
 /// 同理。账本的权威来源是原始帧（`ta_core::metering::normalize_gemini` 直接读 `usageMetadata`）。
-/// Gemini 的 usage 字段表（[docs/59] 第 330 轮：读/写由 `shared` 的表驱动）。
+/// Gemini 的 usage 字段表（第 330 轮：读/写由 `shared` 的表驱动）。
 ///
 /// * 每格给了 camelCase 与 snake_case 两个候选 —— Gemini 的两种上游实现都有；
 /// * 口径与 Anthropic 不同：`promptTokenCount` **含**缓存命中
@@ -1656,7 +1656,7 @@ mod tests {
         assert!(json_of(&frames[0]).get("candidates").is_none(), "{frames:?}");
     }
 
-    /// ★ [docs/59] 第 328 轮的核心：**收尾帧里"最后一块文字 + finishReason + usage"三样同帧**
+    /// ★ 第 328 轮的核心：**收尾帧里"最后一块文字 + finishReason + usage"三样同帧**
     /// 时，必须解出**两个**事件（内容是 `TextDelta`、收尾是带 usage 的 `Stop`），
     /// 顺序是先内容、后收尾。
     ///
@@ -1698,7 +1698,7 @@ mod tests {
             ]
         );
         // 一帧里两个 functionCall 各有各的槽位（并行调用不许挤进同一个块），
-        // 而且**入参要带上**（[docs/59] 第 330 轮：从前这一格不存在，`args` 整份丢掉）
+        // 而且**入参要带上**（第 330 轮：从前这一格不存在，`args` 整份丢掉）
         let calls = json!({
             "candidates": [{ "content": { "role": "model", "parts": [
                 { "functionCall": { "name": "weather", "args": { "city": "SH" } } },

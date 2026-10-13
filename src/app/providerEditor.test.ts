@@ -1,5 +1,5 @@
 /**
- * 服务商详情页编辑逻辑（[docs/23] / `src/pages/providers/editor.ts`）的纯逻辑验收。
+ * 服务商详情页编辑逻辑（/ `src/pages/providers/editor.ts`）的纯逻辑验收。
  *
  * 为什么单独一份：这一层最容易写出**静默的数据丢失** —— `provider_upsert` 是整条覆盖写，
  * 载荷里少一个键就是把那个字段重置成默认值。所以这里逐条钉住三件事：
@@ -64,7 +64,7 @@ function viewProvider(): unknown {
   };
 }
 
-describe("[docs/23] 草稿：后端一行 → 可编辑草稿", () => {
+describe("草稿：后端一行 → 可编辑草稿", () => {
   it("完整记录：每一个字段都读进草稿（尾随空格这种有意义的值原样保留）", () => {
     const draft = draftFromRow(readProvider(rustProvider()));
 
@@ -115,7 +115,7 @@ describe("[docs/23] 草稿：后端一行 → 可编辑草稿", () => {
   });
 });
 
-describe("[docs/23] 载荷：以原始记录为底（这是「改个名字不会抹掉配置」的保证）", () => {
+describe("载荷：以原始记录为底（这是「改个名字不会抹掉配置」的保证）", () => {
   it("改一个字段：其余键一个不少，id 复用", () => {
     const row = readProvider(rustProvider());
     const payload = buildProviderPayload(row, { ...draftFromRow(row), name: "改名后" });
@@ -205,7 +205,7 @@ describe("[docs/23] 载荷：以原始记录为底（这是「改个名字不会
   });
 });
 
-describe("[docs/23] 本地预检与「有没有改动」", () => {
+describe("本地预检与「有没有改动」", () => {
   it("必填 / base_url 形状 / 超时必须是正整数 / 头名不空不重复", () => {
     const base = draftFromRow(readProvider(rustProvider()));
 
@@ -248,7 +248,7 @@ describe("[docs/23] 本地预检与「有没有改动」", () => {
   });
 });
 
-describe("[docs/23] 下拉选项与头表编辑的纯函数", () => {
+describe("下拉选项与头表编辑的纯函数", () => {
   it("协议下拉：契约外的取值原样补一行（不改写后端说的话）", () => {
     const labelOf = (protocol: string): string => `L:${protocol}`;
     expect(protocolChoices(["openai", "anthropic"], labelOf, "openai")).toEqual([
@@ -262,7 +262,7 @@ describe("[docs/23] 下拉选项与头表编辑的纯函数", () => {
   });
 
   it("代理下拉：第一条是「直连」，第二条是「不指定」（值 = 空串 → 载荷里的 null）", () => {
-    // [docs/58] 参数从 `lane_list` 改成 **`lane_options` 的分组**：前者只有已配置的线路，
+    // 参数从 `lane_list` 改成 **`lane_options` 的分组**：前者只有已配置的线路，
     // 于是订阅节点一个都进不了下拉 —— 那正是用户第 325 轮报的 bug。
     const choices = providerLaneChoices(
       [
@@ -289,7 +289,7 @@ describe("[docs/23] 下拉选项与头表编辑的纯函数", () => {
       "不指定",
     );
     expect(choices.map((c) => c.value)).toEqual([
-      // [docs/29 §2.2] 「直连」排第一（用户第 81 轮追问过"直连你都没单独列出来？"），
+      // 「直连」排第一（用户第 81 轮追问过"直连你都没单独列出来？"），
       // 值是标记 `direct:`，由后端把那条 direct 线路建出来（可能还不存在）
       "direct:",
       "",
@@ -299,7 +299,7 @@ describe("[docs/23] 下拉选项与头表编辑的纯函数", () => {
     expect(choices.map((c) => c.label)).toEqual([
       "直连（本机网络）",
       "不指定",
-      // 分组名只在"确实是额外信息"时拼上（[docs/58]：两份订阅里都有同名节点时靠它区分）
+      // 分组名只在"确实是额外信息"时拼上（：两份订阅里都有同名节点时靠它区分）
       "日本线（机场 A）",
       "东京-03（机场 A）",
     ]);
@@ -319,7 +319,7 @@ describe("[docs/23] 下拉选项与头表编辑的纯函数", () => {
 });
 
 
-// ================================================================ [docs/58] 选中值 → 真正写下去的东西
+// ================================================================ 选中值 → 真正写下去的东西
 
 /**
  * `resolveLaneChoice` 是这一轮**唯一**一处会让"选了节点却存不下去"的地方：
@@ -331,7 +331,7 @@ describe("[docs/23] 下拉选项与头表编辑的纯函数", () => {
  * 所以三种"后端自己认识"的值必须**原样放过**（不许多调一次命令、也不许改写），
  * 只有节点项才落地。
  */
-describe("[docs/58] resolveLaneChoice：后端认识的标记原样放过，只有节点项先落地", () => {
+describe("resolveLaneChoice：后端认识的标记原样放过，只有节点项先落地", () => {
   const choices = [
     { value: "auto:sub-a", label: "自动（机场 A）" },
     { value: "direct:", label: "直连（本机网络）", direct: true },

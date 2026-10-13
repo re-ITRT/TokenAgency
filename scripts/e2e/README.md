@@ -49,8 +49,8 @@ node scripts\e2e\smoke.mjs --selfcheck
 |---|---|---|
 | `judgeSticky`（step30 沿用判定） | 5 | 2 条正向（名字没变 / **同一地址换名字**）+ 3 条反向（状态不是"沿用" / 日志与内核不一致 / 内核读不到） |
 | `judgePreviousUnreachable`（step30 重挑判定） | 4 | 1 条"无法判定"（不许假红）+ 2 条同层次硬矛盾（必须红）+ 1 条 `app_right` |
-| `pricingWriteEntries`（[docs/51] 成本中心只读） | 5 | 1 条只有只读控件 + 3 条混进写入口（含一个**没在清单里**的新入口）+ 1 条取不到 testid |
-| `judgePricedMatch`（[docs/51] 落库的 `match` 形状） | 6 | 2 条合格形状（**显式 `null`** / 键不存在）+ 4 条必须红（带 provider / 带 credential / 价挂错模型 / match 不是对象） |
+| `pricingWriteEntries`（成本中心只读） | 5 | 1 条只有只读控件 + 3 条混进写入口（含一个**没在清单里**的新入口）+ 1 条取不到 testid |
+| `judgePricedMatch`（落库的 `match` 形状） | 6 | 2 条合格形状（**显式 `null`** / 键不存在）+ 4 条必须红（带 provider / 带 credential / 价挂错模型 / match 不是对象） |
 
 反向用例的作用是防止"为了让那次绿，把判定放松成什么都不查"。
 
@@ -182,7 +182,7 @@ FAIL step10 成本中心新增定价：填了价、点了保存，但 config 的
 | `step7` | 收尾隔离复查 | 真实目录文件级 diff 仍为空 |
 | `step8` | `/providers` 服务商向导 | `providers-add-*` 真表单 → 列表 + `config(kind='provider')` |
 | `step9` | `/models` 模型向导 | `models-add-*` → 列表 + `config(kind='model')` |
-| `step10` | `/models` **给一个对外模型定价**（[docs/51]：定价入口从 `/cost` 搬到模型页那一行） | ① `/cost` 上 `pricing-add*` / `pricing-delete` / `pricing-edit` **一个都不许在**，且 `cost-pricing-readonly` 必须有话（"只做显示"的可执行形式）；② 那一行的 `models-price-open` 打得开、模型字段是**只读展示**（格子里 0 个输入框）；③ **三项价格全空**与**非法数字**都在本地点名且**一条命令都不发**；④ 填一项合法价 → `pricing` section 里真的出现 `input=1.5`，且落库条目的 `match` **只有 `model`**（不许带 `provider` / `credential`） |
+| `step10` | `/models` **给一个对外模型定价**（：定价入口从 `/cost` 搬到模型页那一行） | ① `/cost` 上 `pricing-add*` / `pricing-delete` / `pricing-edit` **一个都不许在**，且 `cost-pricing-readonly` 必须有话（"只做显示"的可执行形式）；② 那一行的 `models-price-open` 打得开、模型字段是**只读展示**（格子里 0 个输入框）；③ **三项价格全空**与**非法数字**都在本地点名且**一条命令都不发**；④ 填一项合法价 → `pricing` section 里真的出现 `input=1.5`，且落库条目的 `match` **只有 `model`**（不许带 `provider` / `credential`） |
 | `step11` | `/models` 的**两个开关**：模型开关与线路开关 | 模型关掉 → 落库 `enabled=false` **且**网关 `/v1/models` 不再列出它、按名字取 **404**，可逆；线路开关 → **先弹确认框**再落库 |
 | `step12` | 网络**未配置**时 `/network` 不渲染任何网络区块 | 只有 `network-optional` + `network-optional-enable`，订阅/线路/分配那些 testid **一个都不存在**（反向断言） |
 | `step13` | 订阅流量与更新时间可见 | 行上出现「更新时间」「已用 92.9 GB / 130 GB」「71%」，且与 fixture 的 `subscription-userinfo` 字节数对得上；后端没给就不显示 |
@@ -197,7 +197,7 @@ FAIL step10 成本中心新增定价：填了价、点了保存，但 config 的
 + 设置页 `refetchOnMount: "always"`；上面两条断言就是那个缺陷的回归闸门。
 
 能力一致性规则（用户硬规则：**只有能力完全一致才允许被同一路由指向**）现在只剩**后端那一道** ——
-`/policies` 整页已删（[docs/48]），界面上的"禁用提交 + 逐字段差异"随之消失，
+`/policies` 整页已删，界面上的"禁用提交 + 逐字段差异"随之消失，
 由 Rust 单测覆盖 `TA-2007`。`step15` 因此**如实记 SKIP**（它原来要验的 UI 路径不存在了）；
 真机这一档不再假装还验着。
 
@@ -213,7 +213,7 @@ FAIL step10 成本中心新增定价：填了价、点了保存，但 config 的
 
 两级都没有 → 才记 SKIP。**SKIP 一定带"它找了哪些 selector"和"页面上实际有什么"**。
 
-> `/channels`（导航标签「套餐与线路」）整页已按用户裁决删除（[docs/49]），
+> `/channels`（导航标签「套餐与线路」）整页已按用户裁决删除，
 > 所以 `channels-add-*` 这一串 testid **一个都不存在了**，`channels-add-lane` / `channels-add-model`
 > 之类不要再往脚本里加。线路的**真路径**现在是：加服务商向导（扫描 → `provider_lines_create_all`
 > 自动建全部线路）→ 服务商详情页用滑块启停。
@@ -221,7 +221,7 @@ FAIL step10 成本中心新增定价：填了价、点了保存，但 config 的
 `step10` 需要"界面前提"（服务商/凭据/**模型**）。`--only` 跳步跑时 `ensureAddPrereqs()` 会**经真界面把前提造出来**
 （首启向导 → `/models` 向导 → `/network` 线路表单），而不是放宽断言。
 
-> **[docs/51] 之后 step10 不再需要凭据**：定价的对象是**对外模型**，界面上不再挑服务商与凭据
+> ** 之后 step10 不再需要凭据**：定价的对象是**对外模型**，界面上不再挑服务商与凭据
 > （`match` 只写 `model`）。前面那些"没有凭据就没有可选项"的分支随之消失 ——
 > 它现在只要求**配置里有模型**（不然模型页没有行，也就没有定价入口，那种情况如实记 SKIP）。
 
@@ -284,7 +284,7 @@ FAIL step10 成本中心新增定价：填了价、点了保存，但 config 的
 
 另外：**多选（MUI `multiple`）选完不关弹层**，只能"弹层打开一次、在里面连点 N 个"。
 这条能力（`wdPickOptions` / `wdKeepOptions`）的唯一使用者是 `/policies` 的路由向导，
-它随整页删除（[docs/48]）—— 那两个 helper 也已删掉，别再照着旧文档去找它们。
+它随整页删除—— 那两个 helper 也已删掉，别再照着旧文档去找它们。
 
 ---
 
@@ -309,18 +309,18 @@ FAIL step10 成本中心新增定价：填了价、点了保存，但 config 的
 - **`--only step7` 不能单独跑**：`step7` 依赖 `real-data-before.json`，
   那是完整流程开头写下的。至少要跑过一次完整流程。
 - **同一构建的两条线路 = 同一个服务商 + 不同上游模型名**。线路 id 由
-  `provider × credential × 上游模型名` 派生（[docs/28 §2] 翻转后**线路归服务商**，
+  `provider × credential × 上游模型名` 派生（翻转后**线路归服务商**，
   不再按逻辑模型派生），所以同 provider / 同 credential / 同上游模型名的第二次 upsert 是
   **覆盖**同一条，不会多出一条。
   想要"同一个模型下两条线路"，只能：建两条不同上游模型名的线路 → 到 `/models` 把它们
   **都分配给同一个模型**（关系的真源在 `Model.lines` 上）。
   > 这里原来写的是"靠第二份凭据（`ta-e2e-cred-2`）造" —— 那是翻转前的做法，
-  > 现在一个服务商就一把密钥（[docs/46 §303]），已经没有"第二份凭据"这条路了。
+  > 现在一个服务商就一把密钥，已经没有"第二份凭据"这条路了。
 
 ### 当前状态
 
 **以最近一次全量真机跑的报告为准**（`report.json` 里的 PASS/SKIP/FAIL 计数）；
-最近一次是 `PASS=29 SKIP=2 FAIL=0`（[docs/49 §7.4.1]）。两个 SKIP 都如实写了理由
+最近一次是 `PASS=29 SKIP=2 FAIL=0`。两个 SKIP 都如实写了理由
 （`step15` UI 路径随 `/policies` 删除、`step28` 夹具量不出真实节点延迟）。
 **别把本文件里的数字当结论 —— 结论只在报告里。**
 
@@ -328,8 +328,8 @@ FAIL step10 成本中心新增定价：填了价、点了保存，但 config 的
 `/models`、`/cost`（新增定价）。`step4` 的线路写入口在 `/network`。
 
 > 上面这段原来写着"（2026-09-22 第 70 轮实测）`PASS=19`…四个向导…"，那已经过期两轮以上：
-> `/channels` 与 `/policies` 两页都已删除（[docs/49] / [docs/48]），
-> 而"同模型两条线路靠第二份凭据造"也不再成立（[docs/28 §2] 翻转后线路归服务商）。
+> `/channels` 与 `/policies` 两页都已删除（/），
+> 而"同模型两条线路靠第二份凭据造"也不再成立（翻转后线路归服务商）。
 > 历史数字不再保留 —— 留着它只会让人对着一个过期的绿数做判断。
 
 

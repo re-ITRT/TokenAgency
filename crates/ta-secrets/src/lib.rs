@@ -1,6 +1,6 @@
 //! `ta-secrets` — 密钥存储与引用解析。
 //!
-//! 契约：`docs/11-internal-contracts.md` §1.4。
+//! 契约：。
 //! **实现由工作包 P7 完成。**
 //!
 //! 硬约束：key **绝不进 SQLite**；`.yaml` 里只允许 `${secret:name}` / `${env:VAR}`。

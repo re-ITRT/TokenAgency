@@ -52,7 +52,7 @@ describe("[15 §4.2] PageHeader：页面标题只有一档", () => {
     expect(getComputedStyle(title).fontSize).toBe(`${typography.size.page}px`);
   });
 
-  it("[docs/22] 说明不再铺在版面上：收进标题右边的问号圆圈，悬停/聚焦才展开", () => {
+  it("说明不再铺在版面上：收进标题右边的问号圆圈，悬停/聚焦才展开", () => {
     renderHeader({ title: "请求日志", description: "每一次转发都留痕" });
 
     // 正文一个字都没丢：它是问号圆圈的 `aria-label`（读屏与"只看无障碍树"的调用方仍拿得到全文）

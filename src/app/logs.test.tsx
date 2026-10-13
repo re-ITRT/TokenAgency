@@ -198,13 +198,13 @@ function renderBody(overrides: Partial<LogsBodyProps> = {}) {
 }
 
 /**
- * [docs/32] L2：顶部四张统计卡。
+ * L2：顶部四张统计卡。
  *
  * 三条都要钉：① 数字来自 `log_stats`（不是前端自己数）；② **一行都没有**时平均延迟显示
  * 「读不到」（后端给 `null`，界面**不许**编 0ms）；③ 读取失败时整排卡显示「读不到」，
  * 不留旧数字 —— 这是本仓库"不编数"的硬规矩在界面上的落点。
  */
-  it("[docs/30 §3.16] 导出：占位符只留一个示例（红线解释仍在版面）", () => {
+  it("导出：占位符只留一个示例（红线解释仍在版面）", () => {
     renderBody();
     // 那条 121 字的"没有默认路径"是**既有测试钉住的红线**，仍在版面上
     expect(screen.getByText(zhCN["logs.export.path.hint"])).toBeTruthy();
@@ -213,7 +213,7 @@ function renderBody(overrides: Partial<LogsBodyProps> = {}) {
     expect(input.placeholder).toBe(zhCN["logs.export.path.placeholder"]);
     expect(input.placeholder.length).toBeLessThan(20);
   });
-describe("[docs/32] L2 统计卡", () => {
+describe("L2 统计卡", () => {
   /** 展示层是**纯 props**：卡片只认 `query.stats`，所以这里直接给它值（容器怎么映射另说）。 */
   const withStats = (stats: LogStatsView | null | undefined) =>
     renderBody({ query: { ...makeProps().query, stats } });
@@ -237,7 +237,7 @@ describe("[docs/32] L2 统计卡", () => {
     expect(screen.getByTestId("logs-stat-avg-value").textContent).toContain("读不到");
   });
 
-  it("[docs/32] L4 列表花费列：契约给了就显示，没给就「—」（不拿 token 现算）", () => {
+  it("L4 列表花费列：契约给了就显示，没给就「—」（不拿 token 现算）", () => {
     renderBody({
       query: {
         ...makeProps().query,
@@ -269,7 +269,7 @@ describe("[docs/32] L2 统计卡", () => {
     // 没给 cost 就显示「—」：**绝不拿 token 乘一个单价编出来**
     expect(costs[1]).toBe("—");
   });
-  it("[docs/32] L5 字段表：只显示这一行真有的值，读不到显示「—」（不猜）", () => {
+  it("L5 字段表：只显示这一行真有的值，读不到显示「—」（不猜）", () => {
     const row = {
       requestId: "req_fields",
       tsMs: 1,
@@ -291,7 +291,7 @@ describe("[docs/32] L2 统计卡", () => {
     expect(screen.getByTestId("logs-field-cost").textContent).toBe("—");
   });
 
-  it("[docs/32] L5 字段表：契约给了 cost 就照它显示（不自己算金额）", () => {
+  it("L5 字段表：契约给了 cost 就照它显示（不自己算金额）", () => {
     renderBody({
       query: {
         ...makeProps().query,
@@ -312,7 +312,7 @@ describe("[docs/32] L2 统计卡", () => {
     });
     expect(screen.getByTestId("logs-field-cost").textContent).toBe("USD 0.020401");
   });
-  it("[docs/32] L6 Token 明细：契约的 token_kinds 被读成 tokenKinds；没有就是 null（不编）", () => {
+  it("L6 Token 明细：契约的 token_kinds 被读成 tokenKinds；没有就是 null（不编）", () => {
     const withKinds = readTraceDetail({
       request_id: "req_tk",
       row: { request_id: "req_tk", tokens: 999 },
@@ -329,7 +329,7 @@ describe("[docs/32] L2 统计卡", () => {
     } as never);
     expect(withoutKinds.tokenKinds).toBeNull();
   });
-  it("[docs/32] L5 详情头部：显示后端给的请求 ID，复制按钮把它写进剪贴板", async () => {
+  it("L5 详情头部：显示后端给的请求 ID，复制按钮把它写进剪贴板", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
     renderBody({
@@ -358,7 +358,7 @@ describe("[docs/32] L2 统计卡", () => {
     // 复制的是**后端给的那个 id**，不是前端拼的
     expect(writeText).toHaveBeenCalledWith("req_copy_me");
   });
-  it("[docs/32] L3 双栏：选中一行 → 右栏显示它的详情；没选中 → 空态（不是一片空白）", () => {
+  it("L3 双栏：选中一行 → 右栏显示它的详情；没选中 → 空态（不是一片空白）", () => {
     const rows = [
       { requestId: "req_a", tsMs: 1, model: "m", status: 200, outcome: "ok", totalMs: 10, tokens: 1 },
       { requestId: "req_b", tsMs: 2, model: "m", status: 502, outcome: "failed", totalMs: 20, tokens: 2 },
@@ -449,7 +449,7 @@ function renderPage() {
 }
 
 /**
- * [docs/32 §9/§13] L7：记录与留存那一节里的四块（存储 / 模式 / 保留 / 导出）**默认收起**。
+ * L7：记录与留存那一节里的四块（存储 / 模式 / 保留 / 导出）**默认收起**。
  *
  * 收起只切 `display`（内容始终挂载），所以按"存在"查询的 `getByTestId` / `getByText`
  * 照旧能找到；但按"可见"查询的 `getByRole` 只认可访问性树 —— 隐藏的内容不在里面。
@@ -706,7 +706,7 @@ describe("无数据：给诚实的空状态，不给假表格 / 假数字", () =
 
   it("模式与保留期都要先点选才能保存（不会把未选的当成默认值写过去）", () => {
     renderBody();
-    // [docs/32 §13] L7：这两块在默认收起的折叠区里 → 先展开（`getByRole` 只认可见的内容）
+    // L7：这两块在默认收起的折叠区里 → 先展开（`getByRole` 只认可见的内容）
     expandAdvanced();
     expect((screen.getByRole("button", { name: "保存模式" }) as HTMLButtonElement).disabled).toBe(
       true,
@@ -810,7 +810,7 @@ describe("有数据：两种后端形状的行都渲染出来", () => {
     expect(screen.getByTestId("fake-trace").textContent).toBe("req_rust_0003");
     // 展开区里这一行的原始字段（未清洗）
     expect(screen.getByTestId("logs-row-raw").textContent).toContain("req_rust_0003");
-    // 「原样显示、未清洗」是解释（[docs/22 §2]）→ 收进问号，正文不再内联；下面的原文一个字没动
+    // 「原样显示、未清洗」是解释→ 收进问号，正文不再内联；下面的原文一个字没动
     expect(screen.getByTestId("logs-row-raw-help").getAttribute("aria-label")).toBe(
       zhCN["logs.trace.rawHint"],
     );
@@ -823,7 +823,7 @@ describe("有数据：两种后端形状的行都渲染出来", () => {
     const onClear = vi.fn();
     renderBody({ log: { ...makeProps().log, onClear } });
 
-    // [docs/32 §13] L7：清空按钮在折叠区里（确认框归 MUI Dialog，展开后才点得到）
+    // L7：清空按钮在折叠区里（确认框归 MUI Dialog，展开后才点得到）
     expandAdvanced();
     fireEvent.click(screen.getByRole("button", { name: "清空…" }));
     expect(screen.getByRole("dialog")).toBeTruthy();
@@ -869,7 +869,7 @@ describe("[task-23 B] 导出诊断包：路径不是前端编的，落盘以后�
 
   it("路径空着：输入框就是空的（没有编出来的默认值），按钮禁用，点了也不发请求", async () => {
     renderPage();
-    // [docs/32 §13] L7：导出块默认收起 —— 这里要看"看得见的输入框"，所以先展开
+    // L7：导出块默认收起 —— 这里要看"看得见的输入框"，所以先展开
     expandAdvanced();
 
     const box = await screen.findByTestId("logs-export-path");
@@ -1110,16 +1110,16 @@ describe("[task-23] log_export 的返回形态：回执路径与防御的 void �
   });
 });
 
-// ================================================================ ⑩ 长篇说明收进「问号圆圈」（[docs/22]）
+// ================================================================ ⑩ 长篇说明收进「问号圆圈」
 
 /**
- * [docs/22 §2]：**解释**收进问号圆圈，**红线**留在版面上。
+ *：**解释**收进问号圆圈，**红线**留在版面上。
  *
  * 这一页的红线特别多（用户原话之外的硬约束）：空态三种可能、off 的后果、检索上限的**数值**、
  * "未读取"这种状态结论、以及"导出路径没有默认值"这种"按钮为什么禁用"的说明 ——
  * 它们一句都不许进 tooltip。
  */
-describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () => {
+describe("长篇说明收进问号圆圈，红线留在版面上", () => {
   it("筛选区：三条成段解释全部收进 logs-filter-help，正文一条都不内联", () => {
     renderBody();
 
@@ -1169,7 +1169,7 @@ describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () 
     expect(help.getAttribute("aria-label")).toBe(text);
     expect(screen.queryByText(text)).toBeNull();
 
-    // 同一面板里的「原始字段」说明：同样收进问号，正文不再内联（[docs/22 §2]）
+    // 同一面板里的「原始字段」说明：同样收进问号，正文不再内联
     expect(screen.getByTestId("logs-trace-raw-help").getAttribute("aria-label")).toBe(
       zhCN["logs.trace.rawHint"],
     );
@@ -1203,10 +1203,10 @@ describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () 
   });
 });
 
-// ================================================================ [docs/32 §13] L7：默认收起
+// ================================================================ L7：默认收起
 
 /**
- * [docs/32 §13] L7：记录与留存那一节里的四块（存储 / 模式 / 保留 / 导出）**默认收起**。
+ * L7：记录与留存那一节里的四块（存储 / 模式 / 保留 / 导出）**默认收起**。
  *
  * 这条用例钉的是"不许把默认值改成展开来换绿"：
  * ① 默认 `aria-expanded=false`，里面的操作按钮**不在可访问性树里**（用户看不见就点不到）；
@@ -1214,7 +1214,7 @@ describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () 
  *    `Accordion` 的 `unmountOnExit`，它会把真功能从 DOM 里拿走（第一次尝试就栽在这）；
  * ③ 点一下开关，同一批内容立刻可操作（`保存模式` 出现在可访问性树里）。
  */
-describe("[docs/32 §13] L7 记录与留存四块默认收起（可展开，内容不卸载）", () => {
+describe("L7 记录与留存四块默认收起（可展开，内容不卸载）", () => {
   it("默认收起：内容挂载但不可见；点开关后同一批内容可操作", () => {
     renderBody();
 
@@ -1231,9 +1231,9 @@ describe("[docs/32 §13] L7 记录与留存四块默认收起（可展开，内�
   });
 });
 
-// ================================================================ [docs/26 §2] 一级界面省略
+// ================================================================ 一级界面省略
 
-describe("[docs/26 §2] 请求 id / 模型 / 通道：省略后全文仍在 DOM（错误原文不省略）", () => {
+describe("请求 id / 模型 / 通道：省略后全文仍在 DOM（错误原文不省略）", () => {
   it("三个长值都整段留在 DOM 里；没溢出时一个提示都不挂", () => {
     const requestId = "req_contract_0001-2026-07-18-preview-long";
     const model = "deepseek-v4.1flash-2026-07-18-preview";

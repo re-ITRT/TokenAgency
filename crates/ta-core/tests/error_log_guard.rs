@@ -71,7 +71,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     //
     // 规则：**EXEMPT 条目必须与其引用的文件在同一个提交/同一个合并里落地。**
     //
-    // [docs/31 §35] 下面是**环境/系统层**失败：`tauri::Error` 没有 TA 码（它包的是 Windows/WebView2
+    // 下面是**环境/系统层**失败：`tauri::Error` 没有 TA 码（它包的是 Windows/WebView2
     // 的错误），而这几条日志的正文已经写清"是什么失败 + 常见原因 + 下一步"，比一个自造的码有用。
     (
         "src-tauri/src/lib.rs",

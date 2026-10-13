@@ -1,7 +1,7 @@
 //! 粘性存储：`sticky` 表（会话 key → 通道）。
 //!
-//! 契约：`docs/11-internal-contracts.md` §1.3（`StickyStore` get/put/release/gc）、
-//! `docs/02-config-and-data-model.md` §3。
+//! 契约：（`StickyStore` get/put/release/gc）、
+//! 。
 //!
 //! 语义（对应 `ChannelGroup.sticky` 与 `ReleaseReason`）：
 //! - 一个 key 同时只粘一个组（与 §3 草案的 `key TEXT PRIMARY KEY` 一致）；

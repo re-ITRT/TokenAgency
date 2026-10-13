@@ -1,6 +1,6 @@
 /**
  * 成本中心 `/cost`（[07 §6]、[10 §2.4]）—— 用量与花费的**趋势 + 明细 + 导出**，
- * 外加**定价条目**区块（[docs/21 §3]：列表 + 单条 / 批量删除）。
+ * 外加**定价条目**区块（：列表 + 单条 / 批量删除）。
  *
  * 四条纪律（这一页最容易违反，所以写在最上面）：
  *
@@ -21,7 +21,7 @@
  *    （`ta_store::UsageTable` 的 `metrics`/`values`/`total_groups`/`bucket`）不一样 ——
  *    收口在 `readUsageTable()` 一处（与 `/logs` 的 `pages/logs/model.ts` 同一套做法）。
  *
- * 定价条目的删除有一条**独有的**安全规则（[docs/21 §1.1 第 5 条]）：`pricing_delete` 的入参是
+ * 定价条目的删除有一条**独有的**安全规则：`pricing_delete` 的入参是
  * **index**，所以删之前必须**重新读一次** `pricing_list`，逐字段确认那个下标上仍然是用户看到的
  * 那一条；不一致就**拒绝执行**（让用户重看一遍），**绝不**在错位上下手。
  *
@@ -31,10 +31,10 @@
  * - `useCommandQuery("usage_token_kinds", undefined, qk.usageTokenKinds)`                      → 指标候选
  * - `useCommandQuery("usage_request_stream_snapshot", {limit}, qk.usage("recent:…"))`          → 最近请求
  * - `useCommandQuery("pricing_unpriced_models", undefined, qk.unpricedModels)`                 → 未定价模型
- * - `useCommandQuery("pricing_list", undefined, qk.pricing)`                                   → 定价条目（**只读展示**，[docs/51]）
+ * - `useCommandQuery("pricing_list", undefined, qk.pricing)`                                   → 定价条目（**只读展示**）
  * - `useCommandMutation("usage_export_csv")` / `useCommandMutation("app_open_dir")`
  *
- * **写命令一个都不在这页**（[docs/51] 第 318 轮）：`pricing_upsert` / `pricing_delete`
+ * **写命令一个都不在这页**（第 318 轮）：`pricing_upsert` / `pricing_delete`
  * 已随价格配置搬到模型页（`src/pages/models/PricingDialog.tsx`）。
  * 本页只回答"钱是怎么算出来的"，不改动任何东西。
  */
@@ -571,15 +571,15 @@ export function readDashboard(raw: unknown): DashboardView | undefined {
 /**
  * 这里原有本页自己的 `mergeHelpText`（与 `network/index.tsx` 那份逐字相同）。
  *
- * **第 319 轮删除**（[docs/52]）：收敛到 `@/shared/helpTip`。
+ * **第 319 轮删除**：收敛到 `@/shared/helpTip`。
  * 原来的注释写着"不跨页 import 另一个页面模块 —— 那会把整个 network 页拖进本页的依赖里"，
  * 那个顾虑是对的，而现在共享模块在 `shared/` 下，不再有这个代价。
  */
 
 /**
- * 一个区块的标题 + 右边的问号圆圈（[docs/22 §1/§2]）。
+ * 一个区块的标题 + 右边的问号圆圈。
  *
- * 这一页**全是数字**（[docs/22 §2] 第 5 条），所以只收"这些数是怎么算出来的"这类成段解释：
+ * 这一页**全是数字**（第 5 条），所以只收"这些数是怎么算出来的"这类成段解释：
  * 带条数 / 组数 / 单位 / 时间戳的句子一律留在版面上（`cost.provenance.unpriced`、
  * `cost.result.truncated`、`cost.result.total`、`cost.chart.excluded`…）。
  */
@@ -901,7 +901,7 @@ export function CostBody(props: CostBodyProps): ReactElement {
 
           <Stack spacing={2}>
             {/* 「指标 key 就是后端返回的列名 / 认不出的类型原样显示」是**解释**
-                （[docs/22 §2]）→ 收进问号；下面那排指标名与括号里的 `usage_token_kinds` 报错留在版面上。 */}
+                → 收进问号；下面那排指标名与括号里的 `usage_token_kinds` 报错留在版面上。 */}
             <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
               <Typography variant="h4">{t("cost.query.metrics")}</Typography>
               <HelpTip text={t("cost.query.metrics.hint")} testId="cost-query-metrics-help" />
@@ -938,7 +938,7 @@ export function CostBody(props: CostBodyProps): ReactElement {
                 两项指标可选。」—— 那是在解释**后端为什么没给枚举值**；而"只剩两项指标"
                 用户照着一排勾选框就能看出来。整句已删（键进映射文件的 `delete`）。 */}
           </Stack>
-        {/* [docs/30 §3.18] 长页面（1811 行）的主操作固定在底部：照抄 `providers-save-bar` 的 sticky 做法 */}
+        {/* 长页面（1811 行）的主操作固定在底部：照抄 `providers-save-bar` 的 sticky 做法 */}
         <Box
           sx={{ position: "sticky", bottom: 0, zIndex: 1, bgcolor: "background.paper", py: 2 }}
           data-testid="cost-query-bar"
@@ -1045,7 +1045,7 @@ export function CostBody(props: CostBodyProps): ReactElement {
                     {resultTable.rows.map((row, index) => (
                       <TableRow key={`${index}-${rowLabel(row, dimension)}`}>
                         <TableCell sx={{ fontVariantNumeric: "tabular-nums" }}>
-                          {/* [docs/26 §2] 分组维度是模型/通道/服务商名（按 dimension 变），可能很长。
+                          {/* 分组维度是模型/通道/服务商名（按 dimension 变），可能很长。
                               恢复路径：本页没有详情页 → 悬停/聚焦的 tooltip 就是恢复路径。 */}
                           <AutoEllipsis testId={`cost-row-label-ellipsis-${index}`} sx={{ maxWidth: 280 }}>
                             {rowLabel(row, dimension)}
@@ -1108,7 +1108,7 @@ export function CostBody(props: CostBodyProps): ReactElement {
       {/* ④ 未定价模型：成本数字不完整必须说出来 */}
       <Paper variant="outlined" sx={SECTION_SX}>
         <Stack spacing={2} data-testid="cost-unpriced">
-          {/* 「为什么不给补定价按钮」是**解释**（[docs/22 §2]）→ 收进问号；
+          {/* 「为什么不给补定价按钮」是**解释**→ 收进问号；
               模型名本身是数据，留在版面上。空态（没有未定价的模型）是结论，也留在版面上（§2 第 1 条）。 */}
           <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
             <Typography variant="h4">{t("cost.unpriced.title")}</Typography>
@@ -1143,7 +1143,7 @@ export function CostBody(props: CostBodyProps): ReactElement {
       {/* ⑤ 最近请求（实时流快照） */}
       <Paper variant="outlined" sx={SECTION_SX}>
         <Stack spacing={2}>
-          {/* 「每条的花费同样是本地算出来的」是口径解释（[docs/22 §2]）→ 收进问号；
+          {/* 「每条的花费同样是本地算出来的」是口径解释→ 收进问号；
               空态（还没有请求经过网关）是结论，留在版面上（§2 第 1 条）。 */}
           <TitleWithHelp
             title={t("cost.recent.title")}
@@ -1180,7 +1180,7 @@ export function CostBody(props: CostBodyProps): ReactElement {
                         {formatLocalTime(item.ts_ms)}
                       </TableCell>
                       <TableCell sx={{ overflowWrap: "anywhere" }}>
-                        {/* [docs/26 §2] 最近请求里的模型名可能带很长的上游后缀。
+                        {/* 最近请求里的模型名可能带很长的上游后缀。
                             恢复路径：这一列没有详情入口 → 悬停/聚焦的 tooltip 就是恢复路径
                             （本页的「最近请求」是流的快照，不承担逐条排查，逐条排查在 /logs）。 */}
                         <AutoEllipsis testId="cost-recent-model-ellipsis" sx={{ maxWidth: 280 }}>
@@ -1205,7 +1205,7 @@ export function CostBody(props: CostBodyProps): ReactElement {
   );
 }
 
-// ================================================================ 定价条目（[docs/21 §1 / §3]）
+// ================================================================ 定价条目
 
 /**
  * 一条价格数字 → 文案。
@@ -1261,7 +1261,7 @@ export function priceSourceText(source: unknown): string {
 }
 
 /**
- * 「定价条目」区块：**只读展示**（[docs/51]）。
+ * 「定价条目」区块：**只读展示**。
  *
  * 用户第 318 轮的两句话定下了它现在的形态：
  *
@@ -1273,7 +1273,7 @@ export function priceSourceText(source: unknown): string {
  * 输入 / 输出各是多少、这条价从哪来（手工 / 导入 / 内置）。**它只陈述，不改动。**
  *
  * 「去哪儿改」那句话是**常驻版面**的、不收进问号：原来"添加定价"的按钮就在这里，
- * 用户会回来这里找它（[docs/22 §2] 红线的道理 —— 恢复路径不能藏）。
+ * 用户会回来这里找它（红线的道理 —— 恢复路径不能藏）。
  */
 export function PricingSection(): ReactElement {
   const { t } = useTranslation();
@@ -1336,7 +1336,7 @@ export function PricingSection(): ReactElement {
                     return (
                       <TableRow key={row.index} data-testid="pricing-row">
                         <TableCell sx={{ minWidth: 240, fontFamily: typography.fontMono }}>
-                          {/* [docs/26 §2] 匹配式可能很长。恢复路径：定价条目没有详情页
+                          {/* 匹配式可能很长。恢复路径：定价条目没有详情页
                               → 悬停/聚焦的 tooltip 就是恢复路径。 */}
                           <AutoEllipsis testId={`pricing-match-ellipsis-${row.index}`} sx={{ maxWidth: 320 }}>
                             {priceMatchText(raw["match"])}
@@ -1521,7 +1521,7 @@ export default function CostPage(): ReactElement {
         exporting={exportCsv.isPending}
       />
 
-      {/* 定价条目（[docs/21 §3]）：独立区块 —— 它有自己的取数与删除链路，不掺进用量视图 */}
+      {/* 定价条目：独立区块 —— 它有自己的取数与删除链路，不掺进用量视图 */}
       <PricingSection />
     </>
   );

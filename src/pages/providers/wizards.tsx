@@ -1,11 +1,11 @@
 /**
- * `/providers` 的「高级添加」对话框（[docs/17 §3.1]）：**添加服务商**（单步、字段全）。
+ * `/providers` 的「高级添加」对话框：**添加服务商**（单步、字段全）。
  *
  * 单独成文件（不在 `index.tsx` 里）的理由：它是列表页唯一会写**服务商**的对话框，
  * 它的"说什么、发什么、什么时候清空"值得单独看清楚；列表页只管读。
  *
  * **这里原来还有第二个对话框「添加密钥」**（一次建一份凭据，带额度上限 / 币种 / 窗口）——
- * 第 80 轮已**整条删除**（[docs/28 §1] 硬规则 3：**一个服务商一把密钥**）。留着它就是
+ * 第 80 轮已**整条删除**（硬规则 3：**一个服务商一把密钥**）。留着它就是
  * "给一个已存在的服务商再挂一份凭据"的活入口，正是 owner 明确反对的那个模型：
  * 要两个账号 → **再加一条服务商、取不同名字**（提示文案 `providers.key.multipleHint`）。
  * 密钥的写入口现在只有两处 —— 两步向导第 1 步（`./providerWizard.tsx` 的 `pw-key`）
@@ -17,7 +17,7 @@
  *    `collect_commands!` 里（`src/app/commandSurface.guard.test.ts` 机械检查）。
  * 2. **本地预检不过就一次都不发**（`./wizard.ts` 的 `validateProviderDraft`）。
  * 3. **回显的是后端返回值**（`mutation.data`），不是我们提交的草稿 —— 后端可能改字段。
- * 4. **名称是用户区分"同一家的不同账号"的抓手**（[docs/28 §1] 硬规则 3）：重名在本地就挡住
+ * 4. **名称是用户区分"同一家的不同账号"的抓手**（硬规则 3）：重名在本地就挡住
  *    （对现有 `name` 去重），不等到配置里出现两条长得一样的记录；后端错误原文仍原样显示。
  * 5. `data-testid` 挂在**外层元素**上（MUI 的 `TextField` / `Select` / `Checkbox` 不吃它，
  *    会 TS2353）；真机 E2E 与单测都用 `[data-testid="X"] input` 命中同一形状。
@@ -78,7 +78,7 @@ export const FIELD_LABEL: Record<string, I18nKey> = {
   baseUrl: "providers.field.baseUrl",
   label: "providers.credentials.col.label",
   provider: "channels.add.provider",
-  /** 两步向导（[docs/19 §1.1]）把密钥也放在步骤 1，所以这里也要点得出它的名字。 */
+  /** 两步向导把密钥也放在步骤 1，所以这里也要点得出它的名字。 */
   key: "onboarding.provider.secret",
 };
 
@@ -168,7 +168,7 @@ function Issues({ testId, issues }: { testId: string; issues: readonly WizardIss
 export type ProviderAddDialogProps = {
   open: boolean;
   /**
-   * 现有 `provider_list` 的 id **与显示名称**：本地去重用（[docs/17 §3.1] + [docs/28 §1]）。
+   * 现有 `provider_list` 的 id **与显示名称**：本地去重用（+）。
    *
    * 名称也要去重：`name` 是用户区分"同一家的不同账号"的抓手（"我要两个账号就再加一条服务商、
    * 取不同名字"），两条同名记录在界面上根本分不出谁是谁 —— 所以本地就挡住，不发命令。
@@ -306,7 +306,7 @@ export function ProviderAddDialog({ open, existing, onClose }: ProviderAddDialog
           </Stack>
 
           {/*
-            「这些字段来自哪个视图」是**解释**，不是结论 → 收进问号圆圈（[docs/22 §2/§3]）。
+            「这些字段来自哪个视图」是**解释**，不是结论 → 收进问号圆圈。
             它与两个单步对话框（添加服务商 / 添加密钥）共用，所以测试 id 取 `providers-add-help`。
             这里**不留内联正文**：用户要的正是"介绍收进圆圈"，正文在 `aria-label` 与气泡里一个字不少。
           */}
@@ -360,7 +360,7 @@ export function ProviderAddDialog({ open, existing, onClose }: ProviderAddDialog
 
 // ================================================================ 凭据：这里没有向导了
 //
-// 第 80 轮删掉的 `CredentialAddDialog`（「添加密钥」）不会再回来（[docs/28 §1] 硬规则 3：
+// 第 80 轮删掉的 `CredentialAddDialog`（「添加密钥」）不会再回来（硬规则 3：
 // **一个服务商一把密钥**；要两个账号 → 再加一条服务商、取不同名字，见 `providers.key.multipleHint`）。
 // 它当年做的是"给一个**已存在**的服务商再挂一份凭据（带自己的额度上限/币种/窗口）"——
 // 正是 owner 反对的那个模型，也是"多份凭据 → 多个删除入口"的源头。
