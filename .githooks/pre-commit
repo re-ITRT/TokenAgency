@@ -6,7 +6,7 @@
 # 为什么钩子只做转发：员工现在走 `scripts/pr.ps1` 提 PR，它用「临时 index +
 # git commit-tree」组装分支提交 —— 而 `git commit-tree` **不触发任何钩子**。
 # 如果钩子自带一套检查、pr.ps1 再自带一套，两套门禁迟早漂移，
-# 那正是 docs/13 L21 记的那类问题（含糊/重复的地方会各自长出一套，且都不报错）。
+# 那正是那类问题：含糊/重复的地方会各自长出一套，且都不报错。
 #
 # 安装：pwsh -File scripts/install-hooks.ps1
 # 绕过：git commit --no-verify（仅限紧急情况）

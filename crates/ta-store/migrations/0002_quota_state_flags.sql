@@ -7,7 +7,7 @@
 -- 没有这两列，失效的 key 会在每次窗口滚动后被反复启用，白白烧掉尝试次数。
 -- 同时补 `currency` / `used_ratio`，让 QuotaRecord ↔ 行 的往返**无损**。
 --
--- 迁移只增不改（docs/11-internal-contracts.md §4.1）：0001 已发布，对已有库改它是灾难。
+-- 迁移只增不改：0001 已发布，对已有库改它是灾难。
 ALTER TABLE quota_state ADD COLUMN hard_exhausted INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE quota_state ADD COLUMN invalid INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE quota_state ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';

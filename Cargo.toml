@@ -135,7 +135,7 @@ opt-level = 1
 [profile.dev.package."*"]
 opt-level = 2
 
-# [docs/46 §293] **验证用快速 profile**：给真机 E2E 迭代替换 `release`（功能一致，构建快数倍）。
+# **验证用快速 profile**：给真机 E2E 迭代替换 `release`（功能一致，构建快数倍）。
 # 为什么不用 `dev`：本仓库的 `dev` 是 optimized + debuginfo，构建并不快；这里显式关掉优化与调试信息。
 [profile.verify]
 inherits = "dev"

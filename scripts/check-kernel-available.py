@@ -62,8 +62,8 @@ def main() -> int:
         print(f"(没有隔离配置可读：{db})")
 
     print()
-    print("结论：内置内核在场 => `net.kernel.path` 为空时应用会用它(见 docs/46)；")
-    print("      真实延迟/粘性的验证见 docs/46 的本地延迟测试台(两个 CONNECT 代理 + 200 端点)。")
+    print("结论：内置内核在场 => `net.kernel.path` 为空时应用会用它；")
+    print("      真实延迟/粘性的验证用本地延迟测试台(两个 CONNECT 代理 + 200 端点)。")
     return 0
 
 

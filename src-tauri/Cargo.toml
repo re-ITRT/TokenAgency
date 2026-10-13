@@ -20,7 +20,7 @@ ta-store = { path = "../crates/ta-store", features = ["specta"] }
 ta-kernel = { path = "../crates/ta-kernel" }
 ta-subscription = { path = "../crates/ta-subscription" }
 ta-secrets = { path = "../crates/ta-secrets" }
-# [docs/46 §310] 额度查询的出网口（与 provider_test 同一套 reqwest 客户端纪律）
+# 额度查询的出网口（与 provider_test 同一套 reqwest 客户端纪律）
 reqwest.workspace = true
 ta-gateway = { path = "../crates/ta-gateway" }
 
@@ -56,7 +56,7 @@ tauri-plugin-dialog.workspace = true
 tauri-plugin-window-state.workspace = true
 tauri-plugin-deep-link.workspace = true
 # ⚠️ **不引 `tauri-plugin-log`**：本应用用 `tracing_subscriber` 作为唯一日志路径。
-# 两套并行系统会让"日志到底去哪"不确定（[14 §1.1]）；插件默认还会再 `log::set_logger`
+# 两套并行系统会让"日志到底去哪"不确定；插件默认还会再 `log::set_logger`
 # 一次 → 启动即 panic。之前用 `.skip_logger()` 只是压住了 panic，问题仍在。
 
 [features]

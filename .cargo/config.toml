@@ -1,4 +1,4 @@
-# [docs/46 §293/§298] 构建/验证加速：用 Rust 自带的 rust-lld 取代默认 MSVC link.exe（零安装）
+# 构建/验证加速：用 Rust 自带的 rust-lld 取代默认 MSVC link.exe（零安装）
 # 若某个 crate 在 lld 下链接异常，删掉本文件即回到默认链接器（一行回退）。
 [build]
 incremental = true
@@ -6,7 +6,7 @@ incremental = true
 [target.x86_64-pc-windows-msvc]
 linker = "C:/Users/19404/.rustup/toolchains/stable-x86_64-pc-windows-msvc/lib/rustlib/x86_64-pc-windows-msvc/bin/rust-lld.exe"
 
-# [docs/46 §298] **别再走 `cargo check` / `cargo test` 的默认 debug profile**：
+# **别再走 `cargo check` / `cargo test` 的默认 debug profile**：
 #   ① 它的指纹与 `verify` 是两套 ⇒ 换一次就重编一遍依赖（实测 `ring` 的 C 部分会被重新编，
 #      在这台机器上直接撞 `cl.exe D8050`，白等好几分钟）；
 #   ② `--profile verify`（`[profile.verify] inherits=dev, debug=false, incremental=true`）

@@ -1,4 +1,4 @@
--- 0005：多窗口额度 —— `quota_window_state` + `quota_window_bucket`（docs/24）。
+-- 0005：多窗口额度 —— `quota_window_state` + `quota_window_bucket`。
 --
 -- 背景：一份套餐从此可以配**多个**额度窗口（「5 小时 + 周」= 2 个圈，「天 + 周 + 月」= 3 个圈），
 -- 每个窗口各有一份累计口径与上限。0001 的 `quota_state` 主键是 `credential_id`（一凭据一行），
@@ -11,7 +11,7 @@
 --   * `rolling_hours` 滚动窗口：窗口是 `[now - N 小时, now]`，**随请求滑动**，
 --     它的"已用"必须是窗口内所有分钟桶的和 —— 所以要有 `quota_window_bucket`。
 --
--- ★ **桶必须落库**（docs/24 §4 第 3 条）：不持久化的话重启后 5 小时窗口会从零开始，
+-- ★ **桶必须落库**：不持久化的话重启后 5 小时窗口会从零开始，
 --   那是**撒谎**，比不显示更糟。粒度见 `ta_core::quota::BUCKET_MS`（1 分钟）。
 --
 -- ★ `window_end` / `next_expiry` 都**可空**，且语义不同，不能用 0 冒充：
@@ -26,7 +26,7 @@
 --   `WHERE credential_id=? AND window_key=? ORDER BY bucket_start` 与剪枝都直接走它。
 --   再加一个同前缀的索引只会让每次写入多维护一棵 B 树，没有查询受益。
 --
--- 迁移只增不改（docs/11-internal-contracts.md §4.1）：0001–0004 已发布，改它们是灾难。
+-- 迁移只增不改：0001–0004 已发布，改它们是灾难。
 CREATE TABLE quota_window_state (
   credential_id      TEXT    NOT NULL,
   window_key         TEXT    NOT NULL,

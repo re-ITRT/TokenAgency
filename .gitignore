@@ -29,7 +29,7 @@ dist/
 # T1b（E1 把 `src/shared/api/**` 迁到生成物上）完成后再把它放回生成物规则里 ——
 # 那时它会由 `gen-bindings.ps1` 产出，重新忽略才是对的。
 src/shared/schema/config.schema.json
-# `gen-bindings.ps1` 在覆盖前自动备份的上一版（它**有价值**：见 docs/06 §11.2 ——
+# `gen-bindings.ps1` 在覆盖前自动备份的上一版（它**有价值** ——
 # 生成物比手写契约窄时，`.bak` 就是唯一能还原的东西。但它是本地产物，不入库。）
 src/shared/bindings.ts.bak
 

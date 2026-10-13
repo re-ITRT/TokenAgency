@@ -28,6 +28,9 @@ import { describe, expect, it } from "vitest";
 const ROOT = resolve(__dirname, "..", "..");
 
 const SKIP_DIRS = new Set([
+  // `docs/` 自己要排除：验收标准第 2 条管的是"`docs/` 之外"，
+  // 保留下来的文档之间互相引用编号是允许的（索引就是靠编号导航）。
+  "docs",
   "node_modules",
   ".git",
   "dist",
@@ -43,8 +46,19 @@ const SKIP_DIRS = new Set([
  * 保留下来的文档之间**互相引用编号是允许的**（`docs/README.md` 那份索引本来就要写编号）。
  * `docs/` 自身的规模由下面第二条棘轮管。
  */
-const SCAN_DIRS = ["src", "crates", "src-tauri", "scripts"];
-const EXT = new Set([".rs", ".ts", ".tsx", ".mjs", ".js", ".ps1", ".sh", ".yaml", ".yml", ".json", ".md"]);
+// **扫全仓**，不是"我恰好想到的那几个目录"。
+// 曾经只列了四个子目录，于是根目录的 `Cargo.toml` 从未被计入（实测又漏了几行）。
+const SCAN_DIRS = ["."];
+// **只排除二进制与生成物，不列“文本白名单”。**
+// 白名单已经漏过三次（.toml/.sql、根目录文件、.py/.nsh）——
+// “全仓”的定义不该取决于我恰好想到哪些扩展名。
+const BINARY_EXT = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg",
+  ".exe", ".dll", ".so", ".dylib", ".pdb", ".lib", ".obj",
+  ".zip", ".gz", ".tar", ".7z", ".mmdb", ".db", ".sqlite", ".sqlite3",
+  ".woff", ".woff2", ".ttf", ".otf", ".pdf", ".lock", ".map",
+  ".bak", ".tmp", ".log",
+]);
 
 /**
  * 棘轮基线（第 342 轮实测，2026-10-14）。
@@ -104,7 +118,7 @@ function walk(dir: string, out: string[] = []): string[] {
     const p = join(dir, e.name);
     if (e.isDirectory()) {
       if (!SKIP_DIRS.has(e.name)) walk(p, out);
-    } else if (EXT.has(extname(e.name))) {
+    } else if (!BINARY_EXT.has(extname(e.name.toLowerCase()))) {
       out.push(p);
     }
   }

@@ -45,7 +45,7 @@ wiremock.workspace = true
 insta.workspace = true
 pretty_assertions.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-# 只为证明"`request_id` 真的从 span 里出来了"（[docs/14 §6 G2]）：用**应用实际使用的**
+# 只为证明"`request_id` 真的从 span 里出来了"：用**应用实际使用的**
 # 订阅者捕获输出，而不是自己写个 Subscriber 自证。
 tracing-subscriber.workspace = true
 

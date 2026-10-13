@@ -19,7 +19,7 @@ chrono.workspace = true
 zstd.workspace = true
 sha2.workspace = true
 base64.workspace = true
-# 访问密钥的明文随机段（docs/19 §3.1：`ta-sk-` + 高熵随机）。
+# 访问密钥的明文随机段。
 # 版本与 `ta-kernel` / `ta-secrets` 一致（工作区里没有把它提到 workspace.dependencies）。
 rand = "0.8"
 dirs.workspace = true
