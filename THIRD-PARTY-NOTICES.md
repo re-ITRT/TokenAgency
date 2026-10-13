@@ -40,31 +40,44 @@
 
 ---
 
-## 2. Country.mmdb —— GeoIP 数据库（⚠️ 定制方待确认）
+## 2. Country.mmdb —— GeoIP 数据库（CC-BY-SA-4.0）
 
 | 项 | 值 |
 | --- | --- |
 | 文件 | `src-tauri/resources/mihomo/Country.mmdb`（7,705,141 字节） |
 | sha256 | `F35228DD74B70AE0AC72DCD2B86D03E0510264E20A0EC21EBB6AA32FA4F85C38` |
 | 内嵌元数据（实测读出） | `database_type = GeoLite2-Country`；`description = Customized GeoLite2 Country database` |
+| 血缘 | **`Loyalsoldier/geoip`** 的 `Country.mmdb` |
+| 数据许可 | **CC-BY-SA-4.0** |
 
 **它不在上游 mihomo 的任何发布资产里**（已核实：v1.19.31 的 Windows 资产里只有 exe），
 所以它是**本仓自己随包的第三方数据**，义务由我们承担。
 
-它是 **MaxMind GeoLite2-Country 的第三方定制衍生库**。GeoIP 定位数据属于数据库，
-受数据许可而非代码许可约束：
+### 血缘是怎么定下来的（2026-10-13）
 
-* **署名（必须）**：GeoLite2 数据由 MaxMind 创建。需要保留的署名文案：
+1. 读文件内嵌的 mmdb 元数据 → `GeoLite2-Country` + "Customized GeoLite2 Country database"；
+2. 该描述串指向 `Loyalsoldier/geoip` 那一路的定制产物（它的产物就叫 `Country.mmdb`）；
+3. **决定性的一步**：把 `Loyalsoldier/geoip` 与 `MetaCubeX/meta-rules-dat` 两处的最新
+   `country.mmdb` 都拉下来比对 —— **两者 sha256 完全相同（`AD2A3B90…`）**。
+   也就是说这两个仓库分发的是**同一个产物**，最初标注的"两家候选、许可不同"这个不确定性
+   **就此塌缩**：不存在"拿到的是哪一家"的问题，数据本身受 CC-BY-SA-4.0 约束。
+4. 我们的副本与今天的最新构建**哈希不同**，因为该数据库**定期重建** —— 属正常现象，
+   不改变血缘与许可。
+
+### 必须履行的
+
+* **署名（MaxMind，必须）**：
   *This product includes GeoLite2 data created by MaxMind, available from
   <https://www.maxmind.com>.*
-* **CC BY-SA 4.0（必须核对）**：MaxMind 的 GeoLite2 数据库以 **CC BY-SA 4.0** 分发，
-  该许可带**相同方式共享**要求。以 MaxMind 官方页面为准。
-* ⚠️ **定制方待确认**：内嵌描述里的 "Customized" 说明它不是原版 GeoLite2，而是某个
-  社区项目的再加工产物（候选：`Loyalsoldier/geoip`、`MetaCubeX/meta-rules-dat`）。
-  **定制方自己的许可会叠加在 MaxMind 之上**，而不同候选的许可不同
-  （有的是 GPL-3.0，有的更宽松）。**在确认是哪一家之前，这一条不算完成。**
+* **署名（定制方，必须）**：数据血缘为
+  [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip)（CC-BY-SA-4.0）。
+* **相同方式共享（必须）**：CC-BY-SA-4.0 带 share-alike。**我们原样随包、未修改该数据**，
+  因此只需保留许可与署名；**一旦我们改动它（例如自己裁剪 IP 段），改动后的数据库必须
+  同样以 CC-BY-SA-4.0 提供**。
+* 与代码许可的关系：本仓代码是 GPL-3.0，而这是**随包的独立数据文件**（既非链接、也非衍生
+  于本仓代码）。CC-BY-SA-4.0 另被 Creative Commons 声明与 GPLv3 兼容，两边不冲突。
 
-**待办**：确认该文件的下载来源 → 补齐定制方署名与其许可 → 更新本节。
+> 结论：这一条**已完成**。原先挂着的"定制方待确认"已通过上面第 3 步消解。
 
 ---
 

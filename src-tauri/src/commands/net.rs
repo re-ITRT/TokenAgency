@@ -2322,11 +2322,45 @@ fn top_level_block(text: &str, key: &str) -> Option<String> {
     }
 }
 
+/// **补齐线路端口，并推给内核源与网关拨号器。**
+///
+/// 为什么需要它（2026-10-13 的真机复现，[docs/59] 同族）：
+///
+/// `commit_config`（本文件上方）只在 `kernel_source_slot()` **已经装好**时才调
+/// `allocate_ports` —— 而开机编排完成之前那个槽是 `None`，此时提交的配置
+/// **端口一个都没分配，配置却照样入库**。之后没有任何地方补分配，于是：
+///
+/// ```text
+/// 配置校验失败：[FieldError { path: "lanes[0].id", code: "port_missing" }]
+///   → 内核永不就绪 → 启动编排超时 → **网关根本不启动** → 连直连也不可用
+/// ```
+///
+/// 也就是说：那句"（直连仍可用）"的日志是**替事实打包票**，而事实恰恰相反。
+/// 这个函数就是把缺的那次分配补上，让"配错的线路"最多只影响它自己那条出口。
+///
+/// 幂等：`RangePortAllocator` 会优先拿回落库的端口，重复调用不会让端口漂移。
+fn ensure_lane_ports(state: &AppState) -> IpcResult<()> {
+    // 槽还没装好就什么都不做：那时连内核源都没有，推给它没有意义。
+    let Some(source) = state.kernel_source_slot() else {
+        return Ok(());
+    };
+    let doc = state.doc();
+    let ports = allocate_ports(state, &doc)?;
+    source.set_ports(ports.clone());
+    if let Some(hot) = state.lane_ports() {
+        hot.replace(ports);
+    }
+    Ok(())
+}
+
 /// [docs/46] 订阅/线路数据出现之后再拉一次内核。
 ///
 /// 启动那一刻还没有任何 provider，生成配置的预检会**如实拒绝**（`TA-5001`），内核不会就绪——
 /// 那是对的（没有节点时内核无路可走）。等用户真的建了订阅、节点出现之后，内核才有意义。
-/// 失败只记 WARN：订阅刷新本身的结果不受影响，直连通道始终可用。
+///
+/// **失败只记 WARN，但不能因此宣称"直连仍可用"**：网关要等内核就绪才会启动，
+/// 内核一直不就绪时它根本不起来 —— 直连同样用不了（2026-10-13 实测）。
+/// 日志只准陈述已经发生的事，不准替事实打包票。
 pub(crate) async fn kick_kernel(state: &AppState) {
     // 这个仓库用的是标准库 `RwLock`：`read()` 返回 `Result<Guard>`，不是 parking_lot 的裸 guard。
     let kernel = {
@@ -2338,6 +2372,18 @@ pub(crate) async fn kick_kernel(state: &AppState) {
         };
         kernel
     };
+    // 先补端口，再重生成配置 —— 顺序不能反：`apply()` 内部的预检会**如实拒绝**没有端口的线路。
+    if let Err(e) = ensure_lane_ports(state) {
+        // `IpcError` 没有 `code()`、也不实现 `Display`（那是 `TaError` 的接口）——
+        // 这里用 Debug，别为了好看去给 `IpcError` 加 trait 实现。
+        // `error_log_guard`（crates/ta-core/tests/error_log_guard.rs）要求 warn 必须带 code。
+        // `IpcError` 没有 `code()` 方法，但它的字段就叫 `code`。
+        tracing::warn!(
+            code = %e.code,
+            error = ?e,
+            "重拉内核前补分配线路端口失败：内核会因缺少端口而不就绪，网关也不会启动"
+        );
+    }
     // [docs/46] **`apply()` 而不是 `start()`**：`apply()` = 生成 + 落盘 + reload；
     // 内核已经在跑时 `start()` 是空操作 ⇒ 配置永远不重新生成（实测：`proxy-groups: []`）。
     match kernel.apply().await {
@@ -2345,7 +2391,9 @@ pub(crate) async fn kick_kernel(state: &AppState) {
         Err(e) => tracing::warn!(
             code = %e.code(),
             error = %e,
-            "订阅数据就绪后拉起内核失败（直连仍可用）"
+            // 老文案是"（直连仍可用）"。**实测不成立**：网关要等内核就绪才启动，
+            // 内核一直不就绪时它根本不起来，直连同样不可用。
+            "订阅数据就绪后重拉内核失败：若内核始终不就绪，网关不会启动，**直连也不可用**（查 boot phase）"
         ),
     }
 }
@@ -2360,6 +2408,62 @@ mod tests {
     use std::time::Duration;
 
     use async_trait::async_trait;
+
+    /// 装配守卫：`kick_kernel` 必须**先补端口、再重生成配置**。
+    ///
+    /// 为什么值得一条守卫：`commit_config` 只在 `kernel_source_slot()` 已经装好时才调
+    /// `allocate_ports`，而**在那个槽装好之前提交的配置，端口一个都没有**。
+    /// 少了这次补分配，内核会因为 `port_missing` 永远不就绪，而启动编排要等内核就绪
+    /// 才启动网关 —— 表现是**整个网关都不起来（连直连也不可用）**。
+    ///
+    /// 这是典型的"静默失效"：少了它**不会报任何错**，只会让软件打不开。
+    /// 2026-10-13 真机复现过，所以钉死它。
+    #[test]
+    fn kick_kernel_compensates_missing_lane_ports() {
+        let src = include_str!("net.rs");
+        let start = src
+            .find("pub(crate) async fn kick_kernel")
+            .expect("kick_kernel 不见了（改名就同步改这条守卫）");
+        let tail = &src[start..];
+        let end = tail.find("\n}\n").unwrap_or(tail.len());
+        let body = &tail[..end];
+
+        let apply_at = body.find("kernel.apply()").expect("kick_kernel 里找不到 kernel.apply()");
+        let ensure_at = body.find("ensure_lane_ports(state)").expect(
+            "kick_kernel 没有补分配线路端口 —— 端口缺失时内核永不就绪、网关不会启动（见 ensure_lane_ports 的注释）",
+        );
+        assert!(
+            ensure_at < apply_at,
+            "补端口必须排在 apply() **之前**：apply() 内部的预检会如实拒绝没有端口的线路"
+        );
+    }
+
+    /// 守卫：**日志不许替事实打包票**。
+    ///
+    /// 老文案是「订阅数据就绪后拉起内核失败（直连仍可用）」，而 2026-10-13 实测它**不成立**：
+    /// 网关要等内核就绪才启动，内核一直不就绪时它根本不起来，直连同样不可用。
+    /// 这里只禁**代码里**的字面量；注释为了说明缘由可以引用那句话。
+    #[test]
+    fn no_log_claims_direct_stays_available_when_kernel_is_down() {
+        let src = include_str!("net.rs");
+        // ⚠️ 用 `concat!` 把这个词拼出来，**不要直接写字面量**：
+        // 这条守卫扫的正是它自己所在的文件，直接写会让它扫到自己这一行（注释不算，代码行算）。
+        // 上一版就是这么红的 —— 守卫把自己抓了。
+        let needle = concat!("直连", "仍可用");
+        for (i, line) in src.lines().enumerate() {
+            if !line.contains(needle) {
+                continue;
+            }
+            let t = line.trim_start();
+            assert!(
+                t.starts_with("//"),
+                "net.rs:{} 在**代码**里出现那句被推翻的旧结论。日志只准陈述已经发生的事，\
+                 不许宣称一个「内核不就绪时直连依然可用」的结论。行：{}",
+                i + 1,
+                t
+            );
+        }
+    }
     use ta_core::domain::{ChannelConfig, Credential, Model, Provider};
     use ta_core::types::Protocol;
     use ta_kernel::{KernelStatus, NodeRef, NodeSource, ProvidersSnapshot, ProxyEntry};
