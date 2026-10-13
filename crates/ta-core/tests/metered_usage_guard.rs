@@ -1,5 +1,5 @@
 //! 守卫：**`MeteredUsage { … }` 的字面构造只允许出现在 `crates/ta-core/src/metering/**`**
-//! （[11 §6] 铁律 4"不猜不估算"）。
+//! （铁律 4"不猜不估算"）。
 //!
 //! 为什么需要它：`estimated_usage()` 是**约定上的**唯一估算出口，但 `MeteredUsage` 的字段是
 //! `pub`，任何地方都能手拼 `MeteredUsage { usage, source: UsageSource::Upstream }` 把估算
@@ -10,7 +10,7 @@
 //! 那是"字段私有化 + 只留构造器"那一步的事（跨 `types.rs` 与 E5 的调用点，另行裁决）。
 //!
 //! 扫描范围与 [`common::source_files`] 一致：`crates/**/*.rs` 与 `src-tauri/src/**/*.rs`
-//! （[14 §5.5] 的既有约定），**不新增第二套遍历**。
+//! （既有约定），**不新增第二套遍历**。
 //!
 //! ## 政策：**测试代码同样在范围内**（评审 E1 要求写明确）
 //!
@@ -45,10 +45,10 @@ fn metered_usage_literals_stay_inside_metering() {
         "发现 {} 处 metering 之外手拼 `MeteredUsage` 的地方：\n{}\n\n\
          为什么这是违规：估算必须带 `UsageSource::Estimated`，而手拼最容易写成 \
          `source: UsageSource::Upstream` —— 那会把本地估算冒充成上游数据，\
-         成本中心与看板会照原样当真（[11 §6] 铁律 4）。\n\
+         成本中心与看板会照原样当真（ 铁律 4）。\n\
          修法：走 `ta_core::metering::estimated_usage(&request_body)`（估算）\
          或对应协议的 `normalize_*` / `DefaultMeter`（真实归一化），不要自己构造。\n\
-         确实需要在别处构造时：先问 [11 §6] 是否允许，再改本守卫，两处必须同改。",
+         确实需要在别处构造时：先问 是否允许，再改本守卫，两处必须同改。",
         violations.len(),
         violations.join("\n")
     );

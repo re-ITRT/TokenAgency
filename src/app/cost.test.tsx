@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 /**
- * 成本中心 `/cost`（[07 §6]）的验收。三条硬要求各有一组断言：
+ * 成本中心 `/cost`的验收。三条硬要求各有一组断言：
  *
  * 1. **估算不许冒充上游上报**：`UsageSource`（upstream / upstream_partial / estimated）只写在
  *    写入路径的 `UsageRecord` 上（`crates/ta-core/src/types.rs:282`），而**查询与看板 DTO 都没带它**
- *    （`UsageRow` 只有 `dims`/`values`，`DashboardData` 没有 `estimated_requests` —— 见 [16 §8] 的推迟决定）。
+ *    （`UsageRow` 只有 `dims`/`values`，`DashboardData` 没有 `estimated_requests` —— 见 的推迟决定）。
  *    所以页面必须**明说"来源标记不可得"**，而不是把数字标成上游数据；花费更是**本地定价表算出来的**，
  *    一律按本地口径标注。
  * 2. **图表真用 ECharts 且只画后端给的数**：option 里的 x 轴标签就是后端给的 bucket 标签、
@@ -476,7 +476,7 @@ describe("估算 vs 上游上报：如实标注，不许把本地口径说成上
     // (1284-1120)/1120 = 14.64% → "+14.6%"（NumberCard 的 delta.value 是比率，不是差值：
     // 传差值会画成 +16400.0%，这条断言就是钉住这一点）
     expect(screen.getByText("+14.6%")).toBeTruthy();
-    // 花费涨了不是好事 → 用 error 色，但方向仍由 +/- 号表达（[15 §2.1]）
+    // 花费涨了不是好事 → 用 error 色，但方向仍由 +/- 号表达
     expect(screen.getByText("+13.5%")).toBeTruthy();
   });
 });
@@ -782,7 +782,7 @@ describe("[定价条目] 读列表与展示（取不到就 —，不猜）", () 
 //    "路径为空时导出按钮不可用"（带例子与禁用条件的校验说明）、空态、后端原文，
 //    一律留在版面上。判不准就留在版面上（§2 末尾的默认）。
 
-describe("⑨ [docs/22] 长简介收进问号圆圈，数值与单位一句都不收", () => {
+describe("⑨ 长简介收进问号圆圈，数值与单位一句都不收", () => {
   /** 文案取真源：断言直接用 zh-CN 里的全文，而不是把长句在测试里再抄一遍。 */
   function copy(key: I18nKey): string {
     return i18n.t(key);

@@ -35,7 +35,7 @@ pub(crate) fn build_default_doc() -> ConfigDoc {
         channel_groups: channel_groups(),
         policies: policies(),
         system_integration: SystemIntegration {
-            // 注意：会写操作系统状态的三个开关一律默认关（[09 §1.2] E1）：
+            // 注意：会写操作系统状态的三个开关一律默认关（E1）：
             //   装完就静默加一个开机启动项 / 接管整机网络，都是用户最反感的"副作用"。
             enable_tun: false,
             enable_system_proxy: false,

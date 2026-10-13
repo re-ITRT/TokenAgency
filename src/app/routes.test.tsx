@@ -36,7 +36,7 @@ beforeAll(async () => {
   // 语言固定成中文并**等它生效**：CI 机器的 navigator.language 不可控，
   // 断言不能依赖运行环境。（也顺带验证了 setLocale → changeLanguage 这条链路。）
   await i18n.changeLanguage("zh-CN");
-  // 浏览器开发用的基准场景 mock：让状态条有真实数据可渲染（[03 §0]）
+  // 浏览器开发用的基准场景 mock：让状态条有真实数据可渲染
   registerBaselineMocks();
   // **再加上开发用的完整 mock 集**：`registerBaselineMocks` 只覆盖基准场景那几条命令，
   // 而 13 条路由各自的页面（成本中心要 usage_*、设置页要 config_*、网络页要 subscription_list …）
@@ -130,7 +130,7 @@ describe("路由外壳", () => {
   it("侧边栏项由路由表生成，且覆盖用户主视角（概览在首位）", () => {
     expect(NAV_ROUTES.length).toBeGreaterThanOrEqual(8);
     expect(NAV_ROUTES[0]?.path).toBe(HOME_PATH);
-    // 导航标签不得出现内部概念（channel / credential / lane）——[12 §6 F1] 的措辞要求
+    // 导航标签不得出现内部概念（channel / credential / lane）—— 的措辞要求
     for (const route of NAV_ROUTES) {
       const label = zhCN[route.titleKey];
       expect(/channel|credential|lane/i.test(label), `导航标签不该用内部概念：${label}`).toBe(

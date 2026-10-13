@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * 请求日志页（[07 §2] / [14 §12]）的验收。重点和看板那份一样是**诚实**，外加 C 组的三件事：
+ * 请求日志页（/）的验收。重点和看板那份一样是**诚实**，外加 C 组的三件事：
  *
  * 1. **有数据 / 无数据两种状态都要对**（本任务点名的要求）：
  *    有数据时按契约渲染行；无数据时给**诚实的空状态**（把 off 模式、没有流量、条件太窄三种
@@ -1049,7 +1049,7 @@ describe("整页在 mock 基准场景下能用（不依赖 Rust/Tauri）", () =>
     expect((await screen.findByText("请求日志")).tagName).toBe("H1");
     expect(screen.queryByTestId("page-placeholder")).toBeNull();
 
-    // mock 的请求日志（[03 §0] 基准场景）
+    // mock 的请求日志（基准场景）
     expect(await screen.findByText("req_mock_0000")).toBeTruthy();
 
     // 展开第一行 → `log_get_trace` 走同一个 mock，轨迹面板出现

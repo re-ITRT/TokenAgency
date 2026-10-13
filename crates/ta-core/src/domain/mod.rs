@@ -464,7 +464,7 @@ fn default_max_size_mb() -> u64 {
 pub enum RetentionDefault {
     #[serde(rename = "7d")]
     D7,
-    /// 默认保留 30 天（见 [02 §3] 的保留策略）
+    /// 默认保留 30 天（见 的保留策略）
     #[default]
     #[serde(rename = "30d")]
     D30,
@@ -1654,7 +1654,7 @@ pub enum PriceSource {
 
 // ================================================================ 系统集成
 
-/// 开机自启动后的行为（见 [02 §2.10]）。
+/// 开机自启动后的行为（见）。
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1669,14 +1669,14 @@ pub enum AutostartMode {
 
 /// 系统集成开关。
 ///
-/// **三类开关的默认值规则**（[09 §1.2] E1）：
+/// **三类开关的默认值规则**（E1）：
 /// - **会写操作系统状态的开关一律默认关**：`autostart` / `enable_tun` / `enable_system_proxy`；
 /// - **"实体启用"语义的开关默认开**：见 `Provider.enabled` 等（列出来就是要用）；
 /// - **无损 / 自检类默认开**：`tray_show_latency`。
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SystemIntegration {
-    /// **例外：默认关**（同 `autostart`：会写 OS 状态的开关一律默认关，[09 §1.2] E1）。
+    /// **例外：默认关**（同 `autostart`：会写 OS 状态的开关一律默认关， E1）。
     /// 接管整机网络（TUN）是实验性高级模式，需要管理员权限；
     /// "默认不接管整机流量"是本产品的核心承诺，所以这里与"实体 enabled"的规则相反。
     #[serde(default)]
@@ -1685,7 +1685,7 @@ pub struct SystemIntegration {
     #[serde(default)]
     pub enable_system_proxy: bool,
     /// 开机自启动：**本项目唯一会写操作系统状态的功能**
-    /// （Windows `Run` 键 / macOS `LaunchAgent` / Linux XDG autostart，见 [09 §1.2]）。
+    /// （Windows `Run` 键 / macOS `LaunchAgent` / Linux XDG autostart，见）。
     ///
     /// **默认 false** —— 凡是会写 OS 状态的开关一律默认关：装完就静默加一个开机启动项，
     /// 正是用户最反感的那种"副作用"。与 `enable_tun` / `enable_system_proxy` 同属

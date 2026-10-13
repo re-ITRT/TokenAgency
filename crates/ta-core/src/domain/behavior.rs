@@ -5,7 +5,7 @@
 //!
 //! - 便捷构造函数与 builder：`ChannelConfig::new(..).with_lane(..)`
 //! - 只读辅助：`Model::matches`、`ChannelConfig::effective_lane`、`ConfigDoc::find_model`
-//! - 线路解析优先级（[04 §8.1]）：
+//! - 线路解析优先级：
 //!   `policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.default_lane ?? direct`
 //! - 模型名 glob（[`matches_glob`]）：校验器与定价引擎共用同一套匹配语义，
 //!   避免"校验说能匹配、定价说匹配不上"这种漂移。
@@ -385,7 +385,7 @@ impl Lane {
 
     /// `kind` 语义上要求、但当前缺失的字段名（`direct` 恒为 `None`）。
     ///
-    /// 依据 [04 §7.1]：非 `direct` 必须有 `subscription`；`subscription_node` 要有 `node`；
+    /// 依据：非 `direct` 必须有 `subscription`；`subscription_node` 要有 `node`；
     /// `filter` 要有 `filter`。
     ///
     /// `subscription_group` 仍然在这里返回 `group`（保持老数据能被描述清楚），
@@ -598,7 +598,7 @@ impl ChannelConfig {
     /// 传 `None` 表示"该服务商不存在或没查"，会自然跳到全局默认。
     /// 需要完整解析（含 `direct` 兜底）请用 [`resolve_lane`]。
     ///
-    /// 依据 [04 §8.1]（已按本文档 §"线路分配收敛"更正）/ [02 §2.3]。
+    /// 依据（已按本文档 §"线路分配收敛"更正）/。
     pub fn effective_lane<'a>(
         &'a self,
         _credential: Option<&'a Credential>,
@@ -651,7 +651,7 @@ impl<'a> LaneResolution<'a> {
 /// 留着一个永远不读的形参，下一个人会以为"是不是这里漏了什么"。
 /// 唯一的调用点（`ta-gateway/src/pipeline.rs`）也一并改掉了。
 ///
-/// 依据 [04 §8.1]（已按 更正）。
+/// 依据（已按 更正）。
 pub fn resolve_lane<'a>(provider: Option<&'a Provider>, net: &'a NetConfig) -> LaneResolution<'a> {
     match provider.and_then(|p| p.lane.as_ref()).or(net.default_lane.as_ref()) {
         Some(lane) => LaneResolution::Lane(lane),
@@ -662,7 +662,7 @@ pub fn resolve_lane<'a>(provider: Option<&'a Provider>, net: &'a NetConfig) -> L
 // ================================================================ ChannelGroup
 
 impl ChannelGroup {
-    /// 新通道组：默认选择器 `sticky_then_priority`（[02 §2.7] 的默认值）。
+    /// 新通道组：默认选择器 `sticky_then_priority`（默认值）。
     pub fn new<I, S>(id: impl Into<ChannelGroupId>, model: impl Into<String>, members: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -794,7 +794,7 @@ impl PolicyAction {
 // ================================================================ 定价
 
 impl PriceMatch {
-    /// 空匹配——**会吃掉所有匹配**，校验器会拒绝（[02 §2.9] 的定价条目必须有限定字段）。
+    /// 空匹配——**会吃掉所有匹配**，校验器会拒绝（定价条目必须有限定字段）。
     pub fn unconstrained() -> Self {
         Self::default()
     }
@@ -924,7 +924,7 @@ impl Default for PlanFee {
 // ================================================================ Subscription
 
 impl Subscription {
-    /// 新订阅：`enabled = true`、UA 伪装成 Clash 客户端（[02 §2.4]）。
+    /// 新订阅：`enabled = true`、UA 伪装成 Clash 客户端。
     pub fn new(
         id: impl Into<SubscriptionId>,
         name: impl Into<String>,
@@ -1018,17 +1018,17 @@ impl NetConfig {
     }
 }
 
-// ================================================================ 开机自启动（[09 §1.2] E1–E5）
+// ================================================================ 开机自启动（E1–E5）
 
-/// 启动延迟上限（秒）。见 [02 §2.10]（0–300）。
+/// 启动延迟上限（秒）。见（0–300）。
 ///
 /// 由 `config::validator` 强制：一个手滑写成 `3000` 的配置不会报错，
 /// 只会让用户看到"开机后快一小时才启动"，然后怀疑软件坏了。
 pub const MAX_AUTOSTART_DELAY_S: u32 = 300;
 
-/// 自启动的**期望状态**（配置）与**系统实际状态**的比对结果（[09 §1.2] E3/E4）。
+/// 自启动的**期望状态**（配置）与**系统实际状态**的比对结果（E3/E4）。
 ///
-/// 对应 `AutostartState.drifted`（[10 §2.2]）。
+/// 对应 `AutostartState.drifted`。
 ///
 /// 注意：**只是判定结果，不带任何动作**：`MissingOnSystem` 不等于"该去注册"、
 /// `UnexpectedOnSystem` 不等于"该去删除"。动作只能由用户点击
@@ -1068,7 +1068,7 @@ impl AutostartDrift {
     }
 }
 
-/// 判定自启动的期望状态与系统实际状态是否漂移（[09 §1.2] E3/E4）。
+/// 判定自启动的期望状态与系统实际状态是否漂移（E3/E4）。
 ///
 /// **纯函数：只判定，不做任何动作。** 调用方（T2）也不得据此自动写注册表或删条目：
 /// 用户手动禁用后我们绝不偷偷加回来（E3），用户配了没生效也不替他做主（E4）——
@@ -1076,7 +1076,7 @@ impl AutostartDrift {
 ///
 /// `supported = false`（Linux 无桌面会话、非桌面环境等）**优先于一切**：
 /// 此时既不返回 `MissingOnSystem` 也不返回 `UnexpectedOnSystem`，否则 UI 会显示
-/// "系统里没有 → 点重新注册"，而用户点了也不会成功（[10 §2.2] 规则 5）。
+/// "系统里没有 → 点重新注册"，而用户点了也不会成功（规则 5）。
 pub fn evaluate_autostart_drift(desired: bool, actual: bool, supported: bool) -> AutostartDrift {
     if !supported {
         return AutostartDrift::Unsupported;
@@ -1140,7 +1140,7 @@ impl ConfigDoc {
 
     /// 生效策略表：只保留 `enabled`，按 `priority` 升序（同优先级保持声明顺序）。
     ///
-    /// [02 §2.8]：数字小的先求值，**首个命中即生效**。
+    ///：数字小的先求值，**首个命中即生效**。
     pub fn enabled_policies_in_order(&self) -> Vec<&Policy> {
         let mut out: Vec<&Policy> = self.policies.iter().filter(|p| p.enabled).collect();
         out.sort_by_key(|p| p.priority);
@@ -1363,7 +1363,7 @@ mod tests {
 
     #[test]
     fn autostart_delay_max_matches_doc() {
-        // [02 §2.10]：0–300 秒。校验器引用这个常量，别各自写死。
+        //：0–300 秒。校验器引用这个常量，别各自写死。
         assert_eq!(MAX_AUTOSTART_DELAY_S, 300);
     }
 

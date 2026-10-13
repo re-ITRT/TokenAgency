@@ -12,7 +12,7 @@
  *    —— 写错 key 会被 `tsc --noEmit` 直接拦下，en 翻译缺失同样会被拦下。
  * 4. `owner` 只用于标注归属，便于四个人对表；不参与运行时逻辑。
  * 5. **导航标签用用户语言，不用内部概念**：不出现 channel / credential / lane
- *    这类词。套餐（tokenplan）是用户的心智模型（[03 §0]、[05 §2.1]）。
+ *    这类词。套餐（tokenplan）是用户的心智模型（）。
  */
 
 import type { SvgIconComponent } from "@mui/icons-material";
@@ -28,7 +28,7 @@ import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 
 import type { I18nKey } from "@/shared/i18n";
 
-/** 归属工作包。仅作标注（[12 §6]）。 */
+/** 归属工作包。仅作标注。 */
 export type RouteOwner = "F1" | "F2" | "F3" | "F4";
 
 export type AppRoute = {
@@ -99,7 +99,7 @@ export const NAV_GROUP_ORDER: readonly I18nKey[] = [
  * 3. **观察项相邻** —— 请求日志（明细）与成本中心（聚合）是一类，不再被别类切开。
  * 4. **设置永远最后** —— 全局通行约定；它也是唯一"改了会影响整个软件"的一页。
  *
- * 归属（[12 §6]）：F2 = 看板 + 日志；F3 = 服务商/模型；F4 = 网络/成本/设置/访问密钥。
+ * 归属：F2 = 看板 + 日志；F3 = 服务商/模型；F4 = 网络/成本/设置/访问密钥。
  */
 export const ROUTES: readonly AppRoute[] = [
   {
@@ -245,12 +245,12 @@ export const ROUTES: readonly AppRoute[] = [
     navGroup: "navGroup.system",
     pages: ["settings", "settings/index"],
   },
-  // 首启向导 `/onboarding` 已**整条移除**（[19 §2.1]：两个向导都关掉）。
+  // 首启向导 `/onboarding` 已**整条移除**（：两个向导都关掉）。
   // `onboarding_*` 三条命令**保留注册**（后端能力不删），但页面不许再引用它们 ——
   // 见 `src/app/onboarding.test.tsx` 的反向断言：没有路由、也没有页面入口。
 ];
 
-/** 根路径重定向目标（[10 §2.2] 的看板）。 */
+/** 根路径重定向目标（看板）。 */
 export const HOME_PATH = "/dashboard";
 
 /** 侧边栏项（顺序即 `ROUTES` 顺序）。 */

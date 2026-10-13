@@ -4,7 +4,7 @@
 //!
 //! ★ 必须使用**独立 Client（不走 lane）** —— 鸡生蛋：不先拿到订阅就不知道有哪些节点。
 //!
-//! 本包只做**业务层**（[04 §5.3] 的五件事）：下载 / userinfo / 版本与回滚 / 坏更新拦截 /
+//! 本包只做**业务层**（五件事）：下载 / userinfo / 版本与回滚 / 坏更新拦截 /
 //! 订阅级过滤 + 预览用的节点与分组清单。**节点协议与 Clash 配置解析归内核（mihomo）**，
 //! 这里的解析只是为了"预览、计数、防坏更新"，不追求覆盖全部可选字段。
 
@@ -35,7 +35,7 @@ pub use traffic::SubscriptionTraffic;
 /// 默认 UA：很多机场按 `User-Agent` 返回不同格式（clash / surge / v2ray），默认伪装 Clash 客户端。
 pub const DEFAULT_USER_AGENT: &str = "clash-verge/v2.0.0";
 
-/// 默认保留版本数（[11 §3] 版本表）。
+/// 默认保留版本数（版本表）。
 pub const DEFAULT_KEEP_VERSIONS: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

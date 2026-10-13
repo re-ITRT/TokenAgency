@@ -1,5 +1,5 @@
 /**
- * 请求日志页 `/logs`（[07 §2]、[14 §12]）—— M1 验收 C 组（C1/C2/C4）的用户可见面。
+ * 请求日志页 `/logs`（）—— M1 验收 C 组（C1/C2/C4）的用户可见面。
  *
  * 三条硬纪律（这一页最容易违反，所以写在最上面）：
  *
@@ -135,7 +135,7 @@ const LEVEL_LABEL: Record<Level, I18nKey> = {
   failed: "logs.filter.level.failed",
 };
 
-/** 结果语义：[15 §3.2] 绿=成功 · 黄=重试 · 红=失败。取值来自后端的 `outcome` 字段。 */
+/** 结果语义： 绿=成功 · 黄=重试 · 红=失败。取值来自后端的 `outcome` 字段。 */
 const OUTCOME_STATUS: Record<string, SemStatus> = { ok: "ok", retried: "warn", failed: "error" };
 const OUTCOME_LABEL: Record<string, I18nKey> = {
   ok: "logs.filter.level.ok",
@@ -467,7 +467,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
 
   return (
     <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-      {/* ① 查询条件（[07 §2.4]：时间范围 / 检索 / 状态） */}
+      {/* ① 查询条件（：时间范围 / 检索 / 状态） */}
       <Paper variant="outlined" sx={SECTION_SX} data-testid="logs-filter">
         <Stack spacing={3}>
           {/* 区块说明收进问号圆圈：下面那几行说明里，
@@ -699,7 +699,7 @@ export function LogsBody({ query, log, export: exportProps, expanded }: LogsBody
                 <TableHead>
                   <TableRow>
                     <TableCell padding="none" />
-                    {/* 时间轴永远本地时区，且写在列头（[07 §1.3]） */}
+                    {/* 时间轴永远本地时区，且写在列头 */}
                     <TableCell>{`${t("logs.col.time")}（${timezoneLabel()}）`}</TableCell>
                     <TableCell>{t("logs.col.requestId")}</TableCell>
                     <TableCell>{t("logs.col.model")}</TableCell>

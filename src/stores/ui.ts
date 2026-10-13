@@ -33,7 +33,7 @@ export function systemPrefersDark(): boolean {
 }
 
 type UiState = {
-  /** 深色优先（[07 §1.3]）：默认 dark。 */
+  /** 深色优先：默认 dark。 */
   themeMode: ThemeMode;
   sidebarCollapsed: boolean;
   setThemeMode: (mode: ThemeMode) => void;

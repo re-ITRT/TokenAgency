@@ -197,7 +197,7 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
     }
 }
 if ($otherEmoji.Count -gt 0) {
-    Write-Host "! 生成物里有 $($otherEmoji.Count) 处 emoji（多为 doc 里演示的用户数据，按 [15 §2.2] 可保留）：" -ForegroundColor Yellow
+    Write-Host "! 生成物里有 $($otherEmoji.Count) 处 emoji（多为 doc 里演示的用户数据，按 可保留）：" -ForegroundColor Yellow
     $otherEmoji | Select-Object -First 6 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
 }
 if ($badMarkers.Count -gt 0) {
@@ -206,7 +206,7 @@ if ($badMarkers.Count -gt 0) {
     $badMarkers | Select-Object -First 10 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
     Write-Host ""
     Write-Host "  根因几乎总在 `crates/**` 的 doc 注释里（这里只是被原样带出来）。" -ForegroundColor Yellow
-    Write-Host "  正确修法是**改源头的注释文字**（[docs/15] 要求我们自己不产生 emoji），" -ForegroundColor Yellow
+    Write-Host "  正确修法是**改源头的注释文字**（ 要求我们自己不产生 emoji），" -ForegroundColor Yellow
     Write-Host "  **不要**把 `// ta-allow-emoji` 加回来 —— 那会让 emoji 守卫整体失效。" -ForegroundColor Yellow
     Write-Host "  生成物仍保留在 $genPath（未被复制到任何被跟踪的位置）。" -ForegroundColor DarkGray
     exit 1

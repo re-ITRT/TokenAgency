@@ -1,5 +1,5 @@
 /**
- * 服务商详情 `/providers/:id`（[07 §3.2]）—— **查看与编辑一体**。
+ * 服务商详情 `/providers/:id`—— **查看与编辑一体**。
  *
  * ## 这一页为什么长这样（用户第 75 轮原话）
  *
@@ -142,7 +142,7 @@ const PASSTHROUGH_BODY_LABEL: Record<string, I18nKey> = {
   strip: "providers.passthrough.body.strip",
 };
 
-/** 服务商健康状态（契约视图的 `status`）→ 全站状态语义（[15 §3.2]）。 */
+/** 服务商健康状态（契约视图的 `status`）→ 全站状态语义。 */
 const STATUS_SEM: Record<string, SemStatus> = { ok: "ok", warn: "warn", error: "error", off: "off" };
 const STATUS_LABEL: Record<string, I18nKey> = {
   ok: "component.statusDot.ok",
@@ -287,7 +287,7 @@ function SectionTitle({ title, helpText, helpTestId }: { title: string; helpText
   );
 }
 
-/** 一个字段格：标签（overline）+ 控件。层级只靠字号与颜色，没有装饰（[15 §1]）。 */
+/** 一个字段格：标签（overline）+ 控件。层级只靠字号与颜色，没有装饰。 */
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <Box sx={{ minWidth: 0 }}>
@@ -620,7 +620,7 @@ export function LinesSection({
 
         {/* ① 扫描：扫上游 + **把清单里的每条线路都建出来**（默认关闭）
             —— 之后这里不再有"勾一下才创建"。
-            [15 §2] **极简**：那句解释收进本节标题的问号（`linesHint`），版面上只留一个图标按钮 +
+ **极简**：那句解释收进本节标题的问号（`linesHint`），版面上只留一个图标按钮 +
             一个只在真等后端时才出现的状态字 —— 节标题右边已经有一个问号，不需要第二份说明。 */}
         <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
           <Button
@@ -661,7 +661,7 @@ export function LinesSection({
           </Typography>
         ) : null}
 
-        {/* ③ 唯一的列表：**列头说一次，行里不再重复标签**（[15 §2] 极简 + 符号化） */}
+        {/* ③ 唯一的列表：**列头说一次，行里不再重复标签**（极简 + 符号化） */}
         <Stack spacing={2}>
           {linesError !== undefined && linesError !== null ? (
             /* 读线路失败的**后端原文**（含 TA 码）：原样显示，不改写成一句"加载失败" */
@@ -698,7 +698,7 @@ export function LinesSection({
               ) : (
                 <>
                   {/**
-                   * **列头**（[15 §2] 极简 + 符号化）：三列的标签在这里说**一次**，
+                   * **列头**（极简 + 符号化）：三列的标签在这里说**一次**，
                    * 行里就不再重复画「网络代理」「启用」——
                    * 四行时省下 8 个标签，二十行时省下 40 个。
                    * 计数也收进这里：`3/4` 比「已启用 3 / 4」+「4 条线路」+「目录里记着 3 个模型」
@@ -776,7 +776,7 @@ export function LinesSection({
                               线路一律继承服务商，界面上不再给第二条路。 */}
 
                           {/* **滑块**（启用 / 关闭）—— 列表上唯一的开关。
-                              符号化：[15 §2] 开关本身就是"启用/关闭"的符号，行里不再写那两个字，
+                              符号化： 开关本身就是"启用/关闭"的符号，行里不再写那两个字，
                               无障碍名称走 `label`（读屏一个字不少）。 */}
                           <ProviderSwitch
                             testId="providers-line-enabled"
@@ -1283,7 +1283,7 @@ export function ProviderDetailBody({
                 />
               </Box>
 
-              {/* 健康列：**只读遥测**，不是配置（[07 §3.2]） */}
+              {/* 健康列：**只读遥测**，不是配置 */}
               <Stack spacing={2} data-testid="providers-health">
                 <Typography variant="overline" sx={{ color: "text.secondary" }}>
                   {t("providers.edit.health")}

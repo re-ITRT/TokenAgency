@@ -1,4 +1,4 @@
-//! 守卫：**`tracing` 字段名必须来自 [14 §5] 的白名单**（[14 §5.5]）。
+//! 守卫：**`tracing` 字段名必须来自 的白名单**。
 //!
 //! 为什么值得加这条：字段名漂移是**静默**发生的 —— 没人会因为写了
 //! `subscription_id` 而不是 `sub_id` 而收到任何报错，但"按 `request_id` 筛出一次请求的
@@ -17,10 +17,10 @@ use ta_core::diag::{fields, scan};
 /// 白名单之外**额外允许**的字段名，每一项都必须写理由。
 ///
 /// 只有两类能进来：
-/// 1. 契约正文里明确使用的字段（例如 [14 §6.2] 的推荐写法用了 `error`）；
+/// 1. 契约正文里明确使用的字段（例如 的推荐写法用了 `error`）；
 /// 2. §5 定稿前就已经写下的既有调用点（**只减不增**，新代码一律用 §5 的名字）。
 const EXTRA_ALLOWED: &[(&str, &str)] =
-    &[("error", "[14 §6.2] 推荐写法：`error = %e` 记人话（§5 表格未列，但 §6 强制成对记录）")];
+    &[("error", "推荐写法：`error = %e` 记人话（§5 表格未列，但 §6 强制成对记录）")];
 
 /// §5 定稿前的既有调用点用过的字段名：**历史遗留，只减不增**。
 ///
@@ -55,7 +55,7 @@ fn tracing_field_names_must_be_in_the_whitelist() {
     }
     assert!(
         violations.is_empty(),
-        "发现 {} 处不在 [14 §5] 白名单里的 tracing 字段名：\n{}\n\n\
+        "发现 {} 处不在 白名单里的 tracing 字段名：\n{}\n\n\
          修法（二选一）：① 改用 §5 里的名字（首选，例如 request_id / channel_id / attempt / code）；\
          ② 如果这个字段确实该进契约，先改 docs/14-observability.md §5，再更新 diag::fields 常量与守卫白名单。",
         violations.len(),
@@ -86,7 +86,7 @@ fn canonical_fields_match_the_doc() {
 
     assert_eq!(
         code_fields, doc_fields,
-        "`diag::fields::CANONICAL` 与 [14 §5.1/§5.2/§5.4] 的表格不一致。\n\
+        "`diag::fields::CANONICAL` 与 的表格不一致。\n\
          顺序说明：先改文档、再改常量（文档是唯一真相源）。"
     );
 
@@ -94,10 +94,10 @@ fn canonical_fields_match_the_doc() {
     doc_jobs.sort();
     let mut code_jobs: Vec<String> = fields::JOBS.iter().map(|s| s.to_string()).collect();
     code_jobs.sort();
-    assert_eq!(code_jobs, doc_jobs, "`diag::fields::JOBS` 与 [14 §5.3] 的表格不一致");
+    assert_eq!(code_jobs, doc_jobs, "`diag::fields::JOBS` 与 的表格不一致");
 }
 
-/// [14 §5.6] 的登记表与 `diag::fields::LOCAL_CONTEXT` 必须一致。
+/// 的登记表与 `diag::fields::LOCAL_CONTEXT` 必须一致。
 ///
 /// 与 `canonical_fields_match_the_doc` 同一机制：**文档是唯一真相源**。
 /// 没有这条，"§5.6 必须登记"就会退化成一句口号。
@@ -116,7 +116,7 @@ fn local_context_fields_match_the_doc() {
 
     assert_eq!(
         code_fields, doc_fields,
-        "`diag::fields::LOCAL_CONTEXT` 与 [14 §5.6] 的登记表不一致。\n\
+        "`diag::fields::LOCAL_CONTEXT` 与 的登记表不一致。\n\
          顺序说明：先改文档、再改常量（文档是唯一真相源）。"
     );
 }
@@ -169,7 +169,7 @@ fn the_whitelist_has_no_dead_entries() {
 
 /// 取某个小节里所有表格行的第一列，**并拆开成对写法**。
 ///
-/// [14 §5.2] 把成对字段写成一行（`` `channel_id` / `channel_name` ``），
+/// 把成对字段写成一行（`` `channel_id` / `channel_name` ``），
 /// 因为它们总是同时出现、读起来更清楚。所以这里必须拆 `/`、
 /// 并去掉**每一个**反引号（只 trim 首尾会留下中间那对）。
 fn section_table_first_column(doc: &str, from: &str, to: &str) -> Vec<String> {

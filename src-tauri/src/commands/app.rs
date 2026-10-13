@@ -70,7 +70,7 @@ pub struct AppStatus {
 ///
 /// **为什么闸门优先于 `gateway_ready()`**：`gateway_ready()` 只说"装配过了没有"，
 /// 装配过之后一直是 `true`。暂停是**运行态**，必须读闸门 —— 否则用户点了暂停，
-/// 状态条还显示"运行中"（[10 §2.2] 的 `gateway: Running|Paused`）。
+/// 状态条还显示"运行中"（`gateway: Running|Paused`）。
 ///
 /// 顺带一条语义（E5 接缝第 4 条）：暂停**不影响** `/healthz`，所以"暂停"绝不能
 /// 被读成"失联/故障" —— 这也是为什么暂停要显示成 `paused` 而不是 `stopped`。
@@ -149,7 +149,7 @@ fn gate_of(state: &AppState) -> IpcResult<Arc<ta_gateway::ingress::GatewayGate>>
 #[specta::specta]
 pub async fn app_pause_gateway(state: State<'_, AppState>) -> IpcResult<AppStatus> {
     gate_of(&state)?.pause();
-    // `gateway` 不在 [14 §5] 的字段白名单里：按"自由文本不进字段"的裁决写进 message，
+    // `gateway` 不在 的字段白名单里：按"自由文本不进字段"的裁决写进 message，
     // 而不是为了好看去开一个新字段（字段一旦散出去就收不回来）。
     tracing::info!("用户暂停了网关：不再接受新请求（在途不取消，/healthz 不受影响）");
     build_status(&state).await

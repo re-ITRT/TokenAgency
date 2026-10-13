@@ -11,7 +11,7 @@
  * | 命令 | 冻结契约 | Rust 实际返回（权威） |
  * |---|---|---|
  * | `lane_list` | `LaneView { lane, type, node_count, current_node, latency_ms, health }` | `LaneView { lane, latest: HealthSample?, channel_count }`（`src-tauri/src/commands/catalog.rs`） |
- * | `subscription_list` | `SubscriptionView[]`（带 `node_count` / `group_count` / `last_update_ms` / `parser`） | **已对齐**：`net.rs::views_of_subscriptions` 返回 `SubscriptionView`，解析状态取自版本存储元数据（**没刷过 = 字段缺失**，不给 0）。第 71 轮之前这里返回裸 `Subscription`，于是节点页的硬前置（[19 §2.3]）恒判"没解析过"、节点清单恒空 |
+ * | `subscription_list` | `SubscriptionView[]`（带 `node_count` / `group_count` / `last_update_ms` / `parser`） | **已对齐**：`net.rs::views_of_subscriptions` 返回 `SubscriptionView`，解析状态取自版本存储元数据（**没刷过 = 字段缺失**，不给 0）。第 71 轮之前这里返回裸 `Subscription`，于是节点页的硬前置恒判"没解析过"、节点清单恒空 |
  * | `credential_list` | `CredentialView { credential, provider_name, quota, channel_count }` | `CredentialView { credential, quota_state, used_pct }` |
  * | `provider_list` | `ProviderView`（**没有 `lane` 字段**） | `Vec<Provider>`（有 `lane`） |
  *
@@ -27,7 +27,7 @@
  *
  * - **不保留订阅原始对象**：`Subscription.url` 里带订阅 token，所以 `SubscriptionRow`
  *   刻意**不提供** `raw` 逃生口 —— 原始地址没有任何进入 DOM 的路径（`maskSubscriptionUrl` 是唯一出口）。
- * - **不自己算"最终生效线路"**：五级继承（[04 §8.1]）的解析归后端（`lane_assignments`）所有。
+ * - **不自己算"最终生效线路"**：五级继承的解析归后端（`lane_assignments`）所有。
  *   前端再实现一遍就是两个真相源。这里只做**配置里显式写了什么**的收集，以及它的倒排。
  *
  * ## 三、契约生成落地之后
@@ -65,10 +65,10 @@ import type { Subscription, SubscriptionFormat } from "@/shared/bindings";
 // ================================================================ 网络代理是不是**在用**
 
 /**
- * `net.kernel.path` 的读取（[18 §2.1]，[19 §2.2]）。
+ * `net.kernel.path` 的读取（）。
  *
  * **注**：上一版这里还有一个 `networkScope()`，用"内核路径 / 订阅 / 线路三项是否都空"来决定
- * `/network` 要不要整页隐藏（[18 §2.2] 的"选装入口"）。那个口径**已被 [19 §2.2] 取代**：
+ * `/network` 要不要整页隐藏（"选装入口"）。那个口径**已被 取代**：
  * 网络代理默认开启（默认直连），这一页**永远渲染**各区块，没有"启用网络代理"这个动作。
  * 所以那个函数连同它的类型一起删掉了 —— 留一个不再决定任何事情的"门控"只会让下一个人读错。
  */
@@ -89,7 +89,7 @@ export function readKernelPath(doc: unknown): string | undefined {
 // ================================================================ 文案映射（显式表，不用模板拼 key）
 
 /**
- * 线路种类（[04 §7.1]）—— **界面认得的词表**。
+ * 线路种类—— **界面认得的词表**。
  *
  * 用户第 321 轮："**直接放弃订阅里面分组这一概念，只拿节点**" ——
  * `subscription_group`（订阅里自带的组）**从界面上彻底消失**，所以这里不再是五种。
@@ -133,7 +133,7 @@ export function subscriptionFormatLabel(format: string | undefined): I18nKey | u
   return SUBSCRIPTION_FORMAT_LABEL[format];
 }
 
-/** 线路健康（[04 §7.2] 的判定 + `unknown`）。 */
+/** 线路健康（判定 + `unknown`）。 */
 export type LaneHealth = "ok" | "degraded" | "down" | "unknown";
 
 export const HEALTH_LABEL: Record<LaneHealth, I18nKey> = {
@@ -143,7 +143,7 @@ export const HEALTH_LABEL: Record<LaneHealth, I18nKey> = {
   unknown: "network.health.unknown",
 };
 
-/** 全站颜色语义唯一（[15 §3.2]）：绿=正常 · 黄=警告 · 红=失败 · 灰=未知。 */
+/** 全站颜色语义唯一：绿=正常 · 黄=警告 · 红=失败 · 灰=未知。 */
 export const HEALTH_STATUS: Record<LaneHealth, SemStatus> = {
   ok: "ok",
   degraded: "warn",
@@ -220,7 +220,7 @@ export type SubscriptionRow = {
    * - 对象 = 上次已知（各字段仍可能缺失）。
    *
    * 为什么不再读契约里的 `SubscriptionView.userinfo`：Rust 返回的是**裸实体**（没有这个字段），
-   * 那份数据永远读不到；而流量是**运行时观测值**，真源是后端持久化列（[18 §1.2]）。
+   * 那份数据永远读不到；而流量是**运行时观测值**，真源是后端持久化列。
    */
   traffic?: TrafficRow | null;
 };
@@ -297,7 +297,7 @@ export function readSubscription(raw: unknown): SubscriptionRow {
   };
 }
 
-// ================================================================ 订阅流量（[18 §1]，等价于 Clash 面板那一行）
+// ================================================================ 订阅流量（等价于 Clash 面板那一行）
 
 /**
  * 一份订阅**上次已知**的流量观测值（来自 `subscription_traffic` 的持久化列）。
@@ -351,7 +351,7 @@ export function readTrafficMap(rows: unknown): Map<string, TrafficRow | null> {
 }
 
 /**
- * 一行流量 → 界面上要显示的三样（[18 §1.3]）。**纯函数、不做 i18n**（文案由页面拼）。
+ * 一行流量 → 界面上要显示的三样。**纯函数、不做 i18n**（文案由页面拼）。
  *
  * 规则（"缺哪样就不显示那一样"）：
  * - `used = upload + download` —— **两者都有**才算（缺一个就没有"已用"，**不填 0**）；

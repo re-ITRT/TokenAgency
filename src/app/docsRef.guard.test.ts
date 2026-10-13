@@ -18,7 +18,7 @@
  * 这样清理可以慢慢做，但**不可能反弹**。
  *
  * 注意 `[NN §x]` 这种**短式**（不带 `docs/`）也算 —— 第一版工具漏了它，
- * 于是把 `[15 §7]` 当成了普通文本。
+ * 于是把 `` 当成了普通文本。
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { extname, join, relative, resolve } from "node:path";
@@ -52,7 +52,7 @@ const EXT = new Set([".rs", ".ts", ".tsx", ".mjs", ".js", ".ps1", ".sh", ".yaml"
  * **只许往下调。** 改掉一批引用后，把这两个数字改小；守卫会逼着你确认
  * "确实只减不增"。
  */
-const BASELINE = { files: 127, lines: 564 };
+const BASELINE = { files: 17, lines: 27 };
 
 /**
  * `docs/` 篇数的棘轮基线（第 342 轮实测 52 篇）。
@@ -127,23 +127,33 @@ function scanRepo(): {
 
 describe("[docsRef] docs/NN 引用制度的棘轮", () => {
   it("计数函数本身有牙（自检：正负样本都要认对）", () => {
+    // 夹具里的文档编号**在源码里拼出来**，不写字面量。
+    //
+    // 为什么：这套编号引用正在被废除，清理工具会把源码里的字面量当引用删掉。
+    // 第 343 轮就真的把下面这几个样本删了 —— 自检于是从"必须命中"变成"永远不命中"，
+    // **守卫安静地失去了牙齿**，而它自己还绿着（因为夹具残缺后断言的是"有没有命中"）。
+    // 拼接之后：运行时样本仍然含编号（牙齿还在），源码里不再有可被扫走的字面量，
+    // 本文件自身也不再被棘轮计数。
+    const ref = (n: string, sec?: string) => `docs/${n}${sec ? ` §${sec}` : ""}`;
+    const short = (n: string, sec: string) => `[${n} §${sec}]`;
+
     // 正面：两种形态都要被数到
-    expect(countsAsRef("// 见 docs/28 §1.2 说明了关系翻转")).toBe(true);
-    expect(countsAsRef("it(\"[docs/30 §3.18] 筛选区的主操作固定在底部\", () => {})")).toBe(true);
+    expect(countsAsRef(`// 见 ${ref("28", "1.2")} 说明了关系翻转`)).toBe(true);
+    expect(countsAsRef(`it("${short("30", "3.18")} 筛选区的主操作固定在底部", () => {})`)).toBe(true);
     expect(countsAsRef("`docs/11-internal-contracts.md` 是契约")).toBe(true);
     // 关键：**短式**也必须认（不带 docs/），否则这一整类会漏掉
-    expect(countsAsRef("* 模型目录页（[07 §4] / [docs/28]）的纯逻辑层")).toBe(true);
+    expect(countsAsRef(`* 模型目录页（${short("07", "4")} / ${ref("28")}）的纯逻辑层`)).toBe(true);
     // 反面：这些不该被误判
     expect(countsAsRef("// 端口 39100 到 39299 是 lane 区间")).toBe(false);
     expect(countsAsRef("const REVISION = 46;")).toBe(false);
     expect(countsAsRef("// §5 的白名单在别处")).toBe(false);
     // 一份合成文本：3 处命中
     const synthetic = [
-      "// 见 docs/28",
+      `// 见 ${ref("28")}`,
       "let x = 1;",
-      "// [15 §7] 的规则",
+      `// ${short("15", "7")} 的规则`,
       "// 普通注释",
-      "it(\"[docs/32] 契约给了就显示\", () => {});",
+      `it("${ref("32")} 契约给了就显示", () => {});`,
     ].join("\n");
     expect(countRefLines(synthetic)).toBe(3);
   });

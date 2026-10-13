@@ -1,6 +1,6 @@
 //! ★ 脱敏规则—— 应用日志与诊断包的**唯一出口防线**。
 //!
-//! 为什么要有这一层（[14 §7.1]）：`ta-secrets` 的 `SecretString` 只在**类型**层面脱敏，
+//! 为什么要有这一层：`ta-secrets` 的 `SecretString` 只在**类型**层面脱敏，
 //! 它挡不住"有人把密钥拼进了 message 字符串"这类绕过。**对最终输出的字符串再扫一遍，
 //! 是唯一能兜住未知写法的一层** —— 而日志文件是"用户随手就能发出去"的东西。
 //!
@@ -10,7 +10,7 @@
 //! |---|---|
 //! | `sk-…` 长 token / `Bearer <token>` | `***` |
 //! | `x-api-key` / `api-key` / `authorization` / `cookie` 的值 | `***`（保留键名，排查仍能看出"这里有个 key"） |
-//! | `data:image/…;base64,…` | `data:image/…;base64,<len=N sha256=xxxxxxxx>`（与 [07 §2.2] 同口径） |
+//! | `data:image/…;base64,…` | `data:image/…;base64,<len=N sha256=xxxxxxxx>`（与 同口径） |
 //! | JWT（`eyJ….….…` 三段） | `***` |
 //! | URL 里的 `?key=` / `&token=` / `&api_key=` / `&password=` 值 | `***` |
 //! | 便携密钥库密文特征 | `***` |
@@ -72,14 +72,14 @@ pub fn sanitize(input: &str) -> String {
     sanitize_with(&RULES, input)
 }
 
-/// 是否含敏感形态（返回第一处命中）。诊断包"打完之后再扫一遍"用它（[14 §11.3]）。
+/// 是否含敏感形态（返回第一处命中）。诊断包"打完之后再扫一遍"用它。
 pub fn find_secret(input: &str) -> Option<SecretHit> {
     find_secret_with(&RULES, input)
 }
 
 /// 配置 YAML 脱敏：**保留结构，只把密钥类字段的值换成 `***`**。
 ///
-/// [14 §11.2] 要的是"密钥替换为 ***，但保留通道/线路结构 —— 结构才是排查要看的"，
+/// 要的是"密钥替换为 ***，但保留通道/线路结构 —— 结构才是排查要看的"，
 /// 所以这里逐行只动 `键: 值` 里的值，不碰键、不碰缩进、不碰 `${secret:name}` 这类引用
 /// （引用本身不含密钥材料）。
 pub fn sanitize_config_yaml(yaml: &str) -> String {
@@ -305,7 +305,7 @@ fn find_secret_with(rules: &Rules, input: &str) -> Option<SecretHit> {
     hits.into_iter().min_by_key(|h| h.start)
 }
 
-/// `<len=N sha256=xxxxxxxx>`：N 是 **base64 解码后的字节数**（与 [07 §2.2] 的 `bytes` 同口径）。
+/// `<len=N sha256=xxxxxxxx>`：N 是 **base64 解码后的字节数**（与 的 `bytes` 同口径）。
 fn image_placeholder(base64_payload: &str) -> String {
     let compact: String = base64_payload.chars().filter(|c| !c.is_whitespace()).collect();
     let padding = compact.chars().rev().take_while(|c| *c == '=').count();

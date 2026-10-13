@@ -2,7 +2,7 @@
 //!
 //! # 这一层**只搬运，不判定**
 //!
-//! `metered_usage_for` 是"上游到底给没给 usage"的**唯一决策点**（[11 §6] 铁律 4），
+//! `metered_usage_for` 是"上游到底给没给 usage"的**唯一决策点**（铁律 4），
 //! 所以这里**绝不**自己判 `null` / `is_empty` / 手拼 [`ta_core::metering::MeteredUsage`]
 //! （`metered_usage_guard.rs` 会直接红）。这里只做三件事：
 //!
@@ -551,7 +551,7 @@ mod tests {
         let records = h.store.records();
         assert_eq!(records.len(), 1);
         // ★ 关键：这是"上游明确给了一个空容器"（说 0），**不是**"我们不知道"。
-        // 若这里变成 Estimated，就是拿估算冒充上游数据（[11 §6] 铁律 4）。
+        // 若这里变成 Estimated，就是拿估算冒充上游数据（铁律 4）。
         assert_eq!(records[0].usage_source, UsageSource::UpstreamPartial);
         assert_eq!(records[0].usage.total(), 0);
         assert_eq!(records[0].usage_raw, json!({}));

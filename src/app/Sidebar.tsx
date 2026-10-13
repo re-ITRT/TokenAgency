@@ -125,7 +125,7 @@ export function Sidebar() {
             <Fragment key={section.groupKey ?? "__ungrouped__"}>
               {/*
  分组之间加一条**细线**，不是大间距 ——
-                [15 §3.3] 的间距刻度里，`mt` 最多只能给 24px，而"同类相邻、异类分开"靠
+ 的间距刻度里，`mt` 最多只能给 24px，而"同类相邻、异类分开"靠
                 一条 1px 线比靠留白更明确（同屏也给不出更大的间距）。
                 第一条前面不加线（与上面的品牌区分隔线重复会显得像两段）。
               */}
@@ -164,7 +164,7 @@ export function Sidebar() {
                     }}
                   >
                     <Tooltip title={collapsed ? label : ""} placement="right">
-                      {/* [15 §6] 侧边栏图标 18px；与文字间距 10px（用 minWidth 表达，不是随手 margin） */}
+                      {/* 侧边栏图标 18px；与文字间距 10px（用 minWidth 表达，不是随手 margin） */}
                       <ListItemIcon
                         sx={{
                           minWidth: collapsed ? 0 : 28,

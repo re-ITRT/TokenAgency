@@ -700,7 +700,7 @@ fn traffic_store(state: &AppState) -> SqliteSubscriptionTrafficStore {
 /// 解析层的流量 → IPC 线上形状。
 ///
 /// 为什么需要这一次转换：`ta-subscription`（下载/解析）与 `ta-store`（持久化 + DTO）
-/// 互不依赖（[11 §1.1]：不跨 crate 用别人的具体类型），而 **DTO 的唯一真相源是 Store**
+/// 互不依赖（：不跨 crate 用别人的具体类型），而 **DTO 的唯一真相源是 Store**
 /// （见 `src-tauri/Cargo.toml` 里"Store 是唯一真相源，不另写一份 DTO"）。
 /// 两个类型字段一一对应，**只在这一处转换** —— 少一个字段就编不过，漂移不了。
 fn to_ipc_traffic(t: &ta_subscription::traffic::SubscriptionTraffic) -> SubscriptionTraffic {
@@ -3432,7 +3432,7 @@ mod tests {
 
     /// 最新一次被坏更新拦下：`error` 必须有值，**计数仍来自上一版已采纳的内容**。
     ///
-    /// 前端据此仍然发 `subscription_nodes`（[19 §2.3]：有 `error` = 后端确实处理过这份订阅），
+    /// 前端据此仍然发 `subscription_nodes`（：有 `error` = 后端确实处理过这份订阅），
     /// 而不是替后端下"没解析过"的结论。
     #[tokio::test]
     async fn subscription_list_reports_a_rejected_latest_attempt_and_keeps_the_old_counts() {

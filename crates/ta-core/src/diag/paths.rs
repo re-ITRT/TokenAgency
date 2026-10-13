@@ -1,7 +1,7 @@
 //! ★ **C1 判定**：日志落点—— 纯决策，不做 IO。
 //!
 //! 为什么 C1 需要一个"判定函数"而不是一句"记得把日志写到用户的日志目录"：
-//! 托盘应用**没有控制台**（[14 §1.1]），日志一旦写错地方就等于没有日志，
+//! 托盘应用**没有控制台**，日志一旦写错地方就等于没有日志，
 //! 而且这件事**不会报错** —— 程序照常跑，只是出问题时谁也找不到文件。
 //! 所以三平台路径在这里成为**可被引用的常量级事实**，由
 //! `src-tauri/src/logging.rs`（E3）传真实 env 进来落地。
@@ -71,7 +71,7 @@ impl std::fmt::Display for MissingBaseDir {
     }
 }
 
-/// 日志目录（[14 §4.1]）。
+/// 日志目录。
 ///
 /// - Windows 用 `LOCALAPPDATA`（**不是** `APPDATA`：日志不该跟着漫游配置到处跑）；
 /// - macOS 用 `~/Library/Logs/TokenAgency`（Console.app 认这个位置）；
@@ -107,7 +107,7 @@ pub fn archive_log_file(dir: &Path, now_ms: i64, local_offset_minutes: i32) -> P
     dir.join(rotation::archive_name_local(now_ms, local_offset_minutes))
 }
 
-/// 崩溃文件的全路径（[14 §8.2]，`crash-<yyyymmdd-HHmmss>.log`）。
+/// 崩溃文件的全路径（`crash-<yyyymmdd-HHmmss>.log`）。
 pub fn crash_log_file(dir: &Path, now_ms: i64, local_offset_minutes: i32) -> PathBuf {
     dir.join(rotation::crash_name_local(now_ms, local_offset_minutes))
 }
@@ -117,7 +117,7 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    /// 把路径规范化成 `a/b/c` 形式，便于与 [14 §4.1] 的表格逐字比对。
+    /// 把路径规范化成 `a/b/c` 形式，便于与 的表格逐字比对。
     fn norm(p: &Path) -> String {
         p.to_string_lossy().replace('\\', "/")
     }
@@ -144,17 +144,17 @@ mod tests {
         assert_eq!(
             norm(&windows_dir()),
             "C:/Users/somebody/AppData/Local/TokenAgency/logs",
-            "[14 §4.1]：Windows 是 %LOCALAPPDATA%\\TokenAgency\\logs（不是 APPDATA）"
+            "：Windows 是 %LOCALAPPDATA%\\TokenAgency\\logs（不是 APPDATA）"
         );
         assert_eq!(
             norm(&macos_dir()),
             "/Users/somebody/Library/Logs/TokenAgency",
-            "[14 §4.1]：macOS 是 ~/Library/Logs/TokenAgency"
+            "：macOS 是 ~/Library/Logs/TokenAgency"
         );
         assert_eq!(
             norm(&linux_dir()),
             "/home/somebody/.local/state/tokenagency/logs",
-            "[14 §4.1]：Linux 是 ~/.local/state/tokenagency/logs"
+            "：Linux 是 ~/.local/state/tokenagency/logs"
         );
     }
 
@@ -191,7 +191,7 @@ mod tests {
         assert_eq!(
             norm(&current_log_file(&d)),
             "C:/Users/somebody/AppData/Local/TokenAgency/logs/tokenagency.log",
-            "[14 §4.1]：文件名是 tokenagency.log"
+            "：文件名是 tokenagency.log"
         );
         assert_eq!(
             current_log_file(&d).file_name().and_then(|s| s.to_str()),
@@ -221,7 +221,7 @@ mod tests {
         );
     }
 
-    /// 契约一致性：本模块的规则必须能在 [14 §4.1] 的表格里找到依据。
+    /// 契约一致性：本模块的规则必须能在 的表格里找到依据。
     ///
     /// 只断言"文档确实写着这三个路径"，不解析表格 —— 表格换排版不该让守卫变红，
     /// 但**删掉/改掉路径规则**必须让守卫变红。

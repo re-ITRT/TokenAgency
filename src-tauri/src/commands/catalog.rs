@@ -1,5 +1,5 @@
 //! `catalog_*`：provider / credential / model / channel / group / policy / lane / subscription
-//! 的**只读**列表与详情（T1a 范围；写操作按 [10 §2.2] 在 T1b 补齐）。
+//! 的**只读**列表与详情（T1a 范围；写操作按 在 T1b 补齐）。
 //!
 //! 这类命令都是"从热读快照里取"，所以体积极小、不查库。
 
@@ -21,13 +21,13 @@ use crate::state::AppState;
 use ta_core::config::ConfigValidator;
 use ta_store::{ConfigStore, HealthStore, ModelCatalogStore};
 
-/// 凭据（[10 §2.2] `credential_list` 的 `CredentialView`）。
+/// 凭据（`credential_list` 的 `CredentialView`）。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct CredentialView {
     pub credential: Credential,
 }
 
-/// 模型 + 通道数（[10 §2.2] `model_list`）。
+/// 模型 + 通道数（`model_list`）。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct ModelView {
     pub model: Model,
@@ -39,7 +39,7 @@ pub struct ModelView {
     pub public_info: PublicModelInfo,
 }
 
-/// 线路 + 最近健康样本（[10 §2.2] `lane_list`）。
+/// 线路 + 最近健康样本（`lane_list`）。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct LaneView {
     pub lane: Lane,
@@ -124,7 +124,7 @@ pub async fn group_list(state: State<'_, AppState>) -> IpcResult<Vec<ChannelGrou
     Ok(doc(&state).channel_groups.clone())
 }
 
-/// 按 priority 升序（UI 的拖拽顺序就是求值顺序，见 [02 §2.8]）。
+/// 按 priority 升序（UI 的拖拽顺序就是求值顺序，见）。
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn policy_list(state: State<'_, AppState>) -> IpcResult<Vec<Policy>> {

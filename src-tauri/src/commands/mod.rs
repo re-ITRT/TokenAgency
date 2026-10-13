@@ -28,7 +28,7 @@ use ta_core::error::TaError;
 /// 前端可见的错误信封。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct IpcError {
-    /// [11 §5] 的错误码，如 `TA-2003`
+    /// 的错误码，如 `TA-2003`
     pub code: String,
     /// 面向机器的类型串，如 `tokenagency_no_viable_channel`
     #[serde(rename = "type")]
@@ -71,7 +71,7 @@ impl IpcError {
         self
     }
 
-    /// 配置校验失败：把**具体字段路径**带出去（[10 §2.2] `config_validate` 的契约）。
+    /// 配置校验失败：把**具体字段路径**带出去（`config_validate` 的契约）。
     pub fn from_field_errors(errors: &[ta_core::error::FieldError]) -> Self {
         let details = serde_json::to_value(errors).unwrap_or(serde_json::Value::Null);
         Self::new(
@@ -85,7 +85,7 @@ impl IpcError {
 
 impl From<TaError> for IpcError {
     fn from(e: TaError) -> Self {
-        // 错误码/类型串的唯一来源是 TaError 自己（[11 §5]），这里不重新映射。
+        // 错误码/类型串的唯一来源是 TaError 自己，这里不重新映射。
         // `details` 装箱（见字段文档）：只有 `ConfigInvalid` 一份，且要带出全部字段路径。
         let details = match &e {
             TaError::ConfigInvalid { errors } => serde_json::to_value(errors).ok().map(Box::new),

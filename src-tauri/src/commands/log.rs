@@ -152,7 +152,7 @@ pub async fn log_clear(state: State<'_, AppState>, mode: ta_store::ClearMode) ->
     Ok(state.trace.clear(mode).await?)
 }
 
-// ================================================================ 查询能力探测（[06 §10.2 D2]）
+// ================================================================ 查询能力探测
 
 /// 一项查询能力是否可用。形状按 E1/E2 已确认的约定：
 /// `enabled = true` 时 `reason` 为 `None`。
@@ -163,7 +163,7 @@ pub struct CapabilitySupport {
     pub reason: Option<String>,
 }
 
-/// [10 §2.2] 日志后端在**当前模式**下支持哪些查询能力。
+/// 日志后端在**当前模式**下支持哪些查询能力。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct LogQueryCapabilities {
     /// "重试"筛选项是否可用（`mode = off` 时没有尝试链可看）
@@ -185,7 +185,7 @@ pub fn capabilities_for(mode: ta_core::types::LogMode) -> LogQueryCapabilities {
     }
 }
 
-/// [10 §2.2] `log_query_capabilities` —— 前端进日志页时取一次（E2 建议的 ② 方案，
+/// `log_query_capabilities` —— 前端进日志页时取一次（E2 建议的 ② 方案，
 /// 不动 `LogPage` 契约）。
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]

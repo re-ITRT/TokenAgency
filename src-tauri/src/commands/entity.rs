@@ -771,7 +771,7 @@ pub struct Cell {
     pub enabled: bool,
 }
 
-/// `MatrixView`（`bindings.ts` / [10 §2.2]）。
+/// `MatrixView`（`bindings.ts` /）。
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct MatrixView {
     pub models: Vec<ModelRow>,
@@ -1207,7 +1207,7 @@ fn first_capability_mismatch(mismatches: Vec<CapabilityMismatchDetail>) -> Optio
 
 /// `policy_upsert`：同 id 覆盖、不存在则新增（幂等）。
 ///
-/// `priority` 数字小的先求值、首个命中即生效（[02 §2.8]）——那一列由
+/// `priority` 数字小的先求值、首个命中即生效——那一列由
 /// [`reorder_policies`] 负责，这里不动它（用户手填的优先级要原样保留）。
 ///
 /// **能力校验**：这条策略**实际会用到的**线路（`use_channels` ∪
@@ -1335,7 +1335,7 @@ pub async fn policy_set_enabled(
 
 // ---------------------------------------------------------------- policy_simulate
 
-/// `SimulateInput`（[10 §2.2] / `bindings.ts`）。
+/// `SimulateInput`（/ `bindings.ts`）。
 ///
 /// 前四个字段在 TS 里是**必填**的，所以这里也不给 `#[serde(default)]` ——
 /// 少传一个字段应当在反序列化时就失败，而不是被悄悄当成 `false` / `0`
@@ -1417,7 +1417,7 @@ pub struct SimulateEliminated {
     pub reason: String,
 }
 
-/// `SimulateResult`（[10 §2.2] / `bindings.ts`）。
+/// `SimulateResult`（/ `bindings.ts`）。
 ///
 /// 为什么要一份自己的 DTO：`ta_core::routing::simulate::SimulateResult` **没有**
 /// `specta::Type`（`ta-core` 只在契约类型上挂 `feature = "specta"`），
@@ -1501,7 +1501,7 @@ pub async fn policy_simulate(
 
 // ================================================================ pricing
 
-/// `ResolvedPrice`（[10 §2.2] / `bindings.ts`）。
+/// `ResolvedPrice`（/ `bindings.ts`）。
 ///
 /// `ta_core::pricing::ResolvedPrice` 没有 `specta::Type`，所以这里直译一份。
 /// **刻意不暴露** `divisor` / `entry_index`：契约里没有它们，
@@ -2853,7 +2853,7 @@ mod tests {
         assert!(set_credential_secret_with(&state, &store, "c-a", "   ").await.is_err());
     }
 
-    // ================================================================ 能力一致才可路由（[17 §2]）
+    // ================================================================ 能力一致才可路由
 
     /// 造出"同一个 `model` 的两条线路"，两条能力分别指定 —— 能力校验的前置。
     ///
@@ -2931,7 +2931,7 @@ mod tests {
 
     #[tokio::test]
     async fn policy_upsert_accepts_same_model_channels_when_only_modalities_order_differs() {
-        // `modalities` 排序去重后相等 → 不是差异（[17 §2] 的比较规则）
+        // `modalities` 排序去重后相等 → 不是差异（比较规则）
         let mut a = caps(true);
         a.modalities = vec!["text".to_string(), "image".to_string()];
         let mut b = caps(true);

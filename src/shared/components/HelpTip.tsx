@@ -41,7 +41,7 @@ export function HelpTip({ text, testId, placement = "top" }: HelpTipProps) {
         size="small"
         data-testid={testId}
         aria-label={text}
-        /* 间距只从刻度取（[15 §3.3] 只允许 2/4/8/12/16/24/32/48/64；`p: 0.5` = 2px） */
+        /* 间距只从刻度取（只允许 2/4/8/12/16/24/32/48/64；`p: 0.5` = 2px） */
         sx={{ ml: 0.5, p: 0.5, color: "text.secondary", verticalAlign: "middle" }}
       >
         <HelpOutlineIcon sx={{ fontSize: 16 }} />

@@ -1,12 +1,12 @@
 // @vitest-environment node
 /**
- * 首启向导 `/onboarding` 的**反向断言**：这个向导已经没有入口了（[19 §2.1]）。
+ * 首启向导 `/onboarding` 的**反向断言**：这个向导已经没有入口了。
  *
  * ## 为什么这份文件从"1700 行的向导验收"变成"一条反向断言"
  *
  * 用户原话（[19]）：「网络：**两个向导都关掉**（首启 `/onboarding` + 设置页里的网络/内核那块）」。
  * 向导**整条从产品里移除**，所以上一版那些"第 1 步 / 第 3 步 / 第 4 步"的用例全都失去了被测对象 ——
- * 留着它们就是[19 §5] 说的那种**"永远渲染不到的测试"**：跑得绿，却什么都没验证。
+ * 留着它们就是 说的那种**"永远渲染不到的测试"**：跑得绿，却什么都没验证。
  *
  * 于是这里改成钉**它真的没了**这一点，而且是用机械检查钉：
  *
@@ -14,7 +14,7 @@
  * 2. **页面文件不存在**：`resolvePage` 解析不出来 —— "不显示"的验收标准是"不存在"，
  *    不是"被 CSS 藏起来了"（与 `network.test.tsx` 的 `network-optional` 反向断言同一套纪律）；
  * 3. **页面层源码不再引用 `onboarding_*` 三条命令**：命令在后端**保留注册**（能力不删），
- *    但 UI 无入口（[19 §2.1]）—— 这一条防的是"哪天顺手把向导接回来"。
+ *    但 UI 无入口—— 这一条防的是"哪天顺手把向导接回来"。
  */
 
 import { readFileSync, readdirSync } from "node:fs";
@@ -25,7 +25,7 @@ import { describe, expect, it } from "vitest";
 import { knownPages, resolvePage } from "@/app/pageRegistry";
 import { NAV_ROUTES, ROUTES, routeByKey } from "@/app/routes";
 
-/** 后端仍注册、但页面不许再引用的三条命令（[19 §2.1]）。 */
+/** 后端仍注册、但页面不许再引用的三条命令。 */
 const ONBOARDING_COMMANDS = ["onboarding_detect", "onboarding_apply", "onboarding_test_all"];
 
 /**
@@ -64,7 +64,7 @@ function offenders(files: readonly string[], read: (file: string) => string): st
   return found;
 }
 
-describe("首启向导 /onboarding 已经没有入口（[19 §2.1]）", () => {
+describe("首启向导 /onboarding 已经没有入口（）", () => {
   it("路由表里没有 /onboarding 这一条，侧边栏也没有", () => {
     expect(routeByKey("onboarding")).toBeUndefined();
     expect(ROUTES.filter((r) => r.path === "/onboarding")).toEqual([]);

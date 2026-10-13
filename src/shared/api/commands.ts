@@ -1,7 +1,7 @@
 /**
  * 类型化命令入口 —— **页面只通过这里调后端，不写裸命令字符串**。
  *
- * 命令名与入参/返回类型都来自 `bindings.ts` 的 `CommandMap`（与 [10 §2.2] 一一对应），
+ * 命令名与入参/返回类型都来自 `bindings.ts` 的 `CommandMap`（与 一一对应），
  * 所以拼错命令名、传错参数、用错返回类型都会在 `tsc --noEmit` 阶段被拦下。
  *
  * 错误统一是 `TokenAgencyError`（见 `client.ts`）：页面按 `err.code`（TA-xxxx）分支，

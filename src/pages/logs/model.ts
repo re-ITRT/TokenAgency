@@ -1,5 +1,5 @@
 /**
- * 请求日志页（[07 §2] / [14 §12]）的**纯逻辑**：没有 JSX、没有 React、没有 IPC。
+ * 请求日志页（/）的**纯逻辑**：没有 JSX、没有 React、没有 IPC。
  *
  * 把这个页面最容易被写错的两件事收在这一个文件里，并用单测钉住：
  *
@@ -78,10 +78,10 @@ const RANGE_TO_TIME_RANGE: Record<RangePreset, string> = {
 export type Level = "ok" | "retried" | "failed";
 export const LEVELS: readonly Level[] = ["ok", "retried", "failed"];
 
-/** 记录模式（[07 §2.1]）：off / meta / shape / full。 */
+/** 记录模式：off / meta / shape / full。 */
 export const LOG_MODES: readonly LogMode[] = ["off", "meta", "shape", "full"];
 
-/** 保留期（[07 §2.1]）：7d | 30d | 90d | forever。 */
+/** 保留期：7d | 30d | 90d | forever。 */
 export const RETENTIONS: readonly Retention[] = ["7d", "30d", "90d", "forever"];
 
 // ================================================================ 筛选条件
@@ -106,7 +106,7 @@ export const DEFAULT_FILTER: LogsFilter = {
 };
 
 /**
- * 时间窗 → `[from_ms, to_ms)`（**本地时区**，与 [07 §1.3]「时间轴永远本地时区」一致）。
+ * 时间窗 → `[from_ms, to_ms)`（**本地时区**，与「时间轴永远本地时区」一致）。
  * 后端是 `ts >= from_ms AND ts < to_ms`（trace_store.rs:767-774）。
  */
 export function rangeWindow(

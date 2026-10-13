@@ -1,4 +1,4 @@
-//! 插件注册（[12 §5 T2] ③）—— 7 个插件在这里**统一**注册，顺序有意。
+//! 插件注册（③）—— 7 个插件在这里**统一**注册，顺序有意。
 //!
 //! 为什么单独一个文件而不是散在 `lib.rs` 里：注册顺序、以及"哪些插件**故意不授予权限**"
 //! 都是要长期维护的决策，散在 builder 链上没人看得见（见 [`PLUGINS`] 与
@@ -10,7 +10,7 @@
 //!    第二个实例先建窗口/先碰数据库再被要求退出（那是真实的脏数据来源）。
 //! 2. **单一日志路径**：**不注册 `tauri-plugin-log`**。
 //!    本应用自己装了 `tracing_subscriber`（`lib.rs::init_tracing`），
-//!    再挂一个日志插件就是**两套并行系统**（[14 §1.1]）：global logger 只能有一个，
+//!    再挂一个日志插件就是**两套并行系统**：global logger 只能有一个，
 //!    插件默认会再 `log::set_logger` 一次 —— 那是**启动即 panic**
 //!    （`attempted to set a logger after the logging system was already initialized`）。
 //!    第 10 轮之前用 `.skip_logger()` 绕过，那只是让 panic 不发生：
@@ -28,13 +28,13 @@
 //!
 //! # ⚠️ autostart 插件：注册但**绝不使用**、**绝不授予权限**
 //!
-//! `tauri-plugin-autostart` 的能力（`enable/disable/isEnabled`）**不满足** [09 §1.2]
+//! `tauri-plugin-autostart` 的能力（`enable/disable/isEnabled`）**不满足**
 //! 的 E1–E5：它没有漂移检测、没有启动延迟、没有 `mode`、也读不到实际注册的命令行。
 //! 如果前端能直接调它的 `plugin:autostart|enable`，就等于给"写 OS 状态"开了**第二条路径**，
-//! 绕过 `app_get_autostart` 的真读逻辑（[10 §2.2] 规则 1）和 E3/E4。
+//! 绕过 `app_get_autostart` 的真读逻辑（规则 1）和 E3/E4。
 //!
 //! 因此：
-//! * 注册它是为了插件清单完整（[12 §5 T2] ③ 去 log 后的 7 个之一），**不调用它的 manager**；
+//! * 注册它是为了插件清单完整（③ 去 log 后的 7 个之一），**不调用它的 manager**；
 //! * `capabilities/` 里**不授予**任何 `autostart:*` 权限（未授予 = 前端调不到）；
 //! * 单元测试 `capabilities_never_grant_the_autostart_plugin` 会守住这条线，
 //!   谁以后手滑加了权限，测试立刻红。
@@ -60,7 +60,7 @@ pub struct PluginSpec {
 /// 7 个插件。
 ///
 /// 数字的来历（**每一减都要有理由，不是随手改**）：
-/// * [12 §5 T2] ③ 原列 12 个；
+/// * ③ 原列 12 个；
 /// * 去掉 `tauri-plugin-log` → 11（单一日志路径，见模块文档第 2 条）；
 /// * ** 去掉 `fs` / `process` / `clipboard-manager` / `shell` → 7**：
 ///   这四个**只注册、零调用**，却在 `capabilities/` 里白给了 `fs:default` /
@@ -73,7 +73,7 @@ pub const PLUGINS: [PluginSpec; 7] = [
     PluginSpec {
         id: "single-instance",
         krate: "tauri-plugin-single-instance",
-        note: "必须最先：抢单实例锁，第二个实例唤起初窗后直接退出（[12 §5 T2] ④）",
+        note: "必须最先：抢单实例锁，第二个实例唤起初窗后直接退出（ ④）",
     },
     PluginSpec {
         id: "window-state",
@@ -149,10 +149,10 @@ mod tests {
 
     #[test]
     fn seven_plugins_with_unique_ids() {
-        // [12 §5 T2] ③ 原列 12 个 →（去 `tauri-plugin-log`）11 个
+        // ③ 原列 12 个 →（去 `tauri-plugin-log`）11 个
         // →（去 `fs` / `process` / `clipboard-manager` / `shell` 四个零调用插件）7 个。
         // 这个数字是**决策的结果**，不是随手改的常量；改它必须同时改上面的理由。
-        assert_eq!(PLUGINS.len(), 7, "插件数量与 [docs/50] 的当前基线不一致");
+        assert_eq!(PLUGINS.len(), 7, "插件数量与 的当前基线不一致");
         let mut ids: Vec<&str> = PLUGINS.iter().map(|p| p.id).collect();
         ids.sort_unstable();
         let before = ids.len();
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn no_second_logging_system() {
         // 模块文档第 2 条的强制化：`tracing_subscriber` 是**唯一**日志路径。
-        // 谁把 `tauri-plugin-log` 加回来，日志就变成两套并行系统（[14 §1.1]），
+        // 谁把 `tauri-plugin-log` 加回来，日志就变成两套并行系统，
         // 而且它的默认行为会再 `log::set_logger` 一次 → 启动即 panic。
         // 这条守卫比"数量 == 7"更能表达真实意图：数量只是它的结果。
         assert!(
@@ -223,7 +223,7 @@ mod tests {
         for (name, body) in CAPABILITY_FILES {
             assert!(
                 !body.contains("autostart:"),
-                "{name} 里出现了 autostart 权限：那会绕过漂移检测（[09 §1.2] E3/E4）"
+                "{name} 里出现了 autostart 权限：那会绕过漂移检测（ E3/E4）"
             );
         }
     }
@@ -258,7 +258,7 @@ mod tests {
                 assert!(
                     PLUGINS.iter().any(|p| p.id == plugin),
                     "{name} 授予了 `{text}`，但 `{plugin}` 不在 PLUGINS 注册表里 —— \
-                     未注册插件的权限是白送的攻击面，删掉它（[docs/50]）"
+                     未注册插件的权限是白送的攻击面，删掉它（）"
                 );
             }
         }

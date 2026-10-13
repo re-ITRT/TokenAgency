@@ -1,5 +1,5 @@
 /**
- * 网络页（[04 §5–§8]、[12 §6 F4]、[19 §2]）—— `/network` 概览，**以及三个网络视图共用的展示件**。
+ * 网络页（）—— `/network` 概览，**以及三个网络视图共用的展示件**。
  *
  * ## 三条硬纪律
  *
@@ -15,7 +15,7 @@
  *    写操作**只显示后端返回的对象**（不拼一句"保存成功"），失败原样显示 TA 码。
  *    需要但尚未注册的后端接口如实点名，而不是编一份看起来完整的节点清单
  *    （见 `model.ts` 文件头「一」的三态区分）。
- * 3. **常显（[19 §2.2]，取代 [18 §2.2] 的"选装入口"）。** 网络代理**默认开启、默认直连**：
+ * 3. **常显（取代 的"选装入口"）。** 网络代理**默认开启、默认直连**：
  *    这一页永远渲染出口 / 订阅 / 线路，没配置时给诚实的空态 —— 页面上**没有"启用网络代理"这个动作**。
  *    未配内核路径时出口显示「出口 · 直连」（`network.directLabel`），不是错误态、不点红点。
  *
@@ -230,7 +230,7 @@ export function SectionPaper({
  * 这是承诺，不能消失 —— 但也不必天天摊在脸上占半屏。
  */
 
-/** 线路健康：6px 圆点 + 文字（[15 §5] 不许用彩色 chip）。 */
+/** 线路健康：6px 圆点 + 文字（不许用彩色 chip）。 */
 export function HealthCell({ health, raw }: { health: LaneRow["health"]; raw?: string }) {
   const { t } = useTranslation();
   // 契约外的取值原样显示（是后端说的话，不改写）；我们认识的词表才翻成中文
@@ -259,12 +259,12 @@ export function Unreadable({ testId }: { testId?: string }) {
 }
 
 // 上一版这里有一个 `MissingCommandNote`（"后端这个接口还没注册"的统一说明）与一个
-// `OptionalNetworkBlock`（未配置时唯一的"启用网络代理"入口）。两者都随 [19 §2] 作废：
+// `OptionalNetworkBlock`（未配置时唯一的"启用网络代理"入口）。两者都随 作废：
 // - 节点清单 / 订阅解析 / 逐节点测速三条命令**都已接入**，那些"本页尚未接入"的说明是**过期说明**；
 // - 网络代理默认开启（默认直连），页面上**没有"启用网络代理"这个动作**。
 // 于是这一页不再有任何"这条命令还没注册"的占位文案 —— 真缺接口时再按需加回来。
 
-// ================================================================ ⓪ 从服务商向导返回（[19 §1.4]）
+// ================================================================ ⓪ 从服务商向导返回
 //
 // 服务商两步向导的「让我先设置网络代理」把用户送到 `#/network?from=provider-wizard`，
 // 于是这一页顶部要给一条**回得去**的路：文案说清"正在为服务商配置网络代理"，
@@ -324,7 +324,7 @@ function CurrentExit({
 }: {
   status: AppStatus | undefined;
   lanes: readonly LaneRow[];
-  /** `net.kernel.path`：`undefined` = 还没读到；`""` = 读到了、用户没配（[19 §2.2]）。 */
+  /** `net.kernel.path`：`undefined` = 还没读到；`""` = 读到了、用户没配。 */
   kernelPath: string | undefined;
 }) {
   const { t } = useTranslation();
@@ -333,7 +333,7 @@ function CurrentExit({
   const laneId = status?.default_lane_id ?? undefined;
   const laneName = laneId === undefined ? undefined : laneNameOf(laneId, lanes);
 
-  // 「未配内核路径」= **读到了**配置、且 `net.kernel.path` 是空的（[19 §2.2]）。
+  // 「未配内核路径」= **读到了**配置、且 `net.kernel.path` 是空的。
   // 这时出口就是**直连** —— 不是错误态、也不是"未启用"（网络代理默认开启，默认直连）。
   // `undefined`（还没读到）不算：那是"不知道"，不能冒充"直连"。
   const kernelNotConfigured = kernelPath !== undefined && kernelPath.trim() === "";
@@ -773,7 +773,7 @@ function SubscriptionWriteDialog({
 }
 
 /**
- * 一行上的**流量**（[18 §1.3]，等价于 Clash 面板那一行）：更新时间 + 已用/总量 + 百分比 + 到期。
+ * 一行上的**流量**（等价于 Clash 面板那一行）：更新时间 + 已用/总量 + 百分比 + 到期。
  *
  * **三条各自独立，缺哪样就不显示那一样**（不显示 0、不显示占位符）：
  * 数字全部来自后端（`subscription_traffic` 的持久化观测值），前端只做格式化 ——
@@ -1081,7 +1081,7 @@ function SubscriptionsSection({
     >
       {/* 「节点数 / 组数从哪来」那一句（`network.subscriptions.countHint`）已作废：
           它写着"本页尚未接入 subscription_nodes / subscription_groups"，而这两条命令
-          这一页真的在调（见 `LaneWriteForm`）；/network/nodes 上更是直接列出了节点清单（[19 §2.3]）。 */}
+          这一页真的在调（见 `LaneWriteForm`）；/network/nodes 上更是直接列出了节点清单。 */}
       {/* **写表单的入口在这里**（它不再常驻）。这一排**永远渲染**：
           订阅一条都没有时，用户也必须有个地方能点"添加" —— 否则空列表就是个死路。 */}
       {/* **多选只在真的存在多选场景时才出现**（规则 3）：只有一条订阅时，
@@ -1376,7 +1376,7 @@ function LanesSection({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  // 行级写操作：删除（配置实体）、钉住节点（**只改内核运行态**，不改配置）、逐节点测速（[19 §2.4]）。
+  // 行级写操作：删除（配置实体）、钉住节点（**只改内核运行态**，不改配置）、逐节点测速。
   const removeOne = useCommandMutation("lane_delete");
   const setNode = useCommandMutation("lane_set_node");
   const testLane = useCommandMutation("lane_test");
@@ -1535,7 +1535,7 @@ function LanesSection({
             t("network.lanes.row.setNodeHint"),
             // 直连行为什么没有"钉住节点"控件（原来写在**每一行**的单元格里，N 条直连就是 N 遍）
             t("network.lanes.row.directNoGroup"),
-            // 测速的口径（[19 §2.4]）：**没有装配内核时后端会如实报错**，这里也如实显示
+            // 测速的口径：**没有装配内核时后端会如实报错**，这里也如实显示
             t("network.lanes.testHint"),
           )}
           testId="network-lanes-help"
@@ -1830,8 +1830,8 @@ export type NetworkBodyProps = {
   status: AppStatus | undefined;
   /**
    * `net.kernel.path`（来自 `config_get`）。
-   * `undefined` = **还没读到** —— 与"读到了、但为空（用户没配内核路径）"不是一回事（[18 §2.1]）。
-   * 空值时出口显示「出口 · 直连」，**不是**错误态（[19 §2.2]）。
+   * `undefined` = **还没读到** —— 与"读到了、但为空（用户没配内核路径）"不是一回事。
+   * 空值时出口显示「出口 · 直连」，**不是**错误态。
    */
   kernelPath: string | undefined;
   subscriptions: SubscriptionRow[] | undefined;
@@ -1842,7 +1842,7 @@ export type NetworkBodyProps = {
   lanesError: unknown;
   onRetry: () => void;
   /**
-   * 是否显示「从服务商向导返回」的返回条（[19 §1.4]）。
+   * 是否显示「从服务商向导返回」的返回条。
    *
    * 由**数据层**从真实 URL 的 `?from=provider-wizard` 读出来传进来（`NetworkBody` 是纯 props 展示层，
    * 不自己解 URL —— 那样展示层的单测就都得包一层 Router）。
@@ -1860,7 +1860,7 @@ export type NetworkBodyProps = {
 /**
  * 网络概览的展示层（纯 props，便于测"有数据 / 空 / 读不到"三种状态）。
  *
- * **[19 §2.2] 之后这里没有任何"门控"**：网络代理默认开启（默认直连），所以这一页
+ * ** 之后这里没有任何"门控"**：网络代理默认开启（默认直连），所以这一页
  * **永远**渲染出口 / 订阅 / 线路三块 —— 没配置时每块给**诚实的空态**（不是空表、不是白纸），
  * 但页面上**没有"启用网络代理"这个动作**（上一版的 `network-optional` 已作废）。
  */
@@ -1907,7 +1907,7 @@ export function NetworkBody({
 
 export default function NetworkPage() {
   const { t } = useTranslation();
-  // 返回条的触发条件是**真实 URL**（[19 §1.4]）：服务商向导里的「让我先设置网络代理」
+  // 返回条的触发条件是**真实 URL**：服务商向导里的「让我先设置网络代理」
   // 跳到 `#/network?from=provider-wizard`，这里据此给一条回得去的路。
   const [searchParams] = useSearchParams();
   const showProviderReturn = searchParams.get("from") === "provider-wizard";
@@ -1915,7 +1915,7 @@ export default function NetworkPage() {
   const status = useAppStatus({ refetchInterval: 30_000 });
   const subscriptions = useCommandQuery("subscription_list", undefined, qk.subscriptions);
   const lanes = useCommandQuery("lane_list", undefined, qk.lanes);
-  // 出口的「直连 / 线路名」判定要用 `net.kernel.path`（[19 §2.2]）：它只在 `config_get` 里，
+  // 出口的「直连 / 线路名」判定要用 `net.kernel.path`：它只在 `config_get` 里，
   // 而 `config_get` 是**原子快照**（与分配页共用同一份缓存，`config:changed` 事件会失效它）。
   const config = useCommandQuery("config_get", undefined, qk.config);
 
@@ -1952,7 +1952,7 @@ export default function NetworkPage() {
       <NetworkBody
         status={status.data}
         kernelPath={config.data === undefined ? undefined : readKernelPath(config.data)}
-        // 订阅行只带**配置与解析结果**：流量（运行时观测值）现在归详情页自己读（[18 §1.2]）
+        // 订阅行只带**配置与解析结果**：流量（运行时观测值）现在归详情页自己读
         subscriptions={
           subscriptions.data === undefined
             ? undefined

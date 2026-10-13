@@ -22,7 +22,7 @@ npm 依赖一起删除。同一轮还删了 `tauri-plugin-shell`（连注册都�
 
 | 权限 | 为什么默认不给 |
 |---|---|
-| `autostart:*` | **给前端一条绕过漂移逻辑的路径**。`app_get_autostart` 必须真读系统状态（[10 §2.2] 规则 1），并在 `desired != actual` 时只提示、不自动改回（[09 §1.2] E3）。`tauri-plugin-autostart` 的 `enable/disable` 没有这些语义 —— 前端能直接调它，就等于绕过了 T2 的 `AutostartController`。**自启动只有一条路径**：`src-tauri/src/autostart.rs`。 |
+| `autostart:*` | **给前端一条绕过漂移逻辑的路径**。`app_get_autostart` 必须真读系统状态（规则 1），并在 `desired != actual` 时只提示、不自动改回（E3）。`tauri-plugin-autostart` 的 `enable/disable` 没有这些语义 —— 前端能直接调它，就等于绕过了 T2 的 `AutostartController`。**自启动只有一条路径**：`src-tauri/src/autostart.rs`。 |
 | `shell:*` | 能起任意外部进程。需要它时必须同时说清楚"起什么、参数怎么来的、怎么防止被前端注入"。当前没有任何必须的用法（**插件本身也已移除**）。 |
 | `deep-link:*` 的注册类权限 | 深链注册要写注册表（`HKCU\Software\Classes`）。运行时写 OS 状态是 `I2` 的红线，注册交给安装包做。 |
 | `fs:*` | **插件已移除**，所以这些权限根本不存在了。将来真需要读写文件时，加**最小作用域**的权限项，不要放 `fs:allow-all`。 |

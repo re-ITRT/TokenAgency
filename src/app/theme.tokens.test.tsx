@@ -3,7 +3,7 @@
  * 令牌守卫：**`src/theme.ts` 里的值必须是 [15] 文档里的值**。
  *
  * 为什么值得单独守：改一个十六进制、加半个刻度（`p: 1.5`）、把字重写成 600，
- * 都不会报错、不影响功能 —— 但"不一致"正是"不高级"的定义（[15 §8] 的立意）。
+ * 都不会报错、不影响功能 —— 但"不一致"正是"不高级"的定义（立意）。
  * `design.guard.test.ts` 管**组件有没有乱写**；这一份管**令牌本身有没有漂移**。
  *
  * 另外它会在**深/浅两态各渲染一遍**核心组件：颜色令牌路径写错时 MUI 会抛错/静默丢色，
@@ -24,7 +24,7 @@ import { buildTheme, motion, radius, SPACING_SCALE, tokens, typography, type The
 
 const MODES: ThemeMode[] = ["dark", "light"];
 
-/** [15 §7] 的时长预算：**不超过 250ms**（唯一例外是循环脉动，理由见 `theme.ts`）。 */
+/** 的时长预算：**不超过 250ms**（唯一例外是循环脉动，理由见 `theme.ts`）。 */
 const MOTION_BUDGET_MS = 250;
 
 /** MUI `styleOverrides` 是联合类型，测试里只读几个键，收窄一次即可。 */
@@ -39,7 +39,7 @@ afterEach(() => {
 });
 
 describe("[15] 设计令牌：值与文档一致，且能被 MUI 正确消费", () => {
-  it("中性色阶与 [15 §3.1] 逐字一致（不用纯黑纯白）", () => {
+  it("中性色阶与 逐字一致（不用纯黑纯白）", () => {
     expect(tokens.palette.dark.bg).toEqual({
       base: "#0B0C0E",
       subtle: "#101114",
@@ -76,8 +76,8 @@ describe("[15] 设计令牌：值与文档一致，且能被 MUI 正确消费", 
       disabled: "#B4B7BB",
     });
 
-    // 纯黑/纯白在 OLED 上有拖影、刺眼（[15 §3.1] 约定）：窗口底与正文都不用它们
-    // （浅色的 `bg.surface`/`raised` 按 [15 §3.1] 表格就是 #FFFFFF，这里只管 base 与 text.primary）
+    // 纯黑/纯白在 OLED 上有拖影、刺眼（约定）：窗口底与正文都不用它们
+    // （浅色的 `bg.surface`/`raised` 按 表格就是 #FFFFFF，这里只管 base 与 text.primary）
     for (const mode of MODES) {
       const p = tokens.palette[mode];
       for (const value of [p.bg.base, p.text.primary]) {
@@ -86,7 +86,7 @@ describe("[15] 设计令牌：值与文档一致，且能被 MUI 正确消费", 
     }
   });
 
-  it("强调色只有一个，语义色与 [15 §3.2] 一致，且不是霓虹", () => {
+  it("强调色只有一个，语义色与 一致，且不是霓虹", () => {
     expect(tokens.palette.dark.accent).toBe("#5B5BD6");
     expect(tokens.palette.dark.accentHover).toBe("#6E6EE0");
     expect(tokens.palette.dark.success).toBe("#46B17B");
@@ -101,24 +101,24 @@ describe("[15] 设计令牌：值与文档一致，且能被 MUI 正确消费", 
     expect(tokens.palette.light.danger).toBe("#C0392F");
     expect(tokens.palette.light.idle).toBe("#8E9196");
 
-    // 选中底色 = 强调色 12%（[15 §3.2] accent.subtle）
+    // 选中底色 = 强调色 12%（accent.subtle）
     expect(tokens.palette.dark.accentSubtle).toMatch(/0\.12/);
     expect(tokens.palette.light.accentSubtle).toMatch(/0\.12/);
   });
 
-  it("间距刻度正好是那九个数；圆角只有三个值（[15 §3.3 §3.4]）", () => {
+  it("间距刻度正好是那九个数；圆角只有三个值（）", () => {
     expect([...SPACING_SCALE]).toEqual([2, 4, 8, 12, 16, 24, 32, 48, 64]);
     expect(radius).toEqual({ control: 6, surface: 10, overlay: 14 });
   });
 
-  it("字号只有六个、字重只有 400/500（[15 §4.2]）", () => {
+  it("字号只有六个、字重只有 400/500（）", () => {
     expect(typography.size).toEqual({ label: 11, meta: 12, body: 13, section: 15, page: 20, hero: 28 });
     expect(Object.values(typography.weight).sort()).toEqual([400, 500]);
     expect(typography.fontUI).toContain("Microsoft YaHei UI");
     expect(typography.fontMono).toContain("ui-monospace");
   });
 
-  it("动效令牌：120/180 + 缓动曲线只有一条（[15 §7]）", () => {
+  it("动效令牌：120/180 + 缓动曲线只有一条（）", () => {
     expect(motion.quick).toBe("120ms");
     expect(motion.enter).toBe("180ms");
     expect(motion.easing).toBe("cubic-bezier(.2,0,0,1)");
@@ -175,7 +175,7 @@ describe("[15] 设计令牌：值与文档一致，且能被 MUI 正确消费", 
       const theme = buildTheme(mode);
       const p = tokens.palette[mode];
 
-      // 层级靠背景明度台阶（[15 §3.1]），不是靠加边框
+      // 层级靠背景明度台阶，不是靠加边框
       expect(theme.palette.background.default).toBe(p.bg.base);
       expect(theme.palette.background.paper).toBe(p.bg.surface);
       expect(theme.palette.divider).toBe(p.border.subtle);
@@ -196,7 +196,7 @@ describe("[15] 设计令牌：值与文档一致，且能被 MUI 正确消费", 
       expect(theme.typography.h1?.fontWeight).toBe(500);
       expect(theme.typography.body1?.fontSize).toBe(typography.size.body);
 
-      // 圆角：面板 = radius.surface，浮层 = radius.overlay；阴影只给浮层（[15 §3.4 §3.5]）
+      // 圆角：面板 = radius.surface，浮层 = radius.overlay；阴影只给浮层
       const paper = theme.components?.MuiPaper?.styleOverrides as unknown as OverrideBag;
       const tooltip = theme.components?.MuiTooltip?.styleOverrides as unknown as OverrideBag;
       expect(paper["rounded"]?.["borderRadius"]).toBe(radius.surface);
@@ -223,7 +223,7 @@ describe("[15] 设计令牌：值与文档一致，且能被 MUI 正确消费", 
 
       expect(screen.getAllByText("正常").length).toBeGreaterThan(0);
       expect(screen.getByText("1,284")).toBeTruthy();
-      // 涨跌用数字符号表达方向（[15 §2.1]），不是箭头/方块字符
+      // 涨跌用数字符号表达方向，不是箭头/方块字符
       expect(screen.getByText("+3.2%")).toBeTruthy();
 
       view.unmount();

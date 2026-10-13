@@ -6,8 +6,8 @@
 //! 之后改价不得追溯改写历史成本（见 [`ResolvedPrice::to_snapshot`] /
 //! [`ResolvedPrice::from_snapshot`]）。
 //!
-//! 规格来源：[07 §6](../../../)（成本中心）、
-//! [11 §1.2](../../../)（`PricingEngine` 契约）。
+//! 规格来源：(../../../)（成本中心）、
+//!(../../../)（`PricingEngine` 契约）。
 
 pub mod builtin;
 pub mod engine;
@@ -265,7 +265,7 @@ pub fn usage_utilization(used_tokens: u64, limit_tokens: u64) -> f64 {
     }
 }
 
-/// 成本中心"套餐行"要显示的全部数字（[07 §6.2] 那一行）。
+/// 成本中心"套餐行"要显示的全部数字（那一行）。
 #[derive(Debug, Clone)]
 pub struct PlanCostSummary {
     /// 按量折算（token × 单价）

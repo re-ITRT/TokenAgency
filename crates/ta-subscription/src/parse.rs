@@ -3,7 +3,7 @@
 //! 内核（mihomo）才是真正解析并连接节点的那个；这里的目标是：
 //! * 从 Clash YAML 里拿到 `NodeMeta` / `GroupMeta`（用于 UI 预览与坏更新比对）；
 //! * 从链接清单（base64 / 明文）里拿到 `NodeMeta`；
-//! * **遇到不认识的协议只跳过并记录，绝不让整份订阅失败**（[04 §5.6]）。
+//! * **遇到不认识的协议只跳过并记录，绝不让整份订阅失败**。
 
 use std::sync::OnceLock;
 
@@ -462,7 +462,7 @@ fn hex_val(b: u8) -> Option<u8> {
 
 // ================================================================ 订阅级过滤
 
-/// [04 §5.3] 第 4 条：剔除"剩余流量/到期/官网/防失联"这类假节点。
+/// 第 4 条：剔除"剩余流量/到期/官网/防失联"这类假节点。
 /// 返回被剔除的节点（调用方可以记日志）。正则非法时**只记警告、不过滤**。
 pub fn apply_node_filter(nodes: &mut Vec<NodeMeta>, filter: &SubscriptionFilter) -> Vec<NodeMeta> {
     let include = compile_filter(filter.include.as_deref(), "include");
@@ -537,7 +537,7 @@ pub fn parse_userinfo(header: &str) -> Option<SubUserinfo> {
 }
 
 /// `Profile-Update-Interval`：Clash 生态里这个头的值是**小时**（内核默认 6），
-/// 但契约（[11 §3]）要求返回秒。经验判定：`<= 168`（一周）按小时算，否则按秒算。
+/// 但契约要求返回秒。经验判定：`<= 168`（一周）按小时算，否则按秒算。
 pub fn parse_update_interval(header: &str) -> Option<u64> {
     let n: u64 = header.trim().parse().ok()?;
     if n == 0 {

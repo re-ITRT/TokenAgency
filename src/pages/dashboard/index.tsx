@@ -1,9 +1,9 @@
 /**
- * 概览 / 看板（[07 §1]）—— **它是"现在能不能用"的观测面**，也是 M1 验收（A1/B2）唯一能用眼睛看的地方。
+ * 概览 / 看板—— **它是"现在能不能用"的观测面**，也是 M1 验收（A1/B2）唯一能用眼睛看的地方。
  *
  * 三条诚实纪律（这个页面最容易违反，所以写在最上面）：
  * 1. **契约里没有的判据一律显示「未知」**：`KernelState` 只说明内核进程状态，
- *    **不说明 provider 是否真的加载成功**（[06 §2.1] B2 的核心）。所以这一维显示「未知」+ 一句说明，
+ *    **不说明 provider 是否真的加载成功**（B2 的核心）。所以这一维显示「未知」+ 一句说明，
  *    **绝不**因为 `state === "ready"` 就点绿灯 —— 那正是"拿不确定冒充确定"。
  * 2. **没有数据就给诚实的空状态/骨架**，不用 0 或别的数字填坑；错误必须带 `TA-xxxx` 出处与重试入口。
  * 3. 排版/颜色/间距全部走 [15] 令牌（守卫会机械检查）。
@@ -113,7 +113,7 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
 
   return (
     <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-      {/* ① 可用性：现在能不能用（[07 §1.2] ①）。缺数据一律"未知"。 */}
+      {/* ① 可用性：现在能不能用（①）。缺数据一律"未知"。 */}
       <Paper variant="outlined" sx={{ p: 4, borderRadius: `${radius.surface}px` }}>
         <Stack spacing={3}>
           <Typography variant="h4">{t("dashboard.readiness")}</Typography>
@@ -188,7 +188,7 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
         </Stack>
       </Paper>
 
-      {/* ② 四张数字卡（[07 §1.2]） */}
+      {/* ② 四张数字卡 */}
       {isLoading ? (
         <Box sx={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 3 }}>
           {[0, 1, 2, 3].map((i) => (
@@ -233,7 +233,7 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
             currency={data.cards.cost.currency}
             exact
             sparkline={data.sparklines.cost}
-            // 花费涨了不是好事：颜色语义要反过来（[15 §3.2] 语义色只表达状态）
+            // 花费涨了不是好事：颜色语义要反过来（语义色只表达状态）
             delta={(() => {
               const r = ratio(data.cards.cost.amount, data.cards.cost.prev);
               return r === undefined ? undefined : { value: r, goodWhenPositive: false };
@@ -241,7 +241,7 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
           />
           <NumberCard
             label={t("dashboard.card.successRate")}
-            // [15 §4.3]：百分比固定一位小数（99.2%，不是 99% 也不是 99.2000001%）
+            //：百分比固定一位小数（99.2%，不是 99% 也不是 99.2000001%）
             value={formatPercent(data.cards.success_rate, 1)}
             sparkline={data.sparklines.success_rate}
             exact={formatPercent(data.cards.success_rate, 1)}
@@ -249,7 +249,7 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
         </Box>
       )}
 
-      {/* ③ 未定价模型：成本数字不完整必须说出来（[07 §1.3] 诚实） */}
+      {/* ③ 未定价模型：成本数字不完整必须说出来（诚实） */}
       {data !== undefined && data.unpriced_models.length > 0 ? (
         <Stack direction="row" spacing={2} alignItems="center">
           <StatusDot status="warn" />

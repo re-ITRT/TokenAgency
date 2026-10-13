@@ -12,7 +12,7 @@ import { create } from "zustand";
 
 import type { AppStatus, EventPayload, KernelStatus } from "@/shared/bindings";
 
-/** 一条 toast。`dedupeKey` 相同的事件 10 分钟内只弹一次（[05 §3]）。 */
+/** 一条 toast。`dedupeKey` 相同的事件 10 分钟内只弹一次。 */
 export type ToastItem = {
   id: string;
   level: "info" | "warn" | "error";
@@ -22,7 +22,7 @@ export type ToastItem = {
   createdAt: number;
 };
 
-/** 同 key 去重窗口（[05 §3]：同事件 10 分钟内只弹一次）。 */
+/** 同 key 去重窗口（：同事件 10 分钟内只弹一次）。 */
 export const TOAST_DEDUPE_MS = 10 * 60 * 1000;
 
 type AppState = {
@@ -40,7 +40,7 @@ type AppState = {
   setStatus: (status: AppStatus | null) => void;
   setKernel: (kernel: KernelStatus | null) => void;
   /**
-   * `kernel:status` 事件只带 `{state, version}`（[10 §2.3]），
+   * `kernel:status` 事件只带 `{state, version}`，
    * 这里把它**合并**进已有的完整状态（`restarts` 等字段保留），
    * 避免事件一到就把 pid/restarts 抹掉。
    */

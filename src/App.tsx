@@ -4,7 +4,7 @@
  * 职责边界：
  * - `main.tsx`（W0 提供）负责 QueryClientProvider；
  * - 这里负责主题（跟随 `useUiStore.themeMode`）、i18n 初始化、路由与外壳；
- * - **浏览器里能跑**：非 Tauri 环境下 `registerDevMocks()` 会注册 [03 §0] 基准场景的
+ * - **浏览器里能跑**：非 Tauri 环境下 `registerDevMocks()` 会注册 基准场景的
  *   mock 数据，所以 `npm run dev` 不依赖 Rust/Tauri 就能看页面。
  *
  * 路由用 `HashRouter`：Tauri 生产环境走自定义协议、没有服务端回退，

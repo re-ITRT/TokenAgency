@@ -1,8 +1,8 @@
-//! 托盘：[12 §5 T2] ①② —— 状态色图标（4 态 + 实验模式角标）与动态菜单（[05 §1.1–1.3]）。
+//! 托盘： ①② —— 状态色图标（4 态 + 实验模式角标）与动态菜单。
 //!
 //! # 结构：把"该显示什么"和"怎么显示"分开
 //!
-//! * **纯逻辑**（可在无 GUI 环境单测）：[`judge_status`]（[05 §1.1] 四条触发条件）、
+//! * **纯逻辑**（可在无 GUI 环境单测）：[`judge_status`]（四条触发条件）、
 //!   [`render_icon`]（真的画像素）、[`build_menu_spec`]（菜单内容）、[`parse_action`]。
 //! * **Tauri 适配**（薄）：[`init`] / [`refresh`] / [`set_source`]。
 //!
@@ -18,7 +18,7 @@
 //!
 //! # 单一逻辑来源
 //!
-//! [05 §1.2] 要求"UI 与托盘共用同一套命令，不重复实现逻辑"：托盘的每个菜单项都只产出
+//! 要求"UI 与托盘共用同一套命令，不重复实现逻辑"：托盘的每个菜单项都只产出
 //! 一个 [`TrayAction`]，交给 [`TrayDataSource::dispatch`]（T1 的实现里调的就是 IPC 命令
 //! 背后的同一批 service 函数）。
 
@@ -39,12 +39,12 @@ pub const TRAY_ID: &str = "tokenagency-tray";
 pub const MAIN_WINDOW: &str = "main";
 /// 图标边长（像素）。
 pub const ICON_SIZE: u32 = 32;
-/// `tray:refresh` 事件名（[10 §2.3]）。
+/// `tray:refresh` 事件名。
 pub const EVENT_TRAY_REFRESH: &str = "tray:refresh";
 
-// ================================================================ 状态（[05 §1.1]）
+// ================================================================ 状态
 
-/// 托盘四态（[05 §1.1]）：正常 / 降级 / 异常 / 暂停。
+/// 托盘四态：正常 / 降级 / 异常 / 暂停。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum TrayStatus {
@@ -89,7 +89,7 @@ impl TrayStatus {
     }
 }
 
-/// 判定 4 态所需的健康输入（[05 §1.1] 的触发条件逐条对应）。
+/// 判定 4 态所需的健康输入（触发条件逐条对应）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HealthInput {
     /// 用户手动暂停了网关
@@ -106,7 +106,7 @@ pub struct HealthInput {
     pub lanes_reachable: usize,
 }
 
-/// 由健康数据判定托盘状态（[05 §1.1]，纯函数）。
+/// 由健康数据判定托盘状态（纯函数）。
 ///
 /// 优先级：暂停 > 异常 > 降级 > 正常。**"全部失败"必须是红**，否则用户看到绿灯
 /// 但所有请求都在报错 —— 那是最伤信任的一种错。
@@ -195,7 +195,7 @@ pub fn render_icon(status: TrayStatus, experimental: bool) -> RgbaIcon {
     RgbaIcon { width: N, height: N, rgba }
 }
 
-/// 右下角的锁形角标（[05 §1.1]：开启 system_proxy / tun 时加锁形角标）。
+/// 右下角的锁形角标（：开启 system_proxy / tun 时加锁形角标）。
 fn draw_lock_badge(rgba: &mut [u8], n: u32, s: u32) {
     let body = [0xFF, 0xFF, 0xFF, 0xFF];
     let outline = [0x1F, 0x1F, 0x1F, 0xFF];
@@ -261,9 +261,9 @@ fn blend(rgba: &mut [u8], x: u32, y: u32, color: [u8; 4], alpha: f32) {
     rgba[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
 }
 
-// ================================================================ 应急开关（[10 §2.2]）
+// ================================================================ 应急开关
 
-/// 紧急开关模式（[10 §2.2] `tray_emergency`）。
+/// 紧急开关模式（`tray_emergency`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum EmergencyMode {
@@ -508,7 +508,7 @@ pub mod id {
     }
 }
 
-/// 由快照生成菜单内容（[05 §1.2] 逐项）。
+/// 由快照生成菜单内容（逐项）。
 pub fn build_menu_spec(s: &TraySnapshot) -> MenuSpec {
     let mut items = Vec::new();
 
@@ -605,7 +605,7 @@ pub fn build_menu_spec(s: &TraySnapshot) -> MenuSpec {
         items: channels,
     });
 
-    // 紧急开关（[05 §1.2] 三项 + 恢复）
+    // 紧急开关（三项 + 恢复）
     let mut emergency = Vec::new();
     for mode in EmergencyMode::ENTRIES {
         emergency.push(MenuNode::Item {
@@ -677,7 +677,7 @@ pub fn build_menu_spec(s: &TraySnapshot) -> MenuSpec {
     MenuSpec { items }
 }
 
-/// tooltip：[05 §1.1] `TokenAgency · 策略: … · 出口: …` + 第二行用量。
+/// tooltip： `TokenAgency · 策略: … · 出口: …` + 第二行用量。
 ///
 /// 第一行恒为 `TokenAgency`，空行会被丢掉（避免 tooltip 里出现空行）。
 pub fn format_tooltip(s: &TraySnapshot) -> String {
@@ -694,7 +694,7 @@ pub fn format_tooltip(s: &TraySnapshot) -> String {
     out
 }
 
-/// 菜单 id → 动作（[05 §1.2] 的每一条）。
+/// 菜单 id → 动作（每一条）。
 pub fn parse_action(menu_id: &str) -> TrayAction {
     match menu_id {
         id::GATEWAY_TOGGLE => return TrayAction::ToggleGateway,
@@ -754,7 +754,7 @@ pub fn parse_action(menu_id: &str) -> TrayAction {
 
 // ================================================================ IPC DTO
 
-/// `tray_state` 命令与 `tray:refresh` 事件的载荷（[10 §2.2]）。
+/// `tray_state` 命令与 `tray:refresh` 事件的载荷。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrayState {
     pub status: TrayStatus,
@@ -816,7 +816,7 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .icon(icon)
         .tooltip(format_tooltip(&snapshot))
         .menu(&menu)
-        // [05 §1.2]：左键 = 显示主窗口，右键才出菜单
+        //：左键 = 显示主窗口，右键才出菜单
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
             let id = event.id().as_ref().to_string();
@@ -854,10 +854,10 @@ pub fn set_source<R: Runtime>(
     refresh(app)
 }
 
-/// 重画图标 / tooltip / 菜单，并广播 `tray:refresh`（[10 §2.3]）。
+/// 重画图标 / tooltip / 菜单，并广播 `tray:refresh`。
 ///
 /// 菜单在每次刷新时整体重建：动态内容（额度百分比、延迟）本来就在文本里，
-/// 重建最直观；[05 §1.2] 提到的 `set_text()` 优化留给"菜单展开时高频刷新"的场景。
+/// 重建最直观； 提到的 `set_text()` 优化留给"菜单展开时高频刷新"的场景。
 pub fn refresh<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let snapshot = current_snapshot(app);
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
@@ -1016,7 +1016,7 @@ fn build_submenu<R: Runtime>(
 mod tests {
     use super::*;
 
-    // ---------------------------------------------------------- 4 态判定（[05 §1.1]）
+    // ---------------------------------------------------------- 4 态判定
 
     #[test]
     fn judge_status_covers_all_four_states() {
@@ -1325,7 +1325,7 @@ mod tests {
         };
         assert_eq!(sub_id, "channel:relay-a");
         assert_eq!(label, "中转站A");
-        // [15 §2.1] 托盘文案里不许出现 emoji
+        // 托盘文案里不许出现 emoji
         assert!(!label.contains('\u{26a0}'), "托盘文案里不许出现 emoji：{label}");
         let ids: Vec<&str> = items
             .iter()
@@ -1504,7 +1504,7 @@ mod tests {
         assert!(st.experimental);
         assert_eq!(st.tooltip, format_tooltip(&s));
         assert_eq!(st.menu, build_menu_spec(&s), "DTO 里的菜单要和托盘用的一致");
-        // 序列化键名必须与 [10 §2.2] 的 TS 类型一致
+        // 序列化键名必须与 的 TS 类型一致
         let json = serde_json::to_value(&st).expect("序列化");
         assert_eq!(json["status"], serde_json::json!("degraded"));
         assert_eq!(json["active_policy_id"], serde_json::json!("cheap"));

@@ -94,7 +94,7 @@ pub struct FieldError {
 }
 
 impl TaError {
-    /// [11 §5] 错误码
+    /// 错误码
     pub fn code(&self) -> &'static str {
         use TaError::*;
         match self {
@@ -176,7 +176,7 @@ impl TaError {
         )
     }
 
-    /// 这个错误要带出去的**结构化 details**（[10 §2.2] 的 `IpcError.details`）。
+    /// 这个错误要带出去的**结构化 details**（`IpcError.details`）。
     ///
     /// 唯一真相源在 `TaError` 自己这里，命令层只负责把它塞进 `IpcError`：
     /// * `ConfigInvalid` → 字段路径数组；

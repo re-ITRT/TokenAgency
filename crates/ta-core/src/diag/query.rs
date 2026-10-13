@@ -5,7 +5,7 @@
 //!
 //! ## 为什么"筛选"也需要判定函数
 //!
-//! [14 §5.5] 的守卫能保证**字段名**不漂移，但保证不了**筛选语义正确**。
+//! 的守卫能保证**字段名**不漂移，但保证不了**筛选语义正确**。
 //! 最典型的错法是子串匹配：`req_abc` 是 `req_abcdef` 的前缀，
 //! 用 `line.contains(request_id)` 会把**两次请求**的轨迹混在一起 ——
 //! 而这种错**在测试里很难暴露**（日志看起来更"全"了），却会让人误信。
@@ -60,7 +60,7 @@ impl LogLevel {
         }
     }
 
-    /// 是不是"出问题了"的那两级（[14 §11.2] 的错误摘要只统计这两级）。
+    /// 是不是"出问题了"的那两级（错误摘要只统计这两级）。
     pub const fn is_problem(&self) -> bool {
         matches!(self, LogLevel::Warn | LogLevel::Error)
     }
@@ -223,7 +223,7 @@ pub fn line_has_request_id(line: &str, request_id: &str) -> bool {
     field_value(line, fields::REQUEST_ID) == Some(request_id)
 }
 
-/// 按 `request_id` 精确筛行（[14 §13] 验收第 4 条的能力）。
+/// 按 `request_id` 精确筛行（验收第 4 条的能力）。
 pub fn filter_by_request_id<'a, I>(lines: I, request_id: &str) -> Vec<&'a str>
 where
     I: IntoIterator<Item = &'a str>,
@@ -231,7 +231,7 @@ where
     lines.into_iter().filter(|l| line_has_request_id(l, request_id)).collect()
 }
 
-/// 按 `job` 精确筛行（后台任务没有 `request_id`，用 `job` 关联 —— [14 §5.3]）。
+/// 按 `job` 精确筛行（后台任务没有 `request_id`，用 `job` 关联 ——）。
 pub fn filter_by_job<'a, I>(lines: I, job: &str) -> Vec<&'a str>
 where
     I: IntoIterator<Item = &'a str>,
@@ -281,14 +281,14 @@ where
     lines.into_iter().filter(|l| line_mentions_code(l, code)).collect()
 }
 
-/// 错误摘要里的一项（[14 §11.2]）。
+/// 错误摘要里的一项。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeCount {
     pub code: String,
     pub count: u64,
 }
 
-/// [14 §11.2] 的"错误摘要"：**只统计 `WARN`/`ERROR` 行**里的码，次数降序、同次按码升序。
+/// 的"错误摘要"：**只统计 `WARN`/`ERROR` 行**里的码，次数降序、同次按码升序。
 ///
 /// 识别不出级别的行**不统计**（宁可少一条，也不把 INFO 里的提示语算成故障）。
 pub fn error_code_summary<'a, I>(lines: I, max_codes: usize) -> Vec<CodeCount>
@@ -316,7 +316,7 @@ where
 
 // ---------------------------------------------------------------- C4：轨迹覆盖度
 
-/// [14 §1.3] 列的请求轨迹阶段（按经过顺序）：
+/// 列的请求轨迹阶段（按经过顺序）：
 /// `ingress → pipeline → routing → kernel → dispatch → meter → trace`。
 ///
 /// **这是建议口径**，不是硬契约：真实 target 名由各 crate 决定，
@@ -417,14 +417,14 @@ impl Support {
     }
 }
 
-/// [06 §10.2 D2] 的诚实提示文案。**不要改写成"未知即正常"** ——
-/// 那是拿不确定冒充确定（[11 §6] 铁律 4 的同一条道理）。
+/// 的诚实提示文案。**不要改写成"未知即正常"** ——
+/// 那是拿不确定冒充确定（铁律 4 的同一条道理）。
 pub const RETRIED_UNKNOWN_REASON: &str =
     "请求日志已关闭（log.mode=off），没有尝试链可看，无法判断是否发生过重试；开启请求日志后才能筛选重试请求";
 
 /// 日志页"重试"筛选项在当前模式下是否可用。
 ///
-/// 保留 `ta-store` 里"未知即 ok"的实现（[06 §10.2] 的裁决），
+/// 保留 `ta-store` 里"未知即 ok"的实现（裁决），
 /// 但 UI **必须**按本函数禁用该筛选项并显示 [`Support::reason`]。
 pub fn retried_filter_support(mode: LogMode) -> Support {
     if mode.enabled() {

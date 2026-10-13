@@ -22,7 +22,7 @@
 //! 它真的去 TCP 连 `gateway.listen`。这是"网关在 8787 上对外可用"唯一诚实的证据；
 //! 否则端口被占 / 绑定失败时我们会报绿，而客户端连不上。
 //!
-//! # 已登记的字段名（[14 §5]）
+//! # 已登记的字段名
 //! 本文件的日志只用白名单里的名字：`port` / `path` / `reason` / `kind` / `job` /
 //! `request_id` / `code`。`listen` 不是白名单字段，所以监听地址写进 message。
 
@@ -313,7 +313,7 @@ impl<R: Runtime> EventBus for TauriEventBus<R> {
         if let Err(err) = self.app.emit(name, event_payload(&e)) {
             // `tauri::Error` 没有 TA 码 → 包成 `TaError::Internal` 再取 `code()`。
             // **必须走 `code = e.code()` 这个字段形式**：把 "TA-9001" 直接写成字符串
-            // 字面量既会被源码扫描器误当 message，也违背 [14 §6 C2] 的"按码检索"。
+            // 字面量既会被源码扫描器误当 message，也违背 的"按码检索"。
             let e = TaError::Internal(format!("事件发到前端失败：{name}：{err}"));
             tracing::warn!(code = e.code(), error = %e, "事件发到前端失败");
         }
@@ -329,7 +329,7 @@ impl<R: Runtime> EventBus for TauriEventBus<R> {
 /// 与 `TaEvent::name()` 配对使用：名字由枚举自己给，载荷在这里裁。
 pub fn event_payload(e: &TaEvent) -> serde_json::Value {
     match e {
-        // [10 §2.3] 明确要求**批量数组**（一次 IPC 发最多 50 条，避免打爆 WebView 队列）
+        // 明确要求**批量数组**（一次 IPC 发最多 50 条，避免打爆 WebView 队列）
         TaEvent::RequestNew { items } => serde_json::json!(items),
         other => serde_json::to_value(other).unwrap_or(serde_json::Value::Null),
     }
@@ -379,7 +379,7 @@ impl GatewayBoot {
         &self.listen
     }
 
-    /// 暂停/恢复闸门（[10 §2.2] `app_pause_gateway` / `app_resume_gateway`）。
+    /// 暂停/恢复闸门（`app_pause_gateway` / `app_resume_gateway`）。
     ///
     /// 闸门来自**唯一装配路径**：`build_runtime` 把同一个 `Arc<GatewayGate>` 同时交给
     /// 运行时与 `IngressState`，所以本层只是把它取出来交给命令层 ——
@@ -709,7 +709,7 @@ mod tests {
         // 这一句和上面那句是**同一个模式**，所以放在一起守。
         assert!(
             production.contains(".with_trace_store("),
-            "装配入参必须接上 trace 表（[docs/14 §6 G2]：少这一句 = 请求轨迹一条都不落库，\
+            "装配入参必须接上 trace 表（：少这一句 = 请求轨迹一条都不落库，\
              前端日志页与 `ta trace` 都查不到；行为验证见 ta-gateway 的 \
              `with_trace_store_really_writes_records_to_the_store`）"
         );
@@ -725,7 +725,7 @@ mod tests {
         // （`with_api_keys` / `with_trace_store`），所以第三、四次也按同一模式守。
         assert!(
             production.contains(".with_usage_meter("),
-            "装配入参必须接上用量计量器（[docs/59]：少这一句 = 成本中心永远 0、\
+            "装配入参必须接上用量计量器（：少这一句 = 成本中心永远 0、\
              usage 表恒空，而界面上看不出原因）"
         );
         // 启动同步在 `lib.rs` 的 setup 里，所以扫那个文件的生产段。
@@ -733,7 +733,7 @@ mod tests {
         let lib_production = lib.split("#[cfg(test)]").next().unwrap_or(lib);
         assert!(
             lib_production.contains("sync_request_log_settings"),
-            "启动时必须把 `request_log.*` 同步进 trace store（[docs/59]：少这一句 = \
+            "启动时必须把 `request_log.*` 同步进 trace store（：少这一句 = \
              配置说 meta、store 说 off，日志一条都不落库）"
         );
     }
@@ -783,12 +783,12 @@ mod tests {
         ];
 
         let got: Vec<&str> = events.iter().map(|e| e.name()).collect();
-        assert_eq!(got, DOC_EVENT_NAMES, "事件名必须与 [10 §2.3] 逐字一致");
+        assert_eq!(got, DOC_EVENT_NAMES, "事件名必须与 逐字一致");
     }
 
     #[test]
     fn request_new_payload_is_a_bare_array_not_a_tagged_object() {
-        // [10 §2.3]：载荷就是数组。若发成 {"kind":"request:new","items":[…]}，
+        //：载荷就是数组。若发成 {"kind":"request:new","items":[…]}，
         // 前端 `.map()` 会直接崩。
         let payload = event_payload(&TaEvent::RequestNew { items: Vec::new() });
         assert!(payload.is_array(), "request:new 的载荷必须是数组：{payload}");
@@ -814,16 +814,13 @@ mod tests {
 
     #[test]
     fn reason_of_keeps_the_user_text_and_the_code_is_separate() {
-        // `TaError::Display` **故意不含码**（[14 §6.2]：给用户看的文案不该出现内部编号），
+        // `TaError::Display` **故意不含码**（：给用户看的文案不该出现内部编号），
         // 所以 `reason_of` 只保证"人话在"；"能按码检索"靠的是日志里的 `code` 字段。
         // 这条测试把两者的分工钉住 —— 谁要是想靠 `reason` 去搜码，会在这里看到为什么不行。
         let e = TaError::Kernel("起不来".into());
         let reason = reason_of(&e);
         assert!(reason.contains("起不来"), "人话必须在：{reason}");
-        assert!(
-            !reason.contains("TA-"),
-            "Display 不该带码（带了就说明 [14 §6.2] 被改了）：{reason}"
-        );
+        assert!(!reason.contains("TA-"), "Display 不该带码（带了就说明 被改了）：{reason}");
         assert!(e.code().starts_with("TA-"), "码要能单独取出来：{}", e.code());
     }
 

@@ -1,6 +1,6 @@
 //! 订阅同步编排：**fetch → 坏更新拦截 → 版本记录 / 回滚**。
 //!
-//! 这是其它层（网关/托盘/UI）真正该调用的入口 —— 它把 [12 §4] 的五件事串起来：
+//! 这是其它层（网关/托盘/UI）真正该调用的入口 —— 它把 的五件事串起来：
 //!
 //! ```text
 //! fetch（独立 Client，不走 lane）
@@ -18,7 +18,7 @@
 //! * **坏更新也留档**（`accepted = false`）：UI 能解释"这次为什么没采纳"，
 //!   而且版本保留策略保证这份留档**不会挤掉**最后一份好版本（见 [`crate::version`]）。
 //!
-//! `subscription:updated` 事件（[11 §3]）由调用方发布：本 crate 不依赖 `EventBus`（[11 §1.1]
+//! `subscription:updated` 事件由调用方发布：本 crate 不依赖 `EventBus`（
 //! 不跨 crate 用别人的具体类型），[`SyncOutcome`] 里该有的都有（ok / reason / 版本号）。
 
 use ta_core::domain::Subscription;

@@ -1,15 +1,15 @@
 //! 日志轮转与保留策略—— **纯决策，不做 IO**。
 //!
-//! [14 §4.3] 明确要求：策略是**纯逻辑**（给定「当前文件大小、已有份数、时刻」→「该做什么」），
+//! 明确要求：策略是**纯逻辑**（给定「当前文件大小、已有份数、时刻」→「该做什么」），
 //! 所以它在这里、有单测，而不是埋在文件 IO 中间件里。删文件由 `src-tauri/src/logging.rs` 执行。
 //!
 //! 三条不许含糊的规则：
 //! 1. **只删我们自己生成的归档文件**（`tokenagency.<时间戳>.log`）。目录里可能有用户自己放的
-//!    东西 —— 删了就是事故（[14 §13] 验收第 9 条专门看这个）。
-//! 2. **`crash-*.log` 永不自动删除**（[14 §8.2]）。
-//! 3. 跨天判定用**本地时区**（[14 §4.2]），否则东八区凌晨写的日志会归到前一天。
+//!    东西 —— 删了就是事故（验收第 9 条专门看这个）。
+//! 2. **`crash-*.log` 永不自动删除**。
+//! 3. 跨天判定用**本地时区**，否则东八区凌晨写的日志会归到前一天。
 
-/// 单文件上限：8 MiB（[14 §4.2]）
+/// 单文件上限：8 MiB
 pub const DEFAULT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// 保留份数：7（不含正在写的那个）
 pub const DEFAULT_KEEP_FILES: usize = 7;
@@ -85,7 +85,7 @@ pub fn archive_name_local(now_ms: i64, local_offset_minutes: i32) -> String {
     format!("tokenagency.{}.log", stamp_local(now_ms, local_offset_minutes))
 }
 
-/// 崩溃文件名（[14 §8.2]）。
+/// 崩溃文件名。
 pub fn crash_name_local(now_ms: i64, local_offset_minutes: i32) -> String {
     format!("crash-{}.log", stamp_local(now_ms, local_offset_minutes))
 }

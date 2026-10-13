@@ -1,5 +1,5 @@
 /**
- * 节点列表 `/network/nodes`（[04 §7 线路类型、选择与健康检查]、[12 §6 F4]、[19 §2.3]）。
+ * 节点列表 `/network/nodes`（）。
  *
  * ## 这一页现在真的画出**完整节点清单**
  *
@@ -8,7 +8,7 @@
  * 那条命令后端**已注册已实现**（`src-tauri/src/commands/net.rs:780`）。现在这一页：
  *
  * 1. `subscription_list` → 每份订阅的解析状态（`last_update_ms` / `error`）；
- * 2. **先判硬前置**（[19 §2.3]）：`last_update_ms == null && error == null` = 这份订阅还没被解析采纳过
+ * 2. **先判硬前置**：`last_update_ms == null && error == null` = 这份订阅还没被解析采纳过
  *    → **这一轮根本不发** `subscription_nodes`。理由不是省一次调用：后端的 `latest_outcome`
  *    在没有已采纳版本时返回的是**错误**（"订阅 {id} 还没有已采纳的版本（先用 subscription_refresh 拉一次）"），
  *    **不是空数组** —— 直接发命令会把一次必然失败画成"这份订阅没有节点"；
@@ -23,13 +23,13 @@
  * ## 另外两块仍然只画**拿得到的**证据
  *
  * 1. **每条线路声明的节点来源**：`lane.group` / `lane.node` / `lane.filter` —— 配置里的字面值，
- *    **原样显示**（用户数据里的 emoji 与特殊字符不做任何替换或清洗，[15 §2.2]）；
+ *    **原样显示**（用户数据里的 emoji 与特殊字符不做任何替换或清洗）；
  * 2. **后端最近一次健康样本**：`lane_list` 的 `latest`（`ta_store::HealthSample`）——
  *    节点、延迟、结果、上游状态码、采样时间。没有样本就显示未知。
  *
  * ## I2
  *
- * 测速由内核负责（`lane_test` 挂在 `/network` 的线路表上，[19 §2.4]）：这一页**不发起任何探测**，
+ * 测速由内核负责（`lane_test` 挂在 `/network` 的线路表上）：这一页**不发起任何探测**，
  * 更不碰系统网络。页面调用的命令是一条可机械检查的白名单（命令面守卫见 `src/app/network.test.tsx`）。
  */
 
@@ -73,7 +73,7 @@ import {
 } from "./model";
 
 /**
- * 这份订阅**有没有已采纳的解析结果**（[19 §2.3] 的硬前置，判定只在这一处）。
+ * 这份订阅**有没有已采纳的解析结果**（硬前置，判定只在这一处）。
  *
  * `readSubscription` 把后端的 `null` 收成 `undefined`，所以"两个都没有"= 还没解析过。
  * 反过来（任一有值）也算"有解析结果"：刷新失败会留下 `error`，那说明后端**确实处理过**
@@ -112,7 +112,7 @@ function NodeListSection() {
   const subscriptions = useCommandQuery("subscription_list", undefined, qk.subscriptions);
   const rows = subscriptions.data?.map((item) => readSubscription(item));
 
-  // 默认用后端清单里的第一份；用户选了就以他选的为准（**只有一个订阅时选择器也显示**，[19 §2.3]）
+  // 默认用后端清单里的第一份；用户选了就以他选的为准（**只有一个订阅时选择器也显示**）
   const [pickedId, setPickedId] = useState<string | undefined>(undefined);
   const selectedId = pickedId ?? rows?.[0]?.id;
   const selected = rows?.find((row) => row.id === selectedId);
@@ -367,7 +367,7 @@ function NodeListSection() {
                           <TableCell sx={CELL_NOWRAP_SX}>
                             {t("network.nodes.samples.col.latency")}
                           </TableCell>
-                          {/* 列名只在表头出现：行里只有开关本身（[15 §2] 符号化） */}
+                          {/* 列名只在表头出现：行里只有开关本身（符号化） */}
                           <TableCell sx={CELL_NOWRAP_SX}>{t("common.enabled")}</TableCell>
                         </TableRow>
                       </TableHead>
@@ -394,7 +394,7 @@ function NodeListSection() {
                                   />
                                 </Box>
                               </TableCell>
-                              {/* 节点名 / 组名来自订阅：**原样显示**，一个字符都不改（[15 §2.2]）。
+                              {/* 节点名 / 组名来自订阅：**原样显示**，一个字符都不改。
                                   这一页不裁剪（回归守卫）：长名字靠 nowrap 保持一行。 */}
                               <TableCell sx={CELL_NOWRAP_SX}>{node.name}</TableCell>
                               <TableCell sx={{ ...CELL_NOWRAP_SX, fontFamily: typography.fontMono }}>
@@ -425,7 +425,7 @@ function NodeListSection() {
                               </TableCell>
                               <TableCell sx={CELL_NOWRAP_SX}>
                                 {/* 启用 / 关闭的**符号**：开关本身就是那两个字，行里不再写一遍；
-                                    `aria-label` 是这一行的节点名（读屏一个字不少，[15 §2]）。
+                                    `aria-label` 是这一行的节点名（读屏一个字不少）。
                                     缺字段 = 没被关掉 = 启用（与库里存"关掉的那些"同语义）。 */}
                                 <Stack data-testid="network-nodes-enabled">
                                   <FormControlLabel
@@ -513,7 +513,7 @@ export function NodesBody({ lanes, lanesLoading, lanesError, onRetry }: NodesBod
     <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
       {/* 零副作用承诺不再单独占一张卡片：它随页头那个问号走（见 `NodesPage` 的 description） */}
 
-      {/* ① 完整节点清单：真调 `subscription_nodes`（[19 §2.3]） */}
+      {/* ① 完整节点清单：真调 `subscription_nodes` */}
       <NodeListSection />
 
       {/* ② 最近健康样本：来自 lane_list 的 latest */}
@@ -628,7 +628,7 @@ export function NodesBody({ lanes, lanesLoading, lanesError, onRetry }: NodesBod
                   <TableRow key={row.id} hover data-testid="network-declared-row">
                     <TableCell sx={CELL_NOWRAP_SX}>{row.name ?? row.id}</TableCell>
                     {/* 这三格的取值全部来自用户数据（订阅组名 / 节点名 / 自己的正则）：
-                        **一个字符都不改**（[15 §2.2]）—— 这一页也不做视觉裁剪。 */}
+                        **一个字符都不改**—— 这一页也不做视觉裁剪。 */}
                     <TableCell sx={CELL_NOWRAP_SX}>{row.group ?? t(NONE_KEY)}</TableCell>
                     {/* 组策略 = 内核的组类型（选择节点的方式），不是我们自己的策略实现 */}
                     <TableCell sx={{ ...CELL_NOWRAP_SX, fontFamily: typography.fontMono }}>

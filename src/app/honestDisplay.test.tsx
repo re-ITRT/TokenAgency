@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 /**
- * E2 交办的 D2/B2 显示层契约（[06 §10.2 D2] / [06 §10.1 B2]）：
+ * E2 交办的 D2/B2 显示层契约（/）：
  * **判定在后端，显示层只负责"不撒谎、不各写一份文案"**。
  *
  * 三条不变量：
- * 1. 后端的 `message`/`reason` **原样**呈现（一个字节都不改，含用户数据里的 emoji —— [15 §2.2]）；
+ * 1. 后端的 `message`/`reason` **原样**呈现（一个字节都不改，含用户数据里的 emoji ——）；
  * 2. 禁用态必须能解释原因（且"禁用控件不派发鼠标事件"这个坑要被统一掉），
  *    **并且鼠标之外还要键盘可达、读屏可达**（B-2）—— 放进真 `<Menu>` 里也不许破坏结构（B-3）；
  * 3. 能力不支持时，outcome 显示"未知"，**不是"正常"**。
@@ -26,7 +26,7 @@ function wrap(ui: ReactElement) {
   return render(<ThemeProvider theme={buildTheme("dark")}>{ui}</ThemeProvider>);
 }
 
-describe("[06 §10.1 B2] LimitGapNotice：三处同一句 = 同一个组件", () => {
+describe("LimitGapNotice：三处同一句 = 同一个组件", () => {
   it("后端原文原样呈现，组件不加一个字", () => {
     const message = "「字节方舟」未设额度上限：不填额度就无法「用完自动切」";
     const { container } = wrap(<LimitGapNotice message={message} />);
@@ -36,7 +36,7 @@ describe("[06 §10.1 B2] LimitGapNotice：三处同一句 = 同一个组件", ()
   });
 
   it("用户数据里的 emoji 原样透传（我们自己永不产生 emoji，但用户的名字不动）", () => {
-    // 用码点构造，避免测试文件自己带上 emoji（[15 §2.1]）
+    // 用码点构造，避免测试文件自己带上 emoji
     const userData = `${String.fromCodePoint(0x1f680)} 节点选择 · 未设额度`;
     wrap(<LimitGapNotice message={userData} />);
     expect(screen.getByTestId("limit-gap-notice").textContent).toBe(userData);
@@ -49,7 +49,7 @@ describe("[06 §10.1 B2] LimitGapNotice：三处同一句 = 同一个组件", ()
   });
 });
 
-describe("[06 §10.2 D2] DisabledReason：禁用必须能说明原因（鼠标 + 键盘 + 读屏）", () => {
+describe("DisabledReason：禁用必须能说明原因（鼠标 + 键盘 + 读屏）", () => {
   const reason = "请求日志已关闭（log.mode=off），没有尝试链可看，无法按「重试」筛选";
 
   it("禁用时：鼠标悬停能看到原因原文（原因来自后端，不是这里写的）", async () => {
@@ -133,7 +133,7 @@ describe("[06 §10.2 D2] DisabledReason：禁用必须能说明原因（鼠标 +
   });
 });
 
-describe("[06 §10.2 D2] DisabledMenuItem：放进真 <Menu> 里也不破坏结构/键盘", () => {
+describe("DisabledMenuItem：放进真 <Menu> 里也不破坏结构/键盘", () => {
   const reason = "请求日志已关闭（log.mode=off），没有尝试链可看，无法按「重试」筛选";
 
   function renderMenu(disabled: boolean) {
@@ -180,7 +180,7 @@ describe("[06 §10.2 D2] DisabledMenuItem：放进真 <Menu> 里也不破坏结�
   });
 });
 
-describe("[06 §10.2 D2] outcomeDisplay：不支持就说未知，不说正常", () => {
+describe("outcomeDisplay：不支持就说未知，不说正常", () => {
   it("能力支持 → 原样显示后端给的文案", () => {
     expect(
       outcomeDisplay({ supportEnabled: true, label: "成功", unknownLabel: "未知" }),

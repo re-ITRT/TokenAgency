@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 /**
- * 动效守卫 —— **机械化执行**（[15 §7] 的规则不靠自觉）。
+ * 动效守卫 —— **机械化执行**（规则不靠自觉）。
  *
  * 为什么要做成守卫：动效的劣化**全是静默的** —— 多一处 `transition: all .3s`、
  * 多一个 `ease-in-out`、多一个循环动画、多一处 `height` 过渡，都不报错、不影响功能，
- * 只会让界面在"跳变"和"抖"之间反复横跳。而这四条正是 [15 §7] 的原话：
+ * 只会让界面在"跳变"和"抖"之间反复横跳。而这四条正是 的原话：
  *
  * 1. **时长只有一个来源**：`theme.ts` 的 `motion`（120/180ms，≤250ms）。组件里不许写字面量；
  * 2. **只有一处循环动画**：额度硬耗尽脉动（>90%），其余一次性（该脉动随额度功能下线后，
@@ -156,7 +156,7 @@ export function unresolvableKeyframes(source: string): string[] {
   );
 }
 
-/** 带 `infinite` 的动画声明 = 循环动效（[15 §7] 只允许一处）。 */
+/** 带 `infinite` 的动画声明 = 循环动效（ 只允许一处）。 */
 export function loopingDeclarations(file: string, source: string): Finding[] {
   const findings: Finding[] = [];
   source.split(/\r?\n/).forEach((raw, index) => {
@@ -197,7 +197,7 @@ function listSources(): SourceFile[] {
 
 /**
  * `width` 过渡**逐条登记**：`width` 是布局属性，只有"进度条那类已经在动的"才允许
- * （[26 §1.5]）。
+ * （）。
  *
  * 现在**一条都没有**：唯一登记过的 `QuotaBar` 已随额度功能整条下线。
  *
@@ -299,7 +299,7 @@ describe("[26 §1] 动效守卫（[15 §7] 的机械检查）", () => {
     const findings = scanRepo();
     expect(
       findings,
-      `[15 §7] 过渡只能用 motion / theme.transitions；动静分开写必然漂。\n${format(findings)}`,
+      ` 过渡只能用 motion / theme.transitions；动静分开写必然漂。\n${format(findings)}`,
     ).toEqual([]);
   });
 

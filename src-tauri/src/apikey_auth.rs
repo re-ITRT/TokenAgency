@@ -65,7 +65,7 @@ impl ApiKeyVerifier for ApiKeyAuthenticator {
             return Ok(None);
         };
         // 记账失败**不让这次请求失败**：请求已经通过鉴权了，把一个 200 变成 500
-        // 去换一个时间戳不划算。打点 + 继续（[14 §6.3]：错误日志必须带 code）。
+        // 去换一个时间戳不划算。打点 + 继续（：错误日志必须带 code）。
         if let Err(e) = self.keys.touch_last_used(&key.id, self.clock.now_ms()).await {
             tracing::warn!(
                 code = e.code(),
@@ -198,7 +198,7 @@ mod tests {
     fn the_warn_site_never_formats_the_token() {
         let src = include_str!("apikey_auth.rs");
         let production = src.split("#[cfg(test)]").next().unwrap_or(src);
-        assert!(production.contains("code = e.code()"), "错误日志必须带 code（[14 §6.3]）");
+        assert!(production.contains("code = e.code()"), "错误日志必须带 code（）");
         for needle in ["token = %token", "error = %token", "{token}", "plaintext = %"] {
             assert!(!production.contains(needle), "明文 token 不许进日志：{needle}");
         }

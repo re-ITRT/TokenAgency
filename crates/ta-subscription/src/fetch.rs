@@ -1,10 +1,10 @@
-//! 订阅下载（契约：[11 §3]）。
+//! 订阅下载（契约：）。
 //!
 //! ★ **独立 Client，不走 lane** —— 这是鸡生蛋问题：还没拿到订阅时，我们根本不知道
 //! 有哪些节点可用，所以下载**必须**直连（或用户显式指定的引导代理）。
 //! 结构上保证：本类型的构造函数**拿不到任何 lane / dialer**，只能拿到 [`FetchOptions`]。
 //!
-//! 契约要点（[11 §3]）：
+//! 契约要点：
 //! * 请求头：`User-Agent` 来自 `subscription.user_agent`（默认 `clash-verge/v2.0.0`）、`Accept: */*`
 //! * 超时：connect 10s / read 30s
 //! * 重试 2 次（`backon` 指数退避，**有上限**）
@@ -30,11 +30,11 @@ use ta_core::error::{Result, TaError};
 
 use crate::{detect, parse, DetectedFormat, FetchOutcome, SubscriptionFetcher};
 
-/// connect 超时（[11 §3]）
+/// connect 超时
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// 读超时（[11 §3]：订阅文件小，30s 足够）
+/// 读超时（：订阅文件小，30s 足够）
 pub const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(30);
-/// 总尝试次数 = 1 次首试 + 2 次重试（[11 §3]「重试 2 次」）
+/// 总尝试次数 = 1 次首试 + 2 次重试（「重试 2 次」）
 pub const DEFAULT_MAX_ATTEMPTS: u32 = 3;
 /// 退避基数
 pub const DEFAULT_RETRY_MIN_DELAY: Duration = Duration::from_millis(500);
@@ -357,7 +357,7 @@ fn build_outcome(sub: &Subscription, response: RawResponse, now_ms: i64) -> Fetc
     let format = resolve_format(sub, &raw, filename_hint.as_deref());
     let extracted = parse::extract(&raw, format);
     let mut nodes = extracted.nodes;
-    // 订阅级过滤（[04 §5.3] 第 4 条）：与下发给内核的 `proxy-providers[].filter` 保持一致，
+    // 订阅级过滤（第 4 条）：与下发给内核的 `proxy-providers[].filter` 保持一致，
     // 这样 UI 里看到的节点数就是内核真正会用的节点数。
     let removed = parse::apply_node_filter(&mut nodes, &sub.filter);
     if !removed.is_empty() {

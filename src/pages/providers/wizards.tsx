@@ -108,7 +108,7 @@ export function SelectField({
   options: readonly { value: string; label: string }[];
   emptyLabel: string;
   /**
-   * [15 §2] **极简**：列表里的重复标签不画在每一行上，改由**列头**说一次。
+   * **极简**：列表里的重复标签不画在每一行上，改由**列头**说一次。
    *
    * 这时 `label` 仍然必须给：它变成 `aria-label`（无障碍名称一个字不少），
    * 只是不占版面。别把"看不见"做成"读不到"。

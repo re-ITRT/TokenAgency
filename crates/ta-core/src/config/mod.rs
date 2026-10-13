@@ -1,6 +1,6 @@
 //! 配置：加载、序列化、校验、版本迁移、默认值。
 //!
-//! 分工（依据 [10 §2.2]、[11 §1.2]、[11 §5]、[02 §4]）：
+//! 分工（依据、、）：
 //!
 //! - **形状层**：[`config_json_schema`] 用 `schemars::schema_for!(ConfigDoc)` 导出结构（给前端
 //!   zod 生成 / 编辑器补全）；[`from_yaml`] / [`from_json`] 在反序列化时强制类型与枚举，
@@ -293,7 +293,7 @@ policies:
         assert!(doc.system_integration.tray_show_latency);
     }
 
-    /// **[09 §1.2] E1**：三个"会写操作系统状态"的开关，省略时**必须全部为 false**。
+    /// ** E1**：三个"会写操作系统状态"的开关，省略时**必须全部为 false**。
     ///
     /// 放在一条测试里成组断言：将来有人（或某个 agent）只改错其中一个，
     /// 这条会连带报出来 —— 单个开关各写一条测试时，改错一个反而容易漏。
@@ -354,7 +354,7 @@ policies:
         assert_eq!(doc.system_integration.autostart_delay_s, 0);
     }
 
-    /// `AutostartMode` 的枚举取值与默认值（[02 §2.10]）。
+    /// `AutostartMode` 的枚举取值与默认值。
     #[test]
     fn autostart_mode_values_and_default() {
         assert_eq!(AutostartMode::default(), AutostartMode::Tray);

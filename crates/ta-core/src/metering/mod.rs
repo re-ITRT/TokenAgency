@@ -329,7 +329,7 @@ pub fn estimate_tokens(body: &Value) -> u64 {
     total
 }
 
-/// 上游完全没给 usage 时的兜底记录：**源必须显式标 `Estimated`**（[11 §6] 铁律 4"不猜不估算"）。
+/// 上游完全没给 usage 时的兜底记录：**源必须显式标 `Estimated`**（铁律 4"不猜不估算"）。
 ///
 /// 为什么要有这个函数、而不是让调用方自己拼一个 `MeteredUsage`：
 /// `UsageSource` 是**唯一**能表达"这个数不是上游给的"的地方，而手拼时最自然的写法是
@@ -356,7 +356,7 @@ pub fn estimated_usage(body: &Value) -> MeteredUsage {
 ///
 /// **三条不许含糊的理由**：
 /// 1. `null` **不是** 0。把 `"usage": null` 记成"上游说 0 token"是**静默少记账** ——
-///    成本中心显示 0，而事实是"我们不知道"，正是 [11 §6] 铁律 4 要挡的那种冒充。
+///    成本中心显示 0，而事实是"我们不知道"，正是 铁律 4 要挡的那种冒充。
 ///    （这条是 E1 的同行评审抓出来的：我原实现只按 `Some`/`None` 分，`null` 会落进
 ///    `UpstreamPartial`；实证输出 `PROBE raw={"usage":null} -> source=UpstreamPartial total=0`。）
 /// 2. `Some(v)` 本身**不证明**上游给了 usage —— 调用方完全可能把整包响应塞进来。
@@ -964,7 +964,7 @@ mod tests {
         assert_eq!(upstream_total(Protocol::Gemini, &gem), Some(9));
     }
 
-    // ------------------------------------------------ D1：估算绝不冒充上游（[11 §6] 铁律 4）
+    // ------------------------------------------------ D1：估算绝不冒充上游（铁律 4）
 
     #[test]
     fn estimation_is_always_labeled_estimated() {

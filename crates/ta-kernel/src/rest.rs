@@ -2,7 +2,7 @@
 //!
 //! 硬性约束：
 //! - 鉴权 `Authorization: Bearer <secret>`；
-//! - **仅 loopback**：`net.kernel.controller` 不是回环地址直接拒绝（[04 §9] 无系统副作用）；
+//! - **仅 loopback**：`net.kernel.controller` 不是回环地址直接拒绝（无系统副作用）；
 //! - **绝不走系统/环境代理**（`reqwest::ClientBuilder::no_proxy`），否则等于把内核控制面
 //!   暴露给了一个不存在的代理。
 
@@ -516,7 +516,7 @@ pub fn normalize_controller(controller: &str) -> Result<String> {
     let host = host.trim_matches(|c| c == '[' || c == ']').to_ascii_lowercase();
     if !matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1") {
         return Err(controller_error(format!(
-            "内核控制面必须只监听 loopback，拒绝 {host:?}（[04 §9] 不允许任何 0.0.0.0 监听）"
+            "内核控制面必须只监听 loopback，拒绝 {host:?}（ 不允许任何 0.0.0.0 监听）"
         )));
     }
     if host == "localhost" {

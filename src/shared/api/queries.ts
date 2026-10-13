@@ -12,7 +12,7 @@
  * 约定：
  * 1. **query key 从 `qk` 取**，并且把该 query 的参数放进 key（否则筛选切了不刷新）。
  * 2. 错误一律是 `TokenAgencyError`：用 `errorMessage` / `errorCode` 显示，
- *    按 `code`（TA-xxxx，见 [11 §5]）分支，不解析文案。
+ *    按 `code`（TA-xxxx，见）分支，不解析文案。
  * 3. 事件到达时**只 invalidate**（见 `keys.ts` 的 `EVENT_INVALIDATIONS`），
  *    不要在这里 setQueryData 拼数据。
  */
@@ -71,7 +71,7 @@ export function fieldErrorsOf(err: unknown): FieldErrorDetail[] {
 }
 
 /**
- * 面向用户的一句话错误信息（含错误码，便于对着 [11 §5] 查）。
+ * 面向用户的一句话错误信息（含错误码，便于对着 查）。
  *
  * **`TA-5001` 会把逐字段路径一并带上**（：被拒绝时要说清
  * 是**哪一处**、以及怎么出去）。原来这里只返回 `message`，而它的内容只有

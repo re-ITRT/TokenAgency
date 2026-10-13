@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * 服务商页（[07 §3.1 列表 / §3.2 详情]）的验收。重点和看板、日志两份一样是**诚实**：
+ * 服务商页的验收。重点和看板、日志两份一样是**诚实**：
  *
  * 1. **两套后端形状都要读得出来**。冻结契约（`bindings.ts`）说 `provider_list` 返回
  *    `ProviderView[]`，而 Rust 实现（`src-tauri/src/commands/catalog.rs:53`）返回的是
@@ -429,7 +429,7 @@ function renderAt(path: string) {
   );
 }
 
-describe("[07 §3.1] 列表页：空 / 加载 / 错误 / 有数据", () => {
+describe("列表页：空 / 加载 / 错误 / 有数据", () => {
   /**
    * 这一节里有**整页**用例会临时改写 `provider_list`（"空态按钮接到向导"那条）。
    * `registerMock` 是全局注册 → 跑完必须把基准 mock 放回去，否则后面的整页用例会看到 0 条。
@@ -589,7 +589,7 @@ describe("[07 §3.1] 列表页：空 / 加载 / 错误 / 有数据", () => {
   });
 });
 
-describe("[07 §3.2] 详情页：目录里没有 / 连接配置不可用 / 有完整配置", () => {
+describe("详情页：目录里没有 / 连接配置不可用 / 有完整配置", () => {
   it("目录里没有这个 id：说清楚这是「没有」，不是「读失败」", () => {
     renderDetail({ id: "p-gone", row: undefined });
 

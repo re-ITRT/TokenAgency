@@ -1,5 +1,5 @@
 /**
- * 模型目录页 `/models`（[07 §4] /）。候选路径见 `src/app/routes.ts`：
+ * 模型目录页 `/models`（/）。候选路径见 `src/app/routes.ts`：
  * `pages: ["models", "models/index"]` —— 本文件是**文件夹形式**（与 `logs/index.tsx`、
  * `providers/index.tsx` 一致）。纯逻辑与整形在 `./model.ts`，那一层是单测的主要对象。
  *
@@ -1678,7 +1678,7 @@ export default function ModelsPage() {
                                 }
                                 label={
                                   /* 组头已经说了服务商，行里只留"上游模型 · 网络代理"
-                                     （[15 §2]：同一个信息不在同一屏里说两遍） */
+                                     （：同一个信息不在同一屏里说两遍） */
                                   <Typography
                                     variant="body1"
                                     sx={{

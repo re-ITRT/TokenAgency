@@ -1,12 +1,12 @@
 /**
  * 视觉令牌 —— ** 是本文件的唯一裁决处，这里不许出现文档之外的取值。**
  *
- * 规则（[15 §3]）：
+ * 规则：
  * - **颜色/间距/圆角只能从 `tokens` 取**，组件里不许写死颜色字面量、不许写刻度外间距；
  * - 每个值只有一处定义（深色 / 浅色是同构映射，不是两套设计）；
  * - 间距刻度只有九个：`2 4 8 12 16 24 32 48 64`；圆角只有三个；字号只有六个。
  *
- * 机械守卫：`src/app/design.guard.test.ts`（[15 §8]）会扫描 `src/**`，
+ * 机械守卫：`src/app/design.guard.test.ts`会扫描 `src/**`，
  * 违反「无硬编码颜色 / 无刻度外间距 / 无 font-weight:700 / 无自造 emoji」即失败。
  * 也就是说：**本文件是唯一允许出现颜色字面量的地方。**
  */
@@ -23,7 +23,7 @@ import {
 
 export type ThemeMode = "dark" | "light";
 
-// ================================================================ 中性色阶（[15 §3.1]）
+// ================================================================ 中性色阶
 /** 刻意不用蓝调的"开发者灰"，用真正中性的灰阶。层级靠背景明度台阶，不靠边框。 */
 const NEUTRAL = {
   dark: {
@@ -54,7 +54,7 @@ const NEUTRAL = {
   },
 } as const;
 
-// ================================================================ 强调色与语义色（[15 §3.2]）
+// ================================================================ 强调色与语义色
 /** 低饱和，不用霓虹。强调色只有一个；语义色只表达状态，不做装饰。 */
 const SEMANTIC = {
   dark: {
@@ -76,10 +76,10 @@ const SEMANTIC = {
 } as const;
 
 // ================================================================ 间距 / 圆角 / 排版 / 动效
-/** [15 §3.3] 间距刻度 —— 只有这九个数（px）。 */
+/** 间距刻度 —— 只有这九个数（px）。 */
 export const SPACING_SCALE = [2, 4, 8, 12, 16, 24, 32, 48, 64] as const;
 
-/** [15 §3.3] 命名刻度。`sx` 里仍用 MUI 倍数（spacing=4），倍数只能是这里值的四分之一。 */
+/** 命名刻度。`sx` 里仍用 MUI 倍数（spacing=4），倍数只能是这里值的四分之一。 */
 export const space = {
   xxs: 2,
   xs: 4,
@@ -92,7 +92,7 @@ export const space = {
   huge: 64,
 } as const;
 
-/** [15 §3.4] 圆角只有三个值。 */
+/** 圆角只有三个值。 */
 export const radius = {
   /** 按钮、输入框、下拉、chip */
   control: 6,
@@ -102,7 +102,7 @@ export const radius = {
   overlay: 14,
 } as const;
 
-/** [15 §4] 排版。字重只用 400 / 500（不许 700）。 */
+/** 排版。字重只用 400 / 500（不许 700）。 */
 export const typography = {
   fontUI:
     '-apple-system, "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif',
@@ -116,9 +116,9 @@ export const typography = {
 } as const;
 
 /**
- * [15 §7] 动效：**时长只有一个来源（这里）**，且不超过 250ms。
+ * 动效：**时长只有一个来源（这里）**，且不超过 250ms。
  *
- * 组件里不许再出现 `transition: all .3s` 这类字面量（[26 §1.1]）；要过渡就用
+ * 组件里不许再出现 `transition: all .3s` 这类字面量；要过渡就用
  * `motion.enter` / `motion.quick` 配 `motion.easing`。MUI 自己的组件过渡也走这里 ——
  * `buildTheme` 会把 `theme.transitions` 映射成同一套值（MUI 默认的 300ms / `easeInOut`
  * 是**第二个时长来源**，而且超预算）。
@@ -130,11 +130,11 @@ export const motion = {
   quick: "120ms",
   /** 进出场（进场/展开、数值缓动） */
   enter: "180ms",
-  /** 唯一的缓动曲线：快出缓入（[15 §7]） */
+  /** 唯一的缓动曲线：快出缓入 */
   easing: "cubic-bezier(.2,0,0,1)",
 } as const;
 
-/** [15 §3.5] 只有浮层用阴影，且只有一个层级；卡片默认零阴影。 */
+/** 只有浮层用阴影，且只有一个层级；卡片默认零阴影。 */
 const SHADOW = {
   dark: "0 8px 24px rgba(0,0,0,.45)",
   light: "0 8px 24px rgba(16,17,20,.12)",
@@ -286,14 +286,14 @@ export function buildTheme(mode: ThemeMode): Theme {
         disabledBackground: p.bg.subtle,
       },
     },
-    // spacing 基准 4px：sx 里的倍数只能是 [15 §3.3] 刻度 ÷ 4（守卫会拦刻度外的值）
+    // spacing 基准 4px：sx 里的倍数只能是 刻度 ÷ 4（守卫会拦刻度外的值）
     spacing: 4,
     shape: { borderRadius: radius.control },
     /**
      * MUI 自己的组件（按钮悬停、菜单、对话框、tooltip、表格行、tab…）内部全走这里。
      *
      * 不映射的话它们用 MUI 的默认值：`standard: 300ms` / `complex: 375ms` / `easeInOut` ——
-     * 那就正是 [26 §1.1] 说的"第二个时长来源"，而且**超预算**（>250ms），
+     * 那就正是 说的"第二个时长来源"，而且**超预算**（>250ms），
      * 还会在 reduced-motion 之外留下一条 `ease-in-out` 曲线。
      * 映射之后：进/出场用 `enter`、状态变化用 `quick`、缓动只有 `motion.easing` 一条。
      */
@@ -306,7 +306,7 @@ export function buildTheme(mode: ThemeMode): Theme {
         // MUI 拿 `complex` 做多属性联动（默认 375ms 超预算）：它一样是因果过渡，没有理由更长
         complex: toMs(motion.enter),
         enteringScreen: toMs(motion.enter),
-        // 出场比进场快（[15 §7] 快出缓入）：出场用 `quick`
+        // 出场比进场快（快出缓入）：出场用 `quick`
         leavingScreen: toMs(motion.quick),
       },
       easing: {
@@ -383,7 +383,7 @@ export function buildTheme(mode: ThemeMode): Theme {
             color: p.text.primary,
             fontFamily: typography.fontUI,
             /*
-             * [15 §7] / [26 §1.3] 必须遵守 prefers-reduced-motion —— 用 CSS 媒体查询，不用 JS：
+             * / 必须遵守 prefers-reduced-motion —— 用 CSS 媒体查询，不用 JS：
              * JS 判断要等首帧之后才生效，那一帧的位移已经发生（闪一下正是要防的东西）。
              *
              * 两道闸，各管一件事：
@@ -406,7 +406,7 @@ export function buildTheme(mode: ThemeMode): Theme {
       },
       MuiPaper: {
         styleOverrides: {
-          // 卡片默认零阴影（[15 §3.5]）；层级靠 bg 台阶 + border.subtle
+          // 卡片默认零阴影；层级靠 bg 台阶 + border.subtle
           root: { backgroundImage: "none", boxShadow: "none" },
           // 面板/卡片用 radius.surface；菜单/模态/tooltip 在各自组件里用 radius.overlay
           rounded: { borderRadius: radius.surface },
@@ -436,7 +436,7 @@ export function buildTheme(mode: ThemeMode): Theme {
         },
       },
       MuiSelect: { defaultProps: { size: "small" } },
-      // chip 不是状态色的载体（[15 §5] 状态用 6px 圆点 + 文字），这里只保证它不刺眼
+      // chip 不是状态色的载体（状态用 6px 圆点 + 文字），这里只保证它不刺眼
       MuiChip: {
         defaultProps: { size: "small" },
         styleOverrides: {
@@ -450,7 +450,7 @@ export function buildTheme(mode: ThemeMode): Theme {
         },
       },
       MuiDivider: { styleOverrides: { root: { borderColor: p.border.subtle } } },
-      // 表格是本项目的 70%（[15 §5]）：行高 32、表头无底色、只用下边线、无竖线
+      // 表格是本项目的 70%：行高 32、表头无底色、只用下边线、无竖线
       MuiTableCell: {
         styleOverrides: {
           root: {
@@ -488,7 +488,7 @@ export function buildTheme(mode: ThemeMode): Theme {
       },
       MuiListItemText: { styleOverrides: { primary: { fontSize: typography.size.body } } },
       MuiSkeleton: { styleOverrides: { root: { backgroundColor: p.bg.subtle } } },
-      // 浮层：唯一允许阴影的地方，且只有一个层级（[15 §3.5]）
+      // 浮层：唯一允许阴影的地方，且只有一个层级
       MuiTooltip: {
         defaultProps: { arrow: true },
         styleOverrides: {
@@ -545,7 +545,7 @@ export function buildTheme(mode: ThemeMode): Theme {
           },
         },
       },
-      // [15 §2.1] 失败 = 文字 + danger 色文字；不要红底白字的大色块。
+      // 失败 = 文字 + danger 色文字；不要红底白字的大色块。
       // 所以三种 severity 一律：浮层底色 + 语义色**文字**（不是色块）。
       MuiAlert: {
         styleOverrides: {

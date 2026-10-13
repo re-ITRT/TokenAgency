@@ -6,7 +6,7 @@
  *
  * 1. **请求级字段**（模型/协议/通道/策略/耗时/TTFB/记录模式）—— 一次请求一行的那条记录；
  * 2. **尝试链**（`attempts`）—— 依次经过的通道与判定。这是 C4 的核心：
- *    "这次失败到底走了哪条 lane、第几次尝试才失败"（[14 §1.3]）。
+ *    "这次失败到底走了哪条 lane、第几次尝试才失败"。
  * 3. **原始字段** —— 后端返回的整条记录**原样**打印，保证"页面上看不到的字段也能看到"
  *    （诚实优先：[14] 的排查场景不能让 UI 替用户过滤掉证据）。
  *
@@ -378,7 +378,7 @@ export function TracePanel({ detail, isLoading, error, onRetry }: TracePanelProp
         )}
       </Stack>
 
-      {/* ③ 头差异：自检字段。非空 = 网关吞了/加了头（[07 §1.3] 的"谁吞了字段"） */}
+      {/* ③ 头差异：自检字段。非空 = 网关吞了/加了头（"谁吞了字段"） */}
       <Stack spacing={1}>
         <Typography variant="h4">{t("logs.trace.headerDiff")}</Typography>
         {detail.headerDiff === undefined ? (

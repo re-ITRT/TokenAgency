@@ -1,4 +1,4 @@
-//! 明文扫描与迁移（[10 §2.2] 的 `secrets_scan_plaintext` / `secrets_migrate`）。
+//! 明文扫描与迁移（`secrets_scan_plaintext` / `secrets_migrate`）。
 //!
 //! ## 扫描范围
 //!
@@ -27,7 +27,7 @@ use ta_core::error::{Result, TaError};
 use crate::resolver::{classify_literal, validate_entry_name, PlaintextKind};
 use crate::{mask_secret, SecretStore};
 
-/// 明文扫描结果（[10 §2.2] 的 `PlaintextFinding`）。
+/// 明文扫描结果（`PlaintextFinding`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlaintextFinding {
     /// 字段路径，如 `credentials[0].secret`、`providers[1].headers.x-api-key`

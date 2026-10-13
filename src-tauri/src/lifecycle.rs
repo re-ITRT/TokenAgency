@@ -1,9 +1,9 @@
-//! 生命周期编排：[12 §5 T2] ④⑤ —— 启动编排、关窗退托盘、单实例、通知去重。
+//! 生命周期编排： ④⑤ —— 启动编排、关窗退托盘、单实例、通知去重。
 //!
 //! 自启动的**系统读写**在 [`crate::autostart`]（单独一个文件，便于单独审查）；
 //! 这里只负责"启动时怎么用这些参数"。
 //!
-//! # 启动顺序（[05 §2] 骨架屏 → 内核就绪 → 转绿）
+//! # 启动顺序（骨架屏 → 内核就绪 → 转绿）
 //!
 //! ```text
 //! on_setup()            解析命令行 → 隐藏窗口（mode=tray）→ 装 QuitGuard/通知中心 → 广播 Skeleton
@@ -23,9 +23,9 @@
 //! # 启动延迟为什么由我们自己做
 //!
 //! autostart 的条目只是"开机时跑这个命令行"，操作系统**没有**"延迟 N 秒再跑"这种能力
-//! （[12 §5 T2] ④ 明确要求自己实现）。所以延迟写成命令行参数 `--autostart-delay=<s>`，
+//! （④ 明确要求自己实现）。所以延迟写成命令行参数 `--autostart-delay=<s>`，
 //! 进程起来后先睡再拉内核 —— 这样"开机瞬间磁盘/网络都很忙"时不会和系统抢资源。
-//! 参数范围 0–300（[02 §2.10]），**命令行里的值也要再夹一次**（注册表可能被手改）。
+//! 参数范围 0–300，**命令行里的值也要再夹一次**（注册表可能被手改）。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,9 +56,9 @@ use crate::tray;
 
 /// 启动阶段事件名（前端骨架屏订阅它）。
 pub const EVENT_BOOT: &str = "app:boot";
-/// 轻提示事件名（[10 §2.3]：同 key 10 分钟内去重）。
+/// 轻提示事件名（：同 key 10 分钟内去重）。
 pub const EVENT_TOAST: &str = "toast";
-/// 同 key 去重窗口（[05 §1.3]、[10 §2.3]：10 分钟）。
+/// 同 key 去重窗口（：10 分钟）。
 pub const TOAST_DEDUPE_WINDOW_MS: i64 = 10 * 60 * 1000;
 /// 等内核就绪的默认超时。
 pub const KERNEL_READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -82,7 +82,7 @@ pub struct StartupArgs {
     pub mode: AutostartMode,
     /// 启动延迟秒（0–300）
     pub delay_s: u32,
-    /// 卸载钩子调用：清掉自启动条目后立刻退出（[09 §1.2] E2）
+    /// 卸载钩子调用：清掉自启动条目后立刻退出（E2）
     pub uninstall_autostart: bool,
     /// 验收探针：只**读**系统自启动状态并打印 JSON，然后退出（开发/验收用）
     pub probe_autostart: bool,
@@ -199,7 +199,7 @@ pub struct AutostartProbeReport {
 /// （**不起窗口、不连数据库**）。
 ///
 /// 两个用途：
-/// 1. **卸载钩子**（[09 §1.2] E2）：卸载脚本调 `tokenagency --uninstall-autostart`
+/// 1. **卸载钩子**（E2）：卸载脚本调 `tokenagency --uninstall-autostart`
 ///    删掉系统条目。放在这里而不是 Tauri 的 `setup` 里，是因为卸载时 GUI 根本不必起来 ——
 ///    少一层依赖就少一种"卸载不干净"的可能。
 /// 2. **验收探针**：`--t2-probe-autostart [--desired=on|off]` 只读打印系统状态。
@@ -353,7 +353,7 @@ impl QuitGuard {
 /// 关窗时该做什么。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseAction {
-    /// 藏进托盘，进程继续（[12 §5 T2] ④）
+    /// 藏进托盘，进程继续（④）
     HideToTray,
     /// 真的关闭（用户点了"退出"）
     AllowClose,
@@ -416,7 +416,7 @@ pub enum ToastLevel {
     Error,
 }
 
-/// `toast` 事件载荷（[10 §2.3]）。
+/// `toast` 事件载荷。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ToastPayload {
     pub level: ToastLevel,
@@ -425,7 +425,7 @@ pub struct ToastPayload {
     pub dedupe_key: String,
 }
 
-/// [05 §1.3]：只有这四件事配得上一条**系统通知**，其余一律进日志。
+///：只有这四件事配得上一条**系统通知**，其余一律进日志。
 ///
 /// 把"克制"写成枚举而不是散落的 `if`：加第五种通知时必须先想清楚"是不是又滥用了"。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -441,7 +441,7 @@ pub enum NotifyKind {
 }
 
 impl NotifyKind {
-    /// [05 §1.3] 的四条 —— 单元测试会守住条数。
+    /// 的四条 —— 单元测试会守住条数。
     pub const ALL: [NotifyKind; 4] = [
         NotifyKind::QuotaExhaustedSwitched,
         NotifyKind::AllChannelsFailed,
@@ -484,9 +484,9 @@ impl NotifyKind {
     }
 }
 
-/// 去重器：[05 §1.3] "同事件 10 分钟内只弹一次"。
+/// 去重器： "同事件 10 分钟内只弹一次"。
 ///
-/// 时钟可注入（[11 §1.1] `Clock`），所以"10 分钟"是能被确定性测试的，而不是靠 sleep。
+/// 时钟可注入（`Clock`），所以"10 分钟"是能被确定性测试的，而不是靠 sleep。
 pub struct NotificationCenter {
     clock: Arc<dyn Clock>,
     last: Mutex<HashMap<String, i64>>,
@@ -553,7 +553,7 @@ pub fn toast<R: Runtime>(
     }
 }
 
-/// [05 §1.3] 的四类事件：去重 + 系统通知 + 应用内 toast。
+/// 的四类事件：去重 + 系统通知 + 应用内 toast。
 pub fn notify<R: Runtime>(app: &AppHandle<R>, kind: NotifyKind, subject: &str) {
     let key = kind.dedupe_key(subject);
     if let Some(nc) = app.try_state::<NotificationCenter>() {
@@ -582,7 +582,7 @@ pub fn notify<R: Runtime>(app: &AppHandle<R>, kind: NotifyKind, subject: &str) {
 
 // ================================================================ 启动编排
 
-/// 启动阶段（[05 §2] 骨架屏 → 内核就绪 → 转绿）。
+/// 启动阶段（骨架屏 → 内核就绪 → 转绿）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BootPhase {
@@ -594,7 +594,7 @@ pub enum BootPhase {
     StartingKernel,
     /// 等内核就绪（就绪探测）
     WaitingKernel,
-    /// 正在启动本地网关（只绑回环，[09 §1.2] I1）
+    /// 正在启动本地网关（只绑回环， I1）
     StartingGateway,
     /// 等网关就绪 —— 判据是"真的在监听 8787"，不是"调用过启动函数"
     WaitingGateway,
@@ -676,7 +676,7 @@ pub struct BootOrchestrator;
 impl BootOrchestrator {
     /// 跑一次启动编排。
     ///
-    /// 内核起不来**不是致命错误**：用户可能只想用直连通道（[11 §5] TA-3001 的语义是
+    /// 内核起不来**不是致命错误**：用户可能只想用直连通道（TA-3001 的语义是
     /// "内核未就绪，且没有可用的直连通道" 才算失败）。所以这里落到 `Degraded`
     /// 并带上可读原因，让用户自己决定。
     pub async fn run(deps: &dyn BootDeps, args: &StartupArgs, timeout: Duration) -> BootOutcome {
@@ -710,7 +710,7 @@ impl BootOrchestrator {
             ));
         }
 
-        // ---- 网关：内核之后再拉起本地网关（只绑回环，[09 §1.2] I1）
+        // ---- 网关：内核之后再拉起本地网关（只绑回环， I1）
         deps.on_phase(BootPhase::StartingGateway, "正在启动本地网关");
         if let Err(e) = deps.start_gateway().await {
             return degraded(format!("本地网关未能启动：{e}"));
@@ -837,7 +837,7 @@ mod tests {
         // 普通启动：什么都不带
         let plain = StartupArgs::parse(["app.exe"]);
         assert!(!plain.autostart);
-        assert_eq!(plain.mode, AutostartMode::Tray, "默认 tray（[02 §2.10]）");
+        assert_eq!(plain.mode, AutostartMode::Tray, "默认 tray（）");
         assert_eq!(plain.delay_s, 0);
         assert!(!plain.hide_window_at_start());
     }
@@ -987,7 +987,7 @@ mod tests {
 
     #[test]
     fn only_the_four_documented_events_deserve_a_system_notification() {
-        // [05 §1.3]：只有这四件事弹系统通知
+        //：只有这四件事弹系统通知
         assert_eq!(NotifyKind::ALL.len(), 4);
         let mut keys: Vec<String> = NotifyKind::ALL.iter().map(|k| k.dedupe_key("x")).collect();
         keys.sort();

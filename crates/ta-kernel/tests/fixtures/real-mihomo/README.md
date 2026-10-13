@@ -40,7 +40,7 @@
 
 | 文件 | 是什么 | 证什么 |
 |---|---|---|
-| `version.json` | `GET /version` 的原始响应 | 就绪探测的响应形态：`{"meta":true,"version":"v1.19.31"}`（[06 §1.6] 附带验证） |
+| `version.json` | `GET /version` 的原始响应 | 就绪探测的响应形态：`{"meta":true,"version":"v1.19.31"}`（附带验证） |
 | `configs.json` | `GET /configs` 的原始响应 | spike 运行配置的生效值（**注意：这是 spike 的配置，不是我们生成的** —— 它 `mixed-port: 39100`，而 K6 裁决我们**永远写 `mixed-port: 0`**） |
 | `proxies.json` | `GET /proxies` 的原始响应 | **K7 的 7-b / 7-d**：`type` 是首字母大写内部名（`Selector`/`Shadowsocks`/`Compatible`…）；内置伪节点 `COMPATIBLE/DIRECT/GLOBAL/PASS/PASS-RULE/REJECT/REJECT-DROP` 混在里面；每个节点带 `alive` 与 `id` |
 | `providers-proxies.json` | `GET /providers/proxies` 的原始响应 | **K7 的 7-a / 7-c**：`providers` 是**对象**（按 key 索引）不是数组；`ta-lane-provider` 的 `prov-node-a/b/c-vmess` **不在 `/proxies` 顶层**，却出现在 `TA-LANE-mixed.all` 里（悬空引用）；另 3 个 `vehicleType: Compatible` 的条目是**组的镜射**，不是用户订阅 |

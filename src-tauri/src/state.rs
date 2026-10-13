@@ -139,7 +139,7 @@ impl AppState {
         let doc = if ta_core::config::migrate::needs_migration(&loaded) {
             let migrated = ta_core::config::migrate::migrate(loaded);
             tracing::info!(
-                "配置已从旧版本迁移到 v{}（[docs/28 §2]：线路归属搬到 Model.lines）",
+                "配置已从旧版本迁移到 v{}（：线路归属搬到 Model.lines）",
                 migrated.version
             );
             config.save(&migrated).await?;

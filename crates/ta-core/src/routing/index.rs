@@ -173,7 +173,7 @@ lanes:
 providers:
   - { id: p-a, name: A, protocol: openai, base_url: "https://a.example/v1", lane: lane-jp }
 credentials:
-  # 注意：这两条 `lane:` 是**老配置的残留**（[docs/55] 已删除该字段）。
+  # 注意：这两条 `lane:` 是**老配置的残留**（ 已删除该字段）。
   # 故意留着：它证明"老配置仍能解析、且那个值不再参与任何判定"。
   - id: c-a
     provider: p-a

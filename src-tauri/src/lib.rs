@@ -174,7 +174,7 @@ pub fn run() {
                 Ok(None) => (None, None, ta_kernel::PortMap::default()),
                 Err(e) => {
                     // `build_kernel` 返回 `TaError`：码必须成对记，否则日志按 TA-xxxx 搜不到
-                    // （[14 §6]；`error_log_guard` 会守住这条）。
+                    // （；`error_log_guard` 会守住这条）。
                     tracing::error!(
                         code = e.code(),
                         error = %e,
@@ -227,7 +227,7 @@ pub fn run() {
                 let outcome =
                     lifecycle::BootOrchestrator::run(&deps, &args, boot::READY_TIMEOUT).await;
                 // 契约里已有的名字是 `delay_s`（不是 `delayed_s`）；`detail` 按
-                // [14 §5.6] 的裁决写进 message，不开自由文本字段。
+                // 的裁决写进 message，不开自由文本字段。
                 let detail = outcome.detail.as_deref().unwrap_or("无");
                 tracing::info!(
                     phase = outcome.phase.as_str(),
@@ -341,13 +341,13 @@ fn init_tracing() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,ta_gateway=debug,ta_kernel=debug"));
 
-    // 唯一日志路径 = tracing_subscriber（[14 §1.1]：**不引 `tauri-plugin-log`**）。
+    // 唯一日志路径 = tracing_subscriber（：**不引 `tauri-plugin-log`**）。
     // 但"唯一"指的是**不并行两套系统**，不是"只输出到一个地方" —— 这是个**托盘应用，
     // 没有控制台**，只写 stdout 等于用户拿不到任何日志（C1 事实未实现）。
     //
     // 所以：stdout（开发看）+ 文件（用户看、诊断包带走）。文件那层自带两点：
-    //   * 非阻塞写（[14 §9.1]：文件 IO 绝不发生在请求路径上）
-    //   * 写入时脱敏（[14 §11.2]：这个文件是要被分享出去的）
+    //   * 非阻塞写（：文件 IO 绝不发生在请求路径上）
+    //   * 写入时脱敏（：这个文件是要被分享出去的）
     let stdout_layer = fmt::layer().with_target(true);
 
     match logging::file_writer() {

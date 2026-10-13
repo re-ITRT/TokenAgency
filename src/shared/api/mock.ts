@@ -1,7 +1,7 @@
 /**
- * 浏览器开发用的 mock 数据 —— **数字全部来自 [03 §0] 的基准场景，不是随便编的 `foo/bar`**。
+ * 浏览器开发用的 mock 数据 —— **数字全部来自 的基准场景，不是随便编的 `foo/bar`**。
  *
- * 基准场景（[03 §0]）：同一个模型 `deepseek-v4.1flash` 有两份套餐 ——
+ * 基准场景：同一个模型 `deepseek-v4.1flash` 有两份套餐 ——
  *   ① 字节方舟：**直连**，500 万 token/月，1 号重置（当前 82% = 410 万/500 万）
  *   ② command code：**走梯子（日本线）**，按量计费（当前 ¥4.2 / ¥20）
  * 期望行为：先用 ①，用完自动切 ②，同一会话不来回跳。
@@ -81,7 +81,7 @@ const appStatus: AppStatus = {
 };
 
 /**
- * 自启动 mock：**必须体现 [09 §1.2] E3/E4 的语义**（desired 是配置、actual 是系统事实）。
+ * 自启动 mock：**必须体现 E3/E4 的语义**（desired 是配置、actual 是系统事实）。
  *
  * `app_get_autostart` 刻意返回一个**漂移**样例（配置开、系统里没有），
  * 这样 F4 的设置页能对着真实的漂移提示 + 「重新注册」按钮做开发，而不是等真机。
@@ -98,7 +98,7 @@ function autostartState(desired: boolean, actual: boolean = desired): AutostartS
   };
 }
 
-/** 4 张数字卡 + sparkline：与 [07 §1.2] 的版面一致（今日 1,284 请求 / 12.4M token / ¥18.62 / 99.2%）。 */
+/** 4 张数字卡 + sparkline：与 的版面一致（今日 1,284 请求 / 12.4M token / ¥18.62 / 99.2%）。 */
 const dashboard: DashboardData = {
   status_bar: {
     gateway: "running",
@@ -428,7 +428,7 @@ const matrix: MatrixView = {
 // ---------------------------------------------------------------- 订阅节点（用户第 202 轮）
 
 /**
- * 一份订阅解析出来的节点（真实样本里组名带 emoji，[15 §2.2]：用户数据原样透传）。
+ * 一份订阅解析出来的节点（真实样本里组名带 emoji，：用户数据原样透传）。
  *
  * **默认全部启用**：下面那个集合记的是"**关掉的那些**"，与 Rust `Subscription.disabled_nodes`
  * 逐字同义 —— 所以"机场新增的节点默认是开着的"这件事在 mock 里也成立（不是特例代码）。
@@ -547,7 +547,7 @@ export function registerBaselineMocks(): void {
   mockCommand("subscription_nodes_enabled", (args) => {
     if (args.nodes.length === 0) {
       throw new TokenAgencyError({
-        // TA-1004 = `TaError::MalformedRequest`（Rust 侧空清单走的就是这一条，[11 §5]）
+        // TA-1004 = `TaError::MalformedRequest`（Rust 侧空清单走的就是这一条）
         code: "TA-1004",
         message: "要设哪些节点？`nodes` 不能为空清单（空清单不是「全部」，那会静默改掉整份订阅）",
       });

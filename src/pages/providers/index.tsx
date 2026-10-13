@@ -1,5 +1,5 @@
 /**
- * 服务商列表 `/providers`（[07 §3.1]）—— M1 里"配了哪几家、还活着吗"的入口。
+ * 服务商列表 `/providers`—— M1 里"配了哪几家、还活着吗"的入口。
  *
  * 三条硬纪律（写在最上面，这一页最容易违反）：
  *
@@ -21,7 +21,7 @@
  *    它正是"给一个已存在的服务商再挂一份凭据"那个被 owner 否掉的模型）。
  * 2. **没有读取接口的就不猜**：状态灯、成功率、延迟、通道数都**只**取后端返回的那一列；
  *    后端没给（Rust 的 `provider_list` 返回的是完整 `Provider`，没有这几列）就显示「未知/—」。
- *    内核在跑**不等于**服务商可用（[06 §2.1] B2），所以绝不点一个假绿灯。
+ *    内核在跑**不等于**服务商可用（B2），所以绝不点一个假绿灯。
  * 3. **凭据数读不到就是未知**：`credential_list` 失败只让"凭据数"这一列变未知 + 一行错误，
  *    **不把整张表打成错误**，也绝不填 0。
  *
@@ -74,7 +74,7 @@ const PROTOCOL_LABEL: Record<string, I18nKey> = {
   custom: "providers.protocol.custom",
 };
 
-/** 后端 `status` 的取值 → 全站统一的状态语义（[15 §3.2]）。契约外的取值一律按"未知"画。 */
+/** 后端 `status` 的取值 → 全站统一的状态语义。契约外的取值一律按"未知"画。 */
 const STATUS_SEM: Record<string, SemStatus> = { ok: "ok", warn: "warn", error: "error", off: "off" };
 const STATUS_LABEL: Record<string, I18nKey> = {
   ok: "component.statusDot.ok",

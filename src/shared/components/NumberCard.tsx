@@ -4,9 +4,9 @@
  * 按 [15] 的排版规则：
  * - 主数字 `text.hero`（28px / 500，**一页最多一个 hero** —— 卡片行里最多一张卡用它）；
  * - 大号**等宽数字**（`tabular-nums`）+ 小号单位（`text.meta` / `text.secondary`），千分位；
- * - Token 用 `12.4M` 缩写，**悬停显示精确值**（[15 §4.3]）；
- * - 涨跌用数字符号（`+3.2%` / `-1.8%`），颜色只作辅助（[15 §2.1]）；
- * - **主数字不着语义色**：[15 §3.2] 明令不许用 success 当"好的数字"的颜色去美化 KPI。
+ * - Token 用 `12.4M` 缩写，**悬停显示精确值**；
+ * - 涨跌用数字符号（`+3.2%` / `-1.8%`），颜色只作辅助；
+ * - **主数字不着语义色**： 明令不许用 success 当"好的数字"的颜色去美化 KPI。
  */
 
 import { Box, Paper, Skeleton, Tooltip, Typography } from "@mui/material";
@@ -110,7 +110,7 @@ export function NumberCard(props: NumberCardProps) {
           sx={{
             ml: 0.5,
             fontVariantNumeric: "tabular-nums",
-            // 颜色只作辅助（[15 §2.1]）；方向由 +/- 号表达
+            // 颜色只作辅助；方向由 +/- 号表达
             color:
               (delta.value >= 0) === (delta.goodWhenPositive ?? true)
                 ? "success.main"
@@ -147,7 +147,7 @@ export function NumberCard(props: NumberCardProps) {
       )}
 
       {sparkline !== undefined && sparkline.length > 0 ? (
-        // 趋势线是数据不是装饰：不给语义色（[15 §3.2]），跟随次要文字色
+        // 趋势线是数据不是装饰：不给语义色，跟随次要文字色
         <Box sx={{ mt: 1, color: "text.secondary" }}>
           <Sparkline data={sparkline} label={t("component.sparkline.label")} />
         </Box>

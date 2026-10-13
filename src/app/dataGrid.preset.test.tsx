@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 /**
- * DataGrid 令牌预设的验收 —— 表格是本项目 70% 的界面（[15 §5]），
+ * DataGrid 令牌预设的验收 —— 表格是本项目 70% 的界面，
  * 这一份守卫保证：**预设里的值就是文档里的值**，而且**在装的 MUI X v8 上真的能用**。
  *
  * 两类断言：
- * 1. 预设对象逐条等于 [15 §5]（行高 32、表头 11/500 + 下边线 + 无底色、无竖线、
+ * 1. 预设对象逐条等于（行高 32、表头 11/500 + 下边线 + 无底色、无竖线、
  *    选中 accent.subtle + 左 2px 强调色条、悬停 bg.subtle、数字列等宽）；
  * 2. 真渲染一个 DataGrid（jsdom 里给 ResizeObserver 打个最小桩）——
  *    证明这套 `sx`/props 与当前安装的 MUI X v8 的 API 对得上（文档会漂，包不会）。
@@ -38,7 +38,7 @@ function darkSx(): SxBag {
   return sx(buildTheme("dark"));
 }
 
-describe("[15 §5] DataGrid 预设：值等于文档", () => {
+describe("DataGrid 预设：值等于文档", () => {
   it("几何：行高 32、表头 32、compact", () => {
     expect(dataGridDefaults.rowHeight).toBe(32);
     expect(dataGridDefaults.columnHeaderHeight).toBe(32);

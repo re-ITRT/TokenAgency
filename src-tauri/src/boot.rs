@@ -132,8 +132,8 @@ pub fn bundled_country_mmdb() -> Option<std::path::PathBuf> {
 /// * `Err(TaError)` = 内核**想装配但装配不了**（端口分配失败、配置源建不起来），
 ///   这时要如实降级并说明原因。
 ///
-/// 返回 `TaError` 而不是 `String` 是刻意的：`TaError` 带 `code()`（[11 §5] 的
-/// `TA-xxxx`），调用方才能按 [14 §6] 的契约打出**可被码检索**的错误日志。
+/// 返回 `TaError` 而不是 `String` 是刻意的：`TaError` 带 `code()`（
+/// `TA-xxxx`），调用方才能按 的契约打出**可被码检索**的错误日志。
 /// 早期版本在这里 `format!("{e}")` 把码丢了 —— 那正是 `error_log_guard` 要抓的那类问题。
 pub fn build_kernel(doc: &ConfigDoc, data_dir: &Path) -> Result<Option<KernelBuild>, TaError> {
     let kernel_cfg = &doc.net.kernel;
@@ -190,7 +190,7 @@ pub fn build_kernel(doc: &ConfigDoc, data_dir: &Path) -> Result<Option<KernelBui
         }
     }
 
-    // 1) lane 端口：落库复用（[11 §1.5]），否则每次启动都换端口，
+    // 1) lane 端口：落库复用，否则每次启动都换端口，
     //    客户端/订阅里的端口引用会跟着漂。
     let store = Arc::new(FilePortStore::new(kernel_dir.join("ports.json")));
     let alloc = RangePortAllocator::new(kernel_cfg.lane_port_range, store)?;
@@ -279,7 +279,7 @@ pub fn build_kernel(doc: &ConfigDoc, data_dir: &Path) -> Result<Option<KernelBui
 
 /// 阶段广播的落点。生产 = 事件 + 托盘；测试 = 记录器（这样编排逻辑能离线断言）。
 pub trait PhaseSink: Send + Sync {
-    /// 阶段变化（[10 §2.3] `app:boot`）。
+    /// 阶段变化（`app:boot`）。
     fn phase(&self, phase: BootPhase, detail: &str);
     /// 观察到内核状态（用于把就绪真相带进托盘/看板）。默认忽略。
     fn observe_kernel(&self, _status: &KernelStatus) {}
@@ -376,7 +376,7 @@ impl<R: Runtime> PhaseSink for TauriPhaseSink<R> {
             // TA-9001（tokenagency_internal，"其它"）正是这件事的语义。
             //
             // 为什么不用"把码拼进 message"或"靠 EXEMPT 白名单"：
-            // [14 §6 C2] 的判据是**能按 TA-xxxx 检索**，而检索要的是 `code` **字段**
+            // 的判据是**能按 TA-xxxx 检索**，而检索要的是 `code` **字段**
             // （拼进 message 的人在肉眼看得到、筛不出来）；映射成 TA-9001 则真的可筛，
             // 也省掉一条"豁免会不会腐烂"的长期负担。
             let e = TaError::Internal(format!("广播启动阶段事件失败：{err}"));
@@ -390,7 +390,7 @@ impl<R: Runtime> PhaseSink for TauriPhaseSink<R> {
             tracing::debug!(code = e.code(), error = %e, "启动阶段刷新托盘失败");
         }
 
-        // `detail` 是自由文本，按 [14 §5.6] 的裁决**不开字段**（开了就变垃圾桶，
+        // `detail` 是自由文本，按 的裁决**不开字段**（开了就变垃圾桶，
         // 而且与 message 职责重复）—— 写进 message 里。
         if phase.is_terminal() {
             tracing::info!(phase = phase.as_str(), "启动编排已收敛：{detail}");

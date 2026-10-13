@@ -58,7 +58,7 @@ export type Protocol = "openai" | "openai_responses" | "anthropic" | "gemini" | 
 
 export type UsageSource = "upstream" | "upstream_partial" | "estimated";
 
-/** 请求日志三档 + off（[07 §2.1]）。 */
+/** 请求日志三档 + off。 */
 export type LogMode = "off" | "meta" | "shape" | "full";
 
 export type Retention = "7d" | "30d" | "90d" | "forever";
@@ -286,7 +286,7 @@ export type Lane = {
   name: string;
   kind: LaneKind;
   subscription?: SubscriptionId | null;
-  /** **遗留**：`kind: subscription_group` 时订阅里自带的组名。理由见 `LaneKind`。 */ // ta-allow-emoji —— 这是用户数据示例（[15 §2.2]），不是我们产生的文本
+  /** **遗留**：`kind: subscription_group` 时订阅里自带的组名。理由见 `LaneKind`。 */ // ta-allow-emoji —— 这是用户数据示例，不是我们产生的文本
   group?: string | null;
   /**
    * 组策略。**「自动选择」必须是 `select`** —— `url-test` 会按自己的 interval 周期性重选，
@@ -1596,7 +1596,7 @@ export type CommandMap = {
   log_query: { args: { query: LogQuery }; result: LogPage };
   log_stats: { args: { query: LogQuery }; result: LogStats };
   /**
-   * 日志查询能力位（[06 §10.2 D2]）。
+   * 日志查询能力位。
    *
    * 形状与 Rust 侧 `LogQueryCapabilities`（src-tauri/src/commands/log.rs:76）一致：
    * `CapabilitySupport { enabled: bool, reason: Option<String> }` → `reason` 为 `string | null`，

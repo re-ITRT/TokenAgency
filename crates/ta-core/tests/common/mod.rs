@@ -22,7 +22,7 @@ pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
 }
 
-/// 契约要求扫描的范围：`crates/**/*.rs` 与 `src-tauri/src/**/*.rs`（[14 §5.5]）。
+/// 契约要求扫描的范围：`crates/**/*.rs` 与 `src-tauri/src/**/*.rs`。
 pub fn source_files() -> Vec<SourceFile> {
     let root = repo_root();
     let mut out = Vec::new();

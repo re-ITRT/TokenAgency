@@ -1,6 +1,6 @@
 //! 配置校验：[`TaConfigValidator`]。
 //!
-//! 分两层（见 [11 §1.2]、[02 §4]）：
+//! 分两层（见）：
 //!
 //! - **形状层**：类型/枚举由反序列化强制（`from_yaml` / `from_json` + `serde_path_to_error`），
 //!   结构由 `schemars::schema_for!(ConfigDoc)` 导出给前端（[`super::config_json_schema`]）。
@@ -760,7 +760,7 @@ fn check_lanes(doc: &ConfigDoc, r: &mut ValidationReport) {
 }
 
 fn check_system_integration(si: &SystemIntegration, r: &mut ValidationReport) {
-    // 启动延迟范围由 [02 §2.10] 写死为 0–300 秒（下界不用管：字段是 u32）。
+    // 启动延迟范围由 写死为 0–300 秒（下界不用管：字段是 u32）。
     // 写成 3000 不会报错、只会让用户"开机后快一小时才启动"然后怀疑软件坏了 ——
     // 属于"不报错但不生效"那一类，必须在配置层拦住。
     if si.autostart_delay_s > MAX_AUTOSTART_DELAY_S {
@@ -1755,7 +1755,7 @@ mod tests {
         assert!(report.warnings.is_empty(), "{:#?}", report.warnings);
     }
 
-    /// `autostart_delay_s` 的范围由 [02 §2.10] 写死为 0–300 秒。
+    /// `autostart_delay_s` 的范围由 写死为 0–300 秒。
     /// 写大了不会报错、只会让用户"开机后很久才启动"——必须在配置层拦住。
     #[test]
     fn autostart_delay_range_is_enforced() {

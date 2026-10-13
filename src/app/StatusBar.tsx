@@ -1,5 +1,5 @@
 /**
- * 顶部状态条 —— 版面里的 ①（[07 §1.2]：「现在能不能用？」永远排最上，且不能要滚动才看到）。
+ * 顶部状态条 —— 版面里的 ①（：「现在能不能用？」永远排最上，且不能要滚动才看到）。
  *
  * 它是**外壳级**的（所有页面共享），数据来源：
  * - `app_status`（轮询 + 事件失效）→ 网关/内核/当前策略/默认出口；
@@ -60,7 +60,7 @@ export function StatusBar() {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: qk.appStatus }),
   });
 
-  // 实验模式角标：用户必须知道自己处于"会改系统网络"的模式（[09 §1.2]）
+  // 实验模式角标：用户必须知道自己处于"会改系统网络"的模式
   useEffect(() => {
     if (config.data === undefined) return;
     setExperimental(config.data.net.tun || config.data.net.system_proxy);

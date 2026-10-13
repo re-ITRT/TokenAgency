@@ -1,5 +1,5 @@
 /**
- * 成本中心 `/cost`（[07 §6]、[10 §2.4]）—— 用量与花费的**趋势 + 明细 + 导出**，
+ * 成本中心 `/cost`（）—— 用量与花费的**趋势 + 明细 + 导出**，
  * 外加**定价条目**区块（：列表 + 单条 / 批量删除）。
  *
  * 四条纪律（这一页最容易违反，所以写在最上面）：
@@ -9,11 +9,11 @@
  *    定价区块另发 `pricing_list`（读）/ `pricing_upsert`（写）/ `pricing_delete`（删）。
  *    计价条目的**唯一**写入口就在这里（`/channels` 整页删除后：那个"添加线路"向导曾代发
  *    `pricing_upsert`，现在没有第二处了）。
- * 2. **估算不许冒充上游上报**（[11 §6] 铁律 4）：`UsageSource`（upstream / upstream_partial /
+ * 2. **估算不许冒充上游上报**（铁律 4）：`UsageSource`（upstream / upstream_partial /
  *    estimated）只写在写入路径的 `UsageRecord` 上（`crates/ta-core/src/types.rs:282`），
  *    而**查询与看板的返回结构都没有带它**（`UsageRow` 只有 `dims`/`values`；`DashboardData`
- *    没有 `estimated_requests` —— 这两个字段按 [16 §8] 推迟）。所以本页只**如实说明"来源标记不可得"**，
- *    绝不把 token 数标成"上游上报"；花费更是本地定价表算出来的（[07 §6.2]），一律按本地口径标注。
+ *    没有 `estimated_requests` —— 这两个字段按 推迟）。所以本页只**如实说明"来源标记不可得"**，
+ *    绝不把 token 数标成"上游上报"；花费更是本地定价表算出来的，一律按本地口径标注。
  * 3. **图表真用 ECharts，且只画后端给的数**：option 的 x 轴标签就是后端返回的分组/时间标签，
  *    系列值就是后端的数值 —— **不插点、不补 0、不造趋势**；没有数据时给诚实的空状态，
  *    而不是一个空的坐标系。某指标在部分行缺值时**整条系列被排除**并说明（不补 0）。
@@ -316,7 +316,7 @@ export function readUsageTable(raw: unknown): UsageTableView | undefined {
       : [...dimKeysOf(rows), ...(rows.some((r) => r.bucket !== undefined) ? ["time"] : [])];
 
   const totalGroups = num(raw["total_groups"]) ?? num(raw["total"]);
-  // 后端自己说截断就信它；它没说但"已返回的行数 < 分组总数"同样是截断（[10 §2.4] 的语义）。
+  // 后端自己说截断就信它；它没说但"已返回的行数 < 分组总数"同样是截断（语义）。
   const truncated =
     raw["truncated"] === true || (totalGroups !== undefined && rows.length < totalGroups);
 
@@ -456,7 +456,7 @@ export function buildChartOption(
 
   return {
     color: palette.series,
-    // 网格用令牌里的间距（[15 §3.3]），不写刻度外的数
+    // 网格用令牌里的间距，不写刻度外的数
     grid: { left: 8, right: 8, top: 24, bottom: 8, containLabel: true },
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
     legend: { show: false },
@@ -1026,7 +1026,7 @@ export function CostBody(props: CostBodyProps): ReactElement {
 
               <Box sx={{ overflowX: "auto" }}>
                 <Table size="small" data-testid="cost-table">
-                  {/* 时间轴永远本地时区，且写在列头（[07 §1.3]） */}
+                  {/* 时间轴永远本地时区，且写在列头 */}
                   <TableHead>
                     <TableRow>
                       <TableCell>

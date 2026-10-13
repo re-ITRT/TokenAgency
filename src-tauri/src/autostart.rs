@@ -1,6 +1,6 @@
 //! 开机自启动 —— **本项目唯一一处会写操作系统持久状态的代码**。
 //!
-//! 依据：[09 §1.2] I2 的**唯一例外**（E1–E5）、[10 §2.2] 的 IPC 语义、[12 §5 T2] ⑥。
+//! 依据： I2 的**唯一例外**（E1–E5）、 的 IPC 语义、 ⑥。
 //!
 //! 单独成文件（而不是塞进 `lifecycle.rs`）是刻意的：整个项目里只有这一处会写注册表 /
 //! LaunchAgent，它必须能被**单独审查、单独测试、单独 diff**。
@@ -23,7 +23,7 @@
 //!   当前不是本 crate 的声明的依赖，见"已知限制"）。
 //! * **macOS**：`~/Library/LaunchAgents/dev.tokenagency.app.plist`（`MacosLauncher::LaunchAgent` 等价物）。
 //! * **Linux**：`~/.config/autostart/tokenagency.desktop`；没有桌面会话时**报 unsupported 并给原因**，
-//!   不假装成功（[10 §2.2] 规则 5）。
+//!   不假装成功（规则 5）。
 //!
 //! # 已知限制（不藏着）
 //!
@@ -86,7 +86,7 @@ impl<T: AutostartRead + AutostartWrite> AutostartBackend for T {}
 
 // ================================================================ 期望状态
 
-/// 配置里的**期望**状态（[09 §1.2] E4：配置是期望，系统是事实）。
+/// 配置里的**期望**状态（E4：配置是期望，系统是事实）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutostartDesired {
     pub enabled: bool,
@@ -139,14 +139,14 @@ const DELAY_INVALID_CODE: &str = "invalid_value";
 // ================================================================ IPC DTO
 
 /// `app_get_autostart` / `app_set_autostart` / `app_repair_autostart` 的返回值
-/// （[10 §2.2] 字段一模一样，UI 开关显示的是 `actual`）。
+/// （字段一模一样，UI 开关显示的是 `actual`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutostartState {
     /// 配置里的期望状态
     pub desired: bool,
     /// **从操作系统读到的**实际状态
     pub actual: bool,
-    /// `desired != actual`（[09 §1.2] E3：只提示，绝不自动改回）
+    /// `desired != actual`（E3：只提示，绝不自动改回）
     pub drifted: bool,
     /// `windows-run-key` | `macos-launch-agent` | `linux-xdg` | `unsupported`
     pub mechanism: String,
@@ -238,7 +238,7 @@ impl<'a> AutostartProbe<'a> {
     }
 
     /// 漂移的**分类**（`in_sync` / `missing_on_system` / `unexpected_on_system` / `unsupported`），
-    /// 供日志与事件使用（[11 §5] 的 `TaEvent`）。
+    /// 供日志与事件使用（`TaEvent`）。
     pub fn drift(&self, desired: &AutostartDesired) -> AutostartDrift {
         let supported = self.backend.support().is_ok();
         let actual = supported && matches!(self.backend.read(), Ok(Some(_)));
@@ -489,7 +489,7 @@ impl AutostartRead for WindowsRunKey {
     }
 
     fn support(&self) -> std::result::Result<(), String> {
-        // HKCU 是当前用户级：不需要提权，也不需要 HKLM —— 这是 [09 §1.2] 明确要求的
+        // HKCU 是当前用户级：不需要提权，也不需要 HKLM —— 这是 明确要求的
         Ok(())
     }
 
@@ -670,7 +670,7 @@ fn parse_plist_program_arguments(body: &str) -> Option<Vec<String>> {
 /// Linux：`~/.config/autostart/<APP_ID>.desktop`（XDG autostart）。
 pub struct XdgAutostartBackend {
     path: PathBuf,
-    /// 有没有桌面会话。headless 时 `support()` 返回 Err 原因（[10 §2.2] 规则 5）。
+    /// 有没有桌面会话。headless 时 `support()` 返回 Err 原因（规则 5）。
     desktop_session: bool,
 }
 
@@ -817,7 +817,7 @@ fn xml_unescape(s: &str) -> String {
 
 // ================================================================ 卸载钩子配方
 //
-// [09 §1.2] E2：**卸载必须删条目**，否则就是"装了自启、卸了还在"，用户会直接骂人。
+// E2：**卸载必须删条目**，否则就是"装了自启、卸了还在"，用户会直接骂人。
 //
 // W5 需要在两处配置（都在我范围外，故只给配方）：
 //

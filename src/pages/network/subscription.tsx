@@ -123,7 +123,7 @@ export default function SubscriptionDetailPage() {
   const current = rows?.find((row) => row.id === subscriptionId);
 
   /**
-   * 这份订阅**有没有已采纳的解析结果**（[19 §2.3] 的硬前置）。
+   * 这份订阅**有没有已采纳的解析结果**（硬前置）。
    *
    * `last_update_ms == null && error == null` = 还没被解析采纳过 ⇒ **这一轮根本不发**
    * `subscription_nodes`：后端在没有已采纳版本时返回的是**错误**，不是空数组，
@@ -138,7 +138,7 @@ export default function SubscriptionDetailPage() {
   });
 
   /**
-   * 流量是**运行时观测值**（配置实体里没有它，[18 §1.2]）：本条订阅上一次已知的用量。
+   * 流量是**运行时观测值**（配置实体里没有它）：本条订阅上一次已知的用量。
    *
    * 第 326 轮起它从概览页那张表**搬到这里**（列表砍到 6 列）：key 与概览页那份完全相同
    * （`qk.subscriptions` 前缀 + `traffic`），所以两页共享同一份缓存，不会多打一次命令。
@@ -338,7 +338,7 @@ export default function SubscriptionDetailPage() {
                             hover
                             data-testid="network-subscription-node-row"
                           >
-                            {/* 节点名来自订阅：**原样显示**，一个字符都不改（[15 §2.2]）；
+                            {/* 节点名来自订阅：**原样显示**，一个字符都不改；
                                 这一页不裁剪（详情页看的就是完整的名字）。 */}
                             <TableCell sx={CELL_NOWRAP_SX}>{node.name}</TableCell>
                             <TableCell sx={{ ...CELL_NOWRAP_SX, fontFamily: typography.fontMono }}>

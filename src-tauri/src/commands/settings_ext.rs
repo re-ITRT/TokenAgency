@@ -472,7 +472,7 @@ pub fn build_diagnostic_package(
     files.push(PackageFile::text("env.json", &src.env_json));
     files.push(PackageFile::text("export.json", &src.meta_json));
 
-    // 上面两个 ::sanitize::* 是"第一道"；build_package 是最后那道闸（[14 §11.3]）
+    // 上面两个 ::sanitize::* 是"第一道"；build_package 是最后那道闸
     diag_package::build_package(
         &files,
         generated_ms,

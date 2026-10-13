@@ -182,7 +182,7 @@ describe("/network/subscriptions/:id 一条订阅的节点开关", () => {
     expect(auto.textContent).toContain(i18n.t("network.subscription.auto"));
     expect(direct.textContent).toContain(i18n.t("network.subscription.direct"));
 
-    // 两行的开关都**禁用** —— 用户说的"无法关闭"就是这个（[15 §2.1]：我们自己不产生 emoji）
+    // 两行的开关都**禁用** —— 用户说的"无法关闭"就是这个（：我们自己不产生 emoji）
     for (const row of [auto, direct]) {
       const input = row.querySelector("input") as HTMLInputElement;
       expect(input).toBeTruthy();

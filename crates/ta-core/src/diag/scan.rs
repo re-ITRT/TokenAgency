@@ -1,4 +1,4 @@
-//! 源码扫描器：给两条守卫测试提供**纯字符串 → 事实**的解析能力（[14 §5.5 / §6.3]）。
+//! 源码扫描器：给两条守卫测试提供**纯字符串 → 事实**的解析能力。
 //!
 //! 为什么解析逻辑放在库里而不是测试里：测试跑不动、解析要能单测。
 //! 这里**不做 IO**（读文件、走目录是测试的事），所以它可以在 `ta-core` 里活得很好。
@@ -333,7 +333,7 @@ fn is_ident(s: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// 扫出一个源码文件里全部的 `tracing` 字段名（[14 §5] 的守卫测试用）。
+/// 扫出一个源码文件里全部的 `tracing` 字段名（守卫测试用）。
 pub fn tracing_fields(src: &str) -> Vec<FieldUse> {
     let (masked, literals, calls) = macro_calls(src);
     let mut out = Vec::new();
@@ -351,7 +351,7 @@ pub fn tracing_fields(src: &str) -> Vec<FieldUse> {
     out
 }
 
-/// 扫出一个源码文件里全部"报告错误"的日志调用（[14 §6.3] 的守卫测试用）。
+/// 扫出一个源码文件里全部"报告错误"的日志调用（守卫测试用）。
 pub fn error_log_sites(src: &str) -> Vec<ErrorLogSite> {
     let (masked, literals, calls) = macro_calls(src);
     let mut out = Vec::new();
@@ -413,7 +413,7 @@ pub struct StructLiteralSite {
 /// | `T { field: v }` | **是** |
 ///
 /// 注释与字符串字面量先被涂白（复用 [`blank_comments_and_literals`]），
-/// 所以文档里举例"不该这么写"不会把自己判违规 —— [14 §6.2] 的推荐写法注释、
+/// 所以文档里举例"不该这么写"不会把自己判违规 —— 的推荐写法注释、
 /// 本文件自己的文档都是这种形态。
 pub fn struct_literal_sites(src: &str, type_name: &str) -> Vec<StructLiteralSite> {
     if type_name.is_empty() {
@@ -461,7 +461,7 @@ fn is_ident_byte(b: u8) -> bool {
 }
 
 /// `MeteredUsage` 的字面构造位置。**只允许出现在 `crates/ta-core/src/metering/**`**
-/// （[11 §6] 铁律 4：估算不许冒充上游；`estimated_usage()` 是唯一出口）。
+/// （铁律 4：估算不许冒充上游；`estimated_usage()` 是唯一出口）。
 ///
 /// 为什么这条也值得机械检查：手拼 `MeteredUsage { usage, source: UsageSource::Upstream }`
 /// 在类型上是合法的，编译器不会说话，成本中心会**照原样把估算当真实用量显示** ——

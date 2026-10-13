@@ -1,16 +1,16 @@
 //! ★ **C3 判定**：诊断包"用户能放心发出去"—— 纯逻辑，不碰文件系统。
 //!
 //! C3 的判据不是"日志写入时脱敏了"，而是**打出来的那个包里搜不到密钥**。
-//! 两者的差别就是 [14 §11.3] 存在的理由：诊断包还会**新加入**配置、内核配置、
+//! 两者的差别就是 存在的理由：诊断包还会**新加入**配置、内核配置、
 //! 环境信息等**不经过日志路径**的内容 —— 写入时脱敏管不到它们。
 //!
-//! 所以这个模块把 [14 §11.3] 那句"打包**结束后**对整个包做一次全文扫描，
+//! 所以这个模块把 那句"打包**结束后**对整个包做一次全文扫描，
 //! 命中即**中止导出并报错**"落成三段可测的纯逻辑：
 //!
 //! 1. [`scan_for_secrets`]：打包**前**扫输入的每个文件；
-//! 2. [`build_package`]：按 [14 §11.2] 组包（`manifest.json` + 错误摘要 + 内容）并写出 ZIP；
+//! 2. [`build_package`]：按 组包（`manifest.json` + 错误摘要 + 内容）并写出 ZIP；
 //! 3. [`verify_and_scan_archive`]：**对写出来的字节重新解压**、校验 CRC、再扫一遍 ——
-//!    这一遍才是 [14 §11.3] 要的那一遍：它同时证明"包本身可解压、没写坏"。
+//!    这一遍才是 要的那一遍：它同时证明"包本身可解压、没写坏"。
 //!
 //! **错误里绝不回显命中的原文**（那等于把密钥搬进错误日志）—— 只报文件、类型、偏移与长度。
 
@@ -21,9 +21,9 @@ use super::query::CodeCount;
 use super::sanitize::{self, SecretKind};
 use super::zipstore::{self, ZipError};
 
-/// [14 §11.2] 的 `manifest.json`。
+/// 的 `manifest.json`。
 pub const MANIFEST_NAME: &str = "manifest.json";
-/// [14 §11.2] 的"最近 N 条 WARN/ERROR 的码与计数"。
+/// 的"最近 N 条 WARN/ERROR 的码与计数"。
 pub const ERROR_SUMMARY_NAME: &str = "error-summary.json";
 
 /// 待打进包里的一个文件。
@@ -47,7 +47,7 @@ impl PackageFile {
 /// 组包失败的原因。**宁可报错，也不交出一个用户以为安全的包。**
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PackageError {
-    /// [14 §11.3]：扫到敏感形态 → 中止导出。**不回显原文**（只报位置与类型）。
+    ///：扫到敏感形态 → 中止导出。**不回显原文**（只报位置与类型）。
     Secret { name: String, kind: SecretKind, offset: usize, len: usize },
     /// 归档里有重名条目（解压时会互相覆盖 → 用户看到的内容与我们的清单不一致）
     DuplicateName(String),
@@ -86,7 +86,7 @@ impl From<ZipError> for PackageError {
     }
 }
 
-/// 单个文件的 sha256（十六进制小写）。`manifest.json` 用它（[14 §11.2]）。
+/// 单个文件的 sha256（十六进制小写）。`manifest.json` 用它。
 pub fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -130,7 +130,7 @@ pub fn scan_bytes(name: &str, bytes: &[u8]) -> Result<(), PackageError> {
     Ok(())
 }
 
-/// 打包**前**：每个输入文件都要干净（[14 §11.3] 的第一半）。
+/// 打包**前**：每个输入文件都要干净（第一半）。
 pub fn scan_for_secrets(files: &[PackageFile]) -> Result<(), PackageError> {
     for f in files {
         scan_bytes(&f.name, &f.content)?;
@@ -138,7 +138,7 @@ pub fn scan_for_secrets(files: &[PackageFile]) -> Result<(), PackageError> {
     Ok(())
 }
 
-/// `manifest.json` 的内容（[14 §11.2]：生成时间、版本、每个文件的 sha256）。
+/// `manifest.json` 的内容（：生成时间、版本、每个文件的 sha256）。
 ///
 /// 自己**不进清单**（清单没法包含自己的哈希），由调用方在文档里说明 ——
 /// 这是唯一诚实的做法，硬塞一个占位哈希反而会让人以为校验通过。
@@ -164,7 +164,7 @@ pub fn manifest_json(
     s
 }
 
-/// 错误摘要文件的内容（[14 §11.2] 的"最近 N 条 WARN/ERROR 的码与计数"）。
+/// 错误摘要文件的内容（"最近 N 条 WARN/ERROR 的码与计数"）。
 pub fn error_summary_json(codes: &[CodeCount]) -> String {
     let rows: Vec<serde_json::Value> =
         codes.iter().map(|c| json!({ "code": c.code, "count": c.count })).collect();
@@ -174,13 +174,13 @@ pub fn error_summary_json(codes: &[CodeCount]) -> String {
     s
 }
 
-/// 按 [14 §11.2] 组包并写出 ZIP 字节。**任何一步命中敏感内容都返回 `Err`，不产出包。**
+/// 按 组包并写出 ZIP 字节。**任何一步命中敏感内容都返回 `Err`，不产出包。**
 ///
 /// 归档结构：
 ///
 /// ```text
 /// manifest.json          ← 生成时间 / 版本 / 每个文件的 sha256
-/// error-summary.json     ← 最近 WARN/ERROR 的码与计数（[14 §11.2]）
+/// error-summary.json     ← 最近 WARN/ERROR 的码与计数
 /// <调用方传进来的文件>    ← 日志、崩溃文件、脱敏后的配置、环境信息…
 /// ```
 ///
@@ -217,7 +217,7 @@ pub fn build_package(
         entries.iter().map(|e| (e.name.as_str(), e.content.as_slice())).collect();
     let archive = zipstore::write_zip_with_mtime(&borrowed, generated_ms / 1000)?;
 
-    // 第二遍（[14 §11.3]）：对**写出来的字节**解压 → 校验 CRC → 再全文扫一次。
+    // 第二遍：对**写出来的字节**解压 → 校验 CRC → 再全文扫一次。
     verify_and_scan_archive(&archive)?;
     Ok(archive)
 }
@@ -238,7 +238,7 @@ fn check_unique_names(files: &[PackageFile]) -> Result<(), PackageError> {
     Ok(())
 }
 
-/// [14 §11.3] 的那一遍：**解压写出来的字节**，逐条校验 CRC，再扫内容。
+/// 的那一遍：**解压写出来的字节**，逐条校验 CRC，再扫内容。
 ///
 /// 返回 `(归档内路径, 字节数)`，便于调用方写进自己的日志/UI。
 /// 只支持我们自己写出的形态（`store`、无数据描述符）；遇到别的形态**报错而不是猜**。
@@ -341,7 +341,7 @@ mod tests {
         let raw = String::from_utf8_lossy(&archive);
         assert!(!raw.contains(FAKE_KEY), "诊断包字节里出现了密钥");
         assert_eq!(sanitize::find_secret(&raw), None, "整包全文扫描必须零命中");
-        // ② 解压后逐条再扫一遍（[14 §11.3] 的那一遍）
+        // ② 解压后逐条再扫一遍（那一遍）
         let entries = verify_and_scan_archive(&archive).expect("自己写的包必须能解开");
         let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(

@@ -3,7 +3,7 @@
  * `<PageHeader>` 的验收：**四件事的字号层级必须与 [15] 一致**，四个包不能各写一版。
  *
  * 断言三类东西：
- * - 标题必须是 `text.page`（20/500）—— `MuiTypography-h2` 这一档就是 [15 §4.2] 的 `text.page`；
+ * - 标题必须是 `text.page`（20/500）—— `MuiTypography-h2` 这一档就是 的 `text.page`；
  *   **不能**用 `h1`（那是 `text.hero`，留给看板主数字，一页最多一个）；
  * - 间距与配色走令牌：这里用"没有硬编码颜色、没有刻度外间距"的守卫兜底（design.guard）。
  */
@@ -32,12 +32,12 @@ function renderHeader(props: Parameters<typeof PageHeader>[0]) {
   );
 }
 
-describe("[15 §4.2] PageHeader：页面标题只有一档", () => {
+describe("PageHeader：页面标题只有一档", () => {
   it("标题用 text.page（20px / 500），不是 hero", () => {
     renderHeader({ title: "服务商" });
     const title = screen.getByText("服务商");
 
-    // 一页最多一个 hero（[15 §4.2]）—— 字号只到 `text.page`，页头不许抢看板主数字的地位
+    // 一页最多一个 hero—— 字号只到 `text.page`，页头不许抢看板主数字的地位
     // （不再断言内部类名：那是把实现抄一遍；断言可观察到的字号与 DOM 语义）
     expect(getComputedStyle(title).fontSize).toBe(`${typography.size.page}px`);
     expect(getComputedStyle(title).fontWeight).toBe(`${typography.weight.medium}`);
