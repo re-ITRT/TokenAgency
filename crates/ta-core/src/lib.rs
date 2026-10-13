@@ -3,7 +3,7 @@
 //! **硬约束**：本 crate 不做 IO（除 `tracing`），不依赖 `tokio`/`axum`/`tauri`。
 //! 所有可测逻辑都应当落在这里，这样 `cargo test -p ta-core` 是秒级的。
 //!
-//! 接口契约来源：`docs/11-internal-contracts.md`
+//! 对外契约（命令面 / 错误码 / 日志字段）改动时要同步更新，清单见根目录 `AGENTS.md` 的「接口契约」一节。
 
 pub mod clock;
 pub mod config;
