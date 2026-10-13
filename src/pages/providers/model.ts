@@ -9,7 +9,7 @@
  * |---|---|---|
  * | `provider_list` | `ProviderView[]`（bindings.ts:1018） | `Vec<Provider>` —— **完整的配置实体**（`src-tauri/src/commands/catalog.rs:53`） |
  * | `provider_get` | `ProviderView`（bindings.ts:1019） | `Option<Provider>` —— 可能为 `null`（catalog.rs:59） |
- * | `credential_list` | `CredentialView.quota` + `provider_name` + `channel_count`（bindings.ts:603-610） | `{ credential, quota_state, used_pct }`（catalog.rs:21-28） |
+ * | `credential_list` | `CredentialView` + `provider_name` + `channel_count`（bindings.ts:603-610） | `{ credential }`（catalog.rs:21-28） |
  * | `lane_list` | `LaneView.{type, node_count, health…}`（bindings.ts:679-686） | `{ lane, latest, channel_count }`（catalog.rs:39-45） |
  *
  * 两边**各有对方没有的列**：契约视图有 `status` / `success_rate_24h` / `avg_latency_ms` /
@@ -31,38 +31,11 @@
  * 走同一条命令也让两个页面在两种环境下行为一致 —— 一处取数、一处口径。
  */
 
-/** 后端返回的原始对象（键名是后端的事，所以按 `Record` 处理并逐条注明来源）。 */
-type Row = Record<string, unknown>;
-
-function asRow(value: unknown): Row {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Row)
-    : {};
-}
-
-function pickStr(row: Row, ...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const v = row[key];
-    if (typeof v === "string" && v !== "") return v;
-  }
-  return undefined;
-}
-
-function pickNum(row: Row, ...keys: string[]): number | undefined {
-  for (const key of keys) {
-    const v = row[key];
-    if (typeof v === "number" && Number.isFinite(v)) return v;
-  }
-  return undefined;
-}
-
-function pickBool(row: Row, ...keys: string[]): boolean | undefined {
-  for (const key of keys) {
-    const v = row[key];
-    if (typeof v === "boolean") return v;
-  }
-  return undefined;
-}
+import type {
+  LaneChoiceGroup,
+} from "@/shared/bindings";
+// [docs/52] 读后端原始对象的唯一实现（原先本文件自己写了 asRow/pickStr/pickNum/pickBool）
+import { asRow, pickBool, pickNum, pickStr, type Row } from "@/shared/row";
 
 // ================================================================ 服务商
 
@@ -100,8 +73,16 @@ export type ProviderRow = {
   timeoutReadS?: number;
   timeoutTotalS?: number;
   tlsInsecure?: boolean;
-  /** **只记录"配没配"**：额外 CA 是私密材料，页面只显示是否配置，不打印内容。 */
+  /** **只记录"配没配"**：额外 CA 是私密材料，只读展示时只显示是否配置，不打印内容。 */
   tlsExtraCa: boolean;
+  /**
+   * 额外 CA 的**原文**。
+   *
+   * 编辑页（[docs/23]）需要它：`provider_upsert` 是整条覆盖写，回写时少这一个键就等于
+   * 把用户自己配过的 CA 抹掉。所以读出来、原样带回去 —— 只读展示仍然只用
+   * [`tlsExtraCa`] 那个布尔值（"已配置 / 未配置"），不把 PEM 铺在版面上。
+   */
+  tlsExtraCaPem?: string;
   tlsMinVersion?: string;
 
   /**
@@ -175,6 +156,7 @@ export function readProvider(raw: unknown): ProviderRow {
     timeoutTotalS: pickNum(timeout, "total_s"),
     tlsInsecure: pickBool(tls, "insecure"),
     tlsExtraCa: typeof extraCa === "string" && extraCa !== "",
+    tlsExtraCaPem: pickStr(tls, "extra_ca_pem"),
     tlsMinVersion: pickStr(tls, "min_version"),
 
     hasConnectionConfig: CONFIG_KEYS.some((key) => key in row),
@@ -196,22 +178,10 @@ export type CredentialRow = {
   enabled?: boolean;
   tags: string[];
 
-  // 额度配置（`credential.quota`，两种形状都有）
-  metric?: string;
-  /** `undefined` = **未设上限**（[05 §2.1] 要求显式显示）。 */
-  limit?: number;
-  currency?: string;
-  window?: string;
-  resetDay?: number;
 
-  // 额度运行态：Rust 给 `{quota_state, used_pct}`，契约/mock 给 `{quota: QuotaState}`
-  /** 已用比率 0~1。**只有后端给了才有值**（前端不自己除）。 */
-  usedPct?: number;
-  /** `ok | soft | exhausted | unknown`。 */
-  quotaState?: string;
-  usedTokens?: number;
-  usedRequests?: number;
-  usedCost?: number;
+  /**
+   * **多窗口**额度（[docs/24]）：
+   */
 
   /** 契约/mock 才有：这份凭据里是不是明文密钥。 */
   plaintextSecret?: boolean;
@@ -222,8 +192,6 @@ export type CredentialRow = {
 export function readCredential(raw: unknown): CredentialRow {
   const row = asRow(raw);
   const credential = asRow(row["credential"]);
-  const quota = asRow(credential["quota"]);
-  const state = asRow(row["quota_state"] ?? row["quota"]);
   const tags = credential["tags"];
 
   return {
@@ -235,21 +203,19 @@ export function readCredential(raw: unknown): CredentialRow {
     enabled: pickBool(credential, "enabled"),
     tags: Array.isArray(tags) ? tags.filter((x): x is string => typeof x === "string") : [],
 
-    metric: pickStr(quota, "metric"),
-    limit: pickNum(quota, "limit"),
-    currency: pickStr(quota, "currency"),
-    window: pickStr(quota, "window"),
-    resetDay: pickNum(quota, "reset_day"),
-
-    usedPct: pickNum(row, "used_pct"),
-    quotaState: pickStr(state, "state"),
-    usedTokens: pickNum(state, "used_tokens"),
-    usedRequests: pickNum(state, "used_requests"),
-    usedCost: pickNum(state, "used_cost"),
 
     plaintextSecret: pickBool(row, "has_plaintext_secret"),
     raw: row,
   };
+}
+
+/**
+ * 整条 credential 的**原始记录**（`credential_list` 那一行里的 `credential`）。
+ *
+ * 写回时必须以它为底：`credential_upsert` 是整条覆盖写（[docs/24 §3] / [docs/23] 同一条纪律）。
+ */
+export function credentialRawOf(row: CredentialRow): Row {
+  return asRow(row.raw["credential"]);
 }
 
 // ================================================================ 挂载统计
@@ -301,4 +267,91 @@ export function laneNameOf(
 ): string | undefined {
   if (laneId === undefined) return undefined;
   return lanes.find((l) => l.id === laneId)?.name;
+}
+
+// ================================================================ 网络代理下拉（[docs/28 §1.2]）
+
+/**
+ * 网络代理下拉的一项。
+ *
+ * 与 `LaneOption` 的区别：`LaneOption` 只是"把 lane id 翻成名字"，而这里的每一项都带着
+ * **选中之后要做什么**：
+ * * `laneId` 有值 → 直接把它写进 `channel.lane`；
+ * * `nodeRef` 有值 → 这是订阅里的一个**节点**，还没（或不确定）有线路：先调
+ *   `lane_ensure_for_node` 拿到线路 id，再写 `channel.lane`。
+ *
+ * 用户现场（他加好订阅、节点也看到了，但服务商页那条线路只有「不指定（继承）」）就是
+ * 因为下拉过去只列"已配置的线路"，而他的配置里一条线路都没有 —— 所以这个列表必须把
+ * **订阅节点**也列出来。
+ */
+export type ProxyChoice = {
+  /** `""` = 继承；否则是 lane id、`direct:`（直连标记）或 `node:<订阅>:<节点>` */
+  value: string;
+  label: string;
+  laneId?: string;
+  /** 有它 = 这是订阅里的一个节点，选中前要 `lane_ensure_for_node` */
+  nodeRef?: { subscriptionId: string; node: string };
+  /** `true` = 「直连」，选中前要 `lane_ensure_direct`（配置里还没有 direct 线路时） */
+  direct?: boolean;
+};
+
+/**
+ * `lane_options` 的分组 → 下拉选项。
+ *
+ * **顺序是有意的**（用户第 81 轮：「网络代理选项中最重要的是直连，这个你都没单独列出来？」）：
+ * 1. **直连** —— 永远第一项、永远单独列出。配置里没有 direct 线路时后端会给 `direct:` 标记，
+ *    选中它由 `lane_ensure_direct` 把线路建出来。它与「继承」是**两件事**：直连把它钉死在本机网络，
+ *    而继承会跟着凭据 / 服务商 / 默认线路走（那条默认线路以后被改成代理，这条线路会跟着变）。
+ * 2. **继承**（`""`）—— 跟着上层走，末端才是直连。它不是默认选项，但必须留着。
+ * 3. 已配置线路 / 订阅节点（按后端给的分组顺序）。
+ *
+ * **去重规则**：一个节点若**已经有**等价线路，后端会同时给出"线路"项与"节点"项（节点项带
+ * `lane_id`）—— 此时只保留**线路**那一项（同一条线路出现两次会让人以为有两张网）。
+ */
+export function proxyChoices(
+  groups: readonly LaneChoiceGroup[],
+  inheritLabel: string,
+): ProxyChoice[] {
+  const direct: ProxyChoice[] = [];
+  const rest: ProxyChoice[] = [];
+  const seenLanes = new Set<string>();
+  const seenValues = new Set<string>([""]);
+  for (const group of groups) {
+    for (const item of group.items) {
+      // 后端把直连放在第一组；这里再兜一次底（不依赖后端的分组顺序）
+      const isDirect = item.kind === "direct";
+      const laneId = item.lane_id;
+      const isNode = item.kind === "node";
+      if (seenValues.has(item.value)) continue;
+      if (isNode && laneId !== undefined && seenLanes.has(laneId)) continue;
+      if (laneId !== undefined && seenLanes.has(laneId) && !isNode) continue;
+      seenValues.add(item.value);
+      if (laneId !== undefined) seenLanes.add(laneId);
+      const group_ = group.group.trim();
+      // 分组名只在**确实是额外信息**时才拼：直连那条的分组名与它自己的名字相同，
+      // 无脑拼会得到「直连（本机网络）（直连（本机网络））」。
+      //
+      // [docs/58] 「直连」那一项**一律不拼分组名**：它自带的分组就叫「直连（本机网络）」，
+      // 而配置里那条 direct 线路的名字是「直连」—— 拼起来会变成
+      // 「直连（直连（本机网络））」（真机截图里就是这么显示的）。直连是**单独一项**，
+      // 分组名对它没有任何区分作用。
+      const label =
+        isDirect || group_ === "" || item.label === group_ || item.label.includes(group_)
+          ? item.label
+          : `${item.label}（${group_}）`;
+      const choice: ProxyChoice = {
+        value: item.value,
+        label,
+        laneId,
+        nodeRef:
+          isNode && item.subscription_id !== undefined && item.node !== undefined
+            ? { subscriptionId: item.subscription_id, node: item.node }
+            : undefined,
+        direct: isDirect,
+      };
+      if (isDirect) direct.push(choice);
+      else rest.push(choice);
+    }
+  }
+  return [...direct, { value: "", label: inheritLabel }, ...rest];
 }

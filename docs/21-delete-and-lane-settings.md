@@ -104,10 +104,18 @@ export type ConfirmDeleteProps = {
 | 服务商 | `/providers` 列表 + `/providers/:id` 详情 | `providers-delete` / `providers-detail-delete` | `providers-select` / `-all` / `-delete-selected` | 有（`providers-delete-cascade`） |
 | 凭据 | `/providers` 的凭据表 + 详情页凭据表 | `providers-credential-delete` | 同上（可共用多选） | 有（`providers-credential-delete-cascade`） |
 | 模型 | `/models` 列表 | `models-delete` | `models-select` / `-all` / `-delete-selected` | 有（`models-delete-cascade`） |
-| 通道 | `/channels` 列表 | `channels-delete` | `channels-select` / `-all` / `-delete-selected` | 无 |
-| 通道组 | `/channels` 新增「通道组」区块 | `groups-delete` | `groups-select` / `-all` / `-delete-selected` | 无 |
-| 策略 | `/policies` 列表 | `policies-delete` | `policies-select` / `-all` / `-delete-selected` | 无 |
+| ~~通道~~ | ~~`/channels` 列表~~ **页面已删** | ~~`channels-delete`~~ | ~~`channels-select` / `-all` / `-delete-selected`~~ | 无 |
+| ~~通道组~~ | ~~`/channels` 新增「通道组」区块~~ **页面已删** | ~~`groups-delete`~~ | ~~`groups-select` / `-all` / `-delete-selected`~~ | 无 |
+| 策略 | ~~`/policies` 列表~~ **页面已删** | ~~`policies-delete`~~ | ~~`policies-select` / `-all` / `-delete-selected`~~ | 无 |
 | 定价条目 | `/cost` 新增「定价条目」区块 | `pricing-delete` | `pricing-select` / `-all` / `-delete-selected` | 无 |
+
+> **[docs/49] 后记（2026-09-30）**：上表里**划掉的三行**的页面都已按用户裁决整页删除。
+> 命令**一个都没删**（`channel_delete` / `group_delete` / `policy_delete` 仍在，
+> `command_surface_guard` 照常通过），只是**界面不再有那些入口** —— 这是**能力减法**，
+> 逐条记在 [docs/49 §3](49-channels-page-removed.md)。
+> **现在还能在界面上删的只有**：服务商（含级联）、模型（含级联）、定价条目。
+> 线路本身只能到**服务商详情页**逐行移除（`providers-line-remove` + 确认框，[docs/28 §1.5]）；
+> 通道组、批量删线路、按 `use_channels` 拒绝的那一档**当前都没有界面入口**。
 
 三个共用 testid：删除结果区 `<prefix>-delete-result`、删除错误 `<prefix>-delete-error`（前缀见上表左列的单条删除名去掉 `-delete`）。
 
@@ -188,6 +196,6 @@ channel_bulk_assign_lane: { args: { channel_ids: ChannelId[]; lane_id: LaneId | 
 | 工作包 | 负责人 | 写范围 |
 | --- | --- | --- |
 | **WP-73A**：服务商 / 凭据 / 模型的删除（含批量与级联确认） | E1 | `src/pages/providers/**`、`src/pages/models/**`、`src/app/{providers,providerWizard,models}*.test.tsx` |
-| **WP-73B**：通道 / 分组 / 策略 / 计费的删除 + **通道页线路下拉** | E1 | `src/pages/channels/**`、`src/pages/policies.tsx`、`src/pages/cost.tsx`、`src/app/{channels,policies,cost}*.test.tsx`、`src/app/providerWizard.test.tsx`（仅 §4.3 那几条） |
+| **WP-73B**：通道 / 分组 / 策略 / 计费的删除 + **通道页线路下拉** | E1 | ~~`src/pages/channels/**`、`src/pages/policies.tsx`~~（两页已删，见 [docs/49] / [docs/48]）、`src/pages/cost.tsx`、~~`src/app/{channels,policies}.test.tsx`~~ → `src/app/cost.test.tsx`、`src/app/providerWizard.test.tsx`（仅 §4.3 那几条） |
 | **WP-73C**：`channel_bulk_assign_lane` 的 `lane_id` 可空（清空=继承） | E3 | `src-tauri/src/commands/entity.rs` |
 | 主管 | lead | `src/shared/**`（bindings / i18n / commands / 共享确认组件）、`docs/**`、`scripts/e2e/smoke.mjs`、门禁与安装包 |

@@ -16,8 +16,6 @@
  */
 
 import type { SvgIconComponent } from "@mui/icons-material";
-import AltRouteOutlinedIcon from "@mui/icons-material/AltRouteOutlined";
-import CallSplitOutlinedIcon from "@mui/icons-material/CallSplitOutlined";
 import CategoryOutlinedIcon from "@mui/icons-material/CategoryOutlined";
 import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import DeviceHubOutlinedIcon from "@mui/icons-material/DeviceHubOutlined";
@@ -26,7 +24,6 @@ import KeyOutlinedIcon from "@mui/icons-material/KeyOutlined";
 import LanOutlinedIcon from "@mui/icons-material/LanOutlined";
 import PaidOutlinedIcon from "@mui/icons-material/PaidOutlined";
 import ReceiptLongOutlinedIcon from "@mui/icons-material/ReceiptLongOutlined";
-import RuleOutlinedIcon from "@mui/icons-material/RuleOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 
 import type { I18nKey } from "@/shared/i18n";
@@ -46,18 +43,63 @@ export type AppRoute = {
   /** 是否出现在侧边栏 */
   nav: boolean;
   /**
+   * 侧边栏**分组**键（`navGroup.*`）。`undefined` = 不归组。
+   *
+   * 为什么有分组（[docs/56]）：光靠"哪一项排在前面"表达不出结构。改动前侧边栏是
+   * `概览 | 服务商 模型 网络 | 成本 日志 | 设置 | 访问密钥` —— 语义是
+   * **配置(3) → 观察(2) → 系统(1) → 又回到配置(1)**：那条配置链的最后一步
+   * （访问密钥 = 客户端拿它调我）被丢在「设置」**之后**，读起来像设置的子项。
+   * 分组让"这几项是一类"由**结构**说出来，而不是让用户从位置上猜。
+   *
+   * 组内顺序 = `ROUTES` 顺序；组的先后 = 各组第一项在 `ROUTES` 里的先后
+   * （**组必须是连续的**，不连续会被 `routes.test.tsx` 的闸门拦下）。
+   */
+  navGroup?: I18nKey;
+  /**
    * 页面组件候选路径（相对 `src/pages/`，不带扩展名），按优先级从上到下。
-   * 命中第一个存在的文件；都找不到就渲染 `PagePlaceholder`（不白屏、不报错）。
+   * 命中第一个存在的文件；都找不到就渲染 404 页（不白屏、不报错）。
    */
   pages: string[];
-  /** 契约出处，方便四个包对照文档 */
-  docRef: string;
 };
 
 /**
- * 路由表。**顺序 = 侧边栏顺序**（按使用频率，见 [05 §2]）。
+ * 侧边栏分组的**显示顺序**（组名键）。
  *
- * 归属（[12 §6]）：F2 = 看板 + 日志；F3 = 服务商/模型/通道/策略；F4 = 网络/成本/设置/向导。
+ * 为什么单独列一遍而不是只用"第一项出现在哪"：分组顺序是**设计决定**，不该由
+ * "谁先被写进数组"顺带决定 —— 有人插一项就可能把整组挪位。这里显式写死，
+ * `navSections()` 只按它分组；漏了某一组会被 `routes.test.tsx` 拦下。
+ */
+export const NAV_GROUP_ORDER: readonly I18nKey[] = [
+  "navGroup.setup",
+  "navGroup.records",
+  "navGroup.system",
+];
+
+/**
+ * 路由表。**顺序 = 侧边栏顺序**，且**组必须连续**。
+ *
+ * ## 侧边栏的信息架构（[docs/56]，用户第 323 轮："重新排序一下，从用户体验工程和直觉上来说"）
+ *
+ * ```
+ * 概览                                 ← 首页：先看现在怎么样（不归组，永远是第一项）
+ * ── 配置 ──
+ *   服务商 / 模型目录 / 网络 / 访问密钥   ← 把中转站接起来：接谁 → 提供什么 → 怎么出网 → 谁可以调用
+ * ── 记录 ──
+ *   请求日志 / 成本中心                 ← 跑起来之后看过什么、花了多少
+ * ── 系统 ──
+ *   设置                               ← 系统设置，**永远最后**
+ * ```
+ *
+ * **为什么这样排**（不是"按使用频率"，那条规则本身是反模式：频率会变，位置不该变）：
+ *
+ * 1. **按任务流排，不按频率排** —— 位置要可预测（肌肉记忆），所以依据必须是
+ *    "这几项在用户的动作链条里处于哪一步"，而不是"哪个更常用"。
+ * 2. **配置链要连续、以终点收尾** —— `访问密钥` 是这条链的**终点**（客户端拿它调我），
+ *    它原来排在 `设置` **之后**，会被读成设置的子项；现在紧跟 `网络`。
+ * 3. **观察项相邻** —— 请求日志（明细）与成本中心（聚合）是一类，不再被别类切开。
+ * 4. **设置永远最后** —— 全局通行约定；它也是唯一"改了会影响整个软件"的一页。
+ *
+ * 归属（[12 §6]）：F2 = 看板 + 日志；F3 = 服务商/模型；F4 = 网络/成本/设置/访问密钥。
  */
 export const ROUTES: readonly AppRoute[] = [
   {
@@ -70,7 +112,6 @@ export const ROUTES: readonly AppRoute[] = [
     // 两个候选都列出：文件夹形式（`dashboard/index.tsx`）与单文件形式（`dashboard.tsx`）都能自动接线 ——
     // 与 providers/models 等条目保持一致（`pageRegistry` 的约定是"候选路径见本表"）
     pages: ["dashboard", "dashboard/index"],
-    docRef: "07 §1 首页看板",
   },
   {
     key: "providers",
@@ -79,8 +120,8 @@ export const ROUTES: readonly AppRoute[] = [
     icon: DnsOutlinedIcon,
     owner: "F3",
     nav: true,
+    navGroup: "navGroup.setup",
     pages: ["providers", "providers/index"],
-    docRef: "07 §3 渠道设置",
   },
   {
     key: "provider-detail",
@@ -90,7 +131,6 @@ export const ROUTES: readonly AppRoute[] = [
     owner: "F3",
     nav: false,
     pages: ["providers/detail", "provider-detail"],
-    docRef: "07 §3 渠道设置（详情 + 连通性测试 / echo）",
   },
   {
     key: "models",
@@ -99,31 +139,8 @@ export const ROUTES: readonly AppRoute[] = [
     icon: CategoryOutlinedIcon,
     owner: "F3",
     nav: true,
+    navGroup: "navGroup.setup",
     pages: ["models", "models/index"],
-    docRef: "07 §4 模型目录",
-  },
-  {
-    // URL 是 /channels（契约固定），但**导航标签面向用户**：这页的默认视图是
-    // 「套餐链」——哪个模型在用哪些套餐/线路、还剩多少、排第几（[05 §2.1]）。
-    // 所以标签用「套餐与线路」，避免让用户以为要先配"通道"这个内部概念。
-    key: "channels",
-    path: "/channels",
-    titleKey: "nav.plansAndRoutes",
-    icon: AltRouteOutlinedIcon,
-    owner: "F3",
-    nav: true,
-    pages: ["channels", "channels/index"],
-    docRef: "07 §5 / 05 §2.1 套餐链（默认视图）+ 矩阵（批量配置视图）",
-  },
-  {
-    key: "policies",
-    path: "/policies",
-    titleKey: "nav.policies",
-    icon: RuleOutlinedIcon,
-    owner: "F3",
-    nav: true,
-    pages: ["policies", "policies/index"],
-    docRef: "07 §5 路由策略（规则表 + 条件构造器 + 模拟器）",
   },
   {
     key: "network",
@@ -132,8 +149,8 @@ export const ROUTES: readonly AppRoute[] = [
     icon: LanOutlinedIcon,
     owner: "F4",
     nav: true,
+    navGroup: "navGroup.setup",
     pages: ["network", "network/index"],
-    docRef: "12 §6 F4 订阅管理 / 节点列表 / 分配 Tab",
   },
   {
     key: "network-nodes",
@@ -143,59 +160,90 @@ export const ROUTES: readonly AppRoute[] = [
     owner: "F4",
     nav: false,
     pages: ["network/nodes"],
-    docRef: "04 §7 节点列表与测速",
   },
   {
-    key: "network-assignments",
-    path: "/network/assignments",
-    titleKey: "nav.networkAssignments",
-    icon: CallSplitOutlinedIcon,
+    /**
+     * [docs/54] **一条订阅的详情**（用户第 321 轮）：
+     * "先到网络界面，再去点击一个订阅，里面就可以看到这个订阅的所有节点，可以打开或者关闭"。
+     *
+     * 它取代了"在 `/network/nodes` 上用下拉挑订阅"那一步：入口从订阅行直接进来，
+     * 页面**不用再选订阅**（少一个控件，也少一次"选错订阅"的机会）。
+     */
+    key: "network-subscription",
+    path: "/network/subscriptions/:id",
+    titleKey: "nav.networkSubscription",
+    icon: DeviceHubOutlinedIcon,
     owner: "F4",
     nav: false,
-    pages: ["network/assignments"],
-    docRef: "04 §8 线路分配（反向视图：谁走了这条线）",
+    pages: ["network/subscription"],
   },
+  // [docs/55]（第 322 轮）`/network/assignments`（「线路分配」）**整页删除**。
+  //
+  // 用户裁决："线路级别的分配逻辑我们已经放弃了，取而代之的，**每个服务商统一一个节点**"。
+  // 那一页存在的唯一理由是展示五级继承链（策略级 → 通道级 → 套餐级 → 服务商级 → 全局默认），
+  // 而前三级已经没有字段、没有写入口、也没有解析意义了 —— 一张只剩两级的"分配表"
+  // 除了让人以为还有级别可调之外没有任何用处。
+  //
+  // 走哪个节点现在只能在一处改：**服务商详情页**的「网络代理」下拉。
   {
-    key: "cost",
-    path: "/cost",
-    titleKey: "nav.cost",
-    icon: PaidOutlinedIcon,
-    owner: "F4",
-    nav: true,
-    pages: ["cost", "cost/index"],
-    docRef: "07 §6 成本中心",
-  },
-  {
-    key: "logs",
-    path: "/logs",
-    titleKey: "nav.logs",
-    icon: ReceiptLongOutlinedIcon,
-    owner: "F2",
-    nav: true,
-    // 与 dashboard 一致：两个候选都列出（单文件形式 `logs.tsx` 与文件夹形式 `logs/index.tsx`）。
-    // 已落地的是 `src/pages/logs/index.tsx`（`pageRegistry` 的约定是"候选路径见本表"）。
-    pages: ["logs", "logs/index"],
-    docRef: "07 §2 请求日志",
-  },
-  {
-    key: "settings",
-    path: "/settings",
-    titleKey: "nav.settings",
-    icon: SettingsOutlinedIcon,
-    owner: "F4",
-    nav: true,
-    pages: ["settings", "settings/index"],
-    docRef: "07 §7 设置（含开机自启动，09 §1.2 E1–E5）",
-  },
-  {
+    /**
+     * [docs/56] **配置链的终点**（第 323 轮从侧边栏最底部提上来）。
+     *
+     * 原来它排在 `设置` **之后**，读起来像设置的子项；而它其实是配置动作的**最后一步**：
+     * 「客户端拿这些密钥调用本机网关」—— 前面三项（服务商 / 模型 / 网络）都是为了让这一步成立。
+     */
     key: "api-keys",
     path: "/api-keys",
     titleKey: "nav.apiKeys",
     icon: KeyOutlinedIcon,
     owner: "F4",
     nav: true,
+    navGroup: "navGroup.setup",
     pages: ["apikeys", "apikeys/index"],
-    docRef: "19 §3.4 访问密钥（明文只显示一次；列表不放复制按钮）",
+  },
+  {
+    /**
+     * [docs/56] 观察组第一项：**明细**。
+     *
+     * 与「成本中心」谁在前是这一轮唯一真正五五开的一处；选日志在前，理由是
+     * **排查比看账单更高频**，而且「明细 → 聚合」符合阅读方向
+     *（先看清那一次请求，再看这个月合起来花了多少）。
+     */
+    key: "logs",
+    path: "/logs",
+    titleKey: "nav.logs",
+    icon: ReceiptLongOutlinedIcon,
+    owner: "F2",
+    nav: true,
+    navGroup: "navGroup.records",
+    // 与 dashboard 一致：两个候选都列出（单文件形式 `logs.tsx` 与文件夹形式 `logs/index.tsx`）。
+    // 已落地的是 `src/pages/logs/index.tsx`（`pageRegistry` 的约定是"候选路径见本表"）。
+    pages: ["logs", "logs/index"],
+  },
+  {
+    /** [docs/56] 观察组第二项：**聚合**（用量与花费的趋势和明细）。 */
+    key: "cost",
+    path: "/cost",
+    titleKey: "nav.cost",
+    icon: PaidOutlinedIcon,
+    owner: "F4",
+    nav: true,
+    navGroup: "navGroup.records",
+    pages: ["cost", "cost/index"],
+  },
+  {
+    /**
+     * [docs/56] **永远最后**：全局通行约定，也是唯一"改了会影响整个软件"的一页
+     *（端口 / 开机自启 / 托盘 / 存储 / 系统网络）。夹在功能页中间会让人误以为它同类。
+     */
+    key: "settings",
+    path: "/settings",
+    titleKey: "nav.settings",
+    icon: SettingsOutlinedIcon,
+    owner: "F4",
+    nav: true,
+    navGroup: "navGroup.system",
+    pages: ["settings", "settings/index"],
   },
   // 首启向导 `/onboarding` 已**整条移除**（[19 §2.1]：两个向导都关掉）。
   // `onboarding_*` 三条命令**保留注册**（后端能力不删），但页面不许再引用它们 ——
@@ -207,6 +255,47 @@ export const HOME_PATH = "/dashboard";
 
 /** 侧边栏项（顺序即 `ROUTES` 顺序）。 */
 export const NAV_ROUTES: readonly AppRoute[] = ROUTES.filter((r) => r.nav);
+
+/** 侧边栏的一段：可选的组名 + 这一段里的导航项。 */
+export type NavSection = {
+  /** 组名键；`undefined` = **不归组**的那一项（首页）。 */
+  groupKey?: I18nKey;
+  routes: readonly AppRoute[];
+};
+
+/**
+ * 把 `NAV_ROUTES` 切成侧边栏要画的那几段。
+ *
+ * 规则（都由 `routes.test.tsx` 的闸门钉住）：
+ *
+ * 1. **不归组的项自成一段，且排在最前**（现在只有「概览」这一项 —— 它是首页，不该
+ *    被塞进任何组；组名与项名都是"概览"还会造成同屏重复）；
+ * 2. 其余按 [`NAV_GROUP_ORDER`] 的**声明顺序**分组，组内保持 `ROUTES` 顺序；
+ * 3. **同一组的项必须连续** —— 不连续时本函数**返回 `null`**，让闸门当场红
+ *    （而不是画出一个"同样的组名出现两次"的侧边栏，那正是分组要消灭的东西）。
+ */
+export function navSections(): readonly NavSection[] | null {
+  const ungrouped = NAV_ROUTES.filter((r) => r.navGroup === undefined);
+  const sections: NavSection[] = [];
+  if (ungrouped.length > 0) sections.push({ routes: ungrouped });
+
+  for (const groupKey of NAV_GROUP_ORDER) {
+    const routes = NAV_ROUTES.filter((r) => r.navGroup === groupKey);
+    if (routes.length === 0) continue;
+    // 连续性：这一组在 NAV_ROUTES 里的下标必须是一段连续的区间
+    const indices = routes.map((r) => NAV_ROUTES.indexOf(r));
+    const contiguous = indices.every((n, i) => i === 0 || n === (indices[i - 1] ?? -1) + 1);
+    if (!contiguous) return null;
+    sections.push({ groupKey, routes });
+  }
+
+  // 有项带着**不在** `NAV_GROUP_ORDER` 里的组名 = 有人加了组却忘了登记顺序
+  const known = new Set(NAV_GROUP_ORDER);
+  const unknown = NAV_ROUTES.filter((r) => r.navGroup !== undefined && !known.has(r.navGroup));
+  if (unknown.length > 0) return null;
+
+  return sections;
+}
 
 /** 按 key 取路由（找不到返回 undefined，调用方自行兜底）。 */
 export function routeByKey(key: string): AppRoute | undefined {

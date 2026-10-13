@@ -12,7 +12,11 @@
  * ```
  *
  * 候选路径写在 `routes.ts` 的 `pages` 字段里（按优先级）。命中第一个存在的文件；
- * 都没命中就渲染 `<PagePlaceholder>`：**不白屏、不报错**，并把"该放哪个文件"显示出来。
+ * 都没命中就返回 `undefined`，调用方渲染**用户能看懂的 404**（`AppRouter` 的 `<NotFound>`）：
+ * **不白屏、不报错**。
+ *
+ * [极简] 这里原来还会把"该放哪个文件"渲染到页面上（`<PagePlaceholder>`）——
+ * 那是给开发看的。现在缺页面就是 404，页面路径只留在源码与测试的报错信息里。
  *
  * 实现用 Vite 的 `import.meta.glob`（构建期静态分析，产物仍是按页面分包 + 懒加载）。
  */
@@ -36,7 +40,7 @@ for (const [file, loader] of Object.entries(modules)) {
 /** 已解析过的懒加载组件缓存：避免每次 render 都 `lazy()`（那会导致整页重挂载）。 */
 const resolved = new Map<string, LazyExoticComponent<ComponentType>>();
 
-/** 按候选路径解析页面组件；都没有则返回 `undefined`（调用方渲染占位壳）。 */
+/** 按候选路径解析页面组件；都没有则返回 `undefined`（调用方渲染 404）。 */
 export function resolvePage(
   candidates: readonly string[],
 ): LazyExoticComponent<ComponentType> | undefined {
@@ -58,7 +62,3 @@ export function knownPages(): string[] {
   return [...registry.keys()].sort();
 }
 
-/** 占位壳里显示"该放哪个文件"用的首选路径。 */
-export function primaryCandidate(candidates: readonly string[]): string {
-  return candidates[0] ?? "";
-}

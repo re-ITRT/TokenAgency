@@ -82,5 +82,11 @@
 | --- | --- | --- | --- |
 | **WP-74A**：网络族（`/network`、`/network/nodes`、`/network/assignments`） | E1 | `src/pages/network/**`、`src/app/network.test.tsx` | 可立即开工（第 73 轮没占用） |
 | **WP-74B**：设置页 + 日志页 + 看板 + API key 页 | E1 | `src/pages/settings/**`、`src/pages/logs/**`、`src/pages/dashboard/**`、`src/pages/apikeys/**` 与对应测试 | 可立即开工 |
-| **WP-74C**：服务商 / 模型 / 通道 / 策略 / 成本 | E1 | `src/pages/providers/**`、`src/pages/models/**`、`src/pages/channels/**`、`src/pages/policies.tsx`、`src/pages/cost.tsx` 与对应测试 | **必须等第 73 轮（docs/21）合并之后**，否则会撞车 |
+| **WP-74C**：服务商 / 模型 / ~~通道~~ / ~~策略~~ / 成本 | E1 | `src/pages/providers/**`、`src/pages/models/**`、~~`src/pages/channels/**`、`src/pages/policies.tsx`~~（两页已删，[docs/49] / [docs/48]）、`src/pages/cost.tsx` 与对应测试 | **必须等第 73 轮（docs/21）合并之后**，否则会撞车 |
 | 主管 | lead | `src/shared/**`（HelpTip / PageHeader）、`docs/**`、`scripts/e2e/smoke.mjs`、门禁与安装包 | 立即 |
+
+> **[docs/49] 后记（2026-09-30）**：本表把 `src/pages/channels/**` 当成一个**要改的写范围**，
+> 但那一页（导航标签「套餐与线路」）**整页已被用户裁决删除**，`src/pages/policies.tsx` 同理
+> （[docs/48]）。表里保留原文（它如实记录了当时的分工），**现在照着它去找那两个目录会找不到**。
+> 与"长简介收进问号"这条需求相关的**当前**落点：`step22` 的截图/悬停清单已去掉 `/channels`
+> 与 `/policies`，只覆盖现存的 7 个页面。

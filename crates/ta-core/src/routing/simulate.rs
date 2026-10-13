@@ -43,8 +43,9 @@ pub struct SimulateInput {
     /// 毫秒时间戳；不传则用当前时间（`time_window` 会读它）
     #[serde(default)]
     pub now: Option<i64>,
+    /// 各线路在时间窗内的 token 用量（[docs/48 §3]）。空 = 不知道 → 按 priority 排。
     #[serde(default)]
-    pub quota_remaining: BTreeMap<String, Option<f64>>,
+    pub balance: BTreeMap<String, i64>,
     #[serde(default)]
     pub latency_ms: BTreeMap<String, u32>,
     #[serde(default)]
@@ -75,11 +76,6 @@ impl SimulateInput {
                 .iter()
                 .map(|(k, v)| (ChannelId::from(k.as_str()), v.clone()))
                 .collect(),
-            quota_remaining: self
-                .quota_remaining
-                .iter()
-                .map(|(k, v)| (CredentialId::from(k.as_str()), *v))
-                .collect(),
             latency_ms: self
                 .latency_ms
                 .iter()
@@ -91,6 +87,9 @@ impl SimulateInput {
                 .map(|(k, v)| (LaneId::from(k.as_str()), *v))
                 .collect(),
             concurrency: BTreeMap::new(),
+            // 模拟器默认**不知道**用量（空表 → 退化为按 priority）。
+            // 想模拟"平均粘性"的效果，调用方要在 `SimulateInput.balance` 里给出用量。
+            balance: self.balance.iter().map(|(k, v)| (ChannelId::from(k.as_str()), *v)).collect(),
         }
     }
 }
@@ -236,7 +235,8 @@ fn build_result(
     // 预计出口：生效 lane + 该通道的 EWMA 延迟（节点是内核运行态，纯函数拿不到）
     let lane = selection.and_then(|s| {
         let ch = router.index.channel(&s.channel)?;
-        let lane_id = router.index.lane_with_override(ch, decision.lane_override.as_ref())?;
+        // [docs/55]：线路只看服务商那一个节点（策略级覆盖已随 `lane_override` 一起删除）
+        let lane_id = router.index.resolve_lane(ch)?;
         let name = router
             .index
             .lanes

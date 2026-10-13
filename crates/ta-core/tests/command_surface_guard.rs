@@ -65,8 +65,34 @@ const ARCHIVE: &str = "docs/contracts/bindings-handwritten-reference.ts.txt";
 /// → **109**（task-36 新增 `subscription_traffic`：订阅流量与更新时间，docs/18 §1.2）
 /// → **114**（docs/19 §3：我们网关对外的访问密钥，新增 `api_key_list` / `api_key_create` /
 /// `api_key_set_enabled` / `api_key_delete` / `api_key_usage` 五条）。
+/// → **116**（docs/25：模型目录，新增 `provider_model_catalog` / `provider_model_attach` 两条 ——
+/// 扫描只记录、勾一下才接入；**没有**手动添加命令）。
+/// → **115**（docs/28 §1.3：**删掉 `credential_delete`** —— 一个服务商就一把密钥，
+/// 要撤密钥就删服务商；实现体 `delete_credential` 仍在，但它不再是一条 IPC 命令。
+/// 这是**第一次"减法"**，所以除数字外还必须同时把归档件里那一行删掉，
+/// 守卫才会认（它比对的是键集，不只是条数））。
+/// → **118**（docs/28 §1.2：新增 `lane_options` / `lane_ensure_for_node` /
+/// `lane_ensure_direct` —— 线路的代理下拉要能列**直连**与订阅节点，并在选中时把线路建出来/复用）。
 /// 校准依据是守卫自己的输出、不是目测：`归档件里解析出 N 条命令，期望 M 条` → 改这里。
-const ARCHIVE_TOTAL: usize = 114;
+/// → **123**（docs/46 §310：套餐额度自动获取，新增 `quota_fetch` 一条 —— 只读查询，
+/// 不写配置、不碰密钥仓库；归档件已同步）。
+/// → **128**（docs/46 §311：额度这一块从"只读查询"长成完整闭环 —— 新增 5 条
+/// `quota_fetch_remembered`（用记住的凭据查）/ `quota_remember` / `quota_remembered` /
+/// `quota_forget`（凭据进密钥仓库，明文永不回显）/ `quota_record_windows`（把上游周期上限
+/// 写进凭据的 `quota_windows`，用户点一下才发生）；归档件已同步）。
+/// → **131**（docs/46 §313：借 `token_view` 的思路做「在浏览器里登录一次、之后自动查」——
+/// 新增 3 条 `quota_extract_credentials`（用用户机器上已有的 Chrome 提取会话凭证）/
+/// `quota_fetch_with` / `quota_remember_values`（具名凭证：`api_key` / `auth_token` +
+/// org/project / `cookie` —— 各家的鉴权形状不一样，不能再假装"永远是一对 AK/SK"）；
+/// 归档件已同步）。
+/// → **116**（[docs/55] 第 322 轮：**删掉 4 条** —— `channel_bulk_assign_lane`、
+/// `lane_assignments`、`lane_reverse_lookup`、`lane_pick_options`。
+/// 用户裁决"线路级别的分配逻辑我们已经放弃了，取而代之的，每个服务商统一一个节点"：
+/// 前三级覆盖字段（`policy.use_lane` / `channel.lane` / `credential.lane`）整条删除，
+/// 展示它们的页面 `/network/assignments` 整页删除 ⇒ 这 4 条命令**没有任何调用方**。
+/// 与 115 那次一样，这是**减法**，所以除数字外归档件里那几行也必须同时删掉
+/// —— 守卫比对的是**键集**，不只是条数）。
+const ARCHIVE_TOTAL: usize = 116;
 
 // ---------------------------------------------------------------- 解析（纯字符串 → 集合）
 

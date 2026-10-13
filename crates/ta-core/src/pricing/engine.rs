@@ -6,8 +6,9 @@
 //!
 //! 1. 按 **来源分档**：`manual`（用户填）→ `imported`（导入的表）→ `builtin`（内置）
 //!    → 最后才是 [`crate::pricing::builtin`] 的静态官方价表。
-//! 2. **同一档内**：先试"精确匹配"（`match` 里没有任何 `*`），再试通配；
-//!    各自都按**声明顺序首个命中生效**（与策略引擎"首个命中即生效"一致）。
+//! 2. **同一档内**：先比"精确匹配"（`match` 里没有任何 `*`）优于通配；
+//!    再比**具体度**（`model` / `provider` / `credential` 写了几个）**多者优先**；
+//!    最后才按**声明顺序**首个命中生效（与策略引擎"首个命中即生效"一致）。
 //! 3. **倍率与套餐费独立解析**：只写 `multiplier: 0.8` 而不写 `rates` 的条目
 //!    （中转站倍率的典型写法）会和更低优先级的费率组合：`官方价 × 0.8`。
 //! 4. **`plan_fee` 不摊进单次请求**：`cost_of` 只算按量成本，套餐费由
@@ -92,19 +93,39 @@ impl PricingEngineImpl {
         pred: impl Fn(&PriceEntry) -> bool,
     ) -> Option<Hit<'a>> {
         for t in tiers {
-            for exact in [true, false] {
-                for (idx, e) in t.entries {
-                    if is_exact(&e.r#match) != exact {
-                        continue;
-                    }
-                    if !matches_request(&e.r#match, model, provider, cred) {
-                        continue;
-                    }
-                    if !pred(e) {
-                        continue;
-                    }
-                    return Some(Hit { entry: e, index: *idx, kind: t.kind, rank: t.rank });
+            // 同一档内**可能有多条都命中**：例如 `{model:"gpt-4o"}` 与
+            // `{model:"gpt-4o", provider:"p-x"}`。**更具体的必须赢** ——
+            // 否则"给某个服务商单独定价"会被更早写入的那条泛化条目压住，
+            // 而那是一个**只在用户先后顺序不同时**才出现的静默错价。
+            let mut best: Option<(bool, usize, i64, &'a PriceEntry)> = None;
+            for (idx, e) in t.entries {
+                if !matches_request(&e.r#match, model, provider, cred) {
+                    continue;
                 }
+                if !pred(e) {
+                    continue;
+                }
+                let exact = is_exact(&e.r#match);
+                let spec = specificity(&e.r#match);
+                let better = match best {
+                    None => true,
+                    Some((bexact, bspec, bidx, _)) => match exact.cmp(&bexact) {
+                        std::cmp::Ordering::Greater => true,
+                        std::cmp::Ordering::Less => false,
+                        std::cmp::Ordering::Equal => match spec.cmp(&bspec) {
+                            std::cmp::Ordering::Greater => true,
+                            std::cmp::Ordering::Less => false,
+                            // 同档同具体度：按声明顺序取首个（稳定、可解释）
+                            std::cmp::Ordering::Equal => *idx < bidx,
+                        },
+                    },
+                };
+                if better {
+                    best = Some((exact, spec, *idx, e));
+                }
+            }
+            if let Some((_, _, idx, e)) = best {
+                return Some(Hit { entry: e, index: idx, kind: t.kind, rank: t.rank });
             }
         }
         None
@@ -189,6 +210,21 @@ fn is_exact(m: &PriceMatch) -> bool {
     no_star(m.model.as_deref()) && no_star(m.provider.as_ref().map(|p| p.as_str()))
 }
 
+/// `match` 里**写了几个条件**（`model` / `provider` / `credential`）。
+///
+/// 用于同一档内的优先序：**条件多的更具体，应当压过条件少的**
+/// （`{model, provider}` 压过 `{model}`）。没有它就只能按配置顺序，
+/// 而"先配了模型价、后配了某服务商的特价"会得到**先配的那条** ——
+/// 一个只在顺序不同时出现的静默错价。
+///
+/// 注意它与 [`is_exact`] 是两件事：`is_exact` 管"有没有通配符"，
+/// 这里管"写了几个条件"。前者优先级更高（精确整体优于通配）。
+fn specificity(m: &PriceMatch) -> usize {
+    usize::from(m.model.is_some())
+        + usize::from(m.provider.is_some())
+        + usize::from(m.credential.is_some())
+}
+
 /// 三要素全都要匹配；没写的字段 = 不过滤（`match: {}` 是"全命中"）。
 fn matches_request(
     m: &PriceMatch,
@@ -239,7 +275,7 @@ fn best(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{PlanFee, QuotaWindow};
+    use crate::domain::{PlanFee, PlanFeeCycle};
     use crate::pricing::{cache_savings, cost_of_snapshot};
     use pretty_assertions::assert_eq;
 
@@ -346,6 +382,115 @@ mod tests {
         let p = e.resolve("gpt-4o", &provider(), &cred());
         assert_eq!(p.source, PriceSourceKind::Manual);
         approx(p.rates[&TokenKind::Input], 5.0);
+    }
+
+    /// [docs/51] 本轮修正的核心：**同一档内，条件多的条目压过条件少的**。
+    ///
+    /// 用户第 318 轮把定价的对象钉成"每一个对外模型"。于是同档内会出现
+    /// `{model:"m"}`（本轮唯一的写法）与历史遗留的 `{model:"m", provider:"p"}` 并存。
+    /// 没有这条具体度规则时，胜负只看**配置里的先后顺序** —— 那意味着"用户先给模型定价、
+    /// 后来又给某个服务商单独定价"会得到**先写的那条**，一个只在顺序不同时出现的静默错价。
+    #[test]
+    fn more_specific_match_wins_within_the_same_tier_regardless_of_order() {
+        // 泛化在前、具体在后
+        let mut specific = entry(Some("m"), PriceSource::Manual, &[("input", 3.0)], 1.0);
+        specific.r#match.provider = Some(provider());
+        let e = engine(vec![
+            entry(Some("m"), PriceSource::Manual, &[("input", 1.0)], 1.0),
+            specific.clone(),
+        ]);
+        let p = e.resolve("m", &provider(), &cred());
+        approx(p.rates[&TokenKind::Input], 3.0);
+        assert_eq!(p.entry_index, 1, "条件多的那条（model+provider）必须赢");
+
+        // 顺序反过来 —— 结论必须**一模一样**（否则就是"顺序决定价格"的静默错价）
+        let e =
+            engine(vec![specific, entry(Some("m"), PriceSource::Manual, &[("input", 1.0)], 1.0)]);
+        let p = e.resolve("m", &provider(), &cred());
+        approx(p.rates[&TokenKind::Input], 3.0);
+        assert_eq!(p.entry_index, 0);
+    }
+
+    /// 具体度**不跨档比**：通配的 manual 依然赢过精确的 builtin（优先级先于具体度）。
+    #[test]
+    fn specificity_never_crosses_tiers() {
+        let mut builtin_specific = entry(Some("m"), PriceSource::Builtin, &[("input", 1.0)], 1.0);
+        builtin_specific.r#match.provider = Some(provider());
+        builtin_specific.r#match.credential = Some(cred());
+        let e = engine(vec![
+            entry(Some("m*"), PriceSource::Manual, &[("input", 5.0)], 1.0),
+            builtin_specific,
+        ]);
+        let p = e.resolve("m", &provider(), &cred());
+        assert_eq!(p.source, PriceSourceKind::Manual);
+        approx(p.rates[&TokenKind::Input], 5.0);
+    }
+
+    /// 精确（无通配）整体优于通配，**即使通配那条条件更多**。
+    #[test]
+    fn exact_beats_wildcard_even_when_the_wildcard_is_more_specific() {
+        let mut wildcard = entry(Some("m*"), PriceSource::Manual, &[("input", 9.0)], 1.0);
+        wildcard.r#match.provider = Some(provider());
+        wildcard.r#match.credential = Some(cred());
+        let e =
+            engine(vec![wildcard, entry(Some("m"), PriceSource::Manual, &[("input", 2.0)], 1.0)]);
+        let p = e.resolve("m", &provider(), &cred());
+        approx(p.rates[&TokenKind::Input], 2.0);
+        assert_eq!(p.entry_index, 1);
+    }
+
+    /// 只写 `model` 的条目（本轮界面上**唯一**会写出来的形状）能匹配任何服务商/凭据。
+    #[test]
+    fn model_only_entry_matches_every_provider_and_credential() {
+        let e = engine(vec![entry(Some("m"), PriceSource::Manual, &[("input", 1.5)], 1.0)]);
+        for (p, c) in [
+            (ProviderId::new("p-a"), CredentialId::new("c-a")),
+            (ProviderId::new("p-b"), CredentialId::new("c-b")),
+        ] {
+            let got = e.resolve("m", &p, &c);
+            approx(got.rates[&TokenKind::Input], 1.5);
+            assert_eq!(got.entry_index, 0);
+        }
+        // 另一个模型不受影响（定价是按模型键的）：至少**不能**用到刚才那条 manual 价
+        let other = e.resolve("m-other", &provider(), &cred());
+        assert_ne!(other.source, PriceSourceKind::Manual);
+        assert!(other.rates.get(&TokenKind::Input).copied().unwrap_or(0.0) != 1.5);
+    }
+
+    /// [docs/51] **落库时把 `None` 写成显式 `null`，与"键不存在"完全同构。**
+    ///
+    /// 为什么专门钉这一条：真机 e2e 的第一版判据要求落库 JSON 里 `provider` / `credential`
+    /// **键都不存在**，跑出来是 `{"model":"…","provider":null,"credential":null}` 就判了红。
+    /// 那是**挂具越过了语义去要求一种序列化习惯**，不是产品缺陷 ——
+    /// `PriceMatch` 的三个字段是 `Option<T>` + `#[serde(default)]`，`None` 落库就是 `null`
+    /// （整份配置都这样，例如 `"usd_to_cny":null`）。
+    ///
+    /// 这一条把"两种形状在**引擎**里等价"从注释变成可执行断言：先反序列化两份 JSON，
+    /// 再断言它们的解析结果与**解析出来的价格**都一样。
+    #[test]
+    fn explicit_null_and_missing_key_are_equivalent() {
+        let with_nulls: PriceEntry = serde_json::from_str(
+            r#"{"match":{"model":"m","provider":null,"credential":null},"rates":{"input":1.5},"multiplier":1,"currency":null,"source":"manual","effective_from":null}"#,
+        )
+        .expect("显式 null 的形状必须能反序列化");
+        let without_keys: PriceEntry = serde_json::from_str(
+            r#"{"match":{"model":"m"},"rates":{"input":1.5},"multiplier":1,"source":"manual"}"#,
+        )
+        .expect("只有 model 的形状必须能反序列化");
+
+        assert_eq!(with_nulls.r#match.model, without_keys.r#match.model);
+        assert_eq!(with_nulls.r#match.provider, without_keys.r#match.provider);
+        assert_eq!(with_nulls.r#match.credential, without_keys.r#match.credential);
+        assert!(with_nulls.r#match.provider.is_none() && with_nulls.r#match.credential.is_none());
+
+        // 两种形状**解析出来的价必须一模一样**（这才是"同构"的可执行形式）
+        let e = engine(vec![with_nulls, without_keys]);
+        let got = e.resolve("m", &provider(), &cred());
+        approx(got.rates[&TokenKind::Input], 1.5);
+        assert_eq!(got.source, PriceSourceKind::Manual);
+        // 第一条是精确的、条件更多？都不是 —— 两条具体度同为 1、同档、同精确度，
+        // 所以按声明顺序取第一条（这里只要求"命中了且价格对"）。
+        assert_eq!(got.entry_index, 0);
     }
 
     #[test]
@@ -524,7 +669,7 @@ mod tests {
         by_cred.plan_fee = Some(PlanFee {
             amount: 99.0,
             currency: "CNY".into(),
-            window: QuotaWindow::Month,
+            window: PlanFeeCycle::Month,
             ..Default::default()
         });
         let e = engine(vec![by_cred]);
@@ -556,7 +701,7 @@ mod tests {
         e1.plan_fee = Some(PlanFee {
             amount: 9999.0,
             currency: "CNY".into(),
-            window: QuotaWindow::Month,
+            window: PlanFeeCycle::Month,
             ..Default::default()
         });
         let e_fee = engine(vec![e1]);
@@ -583,7 +728,7 @@ mod tests {
         by_cred.plan_fee = Some(PlanFee {
             amount: 99.0,
             currency: "CNY".into(),
-            window: QuotaWindow::Month,
+            window: PlanFeeCycle::Month,
             ..Default::default()
         });
         let e = engine(vec![by_cred]).without_builtin_table();
@@ -605,7 +750,7 @@ mod tests {
         e1.plan_fee = Some(PlanFee {
             amount: 199.0,
             currency: "CNY".into(),
-            window: QuotaWindow::Month,
+            window: PlanFeeCycle::Month,
             ..Default::default()
         });
         let e = engine(vec![e1]);
@@ -712,7 +857,7 @@ mod tests {
         plan.plan_fee = Some(PlanFee {
             amount: 99.0,
             currency: "CNY".into(),
-            window: QuotaWindow::Month,
+            window: PlanFeeCycle::Month,
             ..Default::default()
         });
 

@@ -43,7 +43,7 @@
 | POST | `/v1/messages` | Anthropic Messages |
 | POST | `/v1/embeddings` | 透传（不参与粘性/额度账本以外的特殊处理） |
 | POST | `/v1/images/generations`、`/v1/audio/*`、`/v1/files` | **纯透传**：按模型名选通道后原样转发 |
-| GET | `/v1/models` | 默认**原样透传上游**；`gateway.expose_models_with_capabilities=true` 时注入能力字段 |
+| GET | `/v1/models` | **由网关本地作答**（[docs/28 §4]）：返回**我们配置里的模型**（id = 规范 id，字段只来自我们创建的信息），不再透传上游 |
 | GET | `/v1/models/{id}` | 同上 |
 | GET | `/healthz` | 本地健康检查（不走上游）：`{"status":"ok","kernel":"ready"}` |
 | ANY | `/*` | 通配透传：按 `x-tokenagency-model` 头或路径中提取的模型名选通道 |
@@ -226,11 +226,10 @@ type AutostartState = {
 
 | 命令 | 入参 | 返回 |
 |---|---|---|
-| `credential_list` | — | `CredentialView[]`（含额度状态、已用量） |
+| `credential_list` | — | `CredentialView[]` |
 | `credential_upsert` | `credential: Credential` | `Credential` |
 | `credential_delete` | `id, force` | `void` |
 | `credential_set_secret` | `id, plaintext: string` | `void`（写入钥匙串，不入库） |
-| `credential_clear_quota` | `id` | `QuotaState`（用户手动"我充值了"） |
 | `credential_set_enabled` | `id, enabled: bool` | `void` |
 | `secrets_scan_plaintext` | — | `PlaintextFinding[]` |
 | `secrets_migrate` | `names: string[]` | `void` |
@@ -244,6 +243,8 @@ type AutostartState = {
 | `model_import_from_provider` | `provider_id, prefix_filter?` | `ImportPreview { preview_token, models: [{ upstream_model, suggested_id, exists }], skipped: [{ upstream_model, reason }] }`；`preview_token` 是**进程内存**里的短 TTL 句柄（5 分钟），**不落库** |
 | `model_apply_import` | `preview_token, selected: string[], lane?: string \| null` | `ApplyResult`（含 `channels_created`）；对每条选中模型：模型不存在就建，且 `(provider, credential, model)` 还没有通道就建**一条** `ch-<provider>-<credential>-<model>`（`lane` 即入参，`upstream_model` 用扫描行）——**"添加模型"就是把模型接到这个服务商上**（[20 §1.1](20-provider-model-lane-and-edit.md)）；`exists=true` 的即使被选中也**不重复写**；provider 没有任何凭据 → `TA-1004`；token 过期/未知 → `TA-1004`（"预览已过期，请重新扫描"） |
 | `model_bulk_update` | `ids: string[], patch: ModelPatch` | `ApplyResult`；`patch.lane` 三态（缺省不动 / `null` 清空 / 值写入）：写 `Model.default_lane` 并把该模型**现有每个 channel** 的 `lane` 一起改（[20 §1.3](20-provider-model-lane-and-edit.md)） |
+| `provider_model_catalog` | `provider_id` | `ModelCatalogEntry[]`：这家服务商**扫描记录下来的**模型（[25](25-provider-model-catalog.md)）。每行含 `upstream_model` / `suggested_id` / `seen_in_last_scan` / 首见与末见时间，以及**按当前配置现算**的 `added` / `channel_ids`（该行对应的全部通道）/ `enabled`。目录落 SQLite（`provider_model_catalog`），**不进配置、不进 YAML 导出**；provider 不存在 → `TA-1004`（不返回空目录） |
+| `provider_model_attach` | `provider_id, upstream_model` | `ApplyResult`（含 `channels_created`）：把目录里的这一条**接入**这家服务商 —— 建 `Model`（缺才建）+ 建一条 `ch-<provider>-<credential>-<model>`（`enabled=true`，凭据取 `<provider>-default` → 第一条启用凭据）。逻辑名**只从目录行取**；目录里没有这一条 → `TA-1004`（"先扫描一次"）；已经接入过 → 幂等（不写库，`channels_created=0`）；一份启用凭据都没有 → `TA-1004`；与已有策略下同 `model` 的线路能力声明冲突 → `TA-2007`（与 `channel_upsert` 同一条规则）。**没有"手动添加"**（[25 §1](25-provider-model-catalog.md)）：目录只记真实扫描到的模型 |
 
 > `Model.default_lane`（`#[serde(default, skip_serializing_if)] pub default_lane: Option<LaneId>`）是「添加模型」那一步唯一可改的字段：
 > 它既是"下次为这个模型建 channel 时的默认 lane"，也会被 `model_bulk_update({ patch: { lane } })` 同步到现有 channel。

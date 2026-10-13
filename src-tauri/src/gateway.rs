@@ -35,7 +35,6 @@ use tauri::{AppHandle, Emitter, Runtime};
 
 use ta_core::error::{Result as TaResult, TaError};
 use ta_core::pricing::PricingEngineImpl;
-use ta_core::quota::QuotaLedgerImpl;
 use ta_core::types::{RequestSummary, UsageRecord};
 use ta_gateway::dispatch::DialerOptions;
 use ta_gateway::events::{EventBus, TaEvent};
@@ -79,6 +78,112 @@ impl GatewayStore for UsageStoreGateway {
         // 类型宽度不同（trait 是 usize、store 是 u32）：夹到 u32 上限，别静默截断成 0
         let limit = limit.min(u32::MAX as usize) as u32;
         self.usage.recent_summaries(limit).await
+    }
+}
+
+/// `BalanceSource`：**时间窗内各线路的 token 用量**，平均粘性的"平均"依据（[docs/48 §4]）。
+///
+/// # 为什么必须缓存（用户明确要求"让数据库压力不是那么大"）
+///
+/// `used_tokens` 会被**每个请求**调用一次。直接查库就是"每请求一条 `GROUP BY`" ——
+/// 这正是要避免的。所以这里持一份带 TTL 的快照：
+///
+/// * 未过期 → 直接返回内存里那份 map（**零 IO、不碰锁以外的任何东西**）；
+/// * 过期 → **踢一次后台刷新**，本次仍旧返回旧快照；
+/// * 刷新进行中 → 不重复踢（`refreshing` 门闩），于是**一个 TTL 周期最多查一次库**，
+///   哪怕同时来 1000 个请求。
+///
+/// # 为什么是"后台刷新"而不是"当场查库"
+///
+/// `used_tokens` 是**同步**接口（`RouteContext` 要的是一份纯快照，见
+/// `ta_core::routing::BalanceSource`），而 sqlx 是异步的。第一版我用
+/// `block_in_place` + `block_on` 在调用点当场查 —— 那有两个问题：
+///
+/// 1. **单线程 runtime 上会 panic**（`block_in_place` 只允许多线程 runtime）。
+///    生产是 Tauri 的运行时，把"能不能发请求"押在"运行时是不是多线程"上太脆；
+/// 2. 它会把**请求本身**卡在一次 DB 查询上 —— 正是要避免的东西。
+///
+/// 现在改成"踢一脚就走"：`used_tokens` **永不阻塞**，代价是**冷启动的第一个 TTL 周期**
+/// 里快照还是空的（选路先按 priority 走，刷新落地后自动开始按用量平均）。
+/// 这个取舍是刻意的：宁可头几秒不退避，也不要每请求挂在数据库上。
+///
+/// 刷新失败（库错）时**保留旧快照**并记一条 warn：宁可短暂用稍旧的用量，
+/// 也不要因为一次查询失败就把选路打回"按 priority"，那会让用户看到线路选择莫名变来变去。
+///
+/// # 时间窗
+///
+/// 滚动 24 小时。选它的理由：太短（比如 1 小时）会让"刚用得多"的线路很快又被判定为最闲，
+/// 起不到拉平作用；太长（比如 30 天）则一条早期用得多的线路会**长期**被冷落，
+/// 而用户真正想要的是"最近别老压着一条打"。24 小时是这两者之间的取舍，属于可调参数。
+pub struct SqliteBalanceSource {
+    usage: Arc<SqliteUsageStore>,
+    clock: Arc<dyn ta_core::clock::Clock>,
+    cache: std::sync::Arc<std::sync::Mutex<Cache>>,
+}
+
+#[derive(Default)]
+struct Cache {
+    snapshot: std::collections::BTreeMap<ta_core::types::ChannelId, i64>,
+    /// 上一次**成功**刷新的时刻（`0` = 从没成功过 → 立刻该刷）。
+    fetched_at_ms: i64,
+    /// 刷新门闩：防止一个 TTL 周期内踢出多次查询（并发请求会同时看到"过期"）。
+    refreshing: bool,
+}
+
+/// 快照的存活时间。30 秒 = "新会话最多晚 30 秒才开始避开刚变重的那条线路"。
+const BALANCE_TTL_MS: i64 = 30_000;
+/// 统计窗口：滚动 24 小时（见类型文档里对这个取舍的说明）。
+const BALANCE_WINDOW_MS: i64 = 24 * 3_600_000;
+
+impl SqliteBalanceSource {
+    pub fn new(usage: Arc<SqliteUsageStore>, clock: Arc<dyn ta_core::clock::Clock>) -> Self {
+        Self { usage, clock, cache: std::sync::Arc::new(std::sync::Mutex::new(Cache::default())) }
+    }
+
+    /// 拿锁（中毒也要能继续用：一次刷新 panic 不该让选路永久瘫掉）。
+    fn lock(cache: &std::sync::Mutex<Cache>) -> std::sync::MutexGuard<'_, Cache> {
+        match cache.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+}
+
+impl ta_core::routing::BalanceSource for SqliteBalanceSource {
+    fn used_tokens(&self) -> std::collections::BTreeMap<ta_core::types::ChannelId, i64> {
+        let now_ms = self.clock.now_ms();
+        let mut guard = Self::lock(&self.cache);
+
+        let stale = now_ms.saturating_sub(guard.fetched_at_ms) >= BALANCE_TTL_MS;
+        if stale && !guard.refreshing {
+            guard.refreshing = true;
+            let usage = self.usage.clone();
+            let clock = self.clock.clone();
+            let cache = self.cache.clone();
+            // 踢一脚就走：**不 await、不阻塞调用方**。刷新落地后写回快照。
+            tokio::spawn(async move {
+                let since = clock.now_ms() - BALANCE_WINDOW_MS;
+                let outcome = usage.channel_token_usage(since).await;
+                let mut g = SqliteBalanceSource::lock(&cache);
+                // 无论成败都要放开门闩，否则一次失败会把刷新永久卡死。
+                g.refreshing = false;
+                match outcome {
+                    Ok(rows) => {
+                        g.snapshot = rows
+                            .into_iter()
+                            .map(|(id, tokens)| (ta_core::types::ChannelId::new(id), tokens))
+                            .collect();
+                        g.fetched_at_ms = clock.now_ms();
+                    }
+                    Err(e) => {
+                        // 保留旧快照与旧的 `fetched_at_ms`（于是下个请求会**再**试一次）。
+                        tracing::warn!("线路用量快照刷新失败（沿用上一次的快照）：{e}");
+                    }
+                }
+            });
+        }
+
+        guard.snapshot.clone()
     }
 }
 
@@ -183,7 +288,7 @@ impl KernelProbe for KernelProbeAdapter {
 ///
 /// **载荷形状**：`request:new` 按 [docs/10 §2.3] 发**批量数组**；其余变体发
 /// `TaEvent` 自身序列化后的对象。**已知缺口**：`usage:tick` 的
-/// `{ today, quota }` 形状与 `TaEvent::UsageTick` 的字段不完全一致（`ta-gateway`
+/// `{ today }` 形状与 `TaEvent::UsageTick` 的字段不完全一致（`ta-gateway`
 /// 侧只有 `today_tokens` / `today_cost`），这需要和 E5 对齐后再改载荷，
 /// 本文件不自己发明形状。
 pub struct TauriEventBus<R: Runtime> {
@@ -232,18 +337,28 @@ pub fn event_payload(e: &TaEvent) -> serde_json::Value {
 
 // ================================================================ 装配 + 启动
 
-/// 网关装配入参的**唯一一处**：全透传 + 凭据解析器 + 内核探针 + **API key 验票器**。
+/// 网关装配入参的**唯一一处**：全透传 + 凭据解析器 + 内核探针 + **API key 验票器** + **trace 表**。
 ///
-/// 为什么单独成函数：`RuntimeParts::with_api_keys` 少写一句，网关会静默退化成
-/// `NoApiKeys`（既不强制鉴权、也不认任何 api key）—— 那种失效在真机上只表现为
-/// "访问密钥建了也挡不住人"（[docs/19 §3.3]），没有任何东西会红。
-/// 抽出来之后 [`the_api_key_verifier_is_wired_to_the_real_store`] 能直接对装配入参断言。
+/// 为什么单独成函数：这里的接缝**漏一个都不会编译报错、也不会有任何东西变红** ——
+/// 只会在真机上表现成"功能静默失效"。两个已知的失效形态：
+///
+/// * `with_api_keys` 少写一句 → 网关静默退化成 `NoApiKeys`（既不强制鉴权、也不认任何 api key），
+///   真机上只表现为"访问密钥建了也挡不住人"（[docs/19 §3.3]）；
+/// * `with_trace_store` 少写一句 → 请求轨迹**一条都不落库**，真机上表现为
+///   "前端日志页与 `ta trace` 查不到任何请求"（[docs/14 §6 G2]/G4）。
+///   `with_trace_store` 自己的文档写着"生产装配应当接上"，而它此前**既没被调用、也没有测试** ——
+///   正是那种"没人接"的原始缺口形态。
+///
+/// 抽出来之后，两条防漂移测试能直接对装配入参断言
+/// （[`the_gateway_assembly_actually_wires_the_api_key_verifier`] /
+/// [`the_gateway_assembly_actually_wires_the_trace_store`]）。
 fn runtime_parts(state: &AppState) -> RuntimeParts {
     RuntimeParts::new(
         Arc::new(SecretsAdapter::with_defaults()),
         Arc::new(KernelProbeAdapter::new(state.kernel_supervisor())),
     )
     .with_api_keys(api_key_verifier(state))
+    .with_trace_store(state.trace.clone())
 }
 
 /// 只造验票器（测试用它，避免碰真钥匙串 —— `SecretsAdapter::with_defaults()` 会开钥匙串）。
@@ -273,7 +388,7 @@ impl GatewayBoot {
         self.runtime.gate.clone()
     }
 
-    /// **唯一出站通道**（`GatewayDeps`：dialer / store / pricing / quota / events）。
+    /// **唯一出站通道**（`GatewayDeps`：dialer / store / pricing / events）。
     ///
     /// 为什么必须能取出来（而不是"装配完就丢掉"）：命令层要发 HTTP 只能走
     /// `GatewayDeps.dialer` —— `src-tauri` 不依赖 `reqwest`，另开一条出站路径会**绕过线路策略**
@@ -292,7 +407,15 @@ impl GatewayBoot {
 
         // 出站拨号器：**必须**用 E5 的助手（每 lane 一个 client、关自动解压、
         // 不跟随重定向 —— 这些是透传保真的一部分）
-        let dialer = kernel_dialer(Arc::new(ports), DialerOptions::default());
+        //
+        // [docs/59] 端口表用**可热更新**的 `SharedPorts`（不是裸 `PortMap` 的快照）：
+        // 端口是运行期才分配的，而拨号器原来拿的是 boot 那一刻的冻结副本 ——
+        // 于是 boot 之后新建的 lane（「自动」/ 订阅节点）查不到端口 → TA-3002，
+        // 真机表现就是"只有直连能出网"。句柄同时交给 `AppState`，
+        // 让每个写配置的命令都能把新端口推过来。
+        let shared_ports = ta_gateway::dispatch::SharedPorts::new(ports);
+        state.set_lane_ports(shared_ports.clone());
+        let dialer = kernel_dialer(shared_ports, DialerOptions::default());
 
         let events: Arc<dyn EventBus> = Arc::new(TauriEventBus::new(app));
 
@@ -303,7 +426,12 @@ impl GatewayBoot {
             events,
             clock: state.clock.clone(),
             pricing: Arc::new(PricingEngineImpl::new(&doc.pricing)),
-            quota: Arc::new(QuotaLedgerImpl::with_clock(state.quota.clone(), state.clock.clone())),
+            // 平均粘性的用量来源（[docs/48 §4]）：带 30s TTL + 24h 窗口，
+            // 于是"每请求取快照"不会变成"每请求查库"。
+            balance: Some(Arc::new(SqliteBalanceSource::new(
+                state.usage.clone(),
+                state.clock.clone(),
+            ))),
         });
 
         // `meter` 保持 None：G4 在途，**不塞空实现**（空实现 = "接了但没数据"，L10）
@@ -312,6 +440,19 @@ impl GatewayBoot {
         // 少写一句 `.with_api_keys(...)` 会**静默**退化成 `NoApiKeys`，
         // 在真机上的表现是"访问密钥建了也挡不住人"（[docs/19 §3.3]）。
         let parts = runtime_parts(state);
+
+        // [docs/59] **计量接线**（第 330 轮修）。`with_usage_meter` 早就写好了、
+        // 文档也写着"生产装配应当显式调它"，但**从来没有人调用** ⇒ `meter: None`
+        // ⇒ `usage_request` 表恒为空 ⇒ 成本中心永远是 0、日志详情里的
+        // "Token 与成本"没有数据可显示。
+        //
+        // 上面那句"`meter` 保持 None：G4 在途"在这一轮不再成立：`UsageMeter` 是完整实现
+        // （`ta-gateway::meter`）。不接的后果不是"少一个功能"，而是**永远没有数据**，
+        // 且界面上看不出原因 —— 那正是 L10 要防的"静默失效"。
+        //
+        // 安全性：`from_deps` 只是构造；真正 `spawn` 落库发生在**请求时**
+        // （那时在 tokio 运行时里），所以在这里接不会踩"没有运行时"那条告警。
+        let parts = parts.with_usage_meter(&deps);
 
         let listen = doc.gateway.listen.clone();
         Self {
@@ -460,13 +601,17 @@ pub(crate) fn test_gateway_deps(state: &AppState) -> Arc<GatewayDeps> {
         events: Arc::new(NoEvents),
         clock: state.clock.clone(),
         pricing: Arc::new(PricingEngineImpl::new(&doc.pricing)),
-        quota: Arc::new(QuotaLedgerImpl::with_clock(state.quota.clone(), state.clock.clone())),
+        // 这个夹具只测"网关起得来"，用量来源不需要真接上 → `None`
+        // （选路会退化为按 priority，那对这条测试无关）。
+        balance: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // 快照那两条用例要**通过 trait 调** `used_tokens`（它定义在 trait 上）。
+    use ta_core::routing::BalanceSource;
 
     /// 一个**真的库**：验票器要证明的就是"它查的是这张表"。
     async fn temp_state(tag: &str) -> AppState {
@@ -497,7 +642,51 @@ mod tests {
         assert!(verifier.verify("ta-sk-别的").await.unwrap().is_none());
     }
 
-    /// **防漂移**：生产装配路径必须真的用 [`runtime_parts`]（也就是真的接上验票器）。
+    /// [docs/59] 第 330 轮真机 bug 的复现与修复：**配置说 meta，store 说 off ⇒ 一条都不落库**。
+    ///
+    /// 真机证据（用户 DB）：`store_setting` 里 `('trace.mode', '"off"')`，
+    /// 而配置里是 `request_log.mode: meta` —— 两个真相源，没人同步。
+    /// `TraceStore::write` 在 off 下**直接 return**，所以日志页永远空白，
+    /// 而用户在界面上找不到原因。
+    ///
+    /// 这条测试把整个过程走一遍：先**制造**那个坏状态，再断言同步把它治好。
+    #[tokio::test]
+    async fn syncing_request_log_settings_recovers_from_a_stale_off_mode() {
+        use ta_store::TraceStore;
+
+        let state = temp_state("log-sync").await;
+
+        // ① 制造坏状态：store 被设成 off（模拟"历史上某次被关掉、配置后来改成 meta"）
+        state.trace.set_mode(ta_core::types::LogMode::Off).await.unwrap();
+        assert!(!state.trace.mode().await.unwrap().enabled(), "先确认真的关上了");
+
+        // ② 配置说 meta（默认就是 Meta）
+        let doc = state.doc();
+        assert_eq!(doc.request_log.mode, ta_core::types::LogMode::Meta);
+
+        // ③ 同步 = 修复
+        crate::commands::log::sync_request_log_settings(&state, &doc).await.unwrap();
+        assert!(
+            state.trace.mode().await.unwrap().enabled(),
+            "同步之后 store 必须跟着配置走 —— 否则日志一条都不落库"
+        );
+
+        // ④ 真的能写进去了（不是只改了那个 setting 字段）
+        let mut record = ta_store::TraceRecord::new(
+            ta_core::types::RequestId::new("req_log_sync"),
+            1_700_000_000_000,
+            "m".to_string(),
+        );
+        record.status = 200;
+        state.trace.write(record).await.unwrap();
+        let page = state.trace.query(&ta_store::LogQuery::default()).await.unwrap();
+        assert!(
+            page.rows.iter().any(|r| r.request_id.as_str() == "req_log_sync"),
+            "同步后日志必须真的落库"
+        );
+    }
+
+    /// [docs/59] **装配入参必须真的接上验票器 / trace 表 / 计量器**。
     ///
     /// 上面的行为测试直接调 `api_key_verifier`，所以把 `assemble` 里那一句改回内联
     /// `RuntimeParts::new(...)` 它照样绿 —— 而"没人接"正是这个缺口的原始形态。
@@ -513,6 +702,39 @@ mod tests {
         assert!(
             production.contains(".with_api_keys("),
             "装配入参必须装上 API key 验票器（docs/19 §3.3：少这一句 = 建了 key 也挡不住人）"
+        );
+        // [docs/50] 第二处同类缺口：`with_trace_store` 的文档写着"生产装配应当接上"，
+        // 但它此前**从未被调用、也没有任何测试** ⇒ 请求轨迹一条都不落库，
+        // 真机上只表现为"日志页查不到请求"，编译与测试全绿。
+        // 这一句和上面那句是**同一个模式**，所以放在一起守。
+        assert!(
+            production.contains(".with_trace_store("),
+            "装配入参必须接上 trace 表（[docs/14 §6 G2]：少这一句 = 请求轨迹一条都不落库，\
+             前端日志页与 `ta trace` 都查不到；行为验证见 ta-gateway 的 \
+             `with_trace_store_really_writes_records_to_the_store`）"
+        );
+        // [docs/59] 第 330 轮两处**同类**缺口（都是"功能代码写好、但没人调用"）：
+        //
+        // 1. `with_usage_meter` 从来没被调用 ⇒ `usage_request` 恒为空 ⇒
+        //    成本中心永远是 0、日志详情里的"Token 与成本"没有数据；
+        // 2. 配置里的 `request_log.*` 从来没被喂给 trace store ⇒ 用户改了日志设置
+        //    看不出变化，而 store 里一条古老的 `trace.mode = "off"` 会让
+        //    **一条日志都不落库**（真机现象）。
+        //
+        // 这一条守卫是**模式匹配**：这个仓库已经靠它抓到过两次同样的错
+        // （`with_api_keys` / `with_trace_store`），所以第三、四次也按同一模式守。
+        assert!(
+            production.contains(".with_usage_meter("),
+            "装配入参必须接上用量计量器（[docs/59]：少这一句 = 成本中心永远 0、\
+             usage 表恒空，而界面上看不出原因）"
+        );
+        // 启动同步在 `lib.rs` 的 setup 里，所以扫那个文件的生产段。
+        let lib = include_str!("lib.rs");
+        let lib_production = lib.split("#[cfg(test)]").next().unwrap_or(lib);
+        assert!(
+            lib_production.contains("sync_request_log_settings"),
+            "启动时必须把 `request_log.*` 同步进 trace store（[docs/59]：少这一句 = \
+             配置说 meta、store 说 off，日志一条都不落库）"
         );
     }
 
@@ -631,5 +853,103 @@ mod tests {
             .expect_err("没人监听就必须失败");
         assert!(err.contains("没有在"), "{err}");
         assert!(err.contains(&addr), "要点名地址：{err}");
+    }
+
+    // ---------------------------------------------------------- 用量快照缓存
+
+    /// 往 `usage_request` 里真写一条用量（`total_tokens` 就是快照要 SUM 的那一列）。
+    async fn insert_usage(state: &AppState, id: &str, ts: i64, channel: &str, tokens: i64) {
+        sqlx::query(
+            "INSERT INTO usage_request (request_id, ts, channel_id, total_tokens)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(ts)
+        .bind(channel)
+        .bind(tokens)
+        .execute(state.usage.pool())
+        .await
+        .expect("插一条用量");
+    }
+
+    /// 等异步刷新落地（有界轮询，别用固定 sleep —— 那会 flake）。
+    async fn wait_for_channel_tokens(
+        src: &SqliteBalanceSource,
+        channel: &str,
+        want: i64,
+    ) -> std::collections::BTreeMap<ta_core::types::ChannelId, i64> {
+        let key = ta_core::types::ChannelId::new(channel);
+        for _ in 0..400 {
+            let snap = src.used_tokens();
+            if snap.get(&key).copied() == Some(want) {
+                return snap;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("等不到快照里 {channel} = {want}（最后一次：{:?}）", src.used_tokens());
+    }
+
+    /// [docs/48 §4]：用量快照**一个 TTL 周期最多查一次库**，不是每请求查一次 ——
+    /// 这正是用户要求的"让数据库压力不是那么大"。
+    ///
+    /// 验法不靠数 SQL 条数，而靠**行为证据**：刷新是异步的，所以
+    /// ① 第一次调用必须**立刻**返回（拿到空表，说明它没有当场查库）；
+    /// ② 刷新落地后才看得到数据；
+    /// ③ 期间再往库里写一条，**立刻**再调用 —— 仍旧是旧快照（TTL 内没有重新查库）；
+    /// ④ 把时钟推过 TTL 才会再刷一次，那时新用量才出现。
+    ///
+    /// ③ 是这条测试的核心：它是"缓存真的在挡查询"唯一可观察的证据。
+    #[tokio::test]
+    async fn balance_snapshot_is_cached_for_a_ttl_instead_of_querying_per_request() {
+        let state = temp_state("balance-cache").await;
+        let clock = Arc::new(ta_core::clock::ManualClock::new(1_700_000_000_000));
+        let src = SqliteBalanceSource::new(state.usage.clone(), clock.clone());
+        let key = ta_core::types::ChannelId::new("ch-a");
+
+        insert_usage(&state, "r1", 1_700_000_000_000, "ch-a", 300).await;
+
+        // ① 第一次调用不阻塞：此刻刷新还在后台跑，所以是空表（= 不知道用量）
+        let first = src.used_tokens();
+        assert!(first.is_empty(), "第一次调用必须立刻返回、不当场查库：{first:?}");
+
+        // ② 刷新落地
+        let landed = wait_for_channel_tokens(&src, "ch-a", 300).await;
+        assert_eq!(landed.get(&key).copied(), Some(300));
+
+        // ③ TTL 内不查库：新写一条 700，立刻再取仍旧是 300
+        insert_usage(&state, "r2", 1_700_000_000_000, "ch-a", 700).await;
+        let cached = src.used_tokens();
+        assert_eq!(
+            cached.get(&key).copied(),
+            Some(300),
+            "TTL 内不该重新查库（这正是「压力不大」的根据）：{cached:?}"
+        );
+
+        // ④ 推过 TTL → 再刷一次，新用量 1000 才出现
+        clock.advance(BALANCE_TTL_MS);
+        let _ = src.used_tokens(); // 踢一脚
+        let refreshed = wait_for_channel_tokens(&src, "ch-a", 1000).await;
+        assert_eq!(refreshed.get(&key).copied(), Some(1000), "过 TTL 后应看到新总量 300+700");
+    }
+
+    /// 并发调用**只踢一次**刷新：门闩挡住"每个请求都去查一次"。
+    ///
+    /// 用真库跑会太快看不出差别，所以这里直接盯门闩的可观察后果：
+    /// 同一时刻连调 50 次，只能有一次刷新在飞 —— 表现是**不会 panic、不会阻塞**，
+    /// 且返回的都是同一份快照（而不是"最后一个查完的覆盖前面的"）。
+    #[tokio::test]
+    async fn concurrent_calls_share_one_refresh_and_never_block() {
+        let state = temp_state("balance-concurrent").await;
+        let clock = Arc::new(ta_core::clock::ManualClock::new(1_700_000_000_000));
+        let src = Arc::new(SqliteBalanceSource::new(state.usage.clone(), clock));
+        insert_usage(&state, "r1", 1_700_000_000_000, "ch-a", 42).await;
+
+        // 50 次同步连调：每一次都必须立刻返回（空快照），不能有任何一次阻塞在查询上
+        for i in 0..50 {
+            let snap = src.used_tokens();
+            assert!(snap.is_empty(), "第 {i} 次调用阻塞/查库了：{snap:?}");
+        }
+        // 刷新最终落地成一份完整快照
+        wait_for_channel_tokens(&src, "ch-a", 42).await;
     }
 }

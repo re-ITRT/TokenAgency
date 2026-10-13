@@ -204,9 +204,9 @@ React 19 + TS ──Tauri IPC(invoke/emit)──▶ src-tauri ──▶ crates/*
 |---|---|
 | `model/` | Provider / Credential / Lane / Model / Channel / ChannelGroup / Policy 的领域类型与校验 |
 | `config/` | 配置 schema（`schemars` 导出 JSON Schema）、引用完整性校验、版本与迁移 |
-| `routing/` | 策略求值、候选集计算、选择器（priority / sticky_then_priority / quota_first / cheapest / lowest_latency / weighted_random / round_robin） |
+| `routing/` | 策略求值、候选集计算、选择器（**现在只有 `balanced_sticky` 一种**，见 [docs/48](../docs/48-balanced-sticky-only-routing.md)） |
 | `sticky/` | 粘性 key 派生、命中、释放 |
-| `quota/` | 四观测源合成、状态机（ok/soft/exhausted）、窗口滚动 |
+| ~~`quota/`~~ | **已删除**（[docs/31 第 314 轮]：用户选择"自动获取这条路太难走"，额度相关内容全删） |
 | `pricing/` | token 类型归一化、费率匹配、成本计算、价格快照 |
 | `passthrough/` | 定点 patch 规则、头部例外清单、跨协议字段核对 |
 | `lane/` | 五级线路解析（policy → channel → credential → provider → default → direct） |

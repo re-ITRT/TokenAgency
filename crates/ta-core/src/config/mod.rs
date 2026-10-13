@@ -283,7 +283,6 @@ policies:
         assert!(!doc.system_integration.file_watch_mode, "换真源属于 opt-in");
         assert!(!doc.gateway.metering.inject_stream_usage, "会修改客户端请求");
         assert!(!doc.gateway.retry.retry_after_first_byte, "已输出字节后重试 = 重复计费");
-        assert!(!doc.gateway.expose_models_with_capabilities, "不主动改 /v1/models");
         assert!(!TlsConfig::default().insecure, "默认必须校验证书");
 
         // C) 无损 / 自检类默认：省略 = true
@@ -542,6 +541,38 @@ gateway:
     }
 
     // ------------------------------------------------------------ JSON Schema
+
+    /// [docs/28 §4] `gateway.expose_models_with_capabilities` 是**已删除的旧开关**。
+    ///
+    /// 不变量：老配置带着它必须**仍能解析**（值落进 `gateway.extra` 原样保留，前向兼容纪律），
+    /// 但它已经不是结构体字段 —— 新写的配置线上形态里不会出现它，schema 里也不该再宣告它。
+    #[test]
+    fn removed_expose_models_with_capabilities_parses_but_is_no_longer_a_field() {
+        let old = from_yaml("version: 1\ngateway:\n  expose_models_with_capabilities: true\n")
+            .expect("带已删除开关的老配置必须仍能解析");
+        assert_eq!(
+            old.gateway.extra.get("expose_models_with_capabilities"),
+            Some(&serde_json::Value::Bool(true)),
+            "已删除开关的值必须原样落进 extra，不许被吞掉"
+        );
+        // 来自 extra → 整体往返时原样回去（未知键 round-trip 不丢）；关键是它**不是**字段
+        let value = serde_json::to_value(&old).expect("序列化");
+        assert_eq!(value["gateway"]["expose_models_with_capabilities"], serde_json::json!(true));
+
+        // 没写过它的配置：线上形态里**不许**凭空多出这个键
+        let bare = from_yaml("version: 1\n").expect("应当能读");
+        let value = serde_json::to_value(&bare).expect("序列化");
+        assert!(
+            value["gateway"].get("expose_models_with_capabilities").is_none(),
+            "已删除的开关不许再出现在线上形态里：{value}"
+        );
+        // schema 也不再宣告它（前端类型生成跟着它走）
+        let schema = serde_json::to_string(&config_json_schema()).expect("schema 可序列化");
+        assert!(
+            !schema.contains("expose_models_with_capabilities"),
+            "已删除的开关不该还在 JSON Schema 里"
+        );
+    }
 
     #[test]
     fn config_json_schema_declares_the_whole_tree() {

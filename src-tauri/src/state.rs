@@ -23,7 +23,7 @@ use ta_core::error::{Result, TaError};
 
 use crate::import_preview::ImportPreviewCache;
 use ta_store::{
-    ConfigStore, SqliteApiKeyStore, SqliteConfigStore, SqliteHealthStore, SqliteQuotaBackend,
+    ConfigStore, SqliteApiKeyStore, SqliteConfigStore, SqliteHealthStore, SqliteModelCatalogStore,
     SqliteSecretMetaStore, SqliteStickyStore, SqliteTraceStore, SqliteUsageStore,
 };
 
@@ -69,8 +69,15 @@ pub struct AppState {
     /// 这个是我们**发出去**的 key（只存 sha256）。网关的多 key 鉴权也用它
     /// （`crate::apikey_auth`），所以必须挂在 `AppState` 上而不是每个命令各造一份。
     pub api_keys: Arc<SqliteApiKeyStore>,
-    /// 额度账本的持久化后端（同步 trait，见 `ta-store::quota_backend`）
-    pub quota: Arc<SqliteQuotaBackend>,
+    /// 服务商**模型目录**（[docs/25]）：扫描记录下来的上游模型（观察数据，落 SQLite）。
+    ///
+    /// 与 `import_previews` 的区别正是这一轮要修的事：预览是"这次扫描的结果"（内存、5 分钟），
+    /// 目录是"这家扫描到过什么"（**活得比进程久**）。用户在服务商里勾一个没勾过的模型时，
+    /// 靠的就是它 —— 而不是让他再扫一遍。
+    ///
+    /// 不进配置真源：目录会随上游漂移，写进配置就是第二份真相源
+    /// （与 `api_key` / 健康样本同类，见 [docs/02 §4]）。
+    pub model_catalog: Arc<SqliteModelCatalogStore>,
 
     /// `model_import_from_provider` 扫描结果的**进程内存**预览缓存（[docs/19 §1.2]）。
     ///
@@ -103,6 +110,14 @@ pub struct AppState {
     /// **暂停不影响 `/healthz`**（E5 接缝语义第 4 条），所以两者不能互相替代 ——
     /// 把"暂停"读成"失联"会让托盘显示成故障。
     pub gateway_gate: RwLock<Option<Arc<ta_gateway::ingress::GatewayGate>>>,
+
+    /// [docs/59] **可热更新的 lane → 内核 listener 端口表**（与拨号器读的**同一个**对象）。
+    ///
+    /// 为什么必须有这个槽位：端口是运行期才分配的，而拨号器原来拿的是 boot 那一刻的冻结副本
+    /// —— 于是 boot 之后新建的 lane（「自动」/ 订阅节点）在拨号器里查不到端口 →
+    /// `TA-3002`，真机表现就是"只有直连能出网"。每个写配置的命令都要在这里
+    /// `replace` 一次，端口才跟得上配置。
+    pub lane_ports: RwLock<Option<Arc<ta_gateway::dispatch::SharedPorts>>>,
 }
 
 impl AppState {
@@ -114,10 +129,25 @@ impl AppState {
         let started_at_ms = clock.now_ms();
 
         let config = Arc::new(SqliteConfigStore::with_clock(db.clone(), Arc::clone(&clock)));
-        let doc = Arc::new(ArcSwap::from_pointee(config.load().await?));
-
-        // 额度账本后端要在运行时里构造（它 spawn 一个同 runtime 的后台落库任务）
-        let quota = Arc::new(SqliteQuotaBackend::open(db.clone()).await?);
+        // [docs/28 §2] 关系翻转的**配置迁移**：老库的 `channels[].model` 要在载入时搬进
+        // `models[].lines`，否则翻转后的读路径（按 `lines` 找线路）在老库上一条线路都找不到。
+        //
+        // 迁移发生在**启动时**、而不是每个读路径里：`migrate()` 之后立刻落库（版本号也被写下去），
+        // 下一次启动就是恒等迁移。`config_rollback` 可能把老文档放回来 —— 迁移是幂等的，
+        // 那样也只是再搬一次。
+        let loaded = config.load().await?;
+        let doc = if ta_core::config::migrate::needs_migration(&loaded) {
+            let migrated = ta_core::config::migrate::migrate(loaded);
+            tracing::info!(
+                "配置已从旧版本迁移到 v{}（[docs/28 §2]：线路归属搬到 Model.lines）",
+                migrated.version
+            );
+            config.save(&migrated).await?;
+            migrated
+        } else {
+            loaded
+        };
+        let doc = Arc::new(ArcSwap::from_pointee(doc));
 
         Ok(Self {
             doc,
@@ -128,7 +158,7 @@ impl AppState {
             health: Arc::new(SqliteHealthStore::new(db.clone())),
             secret_meta: Arc::new(SqliteSecretMetaStore::new(db.clone())),
             api_keys: Arc::new(SqliteApiKeyStore::new(db.clone())),
-            quota,
+            model_catalog: Arc::new(SqliteModelCatalogStore::new(db.clone())),
             import_previews: Arc::new(ImportPreviewCache::new()),
             db,
             db_path,
@@ -139,6 +169,7 @@ impl AppState {
             kernel_source: RwLock::new(None),
             kernel_supervisor: RwLock::new(None),
             gateway_gate: RwLock::new(None),
+            lane_ports: RwLock::new(None),
         })
     }
 
@@ -179,6 +210,13 @@ impl AppState {
     }
 
     pub fn set_doc(&self, doc: ConfigDoc) {
+        // [docs/46] **内核的"配置真源"必须跟着变**。它在 `boot.rs` 里只 `clone` 了一份开机的 doc
+        // （那时还没有订阅、没有自动线路）；不更新的话，内核永远按那份旧配置生成 ——
+        // 实测表现就是 `proxy-groups: []`、「自动」出口没有可 `set_select` 的目标。
+        // 它的声明注释本来就写着"配置变更后要 `set_doc`/`set_ports`"，这里是把那句话接上线。
+        if let Some(src) = self.kernel_source.read().unwrap_or_else(|e| e.into_inner()).clone() {
+            src.set_doc(doc.clone());
+        }
         self.doc.store(Arc::new(doc));
     }
 
@@ -225,6 +263,16 @@ impl AppState {
 
     pub fn gateway_gate(&self) -> Option<Arc<ta_gateway::ingress::GatewayGate>> {
         self.gateway_gate.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// [docs/59] 装配时把**可热更新**的端口表句柄存进来（与拨号器读的是同一个对象）。
+    pub fn set_lane_ports(&self, ports: Arc<ta_gateway::dispatch::SharedPorts>) {
+        *self.lane_ports.write().unwrap_or_else(|e| e.into_inner()) = Some(ports);
+    }
+
+    /// 取端口表句柄。`None` = 网关还没装配（那时也没有拨号器要更新）。
+    pub fn lane_ports(&self) -> Option<Arc<ta_gateway::dispatch::SharedPorts>> {
+        self.lane_ports.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 

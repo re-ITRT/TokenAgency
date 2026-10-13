@@ -392,6 +392,8 @@ impl ProcessSpawner for SystemSpawner {
             .env_remove("http_proxy")
             .env_remove("https_proxy")
             .env_remove("all_proxy");
+        // 不给这个标志，内核的控制台窗口会**弹出来并抢前台**（真机反馈，见 `no_window`）
+        no_window(&mut cmd);
 
         let mut child = cmd.spawn().map_err(|e| {
             TaError::Kernel(format!("拉起内核失败（{}）：{e}", cfg.program.display()))
@@ -562,15 +564,35 @@ impl ProcessSpawner for SystemSpawner {
     }
 }
 
+/// Windows：给"我们会短暂拉起来的控制台程序"（内核本身、`taskkill`）加 `CREATE_NO_WINDOW`。
+///
+/// 真机反馈（2026-09-27）：装完打开应用会**弹出一个黑色 cmd 窗口、还抢到前台** ——
+/// 那就是内核 `mihomo.exe`（控制台程序）用默认创建标志被拉起时的控制台窗口；
+/// `Stdio::null()/piped()` 只换句柄，**挡不住窗口创建**，必须给创建标志。
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+fn no_window(cmd: &mut Command) -> &mut Command {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(CREATE_NO_WINDOW)
+}
+
+#[cfg(not(windows))]
+fn no_window(cmd: &mut Command) -> &mut Command {
+    cmd
+}
+
 #[cfg(windows)]
 fn graceful_signal(pid: u32) {
     // Windows 没有 SIGTERM：先用不带 /F 的 taskkill（能优雅就优雅），失败也无所谓
-    let _ = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T"])
+    let mut cmd = Command::new("taskkill");
+    cmd.args(["/PID", &pid.to_string(), "/T"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::null());
+    no_window(&mut cmd);
+    let _ = cmd.status();
 }
 
 #[cfg(unix)]
@@ -590,12 +612,13 @@ fn graceful_signal(pid: u32) {
 
 #[cfg(windows)]
 fn force_kill_pid(pid: u32) {
-    let _ = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
+    let mut cmd = Command::new("taskkill");
+    cmd.args(["/F", "/T", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::null());
+    no_window(&mut cmd);
+    let _ = cmd.status();
 }
 
 #[cfg(unix)]
@@ -809,6 +832,17 @@ pub struct KernelSupervisor {
     source: Arc<dyn KernelConfigSource>,
     sleeper: Arc<dyn Sleeper>,
     inner: Mutex<Inner>,
+    /// 「拉起一个进程」这条路径的**串行闸**。
+    ///
+    /// 为什么必须有它（真机实测的缺陷）：`start()` 原本的幂等判据只有 `state == Ready`，
+    /// 而**冷启动期间**状态是 `Starting`（进程已起、在等 REST + 等 provider，可能几十秒）——
+    /// 此时两个调用方同时进来会**各起一个 mihomo**。启动编排（`BootOrchestrator` → `apply()`）
+    /// 与「订阅数据就绪后再拉一次」（`kick_kernel` → `apply()`）正好在冷启动那一秒撞车，
+    /// 第二个内核抢不到端口，只在 `kernel.log` 里刷 `bind: Only one usage of each socket address`。
+    ///
+    /// 闸的持有范围 = **一次完整的拉起尝试**（含等就绪），因为"尝试"与"结果"必须成对：
+    /// 只锁 spawn 那一下的话，第二个调用方会在第一个还没得出结论时又去 spawn。
+    start_gate: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for KernelSupervisor {
@@ -834,6 +868,7 @@ impl KernelSupervisor {
             source,
             sleeper: Arc::new(SystemSleeper),
             inner: Mutex::new(Inner::default()),
+            start_gate: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -861,6 +896,30 @@ impl KernelSupervisor {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().expect("kernel 状态锁被毒化")
+    }
+
+    /// 等内核自己走到 `Ready`（或先走到终态），**全程不拉起任何进程**。
+    ///
+    /// 给 `apply()` 在「别人正在拉起」时用：那一刻**唯一正确的做法是等**，
+    /// 再 spawn 一个只会得到两个内核抢同一批端口（见 `KernelSupervisor::start_gate` 的说明）。
+    ///
+    /// 返回 `true` = 已经就绪，可以 reload 配置了。
+    /// * 走到 `Failed` / `Stopped` 就**立刻**返回 `false`：终态不会再变 Ready，
+    ///   继续耗满超时预算只是让调用方白等（那些秒数是真机上看得见的卡顿）。
+    async fn wait_until_ready(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.state() {
+                KernelState::Ready => return true,
+                KernelState::Failed | KernelState::Stopped => return false,
+                // 还在被拉起的过程中：继续等
+                KernelState::Starting | KernelState::Restarting => {}
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            self.sleeper.sleep(self.cfg.ready_poll).await;
+        }
     }
 
     /// 同步取状态（[`KernelController::status`] 的同步版）
@@ -903,6 +962,18 @@ impl KernelSupervisor {
             KernelState::Failed
         } else {
             tracing::warn!(failures = i.consecutive_failures, code = e.code(), error = %e, "内核启动失败，将退避重启");
+            // [docs/46] **让失败自己说话**：`ConfigInvalid` 的 Display 只有一句"配置校验失败"，
+            // 看不到是哪个字段 —— 真机排查时这一条信息决定"改数据"还是"改代码"。
+            if let TaError::ConfigInvalid { errors } = &e {
+                for f in errors {
+                    tracing::warn!(
+                        path = %f.path,
+                        code = %f.code,
+                        reason = %f.message,
+                        "生成配置未通过校验（逐条）"
+                    );
+                }
+            }
             KernelState::Restarting
         };
     }
@@ -1193,6 +1264,14 @@ impl KernelController for KernelSupervisor {
     }
 
     async fn start(&self) -> Result<()> {
+        // 串行闸：同一时刻**只允许一个调用方真的去拉进程**。
+        //
+        // 没有它就会得到两个 mihomo：启动编排与「订阅就绪再拉一次」在冷启动那一秒撞车时，
+        // 两边读到的状态都不是 Ready（是 Starting / Stopped），于是各 spawn 一个，
+        // 第二个抢不到端口（真机 `kernel.log` 里的 bind error 就是它）。
+        let _gate = self.start_gate.lock().await;
+
+        // 拿闸之后**重新判断**：等闸期间别人可能已经把内核拉起来了。
         if self.state() == KernelState::Ready {
             if let Some(pid) = self.pid() {
                 if self.spawner.is_alive(pid) {
@@ -1200,6 +1279,21 @@ impl KernelController for KernelSupervisor {
                 }
             }
         }
+
+        // 已经在启动中（进程活着、在等就绪）：**绝不能再 spawn 一个**。
+        //
+        // 这里是"幂等"的正确边界：`start()` 的契约是"保证进程在跑"，而 `Starting` 且进程存活
+        // 就是"正在跑"。想要"就绪"的调用方自己去等（编排侧有 `wait_kernel_ready`），
+        // 不要把"我还没就绪"翻译成"我再起一个"。
+        if self.state() == KernelState::Starting {
+            if let Some(pid) = self.pid() {
+                if self.spawner.is_alive(pid) {
+                    tracing::info!(pid, "内核正在启动中：复用已在拉起的那个，不重复拉起");
+                    return Ok(());
+                }
+            }
+        }
+
         {
             // 显式启动 = 用户手动重试，重置连续失败计数
             let mut i = self.lock();
@@ -1229,6 +1323,12 @@ impl KernelController for KernelSupervisor {
     }
 
     async fn restart(&self) -> Result<()> {
+        // 与 `start()` 共用同一道闸：重启也是"拉起一个进程"，
+        // 不和并发的 start/apply 抢着各起一个（见 `start_gate` 的说明）。
+        //
+        // 注意**不能**在这里转调 `self.start()`：那会重入同一把 tokio Mutex（不自旋、会死锁）。
+        let _gate = self.start_gate.lock().await;
+
         let pid = {
             let mut i = self.lock();
             i.pid.take()
@@ -1249,6 +1349,35 @@ impl KernelController for KernelSupervisor {
         // 1) 生成 + 原子落盘
         let path = self.source.write_generated()?;
         let abs = path.to_string_lossy().to_string();
+
+        // 1.5) 别人正在拉起（`Starting` / `Restarting`）：**等它就绪，绝不另起一个**。
+        //
+        // 这正是"两个 mihomo"的那条路：`apply()` 原来对任何非 Ready 状态都落到 `start()`，
+        // 而冷启动那一秒状态就是 `Starting` —— 于是"订阅数据就绪后再拉一次"
+        // （`kick_kernel`）会在启动编排还没拉完时又 spawn 一个，第二个抢不到端口。
+        //
+        // 磁盘上的配置在第 1 步已经更新，所以这里等就绪后**接着往下走 reload 分支**：
+        // 修掉重复进程的同时，"新配置照样生效"这件事不能丢 —— 那件事故原本是被
+        // 第二个进程**意外**做到的（它用新配置启动），不能靠继续犯错来维持。
+        if matches!(self.state(), KernelState::Starting | KernelState::Restarting) {
+            if self.wait_until_ready(self.cfg.provider_ready_timeout).await {
+                tracing::info!(
+                    config = %abs,
+                    "内核已就绪（此前有人在拉起，本调用没有重复 spawn）：继续落这次配置"
+                );
+                // 落到下面的 `Ready` 分支：reload 这份新配置
+            } else {
+                // 还没就绪，或已经进了终态。如实把当前状态交回去给上层判断
+                // （编排侧有自己的 `wait_kernel_ready` 超时窗口，不在这里替它下结论）。
+                tracing::warn!(
+                    config = %abs,
+                    "内核仍在启动中（{:?}）：这次配置留待下一次 apply / reload，不重复拉起进程",
+                    self.state()
+                );
+                return Ok(self.status_sync());
+            }
+        }
+
         // 2) 就绪 → reload；没起来 → 直接起
         match self.state() {
             KernelState::Ready => {
@@ -1294,6 +1423,15 @@ impl KernelController for KernelSupervisor {
 
     async fn delay_of(&self, name: &str, timeout_ms: u64) -> Result<u32> {
         self.rest.delay_of(name, timeout_ms).await
+    }
+
+    async fn provider_delays(
+        &self,
+        key: &str,
+        probe_url: &str,
+        wait_ms: u64,
+    ) -> Result<std::collections::BTreeMap<String, Option<u32>>> {
+        self.rest.provider_delays(key, probe_url, wait_ms).await
     }
 
     async fn refresh_provider(&self, key: &str) -> Result<()> {
@@ -1541,6 +1679,76 @@ mod tests {
         Harness { supervisor: Arc::new(sup), spawner, sleeper, _server: server, _dir: dir }
     }
 
+    /// **就绪慢**的 harness：`GET /version` 会先延迟 `delay` 再回 200。
+    ///
+    /// 用途是造出"冷启动那几秒"的窗口 —— 木有这段延迟，`start_attempt()` 会在
+    /// 第一个 await 之前就把状态推到 `Ready`，并发调用根本重叠不起来，
+    /// 也就复现不出"两个 mihomo"（真机上窗口是几秒，因为内核要抓订阅）。
+    async fn harness_slow_ready(delay: Duration) -> Harness {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/version"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(delay)
+                    .set_body_json(json!({ "version": "v1.18.4", "meta": true })),
+            )
+            .mount(&server)
+            .await;
+        // reload 必须也挂上：`apply()` 的就绪分支会 `PUT /configs`，
+        // 没挂的话 reload 失败会**回落成 restart**，于是多多出一个进程 ——
+        // 那是本 harness 的缺陷，会被误读成"重复拉起没修好"。
+        Mock::given(method("PUT"))
+            .and(path("/configs"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        let rest = Arc::new(KernelRest::new(&server.uri(), "s3cret").unwrap());
+        let dir = TempDir::new("proc-slow");
+        let source = Arc::new(TestSource::new(&dir));
+        let spawner = Arc::new(ScriptedSpawner::new());
+        let sleeper = Arc::new(RecordingSleeper::default());
+        let mut cfg =
+            KernelProcessConfig::new("mihomo", dir.path(), dir.path(), "127.0.0.1:1", "s3cret")
+                .with_args(Vec::<String>::new());
+        // 轮询要够密，才在延迟窗里多探几次（`RecordingSleeper` 的 sleep 是瞬时的）
+        cfg.ready_poll = Duration::from_millis(1);
+        let sup = KernelSupervisor::new(
+            cfg,
+            spawner.clone(),
+            rest,
+            source as Arc<dyn KernelConfigSource>,
+        )
+        .with_sleeper(sleeper.clone());
+        Harness { supervisor: Arc::new(sup), spawner, sleeper, _server: server, _dir: dir }
+    }
+
+    /// 等到"确实已经有人拉起了进程、而且还没就绪"（即 `Starting` 且进程已 spawn）。
+    ///
+    /// 用**真实等待 + 墙钟上限**，不用"固定 2000 次 yield"：后者只要几十微秒就跑完了，
+    /// 在多线程运行时上往往赶不上另一个 worker 把任务调起来 —— 于是用例偶发地报
+    /// "等不到 Starting"，那是脚手架的问题，不是被测逻辑的问题。
+    async fn wait_until_starting(h: &Harness) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if h.spawner.spawn_count() > 0 && h.supervisor.state() == KernelState::Starting {
+                return;
+            }
+            // 也有人一次就跑到 Ready（延迟很短时）——那同样说明"已经有人在拉起"，
+            // 只是快得没让我们看见中间态，这时不必再等。
+            if h.spawner.spawn_count() > 0 && h.supervisor.state() == KernelState::Ready {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "等不到 `Starting`（5s）：spawn 次数={}，状态={:?}",
+                h.spawner.spawn_count(),
+                h.supervisor.state()
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     /// 指向一个必然连不上的端口，用来模拟"内核起不来"
     async fn harness_unreachable_rest(max_failures: u32, ready_timeout: Duration) -> Harness {
         let server = MockServer::start().await;
@@ -1630,6 +1838,83 @@ mod tests {
         KernelController::start(h.supervisor.as_ref()).await.unwrap();
         assert_eq!(h.spawner.spawn_count(), 1);
         assert_eq!(h.supervisor.state(), KernelState::Ready);
+    }
+
+    /// **回归：冷启动期间并发的 `start()` 只能起一个内核进程。**
+    ///
+    /// 真机上的缺陷就是这条：`start()` 原本只幂等 `Ready`，而冷启动那几秒状态是
+    /// `Starting`，于是两个调用方各 spawn 一个 mihomo，第二个抢不到端口
+    /// （`kernel.log` 里刷 `bind: Only one usage of each socket address`）。
+    ///
+    /// 用 `join!` 让两个 future **真的并发**：顺序 await 两次是测不出这条的
+    /// （第二次进来时状态已经是 `Ready`，老代码也会通过）。
+    ///
+    /// `multi_thread` 是**必须的**，不是随手加的：生产路径跑在 Tauri 的多线程运行时上，
+    /// 而本文件的 `RecordingSleeper` 是"瞬时"的（只记账、不真的睡）——
+    /// 单线程运行时下，等就绪的轮询循环会**永不 yield**，把另一个任务整个饿死，
+    /// 于是失败原因变成"测试脚手架把并发饿没了"，而不是被测的那条逻辑。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_starts_spawn_exactly_one_process() {
+        let h = harness_slow_ready(Duration::from_millis(300)).await;
+
+        let (a, b) = (h.supervisor.clone(), h.supervisor.clone());
+        let (r1, r2) =
+            tokio::join!(KernelController::start(a.as_ref()), KernelController::start(b.as_ref()),);
+        r1.unwrap();
+        r2.unwrap();
+
+        assert_eq!(
+            h.spawner.spawn_count(),
+            1,
+            "并发的 start 只能拉起一个内核进程（第二个会抢不到端口）"
+        );
+        assert_eq!(h.supervisor.state(), KernelState::Ready);
+    }
+
+    /// **回归：`apply()` 撞上"正在启动"时不许再 spawn 一个。**
+    ///
+    /// 这条正是真机那条路的形状：启动编排在拉内核（`apply()` → `start()`），
+    /// 一秒后"订阅数据就绪再拉一次"（`kick_kernel` → `apply()`）进来。
+    /// 老代码对任何非 Ready 状态都落进 `start()`，于是在 `Starting` 时又起一个。
+    ///
+    /// 同时钉住"修掉重复进程**不等于**丢掉配置热更新"：`apply()` 在等就绪之后
+    /// 必须仍然把这次生成的新配置 reload 下去（那件事故本来是被第二个进程
+    /// *意外*做到的，不能靠继续犯错来维持）。
+    ///
+    /// 同样用 `multi_thread`：理由见上一条用例。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn apply_during_start_does_not_spawn_a_second_kernel() {
+        let h = harness_slow_ready(Duration::from_millis(300)).await;
+
+        let starter = {
+            let sup = h.supervisor.clone();
+            tokio::spawn(async move { KernelController::start(sup.as_ref()).await })
+        };
+
+        // 精确等到"进程已起、还没就绪"，而不是赌一个固定 sleep
+        wait_until_starting(&h).await;
+
+        let status = KernelController::apply(h.supervisor.as_ref()).await.unwrap();
+        starter.await.unwrap().unwrap();
+
+        assert_eq!(
+            h.spawner.spawn_count(),
+            1,
+            "apply() 在启动期间**不许**再 spawn 一个内核（那会得到两个抢同一批端口的进程）"
+        );
+        assert_eq!(status.state, KernelState::Ready, "apply 应等到就绪后如实报 Ready");
+        assert_eq!(h.supervisor.state(), KernelState::Ready);
+
+        // 配置热更新没有丢：`apply()` 走的是 reload 分支（`PUT /configs`）
+        let reloads = h
+            ._server
+            .received_requests()
+            .await
+            .expect("mock server 应记录请求")
+            .iter()
+            .filter(|r| r.method.as_str() == "PUT" && r.url.path() == "/configs")
+            .count();
+        assert_eq!(reloads, 1, "等就绪之后必须把新配置 reload 下去，不能因为不重复 spawn 就丢掉");
     }
 
     // ------------------------------------------------------------ 失败与退避

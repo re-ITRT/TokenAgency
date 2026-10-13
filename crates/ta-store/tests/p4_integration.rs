@@ -5,13 +5,13 @@
 //! 2. 时区分桶：跨天边界的 ts 落在正确的本地 day；
 //! 3. `gc()` 的 retention / max_rows / max_size 三个限都被触发；
 //! 4. 图片块只存哈希（库里查不到 base64，也查不到明文 key）；
-//! 5. 事务性：让 quota_state 写入失败 → usage_request / usage_daily 一并回滚。
+//! 5. 事务性：任一步失败 → usage_request / usage_daily 一并回滚。
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use ta_core::clock::{Clock, FixedClock, TimeRange};
-use ta_core::domain::{ConfigDoc, Credential, Lane, Policy, QuotaConfig, QuotaMetric};
+use ta_core::domain::{ConfigDoc, Credential, Lane, Policy};
 use ta_core::types::{
     ChannelId, ClientId, CredentialId, LaneId, LogMode, Money, PolicyId, ProviderId, RequestId,
     Retention, TokenKind, TokenUsage, UsageRecord, UsageSource,
@@ -19,7 +19,7 @@ use ta_core::types::{
 
 use ta_store::trace_store::MAX_FIELD_BYTES;
 use ta_store::{
-    ClearMode, ConfigStore, GroupDim, HealthSample, HealthStore, LogQuery, Metric, QuotaStateRow,
+    ClearMode, ConfigStore, GroupDim, HealthSample, HealthStore, LogQuery, Metric,
     SqliteConfigStore, SqliteHealthStore, SqliteTraceStore, SqliteUsageStore, StorageStats,
     TimeBucket, TraceAttempt, TraceLimits, TraceRecord, TraceStore, UsageFormat, UsageQuery,
     UsageStatus, UsageStore,
@@ -799,112 +799,6 @@ async fn images_and_keys_never_reach_the_database_verbatim() {
 
 // ================================================================ 5. 单事务
 
-#[tokio::test]
-async fn record_rolls_back_everything_when_quota_state_fails() {
-    let (pool, store) = usage_store(ms("2026-02-11T03:00:00Z")).await;
-
-    // 让 quota_state 的写入必然失败
-    sqlx::query(
-        "CREATE TRIGGER quota_boom BEFORE INSERT ON quota_state
-         BEGIN SELECT RAISE(ABORT, 'boom'); END",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    let rec = record(
-        7,
-        ms("2026-02-11T01:00:00Z"),
-        "cred",
-        "prov",
-        "gpt-4o",
-        "cli",
-        "ch",
-        "lane",
-        "node",
-        1000,
-        200,
-        50,
-    );
-    let err = store.record(rec.clone()).await;
-    assert!(err.is_err(), "quota_state 失败时 record 必须返回 Err");
-
-    for table in ["usage_request", "usage_daily", "quota_state"] {
-        let n: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(n, 0, "{table} 必须一并回滚");
-    }
-
-    // 移除触发器后恢复正常，并且三张表的数字自洽
-    sqlx::query("DROP TRIGGER quota_boom").execute(&pool).await.unwrap();
-    store.record(rec.clone()).await.unwrap();
-
-    let daily_cost: f64 = sqlx::query_scalar("SELECT COALESCE(SUM(cost), 0) FROM usage_daily")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    let request_cost: f64 =
-        sqlx::query_scalar("SELECT cost FROM usage_request WHERE request_id = 'req-00007'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert!(
-        (daily_cost - request_cost).abs() < 1e-9,
-        "按 token_kind 分摊的成本求和必须精确等于请求总成本：{daily_cost} vs {request_cost}"
-    );
-    let quota = store.quota_state("cred").await.unwrap().unwrap();
-    assert_eq!(quota.used_requests, 1);
-    assert_eq!(quota.used_tokens, 1250);
-    assert!((quota.used_cost - request_cost).abs() < 1e-9);
-
-    // 同一个 request_id 只记一次账（幂等）
-    store.record(rec.clone()).await.unwrap();
-    let n: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM usage_request").fetch_one(&pool).await.unwrap();
-    assert_eq!(n, 1);
-    let quota = store.quota_state("cred").await.unwrap().unwrap();
-    assert_eq!(quota.used_requests, 1, "重复写入不能重复累加");
-
-    // 账本窗口滚动 API（QuotaLedger 用）
-    store.begin_quota_window("cred", 0, 10_000, "ok", ms("2026-02-11T03:00:00Z")).await.unwrap();
-    let quota = store.quota_state("cred").await.unwrap().unwrap();
-    assert_eq!(quota.used_tokens, 0);
-    assert_eq!(quota.state, "ok");
-    store
-        .upsert_quota_state(&QuotaStateRow {
-            credential_id: "cred".into(),
-            window_start: 0,
-            window_end: 10_000,
-            used_tokens: 42,
-            used_requests: 1,
-            used_cost: 0.5,
-            currency: "USD".into(),
-            reported_remaining: Some(100.0),
-            reported_reset_at: Some(20_000),
-            used_ratio: Some(0.3),
-            state: "soft".into(),
-            hard_exhausted: true,
-            invalid: true,
-            updated_at: 1,
-        })
-        .await
-        .unwrap();
-    let quota = store.quota_state("cred").await.unwrap().unwrap();
-    assert_eq!(quota.state, "soft");
-    assert_eq!(quota.reported_remaining, Some(100.0));
-    assert!(quota.hard_exhausted && quota.invalid, "P3 的两个状态机位必须无损落库");
-    assert_eq!(quota.used_ratio, Some(0.3));
-
-    // 窗口滚动：解除 hard_exhausted，但 **invalid 必须保留**
-    store.begin_quota_window("cred", 10_000, 20_000, "ok", 2).await.unwrap();
-    let rolled = store.quota_state("cred").await.unwrap().unwrap();
-    assert!(!rolled.hard_exhausted, "窗口滚动解除 hard_exhausted");
-    assert!(rolled.invalid, "窗口滚动不解除 invalid（换周期不换 key）");
-    assert_eq!(rolled.used_ratio, None, "滚动后比例回到未知");
-}
-
 // ================================================================ 6. token 维度开放 / 看板 / CSV / api key
 
 #[tokio::test]
@@ -982,12 +876,6 @@ async fn dashboard_has_contract_shape_and_cache_math() {
         provider: ProviderId::new("prov-1"),
         label: "中转A".into(),
         secret: "${secret:relay-a}".into(),
-        lane: None,
-        quota: QuotaConfig {
-            metric: QuotaMetric::Tokens,
-            limit: Some(5_000_000.0),
-            ..Default::default()
-        },
         guard: Default::default(),
         tags: vec![],
         enabled: true,
@@ -1077,13 +965,6 @@ async fn dashboard_has_contract_shape_and_cache_math() {
     assert_eq!(dash.status_bar.policy.as_ref().unwrap().id, "pol-1");
     assert_eq!(dash.status_bar.lane.as_ref().unwrap().name, "日本线");
     assert_eq!(dash.status_bar.lane.as_ref().unwrap().latency_ms, Some(82));
-    assert_eq!(dash.quota.len(), 1);
-    let q = &dash.quota[0];
-    assert_eq!(q.label, "中转A");
-    assert_eq!(q.state, "unknown", "账本还没合成 state → unknown（不猜）");
-    assert!(q.used_pct > 0.0, "used_pct 必须反映已用量：{}", q.used_pct);
-    assert!(q.used_pct <= 10.0, "used_pct 收敛在上限内：{}", q.used_pct);
-    assert!(q.detail.contains("/"), "detail 要给出 已用/上限：{}", q.detail);
     assert_eq!(dash.lanes.len(), 1);
     assert!(dash.lanes[0].ok);
     assert_eq!(dash.live.len(), 5);

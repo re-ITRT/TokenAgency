@@ -44,13 +44,6 @@ pub trait StickyResolver: Send + Sync {
     fn release(&self, key: &StickyKey, why: ReleaseReason);
 }
 
-pub trait QuotaLedger: Send + Sync {
-    fn state(&self, cred: &CredentialId) -> QuotaState;
-    fn observe(&self, cred: &CredentialId, obs: QuotaObservation);   // 四观测源之一
-    fn mark_exhausted(&self, cred: &CredentialId, hint: Option<i64>);
-    fn roll_window(&self, now_ms: i64) -> Vec<CredentialId>;         // 返回复活的
-}
-
 pub trait PricingEngine: Send + Sync {
     fn resolve(&self, model: &str, provider: &ProviderId, cred: &CredentialId) -> ResolvedPrice;
     fn cost(&self, usage: &TokenUsage, price: &ResolvedPrice) -> Money;
@@ -155,6 +148,10 @@ pub fn resolve_ref(spec: &str, store: &dyn SecretStore) -> Result<SecretRef>;
     async fn set_select(&self, lane: &LaneId, node: &str) -> Result<()>;
     async fn refresh_provider(&self, name: &str) -> Result<()>;
     async fn delay_of(&self, name: &str, timeout_ms: u64) -> Result<u32>;
+    /// **provider 内节点的延迟只能这样拿**（[docs/46 §297]：`/proxies/<name>/delay` 对它们全 404）
+    async fn provider_delays(
+        &self, key: &str, probe_url: &str, wait_ms: u64,
+    ) -> Result<std::collections::BTreeMap<String, Option<u32>>>;
     async fn snapshot(&self) -> Result<ProvidersSnapshot>;   // 节点+分组列表，供 UI 与线路映射
     async fn log_tail(&self, lines: u32) -> Result<String>;
 }
@@ -320,10 +317,18 @@ rules:
 | 就绪/版本 | `GET /version` |
 | 重载配置 | `PUT /configs?force=true` body `{"path": "<abs>"}` |
 | 切换组内节点 | `PUT /proxies/{group}` body `{"name": "<node>"}` |
-| 测速 | `GET /proxies/{name}/delay?timeout=5000&url=<probe>` |
+| 测速（**顶层**代理） | `GET /proxies/{name}/delay?timeout=5000&url=<probe>` |
 | 节点/分组快照 | `GET /proxies` 、`GET /providers/proxies` |
 | 刷新订阅 | `PUT /providers/proxies/{provider_key}` |
+| **provider 内节点测速** | `GET /providers/proxies/{key}/healthcheck?url=<probe>&timeout=` → `204`；延迟读 `GET /providers/proxies/{key}` 的 `proxies[].history[].delay` |
 | 内核日志 | 子进程 stdout/stderr 落 `<appdata>/logs/kernel.log` |
+
+> ⚠️ **[docs/46 §297] 实测（mihomo v1.19.31）**：`proxy-providers` 的节点**不在 `/proxies` 顶层**
+> （顶层只有内核内置 8 项 + 我们生成的组），所以 `GET /proxies/<节点名>/delay` 对它们
+> **一律 404**（`/proxies/<key>/<name>/delay`、`/proxies/<key>|<name>/delay` 同样 404）。
+> **provider 内节点的延迟只能从 provider 命名空间拿**（上表最后两行）。
+> 另外 `PUT /proxies/{group}` 对 `type: url-test` 的组**返回 204 但被忽略**（`now` 不变），
+> 只有 `select` 组认这一刀 —— 这正是「自动」线路必须是 `Lane::automatic`（显式 `select`）的原因。
 
 **鉴权**：`Authorization: Bearer <secret>`。**仅 loopback**。
 

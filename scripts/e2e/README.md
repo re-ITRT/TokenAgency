@@ -31,7 +31,44 @@ node scripts\e2e\smoke.mjs --only step1,step5
 
 # 保留上一次的 scratch 数据（默认每次都清空，保证"落库"不是上次残留）
 node scripts\e2e\smoke.mjs --keep-data
+
+# 只跑挂具自己的纯逻辑自检（不用浏览器/exe，秒级）
+node scripts\e2e\smoke.mjs --selfcheck
 ```
+
+### `--selfcheck`：让"只在偶发情形下才走到"的判据也有牙
+
+有些判据**只在特定数据下才触发**（例：`step30` 的"同一地址换了名字"分支 —— 机场里常见，
+但不是每轮真机都碰上）。这类修复如果只靠真机跑，"我修好了"就只能靠嘴说，因为
+**下一次跑可能根本不走那条分支**。
+
+`--selfcheck` 把这些判定抽成纯函数后**直接喂用例**（含真机那次假红的原样输入），
+所以它是**可重复、秒级、不需要 exe** 的。当前覆盖 **14 条**：
+
+| 判定 | 条数 | 覆盖 |
+|---|---|---|
+| `judgeSticky`（step30 沿用判定） | 5 | 2 条正向（名字没变 / **同一地址换名字**）+ 3 条反向（状态不是"沿用" / 日志与内核不一致 / 内核读不到） |
+| `judgePreviousUnreachable`（step30 重挑判定） | 4 | 1 条"无法判定"（不许假红）+ 2 条同层次硬矛盾（必须红）+ 1 条 `app_right` |
+| `pricingWriteEntries`（[docs/51] 成本中心只读） | 5 | 1 条只有只读控件 + 3 条混进写入口（含一个**没在清单里**的新入口）+ 1 条取不到 testid |
+| `judgePricedMatch`（[docs/51] 落库的 `match` 形状） | 6 | 2 条合格形状（**显式 `null`** / 键不存在）+ 4 条必须红（带 provider / 带 credential / 价挂错模型 / match 不是对象） |
+
+反向用例的作用是防止"为了让那次绿，把判定放松成什么都不查"。
+
+> **`judgePricedMatch` 那条真机上先红过一次，值得记下来**：第一版判据写的是
+> "`provider` / `credential` **键必须不存在**"，而落库的实际形状是
+> `{"model":"…","provider":null,"credential":null}` —— `PriceMatch` 是 `Option<T>` +
+> `#[serde(default)]`，`None` 落库就是显式 `null`（整份配置都这样，例如 `"usd_to_cny":null`）。
+> 引擎对两种形状**完全同构**（反序列化后都是 `None`），所以那是挂具**越过语义去要求一种
+> 序列化习惯**的假红。判据已改成 `== null`，并把"两种形状等价"用 Rust 测试
+> `explicit_null_and_missing_key_are_equivalent` 钉死（不再只靠注释说）。
+> ——这两条 `null` 用例就是那次的**原样输入**。
+
+> 给这条自检**验牙**的做法（改判定的人应当照做）：把修复前的旧判据临时加回去，
+> 跑 `--selfcheck` 必须变红，且**只有**那条关键用例变红；恢复后必须 20/20 通过。
+>
+> `pricingWriteEntries` 那条另有一层牙在**前端单测**里（`src/app/cost.test.tsx` 的
+> "只做显示"一节）：它直接把一个 `pricing-add-open` 挂回成本页，断言必须变红。
+> 两处判据同源但**不共用代码**（一个在 `.mjs`、一个在 `.tsx`），所以它们互为独立证词。
 
 退出码：`0` = 没有 FAIL（**SKIP 也算通过"没有失败"**，但报告里逐条列出来）；
 `1` = 至少一个 FAIL 或 harness 没起来。
@@ -48,6 +85,25 @@ node scripts\e2e\smoke.mjs --keep-data
 Get-Process cargo,rustc -ErrorAction SilentlyContinue     # 有输出就等
 cargo build --release -p tokenagency *> "$env:TEMP\ta-e2e\logs\build.log"
 ```
+
+#### WebView2 远程调试：为什么 app 里有一条"透传缝"
+
+tauri-driver + msedgedriver 靠 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<port>`
+让 WebView2 开 DevTools 端点。**wry 0.55 只要拿到 `AdditionalBrowserArguments` 就会在进程内
+覆盖掉这个环境变量**（`wry-0.55.1/src/webview2/mod.rs` 的 `options.set_additional_browser_arguments`），
+于是会话永远建不起来，只会报：
+
+```
+session not created: DevToolsActivePort file doesn't exist
+```
+
+所以主窗口**在代码里**建（`tauri.conf.json` 的窗口带 `create: false`，见
+`src-tauri/src/lib.rs::create_main_window`），并把该环境变量**并进**窗口参数：
+**设了才并、没设就一字不差**，生产启动不会设它 —— 它是"把 WebView2 自己的官方约定还给 WebView2"，
+不是产品开关。删掉这条缝，真机 E2E 会立刻退回"会话建不起来"。
+
+**调试用**：debug 与 release 产物都能跑（那条缝对两者都生效）。前端产物是**编进二进制**的，
+所以改了 `src/**` 必须先 `npm run build` **再** `cargo build`，否则测的是旧界面。
 
 ---
 
@@ -80,9 +136,9 @@ App 的数据根只有**一个**解析口：`src-tauri/src/state.rs::AppState::a
 ```
 PASS step2  供应商页新增供应商 + 密钥（两个向导各自：后端回显 + 落库）
      ...
-FAIL step10 线路落地不完整：列表=true 同模型线路数=2(需要 2) vision 条数=0(需要 1) 定价=true
-      · 下拉 channels-add-lane: 现值 "…" · 打开后选项 {"count":1,"texts":["TA E2E 线路"]}
-      · 开关 channels-add-vision: 点一次后 checked=true（目标 true）
+FAIL step10 成本中心新增定价：填了价、点了保存，但 config 的 pricing section 里没有那条费率
+      · 打开对话框后：应有 7 个控件，缺 []
+      · 三项全空提交后：点名元素存在=true，配置未变=true
 ```
 
 三种状态的语义**不允许混淆**：
@@ -126,12 +182,12 @@ FAIL step10 线路落地不完整：列表=true 同模型线路数=2(需要 2) v
 | `step7` | 收尾隔离复查 | 真实目录文件级 diff 仍为空 |
 | `step8` | `/providers` 服务商向导 | `providers-add-*` 真表单 → 列表 + `config(kind='provider')` |
 | `step9` | `/models` 模型向导 | `models-add-*` → 列表 + `config(kind='model')` |
-| `step10` | `/channels` 线路向导：能力块 + 计费块 + 两条同模型线路 | 8 个能力/计费 testid **在打开对话框之后**必须齐全；两条同模型线路落库（**其中一条 `vision=true`**）；`pricing` section 里出现 `input=1.5`；列表出现第一条 |
-| `step11` | `/policies` 路由向导：**能力不一致**时必须被拦住 | 界面显示**逐字段差异**（`policies-add-capability-diff-*`）+ 禁用提交 + 点了不落库；能力一致时不禁用且真落库 |
+| `step10` | `/models` **给一个对外模型定价**（[docs/51]：定价入口从 `/cost` 搬到模型页那一行） | ① `/cost` 上 `pricing-add*` / `pricing-delete` / `pricing-edit` **一个都不许在**，且 `cost-pricing-readonly` 必须有话（"只做显示"的可执行形式）；② 那一行的 `models-price-open` 打得开、模型字段是**只读展示**（格子里 0 个输入框）；③ **三项价格全空**与**非法数字**都在本地点名且**一条命令都不发**；④ 填一项合法价 → `pricing` section 里真的出现 `input=1.5`，且落库条目的 `match` **只有 `model`**（不许带 `provider` / `credential`） |
+| `step11` | `/models` 的**两个开关**：模型开关与线路开关 | 模型关掉 → 落库 `enabled=false` **且**网关 `/v1/models` 不再列出它、按名字取 **404**，可逆；线路开关 → **先弹确认框**再落库 |
 | `step12` | 网络**未配置**时 `/network` 不渲染任何网络区块 | 只有 `network-optional` + `network-optional-enable`，订阅/线路/分配那些 testid **一个都不存在**（反向断言） |
 | `step13` | 订阅流量与更新时间可见 | 行上出现「更新时间」「已用 92.9 GB / 130 GB」「71%」，且与 fixture 的 `subscription-userinfo` 字节数对得上；后端没给就不显示 |
 | `step14` | **数据安全回归**：经界面建线路 → 设置页「校验并应用」 | 应用前后 `config(kind='lane')` 的 id 集合不变，`network-lane-row` 仍在 |
-| `step15` | **能力规则双向**：能力一致的两条线路可路由；把已归组的线路改成不一致 | ① `policy` 真的落库且 `use_channels` 含这两条；② 改能力时后端拒绝，错误原文含 `TA-2007` 且**点出 `vision`**，同时库里那条线路**一个字节都没变** |
+| `step15` | 能力不一致时必须被拦住（**SKIP**） | UI 路径随 `/policies` 删除；后端规则由 Rust 单测覆盖（`TA-2007`）。**如实记 SKIP，不假报 PASS** |
 
 `step6` / `step14` 存在的理由：`config_apply` 是**整份覆盖**（`config_store.rs::write_rows` 先
 `DELETE FROM config` 再按传入的 `ConfigDoc` 插入），而设置页是"读到什么就整份写回什么"。
@@ -140,25 +196,34 @@ FAIL step10 线路落地不完整：列表=true 同模型线路数=2(需要 2) v
 有 1 条 lane、label=`apply` 的有 0 条）。修法：`useCommandMutation` 成功后集中失效 `qk.config`
 + 设置页 `refetchOnMount: "always"`；上面两条断言就是那个缺陷的回归闸门。
 
-`step11` / `step15` 存在的理由（用户硬规则）：**只有能力完全一致才允许被同一路由指向**。
-界面上的"禁用提交 + 逐字段差异"只是第一道；`step15` 证明第二道（后端 `TA-2007`）在真机上也成立 ——
-只测界面等于只测了提示，没测规则。
+能力一致性规则（用户硬规则：**只有能力完全一致才允许被同一路由指向**）现在只剩**后端那一道** ——
+`/policies` 整页已删（[docs/48]），界面上的"禁用提交 + 逐字段差异"随之消失，
+由 Rust 单测覆盖 `TA-2007`。`step15` 因此**如实记 SKIP**（它原来要验的 UI 路径不存在了）；
+真机这一档不再假装还验着。
 
 ### 写入口在哪：两级策略
 
 写命令（`provider_upsert` / `credential_upsert` / `model_upsert` / `channel_upsert` /
-`lane_upsert` / `policy_upsert` …）在 `src/shared/api/commands.ts` 里**都声明了**，
+`lane_upsert` / `pricing_upsert` …）在 `src/shared/api/commands.ts` 里**都声明了**，
 但**声明 ≠ 有入口**。脚本按两级找：
 
-1. **页面专用入口**：`data-testid`（如 `providers-add-open` / `channels-add-*` / `policies-add-*`）。
-   第 70 轮之后四个向导都真实存在，所以这是主路径。
+1. **页面专用入口**：`data-testid`（如 `providers-add-open` / `models-add-*` /
+   `network-lanes-add-*` / `models-price-open`）。这是主路径。
 2. **首启向导**（`/onboarding`）：只在专用入口缺失时兜底，并如实记录"走了兜底路径"。
 
 两级都没有 → 才记 SKIP。**SKIP 一定带"它找了哪些 selector"和"页面上实际有什么"**。
 
-`step10/step11/step15` 还需要"界面前提"（服务商/凭据/模型/线路）。`--only` 跳步跑时
-`ensureAddPrereqs()` 会**经真界面把前提造出来**（首启向导 → `/models` 向导 → `/network` 线路表单），
-而不是放宽断言。
+> `/channels`（导航标签「套餐与线路」）整页已按用户裁决删除（[docs/49]），
+> 所以 `channels-add-*` 这一串 testid **一个都不存在了**，`channels-add-lane` / `channels-add-model`
+> 之类不要再往脚本里加。线路的**真路径**现在是：加服务商向导（扫描 → `provider_lines_create_all`
+> 自动建全部线路）→ 服务商详情页用滑块启停。
+
+`step10` 需要"界面前提"（服务商/凭据/**模型**）。`--only` 跳步跑时 `ensureAddPrereqs()` 会**经真界面把前提造出来**
+（首启向导 → `/models` 向导 → `/network` 线路表单），而不是放宽断言。
+
+> **[docs/51] 之后 step10 不再需要凭据**：定价的对象是**对外模型**，界面上不再挑服务商与凭据
+> （`match` 只写 `model`）。前面那些"没有凭据就没有可选项"的分支随之消失 ——
+> 它现在只要求**配置里有模型**（不然模型页没有行，也就没有定价入口，那种情况如实记 SKIP）。
 
 
 > 注意：首启向导是**一次 apply 同时写供应商与订阅**的（界面只提供这一个提交按钮）。
@@ -217,9 +282,9 @@ FAIL step10 线路落地不完整：列表=true 同模型线路数=2(需要 2) v
    （实测 `"200000"` → `"0200000"`、向导 id 框 `"p1"` → `"p1ta-e2e-provider"`）。
    `wd.fill()` 现在补了一次真键盘清空（Home + Delete × 长度），清不干净会在日志里明说。
 
-另外：**多选（MUI `multiple`）选完不关弹层**，只能"弹层打开一次、在里面连点 N 个"
-（`wdPickOptions`）；而 `/policies` 向导在"选完模型"后会**默认全选**该模型的所有线路，
-想只留下能力一致的那两条必须显式取消其余的（`wdKeepOptions`）。
+另外：**多选（MUI `multiple`）选完不关弹层**，只能"弹层打开一次、在里面连点 N 个"。
+这条能力（`wdPickOptions` / `wdKeepOptions`）的唯一使用者是 `/policies` 的路由向导，
+它随整页删除（[docs/48]）—— 那两个 helper 也已删掉，别再照着旧文档去找它们。
 
 ---
 
@@ -243,15 +308,28 @@ FAIL step10 线路落地不完整：列表=true 同模型线路数=2(需要 2) v
 - **窗口必须能画出来**。跑在有桌面会话的环境里；无头桌面下 WebView2 可能拿不到窗口。
 - **`--only step7` 不能单独跑**：`step7` 依赖 `real-data-before.json`，
   那是完整流程开头写下的。至少要跑过一次完整流程。
-- **同一构建的两条线路必须换凭据**：channel id 由 `provider × credential × model` 派生，
-  同 provider/同 credential/同 model 的第二次 upsert 是**覆盖**同一条，不会多出一条。
-  所以"同模型两条线路"在脚本里是靠**第二份凭据**（`ta-e2e-cred-2`）造出来的。
+- **同一构建的两条线路 = 同一个服务商 + 不同上游模型名**。线路 id 由
+  `provider × credential × 上游模型名` 派生（[docs/28 §2] 翻转后**线路归服务商**，
+  不再按逻辑模型派生），所以同 provider / 同 credential / 同上游模型名的第二次 upsert 是
+  **覆盖**同一条，不会多出一条。
+  想要"同一个模型下两条线路"，只能：建两条不同上游模型名的线路 → 到 `/models` 把它们
+  **都分配给同一个模型**（关系的真源在 `Model.lines` 上）。
+  > 这里原来写的是"靠第二份凭据（`ta-e2e-cred-2`）造" —— 那是翻转前的做法，
+  > 现在一个服务商就一把密钥（[docs/46 §303]），已经没有"第二份凭据"这条路了。
 
-### 当前状态（2026-09-22 第 70 轮实测）
+### 当前状态
 
-`PASS=19 SKIP=0 FAIL=0`（干净数据目录、release 包、单次全流程 90 秒左右）。
-四个添加向导（`/providers` 服务商与密钥、`/models`、`/channels`、`/policies`）都有专用入口，
-`step4` 的线路写入口在 `/network`；**上一版里"预期会 SKIP 的 step4/step5"与
-"`/providers` 仍是只读"的说法都已经过期，已删除。**
+**以最近一次全量真机跑的报告为准**（`report.json` 里的 PASS/SKIP/FAIL 计数）；
+最近一次是 `PASS=29 SKIP=2 FAIL=0`（[docs/49 §7.4.1]）。两个 SKIP 都如实写了理由
+（`step15` UI 路径随 `/policies` 删除、`step28` 夹具量不出真实节点延迟）。
+**别把本文件里的数字当结论 —— 结论只在报告里。**
+
+添加向导现在的专用入口：`/providers`（服务商与密钥，含扫描 → 自动建全部线路）、
+`/models`、`/cost`（新增定价）。`step4` 的线路写入口在 `/network`。
+
+> 上面这段原来写着"（2026-09-22 第 70 轮实测）`PASS=19`…四个向导…"，那已经过期两轮以上：
+> `/channels` 与 `/policies` 两页都已删除（[docs/49] / [docs/48]），
+> 而"同模型两条线路靠第二份凭据造"也不再成立（[docs/28 §2] 翻转后线路归服务商）。
+> 历史数字不再保留 —— 留着它只会让人对着一个过期的绿数做判断。
 
 

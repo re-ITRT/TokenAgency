@@ -85,6 +85,46 @@ impl std::fmt::Debug for KernelBuild {
     }
 }
 
+/// **内置内核**的位置（随安装包分发；[docs/46]）。找不到就返回 `None` —— **绝不猜**。
+///
+/// 查找顺序（都相对**当前可执行文件**，安装后资源就在它旁边）：
+///   1. `<exe 目录>/mihomo.exe`（NSIS 平铺安装）；
+///   2. `<exe 目录>/resources/mihomo/mihomo.exe`（Tauri 按 `bundle.resources` 保留相对路径）；
+///   3. `<exe 目录>/resources/resources/mihomo/mihomo.exe`（某些 Tauri 版本会多套一层）。
+pub fn bundled_kernel_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    for rel in
+        ["mihomo.exe", "resources/mihomo/mihomo.exe", "resources/resources/mihomo/mihomo.exe"]
+    {
+        let candidate = dir.join(rel);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// [docs/46 §292] 随包的 **GeoIP 库**（`Country.mmdb`）在哪。
+///
+/// 为什么必须有它：mihomo **找不到 `Country.mmdb` 会在启动阶段去下载**它，而在大陆网络下
+/// 这常常卡住或失败 ⇒ 控制器根本不监听 ⇒ 我们读 `/version` 超时（`TA-9001 内核就绪超时`）
+/// ⇒ 应用探测全失败（如实报 `all_unreachable`）、真机验证整轮挂住。
+/// 实测：把 7.35 MB 的 `Country.mmdb` 预置进内核目录后，**节点立刻可测**（42/45/40/60 ms ✓）。
+pub fn bundled_country_mmdb() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    for rel in
+        ["Country.mmdb", "resources/mihomo/Country.mmdb", "resources/resources/mihomo/Country.mmdb"]
+    {
+        let candidate = dir.join(rel);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// 按配置装配内核。
 ///
 /// * `Ok(None)` = **配置里没写内核路径**（`net.kernel.path` 为空）。这不是错误：
@@ -97,16 +137,58 @@ impl std::fmt::Debug for KernelBuild {
 /// 早期版本在这里 `format!("{e}")` 把码丢了 —— 那正是 `error_log_guard` 要抓的那类问题。
 pub fn build_kernel(doc: &ConfigDoc, data_dir: &Path) -> Result<Option<KernelBuild>, TaError> {
     let kernel_cfg = &doc.net.kernel;
-    let program = kernel_cfg.path.as_deref().map(str::trim).unwrap_or("");
-    if program.is_empty() {
-        tracing::info!("net.kernel.path 为空：不装配内核（只用直连通道）");
-        return Ok(None);
-    }
+    // [docs/46] **内置内核**：配置没写路径时，改用**随安装包分发**的 mihomo（如果这一版带上了）。
+    //
+    // 优先级铁律：**用户显式写的路径永远赢**（上面那条分支）；内置只是"开箱能用"的兜底。
+    // 兜底也找不到就**如实说没有**（不猜、不下载、不静默尝试）—— 这条语义与原来一致。
+    let configured = kernel_cfg.path.as_deref().map(str::trim).unwrap_or("");
+    let program: String = if configured.is_empty() {
+        match bundled_kernel_path() {
+            Some(p) => {
+                tracing::info!(path = %p.display(), "net.kernel.path 为空：改用内置内核（随包分发）");
+                p.to_string_lossy().into_owned()
+            }
+            None => {
+                tracing::info!("net.kernel.path 为空且未随包分发内核：不装配内核（只用直连通道）");
+                return Ok(None);
+            }
+        }
+    } else {
+        configured.to_string()
+    };
 
     let kernel_dir = data_dir.join("kernel");
     let logs_dir = data_dir.join("logs");
     std::fs::create_dir_all(&kernel_dir)
         .map_err(|e| TaError::Internal(format!("创建内核目录失败：{e}")))?;
+
+    // [docs/46 §292] **把随包的 GeoIP 库铺到内核数据目录**（`-d` 目录）。
+    // 不铺的话：mihomo 会在启动阶段去**下载** `Country.mmdb`，大陆网络下常常卡住/失败
+    // ⇒ 控制器不监听 ⇒ `/version` 超时（`TA-9001 内核就绪超时`）⇒ 应用探测全失败、
+    // 真机验证整轮挂住。实测：预置后节点立刻可测 ✓。
+    let mmdb_dst = kernel_dir.join("Country.mmdb");
+    if !mmdb_dst.is_file() {
+        match bundled_country_mmdb() {
+            Some(src) => match std::fs::copy(&src, &mmdb_dst) {
+                Ok(_) => {
+                    tracing::info!("已把随包 GeoIP 库铺到内核目录（内核无需联网下载）")
+                }
+                // [docs/11 §2.4] 错误日志**必须带 TA 码**（`crates/ta-core/tests/error_log_guard.rs`
+                // 会拦）：这里原来只记了 `error = %e`（io::Error），被守卫测试抓个正着。
+                // 包成 `TaError::Internal` 之后既带上码，又把"源文件是哪一条"写进去。
+                Err(e) => {
+                    let err =
+                        TaError::Internal(format!("铺 GeoIP 库失败（源：{}）：{e}", src.display()));
+                    tracing::warn!(
+                        code = err.code(),
+                        error = %err,
+                        "铺 GeoIP 库失败：内核启动时可能会尝试联网下载（可能很慢或失败）"
+                    );
+                }
+            },
+            None => tracing::info!("未随包分发 GeoIP 库：内核会自行获取（可能需要联网）"),
+        }
+    }
 
     // 1) lane 端口：落库复用（[11 §1.5]），否则每次启动都换端口，
     //    客户端/订阅里的端口引用会跟着漂。
@@ -157,8 +239,25 @@ pub fn build_kernel(doc: &ConfigDoc, data_dir: &Path) -> Result<Option<KernelBui
     let source =
         Arc::new(GeneratedConfigSource::new(Box::new(gen), doc.clone(), ports, kernel_dir.clone()));
 
-    let process_cfg =
+    // [docs/46] **生成的配置文件，就是内核要读的那一份**。
+    //
+    // `net.kernel.config_path` 是"用户自己指定内核配置"时才填的字段，绝大多数用户从没填过 → 空。
+    // 而 `KernelProcessConfig::validate()` 要求它非空 ⇒ 以前只要真的走到"拉起内核"，
+    // 就会报 `TA-5001 配置校验失败`（内置内核上线后才暴露出来：旧路径在 path 为空时就 return 了）。
+    // 这里把 `GeneratedConfigSource` 实际落盘的那个路径接上（`kernel_dir/kernel.generated.yaml`）。
+    let mut process_cfg =
         KernelProcessConfig::from_doc(doc, &kernel_dir, &logs_dir).with_secret(&secret);
+    if process_cfg.config_path.as_os_str().is_empty() {
+        process_cfg.config_path = kernel_dir.join("kernel.generated.yaml");
+        tracing::info!(path = %process_cfg.config_path.display(), "内核配置路径未指定：使用工具生成的那一份");
+    }
+    // [docs/46] **把内置内核的路径写进进程配置**：`from_doc` 是从 `net.kernel.path` 取 `program` 的，
+    // 而这条路正是"用户没配置"的场景 ⇒ `program` 为空 ⇒ `validate()` 报 `kernel_path_missing`（TA-5001），
+    // 内置内核**永远起不来**（真机日志一条条把原因打出来了）。
+    if process_cfg.program.as_os_str().is_empty() {
+        process_cfg.program = std::path::PathBuf::from(&program);
+        tracing::info!(program = %program, "内核可执行路径未指定：使用内置内核");
+    }
     let rest = KernelRest::new(&process_cfg.controller, secret)?;
 
     let supervisor = Arc::new(KernelSupervisor::with_system_spawner(
@@ -689,6 +788,15 @@ mod tests {
 
         async fn delay_of(&self, _name: &str, _timeout_ms: u64) -> TaResult<u32> {
             Ok(0)
+        }
+
+        async fn provider_delays(
+            &self,
+            _key: &str,
+            _probe_url: &str,
+            _wait_ms: u64,
+        ) -> TaResult<std::collections::BTreeMap<String, Option<u32>>> {
+            Ok(std::collections::BTreeMap::new())
         }
 
         async fn refresh_provider(&self, _key: &str) -> TaResult<()> {

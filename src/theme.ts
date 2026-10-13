@@ -13,6 +13,14 @@
 
 import { alpha, createTheme, type Components, type Theme } from "@mui/material/styles";
 
+import {
+  COLOR_TRANSITION_PROPERTIES,
+  MOTION_OFF_DURATION,
+  MOTION_OFF_ITERATIONS,
+  REDUCED_MOTION_QUERY,
+  toMs,
+} from "@/shared/motion";
+
 export type ThemeMode = "dark" | "light";
 
 // ================================================================ 中性色阶（[15 §3.1]）
@@ -107,10 +115,22 @@ export const typography = {
   letterSpacing: { large: "-0.01em", label: "0.06em" },
 } as const;
 
-/** [15 §7] 动效：不超过 250ms；只用来说明因果（唯一允许的循环动效见 QuotaBar >90% 脉动）。 */
+/**
+ * [15 §7] 动效：**时长只有一个来源（这里）**，且不超过 250ms。
+ *
+ * 组件里不许再出现 `transition: all .3s` 这类字面量（[26 §1.1]）；要过渡就用
+ * `motion.enter` / `motion.quick` 配 `motion.easing`。MUI 自己的组件过渡也走这里 ——
+ * `buildTheme` 会把 `theme.transitions` 映射成同一套值（MUI 默认的 300ms / `easeInOut`
+ * 是**第二个时长来源**，而且超预算）。
+ *
+ * 机械守卫：`src/app/motion.test.ts`（扫源码）+ `theme.tokens.test.tsx`（扫令牌预算）。
+ */
 export const motion = {
+  /** 状态变化（悬停、选中、出现即定） */
   quick: "120ms",
+  /** 进出场（进场/展开、数值缓动） */
   enter: "180ms",
+  /** 唯一的缓动曲线：快出缓入（[15 §7]） */
   easing: "cubic-bezier(.2,0,0,1)",
 } as const;
 
@@ -269,6 +289,33 @@ export function buildTheme(mode: ThemeMode): Theme {
     // spacing 基准 4px：sx 里的倍数只能是 [15 §3.3] 刻度 ÷ 4（守卫会拦刻度外的值）
     spacing: 4,
     shape: { borderRadius: radius.control },
+    /**
+     * MUI 自己的组件（按钮悬停、菜单、对话框、tooltip、表格行、tab…）内部全走这里。
+     *
+     * 不映射的话它们用 MUI 的默认值：`standard: 300ms` / `complex: 375ms` / `easeInOut` ——
+     * 那就正是 [26 §1.1] 说的"第二个时长来源"，而且**超预算**（>250ms），
+     * 还会在 reduced-motion 之外留下一条 `ease-in-out` 曲线。
+     * 映射之后：进/出场用 `enter`、状态变化用 `quick`、缓动只有 `motion.easing` 一条。
+     */
+    transitions: {
+      duration: {
+        shortest: toMs(motion.quick),
+        shorter: toMs(motion.quick),
+        short: toMs(motion.enter),
+        standard: toMs(motion.enter),
+        // MUI 拿 `complex` 做多属性联动（默认 375ms 超预算）：它一样是因果过渡，没有理由更长
+        complex: toMs(motion.enter),
+        enteringScreen: toMs(motion.enter),
+        // 出场比进场快（[15 §7] 快出缓入）：出场用 `quick`
+        leavingScreen: toMs(motion.quick),
+      },
+      easing: {
+        easeInOut: motion.easing,
+        easeOut: motion.easing,
+        easeIn: motion.easing,
+        sharp: motion.easing,
+      },
+    },
     typography: {
       fontFamily: typography.fontUI,
       fontSize: typography.size.body,
@@ -335,12 +382,21 @@ export function buildTheme(mode: ThemeMode): Theme {
             backgroundColor: p.bg.base,
             color: p.text.primary,
             fontFamily: typography.fontUI,
-            // [15 §7] 必须遵守 prefers-reduced-motion
-            "@media (prefers-reduced-motion: reduce)": {
+            /*
+             * [15 §7] / [26 §1.3] 必须遵守 prefers-reduced-motion —— 用 CSS 媒体查询，不用 JS：
+             * JS 判断要等首帧之后才生效，那一帧的位移已经发生（闪一下正是要防的东西）。
+             *
+             * 两道闸，各管一件事：
+             * ① **循环动画停掉**：所有动画只跑 0.01ms × 1 次 → 静止。
+             *    属性级 + `!important`，所以**与样式表注入顺序无关** —— 这是真正生效的那道。
+             * ② **位移/缩放/宽度/stroke 的过渡取消**，颜色过渡留下（颜色不引发前庭反应）。
+             *    用 `transition-property` 而不是把时长压到 0.01ms：后者会把颜色反馈一起杀掉。
+             */
+            [REDUCED_MOTION_QUERY]: {
               "*, *::before, *::after": {
-                animationDuration: "0.01ms !important",
-                animationIterationCount: "1 !important",
-                transitionDuration: "0.01ms !important",
+                animationDuration: `${MOTION_OFF_DURATION} !important`,
+                animationIterationCount: `${MOTION_OFF_ITERATIONS} !important`,
+                transitionProperty: `${COLOR_TRANSITION_PROPERTIES.join(", ")} !important`,
                 scrollBehavior: "auto !important",
               },
             },

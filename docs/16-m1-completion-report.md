@@ -179,6 +179,12 @@ pwsh -File scripts/check-invariants.ps1 -Mode Run -Exe target\release\tokenagenc
    **顺带自查出一个真问题**：这条守卫**第一版是假的** —— 它扫整份文件，测试段里的 `Router::with_sticky`
    把它"喂饱"了，于是把 `bind` 换成 `Router::new` 它照样绿。已改成只扫 `#[cfg(test)]` **之前**，
    并把这次"守卫自己被证伪"的过程写进了测试文档。**这条已知偏离可以划掉了。**
+
+   > **第 315 轮追记（[docs/48]）**：上面那句"cheapest 形态"的等价断言与它依赖的
+   > `RouterOptions.pricing` **已经删除** —— 选路策略收敛为唯一一种后，选路不再读价格。
+   > 那条"pricing 有没有被漏传"的探针随之消失，替换成**平均粘性形态**的等价断言
+   > （用量快照有没有被喂进选路）。守卫本身（只扫生产段 + `Router::with_sticky` 唯一装配点）
+   > **照旧有效**，没有改动。本文件其余部分是当时的记录，保留原样。
 3. **`kernel.log` 不再是内核原文**（写入前过脱敏）：这是**有意的取舍** —— 保真度服务排查，脱敏服务用户的账号安全。
 4. **`LANE_RELOAD_RETRY_DELAY_MS = 50` 是估的**，未在真内核上量过 listener 重建耗时（已在注释写明）。
 5. **`is_group()` 的 `URLTest/Fallback/LoadBalance/Relay`** 四个类型名在真夹具里从未出现 → **推断**（已标注）。

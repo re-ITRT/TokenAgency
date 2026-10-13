@@ -14,6 +14,10 @@ pub mod behavior;
 /// [docs/17 §2]「能力一致才可路由」的纯判定层（比较 + 按 model 分组求差异）。
 pub mod capabilities;
 
+/// [docs/46 §303] 上游 `/models` 里**声明过的**能力（上下文窗口 / 最大输出 / 模态 / 工具），
+/// 从我们逐字存下来的扫描原文里读出来 —— 线路"认领"它，网关再把它透传给客户端。
+pub mod upstream_hints;
+
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
@@ -69,13 +73,98 @@ pub struct ConfigDoc {
 }
 
 fn default_version() -> u32 {
-    1
+    // 必须与 `config::migrate::CURRENT_CONFIG_VERSION` 一致（那条隐式契约由
+    // `migrate.rs` 的 `current_version_matches_domain_default` 守着）。
+    // v2 = [docs/28 §2] 的关系翻转：`ChannelConfig.model` → `Model.lines`。
+    // v3 = [docs/54]：放弃「订阅里分组」，`subscription_group` → 「自动选择」（显式 select）。
+    3
 }
 
+/// 「自动」线路的**幂等建线决策**（[docs/29 §2.2]，D 期）。
+///
+/// 纯值：**不动配置、不落库** —— 调用方照它去复用或新建。抽出来的理由是决策里全是边界
+/// （要不要复用、id 撞了怎么办），而这些边界靠"跑一次真机"是验不全的。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoLanePlan {
+    /// 已经有一条够格的「自动」线路 → 直接用它（**绝不新建第二条**）。
+    Reuse(LaneId),
+    /// 没有 → 按这个 id 与名字建一条 `Lane::automatic`。
+    Create { id: LaneId, name: String },
+}
+
+impl ConfigDoc {
+    /// 计划一条挂在这份订阅上的「自动」线路（[`AutoLanePlan`]）。
+    ///
+    /// `base_id`：希望用的 id —— 现在由**服务商**派生（`lane-<服务商>-auto`），因为
+    /// 「自动」是**每家服务商自己的**出口（用户第 202 轮原话：「每一个服务商都有自己的『自动』节点，
+    /// 相当于这个选哪个节点是记录在每一个服务商自身的」）。
+    ///
+    /// ★ **按 `base_id` 复用，不再"按订阅找第一条"**：旧规则会让两家服务商**共用同一条** lane
+    /// ⇒ 各自按自己存的地址重算、写同一个组 ⇒ 组上的 `now` 变成"最后写的那家"的选择
+    /// （真机实测：一家写"沿用 日本-优化2"、另一家写"剩余流量"，[docs/46 §301]）。
+    /// 幂等由调用方保证：服务商**当前挂的那条**够格就复用它（`ensure_auto_lane` 的第 ① 步）。
+    ///
+    /// 如果 `base_id` 已经被**别的**线路占了，就在后面加 `-2`、`-3`… 直到空位 ——
+    /// **绝不改别人已有的线路 id**（改 id 会让引用它的服务商指向不存在的线路，那是配置损坏，
+    /// 不是"顺手重命名"）。
+    pub fn plan_auto_lane(
+        &self,
+        subscription: &SubscriptionId,
+        base_id: &str,
+        name: &str,
+    ) -> AutoLanePlan {
+        if let Some(existing) = self.lanes.iter().find(|l| l.id.as_str() == base_id) {
+            if auto_lane_qualifies(existing, subscription) {
+                return AutoLanePlan::Reuse(existing.id.clone());
+            }
+        }
+        let mut candidate = base_id.to_string();
+        let mut n = 2;
+        while self.lanes.iter().any(|l| l.id.as_str() == candidate) {
+            candidate = format!("{base_id}-{n}");
+            n += 1;
+        }
+        AutoLanePlan::Create { id: LaneId::new(candidate), name: name.to_string() }
+    }
+
+    /// **哪条线路够格当这家订阅的「自动」出口**（[docs/29 §2.2]，D 期幂等建线用）。
+    ///
+    /// 判据两条缺一不可：种类是 `subscription_auto`，**且组类型是显式 `select`** ——
+    /// 只看种类会把老的「整份订阅择优」（`url-test`，会自己周期性换出口）当成「自动」，
+    /// 那就是把用户不想要的东西冒充他要的那个。
+    ///
+    /// ⚠️ **这是"这条订阅上的第一条够格的"**，只用于只读判断/诊断。
+    /// 建线**不要**用它（会把两家服务商的「自动」认成同一条）：用 [`ConfigDoc::plan_auto_lane`]
+    /// + 服务商当前挂的 lane（`catalog::ensure_auto_lane`）。
+    ///
+    /// 多条同时满足时取**配置里靠前的**那条（确定性：同一份配置永远给同一个答案）。
+    pub fn auto_lane_on(&self, subscription: &SubscriptionId) -> Option<&Lane> {
+        self.lanes.iter().find(|lane| auto_lane_qualifies(lane, subscription))
+    }
+
+    /// 显式按 **id** 找一条够格的「自动」线路（同订阅 + `subscription_auto` + 显式 `select`）。
+    pub fn auto_lane_by_id<'a>(
+        &'a self,
+        id: &LaneId,
+        subscription: &SubscriptionId,
+    ) -> Option<&'a Lane> {
+        self.lanes.iter().find(|l| &l.id == id && auto_lane_qualifies(l, subscription))
+    }
+}
+
+/// `lane` 够不够格当这份订阅的「自动」出口（`subscription_auto` + **显式** `select` + 订阅对得上）。
+///
+/// 只写一份：`plan_auto_lane` / `auto_lane_on` / `auto_lane_by_id` 三处**必须**同一个判据，
+/// 否则"能找到"和"能复用"会分叉（一边认、一边不认 ⇒ 越用越多条）。
+fn auto_lane_qualifies(lane: &Lane, subscription: &SubscriptionId) -> bool {
+    lane.kind == LaneKind::SubscriptionAuto
+        && lane.group_type == Some(GroupType::Select)
+        && lane.subscription.as_ref() == Some(subscription)
+}
 impl Default for ConfigDoc {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: default_version(),
             gateway: Default::default(),
             request_log: Default::default(),
             pricing: Default::default(),
@@ -111,8 +200,6 @@ pub struct GatewayConfig {
     /// 是否返回 `x-tokenagency-*` 调试头
     #[serde(default = "default_true")]
     pub debug_headers: bool,
-    #[serde(default)]
-    pub expose_models_with_capabilities: bool,
     /// 通配路径时兜底用哪个 provider（无法确定模型名时）
     #[serde(default)]
     pub fallback_provider: Option<ProviderId>,
@@ -122,6 +209,15 @@ pub struct GatewayConfig {
     pub retry: RetryConfig,
     #[serde(default)]
     pub metering: MeteringConfig,
+    /// [docs/59] **下游 API 家族开关**（用户第 326 轮："是打开关闭形式，按需求勾选"）。
+    #[serde(default)]
+    pub downstream: DownstreamConfig,
+    /// **已删除的旧开关**：`expose_models_with_capabilities`（[docs/28 §4]）。
+    ///
+    /// 它当年表达"要不要在 `/v1/models` 里注入上游能力标签"；现在 `/v1/models` 返回的是
+    /// **我们自己的模型**（[`Model`]），能力字段一律来自我们记录的上游原文、没有开关这回事。
+    /// 老配置里带着它**仍然能解析** —— 未知字段一律落进这里的 `extra` 原样保留（仓库一贯的
+    /// 前向兼容纪律），但它**不再有任何运行时含义**。**别**把它再当开关读。
     #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -145,11 +241,57 @@ impl Default for GatewayConfig {
             local_key: None,
             max_body_mb: default_max_body_mb(),
             debug_headers: true,
-            expose_models_with_capabilities: false,
             fallback_provider: None,
             passthrough: Default::default(),
             retry: Default::default(),
             metering: Default::default(),
+            downstream: Default::default(),
+            extra: Map::new(),
+        }
+    }
+}
+
+/// [docs/59] **下游对外提供哪几种 API 家族** —— 每个一批（勾选式开关）。
+///
+/// ## 为什么要有它
+///
+/// 用户第 326 轮的需求原话："可以在设置页面选择我们下游是统一成 OPENAI 的两种还是
+/// Anthropic 的"，补一句"是打开关闭形式，按需求勾选"。
+///
+/// 所以这不是"选一个"，而是**三个独立的开关**：客户端用哪套 API 由用户自己按需勾。
+///
+/// ## 关掉之后的行为
+///
+/// 关掉的端点**当场明确报错**（`TA-1004` + 指明是哪个开关），而不是被静默转发到上游 ——
+/// "配错了客户端却收到一个来自上游的 404"是最难查的一类问题。
+///
+/// ## 为什么默认全开
+///
+/// 老配置里**没有**这个字段（`#[serde(default)]` → 走 `Default`），而升级前三种端点都是通的。
+/// 默认全开 = 升级不改变任何既有行为；要收窄是**用户显式勾掉**。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DownstreamConfig {
+    /// `POST /v1/chat/completions`（OpenAI 兼容客户端最常用的一种）
+    #[serde(default = "default_true")]
+    pub openai_chat: bool,
+    /// `POST /v1/responses`（OpenAI 新的 Responses API）
+    #[serde(default = "default_true")]
+    pub openai_responses: bool,
+    /// `POST /v1/messages`（Anthropic / Claude Code）
+    #[serde(default = "default_true")]
+    pub anthropic_messages: bool,
+    #[cfg_attr(feature = "specta", specta(skip))]
+    #[serde(flatten, default)]
+    pub extra: Map<String, Value>,
+}
+
+impl Default for DownstreamConfig {
+    fn default() -> Self {
+        Self {
+            openai_chat: true,
+            openai_responses: true,
+            anthropic_messages: true,
             extra: Map::new(),
         }
     }
@@ -564,6 +706,16 @@ pub struct Subscription {
     /// 内核里的 provider key（由 id 派生，稳定）
     #[serde(default)]
     pub provider_key: Option<String>,
+    /// **用户关掉的节点名**（省略/空 = 全部启用）。
+    ///
+    /// 用户第 202 轮：「订阅里面的节点，也将服务商的『模型』一样设置一个启用或关闭的功能」+
+    /// 「这个也要那种有全选功能，默认全部选择」。所以存的是**关掉的那些**：
+    /// 新节点（机场新增）默认就是启用的，不需要用户回来补勾 —— 与 `enabled`（省略 = 启用）
+    /// 是同一套哲学。被关掉的节点**不进「自动」的候选**（`apply_auto_export`），
+    /// 于是订阅里那几条展示用的信息节点（`剩余流量：…` / `套餐到期…` / `过滤掉 N 条线路`）
+    /// 用户自己就能排除，而不用我们在代码里猜哪个名字是"真节点"。
+    #[serde(default)]
+    pub disabled_nodes: Vec<String>,
     #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -640,8 +792,11 @@ pub struct Lane {
     pub kind: LaneKind,
     #[serde(default)]
     pub subscription: Option<SubscriptionId>,
-    /// `kind: subscription_group` 时，订阅里自带的组名；**可能含 emoji**（如用户订阅里的日本线路
-    /// 分组），必须**原样**保存与展示 —— 改一个字就与内核里的名字对不上（[15 §2.2]）
+    /// **遗留（第 321 轮取消）**：`kind: subscription_group` 时订阅里自带的组名。
+    ///
+    /// 用户裁决"放弃订阅里分组这一概念"之后，界面上不再产生它；v2 → v3 迁移会把带它的线路
+    /// 转成「自动选择」并**清空这个字段**。保留字段本身是为了让老配置仍能反序列化（理由同
+    /// [`LaneKind::SubscriptionGroup`]）。新配置里它必须是空的。
     #[serde(default)]
     pub group: Option<String>,
     /// 组类型；缺省时取订阅里该组的 type
@@ -669,14 +824,28 @@ pub struct Lane {
 pub enum LaneKind {
     /// 直连（本机网络）
     Direct,
-    /// 整份订阅里自己择优
+    /// **「自动选择」**：这条订阅里**所有启用节点**各自 ping 该服务商的 URL，取延迟最低的那条；
+    /// 选中后**按地址粘性**（[`crate::domain::Lane::automatic`] 会把它钉成显式 `select` 组，
+    /// 见 [docs/29 §2.2]）。只在"上次那条连不上"或用户手动刷新时才重挑。
     SubscriptionAuto,
-    /// 用订阅里自带的某个分组（保留机场语义）
-    SubscriptionGroup,
     /// 固定某个节点
     SubscriptionNode,
     /// 正则筛选节点后自己择优
     Filter,
+    /// **遗留（第 321 轮取消的概念）**：用订阅里自带的某个分组。
+    ///
+    /// 用户第 321 轮的裁决：*直接放弃订阅里面分组这一概念，只拿节点*。
+    /// 所以**界面上不再有任何入口产生它**，新配置也不该出现。
+    ///
+    /// 但它**必须仍然能被反序列化** —— 老库里存着 `kind: subscription_group`，
+    /// 而配置是"先反序列化、再跑迁移"（`state.rs::bootstrap`）：删掉这个变体，
+    /// 老配置会**在迁移跑到之前就解析失败**，连"升级"的机会都没有。
+    ///
+    /// 迁移 v2 → v3（`config::migrate::v2_to_v3`）会把它转成
+    /// [`LaneKind::SubscriptionAuto`]（即「自动选择」）+ 显式 `select`，
+    /// 于是老用户的分组线路**升级后仍然能用，而且拿到了粘性**。
+    /// 迁移之后再出现这个值就是配置损坏，校验器会点名报错。
+    SubscriptionGroup,
 }
 
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -700,7 +869,15 @@ pub struct Provider {
     pub base_url: String,
     #[serde(default)]
     pub auth: AuthConfig,
-    /// 服务商级默认线路（可被 credential/channel 覆盖）
+    /// 服务商级默认线路 —— **这是唯一一处线路分配入口**（[docs/55]，第 322 轮）。
+    ///
+    /// 用户裁决："**线路级别的分配逻辑我们已经放弃了，取而代之的，每个服务商统一一个节点**"。
+    /// 所以生效线路只有一条链：`provider.lane ?? net.default_lane ?? direct`。
+    ///
+    /// 这里曾有 `credential.lane` / `channel.lane` / `policy.use_lane` 三级覆盖，全部删除：
+    /// 那三级**在界面上早已没有任何写入口**（相关页面都删了），却仍会被解析链读到 ——
+    /// 老配置里一个看不见、也改不掉的 `channel.lane` 会**静默压过**用户当前选的服务商线路。
+    /// 保留它们比删掉更危险，所以整条链收敛到这一处。
     #[serde(default)]
     pub lane: Option<LaneId>,
     /// 附加头：**默认只补缺，不覆盖客户端同名头**
@@ -835,11 +1012,11 @@ pub struct Credential {
     pub label: String,
     /// `"${secret:name}"` 或 `"${env:VAR}"`；**绝不存明文**
     pub secret: String,
-    /// 这份套餐默认走哪条线
-    #[serde(default)]
-    pub lane: Option<LaneId>,
-    #[serde(default)]
-    pub quota: QuotaConfig,
+    // 这里曾有 `lane: Option<LaneId>`（"这份套餐默认走哪条线"）。
+    //
+    // [docs/55]（第 322 轮）整条删除：线路分配只剩**服务商级**一处（`Provider.lane`）。
+    // 老配置里的 `credentials[].lane` 会被 `extra` 吸收（`flatten`，见本结构体末尾），
+    // 解析不失败、值也不丢 —— 但它**不再参与任何解析**。
     #[serde(default)]
     pub guard: GuardConfig,
     #[serde(default)]
@@ -852,79 +1029,20 @@ pub struct Credential {
     pub extra: Map<String, Value>,
 }
 
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct QuotaConfig {
-    #[serde(default)]
-    pub metric: QuotaMetric,
-    #[serde(default)]
-    pub limit: Option<f64>,
-    #[serde(default = "default_currency")]
-    pub currency: String,
-    #[serde(default)]
-    pub window: QuotaWindow,
-    #[serde(default = "default_reset_day")]
-    pub reset_day: u32,
-    #[serde(default = "default_soft_limit")]
-    pub soft_limit: f64,
-    #[serde(default = "default_hard_limit")]
-    pub hard_limit: f64,
-    #[serde(default)]
-    pub reserve: f64,
-    #[cfg_attr(feature = "specta", specta(skip))]
-    #[serde(flatten, default)]
-    pub extra: Map<String, Value>,
-}
-
-fn default_currency() -> String {
-    "USD".into()
-}
-fn default_reset_day() -> u32 {
-    1
-}
-fn default_soft_limit() -> f64 {
-    0.8
-}
-fn default_hard_limit() -> f64 {
-    1.0
-}
-
+/// **套餐费**的计费周期（[docs/02 §4] 的 `PlanFee.window`）。
+///
+/// 注意它**不是**"额度窗口"：这里说的是"这笔套餐费按什么周期摊到每一天"
+/// （`plan_fee_period_ms` / `amortize_plan_fee` 用它把月费摊成日成本）。
+/// 早先它叫 `QuotaWindow`，与已经下线的额度功能同名，容易误伤 —— 现在改名说清楚。
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum QuotaMetric {
-    #[default]
-    Unknown,
-    Tokens,
-    Requests,
-    Cost,
-}
-
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum QuotaWindow {
+pub enum PlanFeeCycle {
     Hour,
     Day,
     #[default]
     Month,
     None,
-}
-
-impl Default for QuotaConfig {
-    fn default() -> Self {
-        Self {
-            metric: QuotaMetric::Unknown,
-            limit: None,
-            currency: default_currency(),
-            window: QuotaWindow::Month,
-            reset_day: 1,
-            soft_limit: default_soft_limit(),
-            hard_limit: default_hard_limit(),
-            reserve: 0.0,
-            extra: Map::new(),
-        }
-    }
 }
 
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -977,14 +1095,32 @@ pub struct Model {
     pub display: DisplayConfig,
     #[serde(default = "default_true")]
     pub expose: bool,
-    /// 「下一次给这个模型建通道默认走哪条线」（[docs/20 §1.3]）。
+    /// **模型级总开关**（[docs/48 §5]）。
     ///
-    /// 它不是运行的生效值：流量挂的是 `ChannelConfig.lane`。这里只回答两个问题 ——
-    /// ① 界面上该模型那一行显示哪条线；② 新建通道时 `lane` 的默认值。
-    /// 真正生效的顺序仍是 [docs/04 §8.1] 的五级继承，
-    /// 所以 `None` **不是**"未配置"，而是"往下继承"（链路末端就是直连）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_lane: Option<LaneId>,
+    /// `false` = **彻底停用**：`GET /v1/models` 不再列出它，调用它直接按"模型不存在"拒绝。
+    /// 关掉它不会删除任何东西 —— 这正是这个字段存在的理由：用户想"暂时下线一个模型"
+    /// 时不必删掉它再重建（那是"频繁删除与创建"，用户明确不想这么干）。
+    ///
+    /// 与 `expose` 的分工：`expose` 管"**列不列进** `/v1/models`"，`enabled` 管
+    /// "**能不能用**" —— 停用必须两者同时生效，所以判据是 `enabled && expose`。
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// **这个模型要用哪几条线路**（[docs/28 §2]）—— 模型↔线路关系的**唯一真源**，由模型侧持有。
+    ///
+    /// 为什么不在 `ChannelConfig` 上写"我是哪个模型的"（老结构）：线路归服务商、模型只负责"用"，
+    /// 而**一条线路可以服务多个模型**（两个模型都用某条火山线路）—— 一对一的字段表达不了这个。
+    /// 放在模型侧还让删除语义自然成立：删模型不动线路；删线路把这条从各模型的清单里摘掉。
+    ///
+    /// **至少一条**（[docs/28 §2]，校验器强制）：零条线路的模型对外可调用却必然路由不到任何地方。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<ChannelId>,
+    /// **已删除的旧字段**：`default_lane`（[docs/28 §1.1]）。
+    ///
+    /// 它当年表达"这个模型的通道默认继承哪条线路 / 界面上显示哪条线"，是**第二份**回答
+    /// "这个模型走哪个代理"的真相源；代理是**线路**（[`ChannelConfig::lane`]）的属性，
+    /// 模型的线路也只由 [`Model::lines`] 决定，所以这个字段整条删掉了。
+    /// 老配置/老导出里带着它**仍然能解析** —— 未知字段一律落进这里的 `extra` 原样保留
+    /// （仓库一贯的前向兼容纪律），但它**没有**真字段、也**不会**被重新当字段写出去。
     #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -1002,8 +1138,31 @@ pub struct DisplayConfig {
     pub extra: Map<String, Value>,
 }
 
-/// 上游能力声明（[docs/17 §2]）。
+/// 一个模型**对外暴露的**信息 —— 客户端在 `/v1/models` 里能看到的那一份（[docs/46 §304]）。
 ///
+/// **为什么要有这个类型**：同一份"对外信息"有两处要显示/发送 —— 网关 `/v1/models` 的响应，
+/// 与模型页「查看模型信息」面板。两处各算一遍必然漂，所以聚合规则**只有一份**
+/// （[`ConfigDoc::public_model_info`]），网关与命令都从它取。
+///
+/// 聚合口径（[docs/17 §2] 的能力等价校验本应让各线路一致，这里仍往"不夸大"的方向兜底）：
+/// * `context_window` / `max_output_tokens`：各线路声明过的值取**最小**；一条都没声明 ⇒ `None`
+///   （**不编 0**，界面显示「未声明」）；
+/// * `vision` / `tools` / `reasoning` / `modalities`：**并集**（只要有一条线路支持就算支持 ——
+///   这是"上游没给的一个都不编"的正面表述：给了的才认）；
+/// * `owned_by`：对外暴露的服务商标识（第一条线路所属服务商的 `id`），与网关同一个口径。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicModelInfo {
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
+    pub vision: bool,
+    pub tools: bool,
+    pub reasoning: bool,
+    pub modalities: Vec<String>,
+    pub owned_by: String,
+}
+
+/// 上游能力声明（[docs/17 §2]）。///
 /// **为什么需要它**：同一个对外模型可以由多条线路服务（Ollama 一条、CommandCode 一条），
 /// 但只有两家上游暴露的能力**完全一致**时，路由到它们才是等价的；否则会出现
 /// "有时有 vision、有时报错"这种不可预期行为。所以能力要**显式声明**、并由后端强制校验。
@@ -1068,12 +1227,32 @@ impl Default for ChannelCapabilities {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ChannelConfig {
     pub id: ChannelId,
-    pub model: String,
-    pub provider: ProviderId,
-    pub credential: CredentialId,
-    /// 不填则继承 credential.lane → provider.lane → net.default_lane → direct
+    /// **过渡期的遗留字段**（[docs/28 §2]）：老配置里"这条线路属于哪个模型"。
+    ///
+    /// 关系已经翻转到 [`Model::lines`]（一条线路可以服务多个模型，一对一的字段表达不了）。
+    /// 这个字段现在的角色只有两个：
+    /// 1. **读取迁移**：`ConfigDoc` 从库里载入时把非空的 `model` 搬进对应模型的 `lines`
+    ///    （见 `ta_core::config::migrate`），迁完就把它清空；
+    /// 2. 让**老配置/老导出**仍能被解析（`#[serde(default)]`）。
+    ///
+    /// **新写入一律写空字符串**（写命令层强制），真源永远是 `Model.lines`。
+    /// S2 会把这个字段连同它的解析一起删掉。
     #[serde(default)]
-    pub lane: Option<LaneId>,
+    pub model: String,
+    /// 这条线路属于哪个**服务商**（[docs/28 §1]：线路在服务商详情页里创建/编辑）。
+    pub provider: ProviderId,
+    /// 这条线路用这个服务商的哪一份凭据。[docs/28 §1.1] 定死"一个服务商就一把密钥"，
+    /// 所以实际上只有一份；字段名保留是为了不动既有配置与内核生成。
+    pub credential: CredentialId,
+    // 这里曾有 `lane: Option<LaneId>`（"不填则继承 credential.lane → provider.lane → …"）。
+    //
+    // [docs/55]（第 322 轮）整条删除：线路分配只剩**服务商级**一处（`Provider.lane`）。
+    // 老配置里的 `channels[].lane` 会被 `extra` 吸收（`flatten`，见本结构体末尾），
+    // 解析不失败、值也不丢 —— 但它**不再参与任何解析**。
+    //
+    // 这一步是必须的，不是顺手清理：这个字段在界面上**早已没有写入口**
+    // （服务商详情页的线路行只有名字 + 启用开关），却仍在解析链的最前面。
+    // 留着它 = 老配置里一个看不见、也改不掉的覆盖项会静默压过用户当前选的线路。
     pub upstream_model: String,
     #[serde(default)]
     pub transform: Transform,
@@ -1150,19 +1329,31 @@ pub struct ChannelGroup {
     pub extra: Map<String, Value>,
 }
 
+/// 选路策略。**现在只有一种**（[docs/48]）。
+///
+/// 为什么把另外几种删掉：`docs/47` 查清"各家的额度耗尽返回什么"之后发现，
+/// **分码也分不干净**（同一家 429 既表限流也表额度耗尽、有的家把额度耗尽藏在 400 里），
+/// 所以"引擎自动判断该用哪条线路"这条路走不通 —— 改成**用户用开关手动调度 + 引擎只做平均**。
+/// 既然只剩一种语义，就不该留一个只有一种合法取值的用户可见字段。
+///
+/// **旧配置仍能读**：`alias` 收下全部历史取值，一律落到 `BalancedSticky`。
+/// 迁移只增不改（[docs/11 §4.1]），老库里的 `"selector": "cheapest"` 不能让解析失败。
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Selector {
-    Priority,
-    /// **默认**：先查粘性，未命中按 priority 并写入粘性
+    /// **唯一策略（平均粘性）**：先查会话粘性；未命中挑 token 用量最少的线路。
+    /// 见 `crate::routing::selector` 模块头。
     #[default]
-    StickyThenPriority,
-    QuotaFirst,
-    Cheapest,
-    LowestLatency,
-    WeightedRandom,
-    RoundRobin,
+    #[serde(
+        alias = "priority",
+        alias = "sticky_then_priority",
+        alias = "cheapest",
+        alias = "lowest_latency",
+        alias = "weighted_random",
+        alias = "round_robin"
+    )]
+    BalancedSticky,
 }
 
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -1207,7 +1398,6 @@ impl Default for StickyConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReleaseReason {
-    QuotaExhausted,
     HardError,
     Cooldown,
     UserPinChange,
@@ -1264,8 +1454,6 @@ pub struct PolicyMatch {
     #[serde(default)]
     pub stream: Option<bool>,
     #[serde(default)]
-    pub quota_remaining_lt: Option<f64>,
-    #[serde(default)]
     pub time_window: Option<String>,
     #[serde(default)]
     pub provider_in: Vec<ProviderId>,
@@ -1287,8 +1475,10 @@ pub struct PolicyAction {
     pub require_tag: Option<String>,
     #[serde(default)]
     pub exclude_tag: Option<String>,
-    #[serde(default)]
-    pub selector: Option<Selector>,
+    // 这里曾有 `selector: Option<Selector>`（策略级选路覆盖）。
+    // 选路策略收敛为唯一一种之后（[docs/48]），"用哪条策略"没有第二种可能，
+    // 该字段整条删除。老配置里的 `"selector": "..."` 会被 `extra` 吸收（`flatten`），
+    // 解析不失败。
     #[serde(default)]
     pub failover: Option<FailoverPolicy>,
     #[serde(default)]
@@ -1297,9 +1487,11 @@ pub struct PolicyAction {
     pub error_code: Option<u16>,
     #[serde(default)]
     pub pin_sticky: Option<ChannelId>,
-    /// 一键全切线路（最高优先级）
-    #[serde(default)]
-    pub use_lane: Option<LaneId>,
+    // 这里曾有 `use_lane: Option<LaneId>`（"一键全切线路（最高优先级）"）。
+    //
+    // [docs/55]（第 322 轮）整条删除：线路分配只剩**服务商级**一处（`Provider.lane`）。
+    // 老配置里的 `policies[].action.use_lane` 会被 `extra` 吸收（`flatten`），解析不失败。
+    // 与上面 `selector` 的删除完全同一条路子。
     #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -1328,7 +1520,6 @@ fn default_failover_on() -> Vec<FailoverTrigger> {
         FailoverTrigger::Http5xx,
         FailoverTrigger::Timeout,
         FailoverTrigger::ConnectError,
-        FailoverTrigger::QuotaExhausted,
         FailoverTrigger::ChannelTaggedOut,
     ]
 }
@@ -1342,7 +1533,6 @@ pub enum FailoverTrigger {
     Http5xx,
     Timeout,
     ConnectError,
-    QuotaExhausted,
     ChannelTaggedOut,
     CapabilityMismatch,
 }
@@ -1446,7 +1636,7 @@ pub struct PlanFee {
     pub amount: f64,
     pub currency: String,
     #[serde(default)]
-    pub window: QuotaWindow,
+    pub window: PlanFeeCycle,
     #[cfg_attr(feature = "specta", specta(skip))]
     #[serde(flatten, default)]
     pub extra: Map<String, Value>,
@@ -1640,33 +1830,32 @@ mod capability_contract_tests {
         assert_eq!(channel.capabilities, documented_default());
     }
 
-    /// `Model.default_lane`（[docs/20 §2.1]）：契约里是可选字段 —— serde 往返不许丢，
-    /// 没配时**不出现在序列化结果里**（老配置读进来也不会凭空多一个字段）。
+    /// `Model.default_lane` **已删除**（[docs/28 §1.1]：代理是线路的属性，模型不挑代理）。
+    ///
+    /// 新的不变量是：老配置/老导出里带着 `default_lane` **必须仍能解析**，值原样落进
+    /// `#[serde(flatten)] extra`（仓库一贯的前向兼容纪律，未知键不许吞）；因此它**只会
+    /// 从 `extra` 原样回来**，`Model` 上不再有真字段，新写的模型线上形态里也不会凭空多出它。
     #[test]
-    fn model_default_lane_round_trips_and_stays_absent_when_unset() {
-        let bare = Model::new("m-a");
-        assert_eq!(bare.default_lane, None, "Model::new 不指定线路");
-        let json = serde_json::to_value(&bare).expect("序列化");
-        assert!(json.get("default_lane").is_none(), "没配就不该出现在线上形态里：{json}");
-
-        // 老配置（没有这个字段）读进来是 `None`
-        let back: Model = serde_json::from_value(json).expect("读");
-        assert_eq!(back.default_lane, None);
-
-        // 显式 `null` 与缺省同义
-        let back: Model = serde_json::from_value(serde_json::json!({
+    fn removed_model_default_lane_lands_in_extra_and_is_not_a_field() {
+        let old: Model = serde_json::from_value(serde_json::json!({
             "id": "m-a",
-            "default_lane": null,
+            "lines": ["ch-a"],
+            "default_lane": "lane-jp-auto",
         }))
-        .expect("读");
-        assert_eq!(back.default_lane, None);
+        .expect("带已删除字段的老配置必须能解析");
 
-        // 配了 → 原样往返
-        let mut model = Model::new("m-a");
-        model.default_lane = Some(LaneId::new("lane-jp-auto"));
-        let value = serde_json::to_value(&model).expect("序列化");
-        assert_eq!(value.get("default_lane").and_then(|v| v.as_str()), Some("lane-jp-auto"));
-        let back: Model = serde_json::from_value(value).expect("读");
-        assert_eq!(back.default_lane, Some(LaneId::new("lane-jp-auto")));
+        assert_eq!(
+            old.extra.get("default_lane"),
+            Some(&serde_json::json!("lane-jp-auto")),
+            "已删除字段的值必须原样落进 extra，不许被吞掉"
+        );
+
+        // 来自 extra → 整体往返时从 extra 原样回去（未知键 round-trip 不丢）
+        let value = serde_json::to_value(&old).expect("序列化");
+        assert_eq!(value.get("default_lane"), Some(&serde_json::json!("lane-jp-auto")));
+
+        // 没写过它的模型：线上形态里**不许**出现这个键（它已经不是字段了）
+        let fresh = serde_json::to_value(Model::new("m-a")).expect("序列化");
+        assert!(fresh.get("default_lane").is_none(), "已删除的字段不许再出现在线上形态里：{fresh}");
     }
 }

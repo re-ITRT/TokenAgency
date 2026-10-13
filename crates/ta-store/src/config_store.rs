@@ -403,6 +403,7 @@ mod tests {
         let store = SqliteConfigStore::new(pool);
         let doc = store.load().await.unwrap();
         assert!(doc.providers.is_empty());
-        assert_eq!(doc.version, 1);
+        // 版本号只有一个来源（[docs/28 §2] 起是 v2）：别在这里写死字面量
+        assert_eq!(doc.version, ta_core::config::migrate::CURRENT_CONFIG_VERSION);
     }
 }

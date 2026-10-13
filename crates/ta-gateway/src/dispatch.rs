@@ -92,6 +92,58 @@ impl LanePorts for ta_kernel::PortMap {
     }
 }
 
+/// **可热更新的** lane → 端口表（[docs/59]，第 326 轮）。
+///
+/// ## 为什么必须有它（用户报的"网络代理只有直连可用"）
+///
+/// 端口是**运行期**才产生的：每写一次配置（改服务商、建「自动」线路、加订阅节点…）都会
+/// `allocate_ports` 出一份**新的** `PortMap`，再 `GeneratedConfigSource.set_ports` 拿它渲染内核 YAML。
+/// 但网关这边的 `KernelDialer` 拿到的是 `boot` 那一刻的 `Arc<PortMap>`
+/// —— **一个冻结的副本，全仓没有第二条路径回写它**。
+///
+/// 后果：boot 之后新建的 lane（「自动」/ 订阅节点）在拨号器里**查不到端口** →
+/// `TaError::LaneUnavailable`（TA-3002）；而 `direct` 走 `is_direct_lane` 分支**绕过端口查询**，
+/// 于是真机表现就是「**只有直连能出网**」。
+///
+/// 这个类型把"同一个事实的三份副本"收敛成一份：内核 YAML 与网关拨号器读**同一个**对象，
+/// 由 `replace()` 就地刷新。
+pub struct SharedPorts {
+    map: std::sync::RwLock<ta_kernel::PortMap>,
+}
+
+impl SharedPorts {
+    pub fn new(map: ta_kernel::PortMap) -> Arc<Self> {
+        Arc::new(Self { map: std::sync::RwLock::new(map) })
+    }
+
+    /// 用新分配的表替换。锁中毒不该让网关瘫痪（与 `clients` 同一处置）。
+    pub fn replace(&self, map: ta_kernel::PortMap) {
+        let mut guard = self.map.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // 只记**变化**的那些：端口漂移是上一轮的真 bug（`ports.rs` 每次都重分配），
+        // 留下日志才看得见它有没有再发生。
+        for (lane, port) in map.iter() {
+            match guard.get(lane) {
+                Some(old) if old == *port => {}
+                // 字段名只用白名单里的（`lane_id` / `port`），原值写进消息正文 ——
+                // `log_field_guard` 会把白名单外的字段名当场拦下。
+                Some(old) => tracing::warn!(
+                    lane_id = %lane, port = *port,
+                    "lane 端口变了（配置写入时重新分配，原端口 {old}）"
+                ),
+                None => tracing::debug!(lane_id = %lane, port = *port, "lane 端口新增"),
+            }
+        }
+        *guard = map;
+    }
+}
+
+impl LanePorts for SharedPorts {
+    fn port_of(&self, lane: &LaneId) -> Option<u16> {
+        let guard = self.map.read().unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.get(lane)
+    }
+}
+
 /// 测试 / 未接入内核时用：显式给出 lane → 端口。
 #[derive(Debug, Clone, Default)]
 pub struct StaticLanePorts(pub std::collections::BTreeMap<LaneId, u16>);
@@ -133,7 +185,12 @@ impl Default for DialerOptions {
 pub struct KernelDialer {
     ports: Arc<dyn LanePorts>,
     options: DialerOptions,
-    clients: Mutex<HashMap<LaneId, reqwest::Client>>,
+    /// `lane → (建成时用的端口, client)`。
+    ///
+    /// [docs/59] 缓存值里**记下端口**：端口表会被热更新（`SharedPorts::replace`），
+    /// 而 `reqwest::Client` 的代理是**建死**在里面的 —— 只按 lane 缓存的话，
+    /// 端口变了还会拿旧 client 去连旧端口。带上端口，不一致就自动重建。
+    clients: Mutex<HashMap<LaneId, (Option<u16>, reqwest::Client)>>,
 }
 
 impl KernelDialer {
@@ -180,6 +237,9 @@ impl KernelDialer {
     }
 
     /// 取（或建）该 lane 的 client。`direct` lane 不需要端口。
+    ///
+    /// [docs/59] **每次都重新查端口**，并核对该 client 是不是用这个端口建的 ——
+    /// 端口表可热更新，缓存不能把旧端口带下去。
     fn client_for(&self, lane: &LaneId) -> Result<reqwest::Client> {
         let port = if is_direct_lane(lane) { None } else { Some(self.require_port(lane)?) };
         let mut guard = match self.clients.lock() {
@@ -187,11 +247,13 @@ impl KernelDialer {
             // 锁中毒不该让网关瘫痪：取回内部值继续用
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(client) = guard.get(lane) {
-            return Ok(client.clone());
+        if let Some((cached_port, client)) = guard.get(lane) {
+            if *cached_port == port {
+                return Ok(client.clone());
+            }
         }
         let client = self.build_client(port)?;
-        guard.insert(lane.clone(), client.clone());
+        guard.insert(lane.clone(), (port, client.clone()));
         Ok(client)
     }
 
@@ -202,7 +264,8 @@ impl KernelDialer {
     }
 }
 
-/// `direct` 是保留的 lane id（`docs/02`：五级线路解析的兜底值就是 `direct`）。
+/// `direct` 是保留的 lane id（`docs/02`：线路解析的兜底值就是 `direct`。
+/// [docs/55] 起解析只剩 `provider.lane ?? net.default_lane ?? direct`，但**兜底是 `direct` 没变**）。
 pub fn is_direct_lane(lane: &LaneId) -> bool {
     lane.as_str().eq_ignore_ascii_case("direct")
 }

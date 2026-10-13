@@ -464,11 +464,11 @@ channel_groups:
         r.store(StickyKey::from("k2"), g1.clone(), ChannelId::from("ch-b"), 60_000);
 
         // release 按 key 跨组清理
-        r.release(&StickyKey::from("k1"), ReleaseReason::QuotaExhausted);
+        r.release(&StickyKey::from("k1"), ReleaseReason::HardError);
         assert!(r.lookup(&StickyKey::from("k1"), &g1).is_none());
         assert!(r.lookup(&StickyKey::from("k1"), &g2).is_none());
         assert!(r.lookup(&StickyKey::from("k2"), &g1).is_some());
-        assert_eq!(r.releases(), vec![(StickyKey::from("k1"), ReleaseReason::QuotaExhausted)]);
+        assert_eq!(r.releases(), vec![(StickyKey::from("k1"), ReleaseReason::HardError)]);
 
         // release_group 清一个组
         r.release_group(&g1, ReleaseReason::UserPinChange);
@@ -476,7 +476,7 @@ channel_groups:
         assert_eq!(
             r.releases(),
             vec![
-                (StickyKey::from("k1"), ReleaseReason::QuotaExhausted),
+                (StickyKey::from("k1"), ReleaseReason::HardError),
                 (StickyKey::from("k2"), ReleaseReason::UserPinChange)
             ]
         );

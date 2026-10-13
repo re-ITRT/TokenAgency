@@ -71,9 +71,8 @@ pub fn run() {
         return;
     }
 
-    // 12 个插件统一注册（顺序有理由，见 plugins.rs）
+    // 7 个插件统一注册（顺序有理由，见 plugins.rs；只注册不使用的插件一律不留，见 [docs/50]）
     let builder = plugins::register(tauri::Builder::default());
-
     // T1：命令注册。同一个 builder 既生成 Tauri handler，也用于导出 TS 绑定，
     // 所以"命令清单"只有一处（漏登记会在绑定文件里露馅）。
     let specta = commands::specta_builder();
@@ -82,10 +81,42 @@ pub fn run() {
         .invoke_handler(specta.invoke_handler())
         .setup(|app| {
             let handle = app.handle().clone();
+            // 0) 主窗口：**在代码里**建（`tauri.conf.json` 里那份是 `create: false`）。
+            //
+            //    [真机 E2E 的硬前提] 官方 E2E 工具链（tauri-driver + msedgedriver）靠
+            //    **`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<port>`**
+            //    让 WebView2 开一个 DevTools 端点；可 wry 0.55 只要设置了
+            //    `AdditionalBrowserArguments`，就在进程内**覆盖**掉那个环境变量
+            //    （`wry-0.55.1/src/webview2/mod.rs`：`options.set_additional_browser_arguments(...)`），
+            //    于是端点永远不存在，WebDriver 只会报
+            //    `DevToolsActivePort file doesn't exist`（实测：release 与 debug 两个 exe 都一样）。
+            //
+            //    所以这里把该环境变量**并进**窗口参数：设了才并，没设就与原来一字不差 ——
+            //    生产环境不会设它，因此这是一个**只在测试里生效**的透传缝，不是产品开关。
+            // [docs/31 §28] **窗口建不出来要吵，不许静默退出**。
+    //
+    // 真机 E2E 排查花了 15 轮的根因之一就是这里：窗口创建失败会一路 `?` 到 `setup` 以外，
+    // 进程**安静地退出**，日志停在"网关已装配"那一行 —— 现场只剩下"应用启动后自己没了"。
+    // 这里把它降级成**明确的错误日志 + 带原因的失败**（仍然不启动，但不留谜）。
+    if let Err(e) = create_main_window(app) {
+        tracing::error!(
+            error = %e,
+            "主窗口创建失败：界面起不来。常见原因：WebView2 运行时缺失 / 用户数据目录不可写",
+        );
+        return Err(e.into());
+    }
             // 1) 生命周期：解析启动参数 / 托盘模式隐藏窗口 / 注册退出守卫与通知中心
             lifecycle::on_setup(&handle)?;
             // 2) 托盘：先用占位数据源亮起来（换真数据是 T2 的独立接缝）
-            tray::init(&handle)?;
+            // [docs/31 §29] **托盘装不上不许把整个应用拖死**。
+    //
+    // 真机实测（受限环境）：`tray::init` 返回 `托盘图标 error: 拒绝访问。(os error 5)`，
+    // 原来这个 `?` 让 `setup` 失败 → Tauri panic → 进程退出（exit code 0xC0000409），
+    // 表现为"应用启动后无声消失、界面永远白屏"。**托盘只是便利功能**，
+    // 界面与网关不依赖它：这里降级成 WARN，如实记原因，然后继续启动。
+    if let Err(e) = tray::init(&handle) {
+        tracing::warn!(error = %e, "托盘不可用（装不上）：应用继续启动，界面与网关不受影响");
+    }
             // 3) T1：打开库（含迁移）并把 AppState 交给命令层。
             //    setup 是同步的、开库是异步的 → 用 Tauri 的 runtime 跑完再 manage，
             //    这样命令被调用时 `State<AppState>` 一定已就绪（否则前端只会看到
@@ -93,6 +124,28 @@ pub fn run() {
             let db_path = state::AppState::default_db_path()?;
             let app_state = tauri::async_runtime::block_on(state::AppState::bootstrap(&db_path))?;
             tracing::info!(db = %db_path.display(), "数据库就绪");
+
+            // 3.5) [docs/59] **把配置里的 `request_log.*` 同步进 trace store**。
+            //
+            // 必须在这里（服务对外之前）：配置说 `mode: meta` 而 store 的
+            // `store_setting.trace.mode` 还躺着一条古老的 `"off"` 时，
+            // `TraceStore::write` 会**直接 return** —— 表现就是"日志一条都没有"，
+            // 而用户在界面上找不到原因（第 330 轮的真机现象）。
+            //
+            // 同步失败**不让启动失败**：日志记不下来是功能缺失，起不来是产品不可用。
+            // 但必须喊出来（静默降级正是这一处原本的问题）。
+            if let Err(err) = tauri::async_runtime::block_on(
+                commands::log::sync_request_log_settings(&app_state, &app_state.doc()),
+            ) {
+                tracing::warn!(
+                    code = %err.code,
+                    // 人话嵌进消息里：`message` **不在** [docs/14 §5] 的白名单里，
+                    // 而它也确实不该进契约（给人看的，不是给筛子用的）。
+                    // `log_field_guard` 会当场拦下白名单外的字段名 —— 它拦得对。
+                    "同步 request_log 设置到 trace store 失败：日志可能不落库（{}）",
+                    err.message
+                );
+            }
 
             // 4) 内核装配：按配置造控制器。
             //    * 没配 `net.kernel.path` → None（用户可能只想用直连通道）
@@ -158,7 +211,10 @@ pub fn run() {
             app.manage(holder.clone());
 
             // 托盘换成"真实就绪驱动"的数据源：图标只在编排真就绪时变绿
-            tray::set_source(&handle, Arc::new(boot::PhaseTraySource::new(holder.clone())))?;
+            // 同理：换数据源失败也只是"托盘状态不更新"，不该让启动失败（[docs/31 §29]）
+    if let Err(e) = tray::set_source(&handle, Arc::new(boot::PhaseTraySource::new(holder.clone()))) {
+        tracing::warn!(error = %e, "托盘数据源切换失败：托盘状态可能不刷新");
+    }
 
             let sink: Arc<dyn boot::PhaseSink> =
                 Arc::new(boot::TauriPhaseSink::new(handle.clone(), holder.clone()));
@@ -178,6 +234,80 @@ pub fn run() {
                     delay_s = outcome.delayed_s,
                     "启动编排结束：{detail}"
                 );
+            });
+
+            // [docs/29 §2.3] 订阅**自动更新**：算到期（第一步）→ 真刷新（第二步）。
+            //
+            // 第二步**不重写刷新链路**，只是调用它（`auto_refresh_subscription`，`force = false`）：
+            // 下载 / 校验 / 坏更新拦下并保留上一版 / 版本裁剪 / 记流量，全都还是那一套 ——
+            // 复用是这里唯一正确的做法，"顺手改一点"就会和手动刷新分叉。
+            //
+            // 60 秒是**轮询粒度**，不是刷新周期：周期由每份订阅自己的 `interval_s` 决定
+            // （默认 6 小时），这里只是"多久来看一眼有没有到期的"。
+            let sub_ticks = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                // 首轮**无论有没有到期的都写一行**：否则"日志里没有这行"既可能是"没有到期的"、
+                // 也可能是"这个任务根本没起来"，两者在真机上完全分不清（诊断缺口）。
+                let mut first = true;
+                loop {
+                    // **先算再睡**：新加/刚改过周期的订阅不用等满一个轮询粒度才被发现；
+                    // 同时首轮立刻发生，"这个任务活着"在日志里马上看得见。
+                    let state = sub_ticks.state::<state::AppState>();
+                    match commands::net::due_subscription_ids(&state).await {
+                        Ok(ids) if !ids.is_empty() => {
+                            // 第二步：**真的去刷**（与手动刷新同一条链路，只是 `force = false`）。
+                            //
+                            // 这一步现在**诚实**的前提已经满足：到点判断与内层 `refresh_one`
+                            // 用的是**同一套钟**（版本元数据的 `fetched_at_ms`），
+                            // 所以 `ok: true` 真的意味着"拉到了并采纳了"，不再出现
+                            // "内层跳过却报成功"（那一版已撤回，见 [docs/29 §2.3]）。
+                            //
+                            // 一条失败不影响其余条：逐条记成败，最后一并说出来 ——
+                            // 绝不在这里写"全部成功"，那会在部分失败时撒谎。
+                            let mut ok = 0usize;
+                            let mut failed = 0usize;
+                            let mut autos = 0usize;
+                            for id in &ids {
+                                match commands::net::auto_refresh_subscription(&state, id).await {
+                                    Ok(r) if r.ok => {
+                                        ok += 1;
+                                        // [docs/29 §2.2] **C 期触发点①：订阅更新后重算「自动」出口**
+                                        // （`manual = false` → 粘性优先：上次那条还在就沿用）。
+                                        // 订阅换了一批节点、上次那条 IP 没了 → 这里才会重挑。
+                                        autos += commands::net::reapply_auto_after_refresh(&state, id).await;
+                                    }
+                                    Ok(_) => failed += 1,
+                                    Err(_) => failed += 1,
+                                }
+                            }
+                            tracing::info!(
+                                job = "subscription_sync",
+                                "订阅自动刷新：到期 {} 条，成功 {} 条，失败 {} 条，「自动」出口重算 {} 家",
+                                ids.len(),
+                                ok,
+                                failed,
+                                autos
+                            );
+                        }
+                        Ok(_) => {
+                            if first {
+                                tracing::info!(
+                                    job = "subscription_sync",
+                                    "订阅自动刷新：任务已在跑（本轮没有到期的）"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                code = %e.code,
+                                error = %e.message,
+                                "订阅自动刷新：算到期订阅失败（本轮跳过）"
+                            );
+                        }
+                    }
+                    first = false;
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
             });
 
             tracing::info!(version = env!("CARGO_PKG_VERSION"), "TokenAgency 启动");
@@ -236,6 +366,42 @@ fn init_tracing() {
             eprintln!("⚠ 日志目录不可用：日志只输出到 stdout，用户将拿不到日志文件（C1 降级）");
         }
     }
+}
+
+/// 建主窗口（`tauri.conf.json` 里那份是 `create: false`，在这里建）。
+///
+/// **为什么不在配置里让 Tauri 建**：要把 WebView2 的远程调试参数透传给 wry。
+///
+/// * 官方真机 E2E 工具链（`tauri-driver` + `msedgedriver`）启动 app 时会设
+///   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=<port>`；
+/// * 可是 wry 0.55 只要拿到 `AdditionalBrowserArguments` 就在进程内把它设进
+///   `CoreWebView2EnvironmentOptions`，**覆盖掉**那个环境变量
+///   （`wry-0.55.1/src/webview2/mod.rs` 的 `options.set_additional_browser_arguments(...)`）；
+/// * 结果：WebView2 永远不开 DevTools 端点，WebDriver 只会报
+///   `DevToolsSession not created: DevToolsActivePort file doesn't exist`
+///   —— 实测 release 与 debug 两个 exe 都一样，会话建不起来（真机 E2E 卡在这一步）。
+///
+/// 所以：**环境变量有值就并进窗口参数**（`<配置里的值> <环境变量的值>`），没值就一字不改。
+/// 生产启动不会设这个变量，所以这是**只在测试里生效的透传缝**，不是产品开关 ——
+/// 它的存在只是把 WebView2 自己的官方约定还给 WebView2。
+fn create_main_window(app: &tauri::App) -> tauri::Result<()> {
+    let Some(cfg) =
+        app.config().app.windows.iter().find(|w| w.label == crate::tray::MAIN_WINDOW).cloned()
+    else {
+        // 配置里没有 main 窗口就没得建：如实报错，不静默继续（那会让"界面没了"变成谜）
+        return Err(tauri::Error::WindowNotFound);
+    };
+    let mut cfg = cfg;
+    let extra = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+    let extra = extra.trim();
+    if !extra.is_empty() {
+        let base = cfg.additional_browser_args.clone().unwrap_or_default();
+        cfg.additional_browser_args =
+            Some(if base.is_empty() { extra.to_string() } else { format!("{base} {extra}") });
+        tracing::info!("主窗口：已把 WebView2 附加参数并进窗口参数（真机 E2E 的远程调试口）");
+    }
+    tauri::WebviewWindowBuilder::from_config(app.handle(), &cfg)?.build()?;
+    Ok(())
 }
 
 #[cfg(test)]

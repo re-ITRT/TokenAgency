@@ -10,18 +10,22 @@
  * 只看 tsc 是看不出来的。
  */
 
-import { ThemeProvider } from "@mui/material/styles";
+import { createTheme, ThemeProvider, type Theme } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import App from "@/App";
-import { NumberCard, QuotaBar, StatusDot } from "@/shared/components";
+import { NumberCard, StatusDot } from "@/shared/components";
 import { registerBaselineMocks } from "@/shared/api/mock";
 import { i18n } from "@/shared/i18n";
-import { buildTheme, radius, SPACING_SCALE, tokens, typography, type ThemeMode } from "@/theme";
+import { toMs } from "@/shared/motion";
+import { buildTheme, motion, radius, SPACING_SCALE, tokens, typography, type ThemeMode } from "@/theme";
 
 const MODES: ThemeMode[] = ["dark", "light"];
+
+/** [15 §7] 的时长预算：**不超过 250ms**（唯一例外是循环脉动，理由见 `theme.ts`）。 */
+const MOTION_BUDGET_MS = 250;
 
 /** MUI `styleOverrides` 是联合类型，测试里只读几个键，收窄一次即可。 */
 type OverrideBag = Record<string, Record<string, unknown>>;
@@ -114,6 +118,58 @@ describe("[15] 设计令牌：值与文档一致，且能被 MUI 正确消费", 
     expect(typography.fontMono).toContain("ui-monospace");
   });
 
+  it("动效令牌：120/180 + 缓动曲线只有一条（[15 §7]）", () => {
+    expect(motion.quick).toBe("120ms");
+    expect(motion.enter).toBe("180ms");
+    expect(motion.easing).toBe("cubic-bezier(.2,0,0,1)");
+
+    // 缓动不许是关键字：只有 `cubic-bezier` 这种可精确表达的曲线才允许。
+    expect(motion.easing).toContain("cubic-bezier");
+  });
+
+  it("动效预算：每个时长都 ≤250ms（机械检查 + 自证有牙）", () => {
+    const overBudget = (bag: Record<string, string>): string[] =>
+      Object.entries(bag)
+        .flatMap(([name, token]) => {
+          let ms: number;
+          try {
+            ms = toMs(token);
+          } catch {
+            return []; // 不是时长令牌（缓动曲线）
+          }
+          return ms > MOTION_BUDGET_MS ? [`${name}: ${token}`] : [];
+        });
+
+    expect(overBudget(motion)).toEqual([]);
+
+    // 自证有牙：把预算违规的令牌喂进去必须被识出（否则这条检查只是"通过"而不是"守住"）
+    expect(overBudget({ ...motion, quick: "300ms" })).toEqual(["quick: 300ms"]);
+  });
+
+  it("MUI 的 theme.transitions 也被收进令牌（默认的 300ms / easeInOut 是第二个时长来源）", () => {
+    const allowed = new Set([toMs(motion.quick), toMs(motion.enter)]);
+    const durationFindings = (theme: Theme): string[] =>
+      Object.entries(theme.transitions.duration)
+        .filter(([, value]) => !allowed.has(value) || value > MOTION_BUDGET_MS)
+        .map(([name, value]) => `${name}: ${value}ms`);
+    const easingFindings = (theme: Theme): string[] =>
+      Object.entries(theme.transitions.easing)
+        .filter(([, value]) => value !== motion.easing)
+        .map(([name, value]) => `${name}: ${value}`);
+
+    for (const mode of MODES) {
+      const theme = buildTheme(mode);
+      expect(durationFindings(theme), "所有档位都必须来自 motion 令牌").toEqual([]);
+      expect(easingFindings(theme), "缓动只有 motion.easing 一条").toEqual([]);
+    }
+
+    // 自证有牙：MUI 的默认主题**必须**被判违规 —— 它正是我们要防的那份"第二个来源"
+    // （`standard: 300ms` / `complex: 375ms` 超预算，`easeInOut` 不是我们的曲线）。
+    const muiDefault = createTheme({});
+    expect(durationFindings(muiDefault).length).toBeGreaterThan(0);
+    expect(easingFindings(muiDefault).length).toBeGreaterThan(0);
+  });
+
   it("buildTheme 把令牌映射进 MUI（背景台阶 / 分隔线 / 4px 间距 / 禁止 700）", () => {
     for (const mode of MODES) {
       const theme = buildTheme(mode);
@@ -150,13 +206,11 @@ describe("[15] 设计令牌：值与文档一致，且能被 MUI 正确消费", 
     }
   });
 
-  it("核心组件在深/浅两态都能渲染，且「未设上限」是文字不是 emoji", () => {
+  it("核心组件在深/浅两态都能渲染", () => {
     for (const mode of MODES) {
       const view = render(
         <ThemeProvider theme={buildTheme(mode)}>
           <StatusDot status="ok" label="正常" />
-          <QuotaBar usedPct={null} label="字节方舟" />
-          <QuotaBar usedPct={0.95} label="command code" detail="418 / 500万" />
           <NumberCard
             label="今日请求"
             value={1284}
@@ -168,8 +222,6 @@ describe("[15] 设计令牌：值与文档一致，且能被 MUI 正确消费", 
       );
 
       expect(screen.getAllByText("正常").length).toBeGreaterThan(0);
-      // 未设上限：文字 + 警告圆点（[15 §2.1] 的替代手段）
-      expect(screen.getAllByText("未设上限").length).toBeGreaterThan(0);
       expect(screen.getByText("1,284")).toBeTruthy();
       // 涨跌用数字符号表达方向（[15 §2.1]），不是箭头/方块字符
       expect(screen.getByText("+3.2%")).toBeTruthy();

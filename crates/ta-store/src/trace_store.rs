@@ -163,6 +163,13 @@ pub struct TraceRow {
 pub struct TraceDetail {
     pub row: TraceRow,
     pub attempts: Vec<TraceAttempt>,
+    /// [docs/32] L6：这次请求的**按 kind token 明细**（来自用量表，`usage_request.token_kinds`）。
+    ///
+    /// 由**命令层**填（store 不该知道用量表）：日志的保留期可能比用量短，
+    /// 所以这里是 `Option` —— `None` 表示"用量侧没有这笔账"，界面据此显示「—」，
+    /// **绝不**用 `row.tokens` 凑一张分项表。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_kinds: Option<ta_core::types::TokenUsage>,
     /// 见 [`TraceRecord::header_diff`]：**有已知形状**，所以用具体类型而不是 `any`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub header_diff: Option<HeaderDiff>,
@@ -225,6 +232,26 @@ pub struct LogPage {
     pub has_more: bool,
 }
 
+/// [docs/32] **L1 聚合统计**：总数 / 成功 / 失败 / 平均总耗时。
+///
+/// 为什么单独一个类型而不是塞进 `LogPage`：日志页要显示的四张卡（总请求、成功率、失败、平均延迟）
+/// 与"当前这一页的行"是**两次不同的查询** —— 混在一起会让翻页时统计跟着抖。
+///
+/// **搜索模式下不给统计**（见 `TraceStore::stats`）：正文是压缩体、SQL 数不准，
+/// 与其给一个偏小的数字，不如如实拒绝。
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LogStats {
+    pub total: u64,
+    /// `outcome = 'ok'`
+    pub ok: u64,
+    /// `outcome <> 'ok'`（含 `retried` 与 `failed`）
+    pub failed: u64,
+    /// 平均总耗时（毫秒）。**一行都没有时是 `None`** —— 不编 0。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avg_total_ms: Option<u32>,
+}
+
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorageStats {
@@ -271,6 +298,12 @@ pub trait TraceStore: Send + Sync {
     /// 写一条日志。`LogMode::Off` 时直接返回；`Meta` 只写元数据；`Shape` 只写结构；`Full` 写脱敏后的头 + 压缩体。
     async fn write(&self, t: TraceRecord) -> Result<()>;
     async fn query(&self, q: &LogQuery) -> Result<LogPage>;
+
+    /// [docs/32] L1：按**同一套过滤**聚合出总数 / 成功 / 失败 / 平均耗时。
+    ///
+    /// `q.search` 非空时**如实拒绝**：正文是压缩 BLOB，SQL 层数不准；
+    /// 返回一个偏小的数字比报错更糟（界面会拿它当"真的只有这么多"）。
+    async fn stats(&self, q: &LogQuery) -> Result<LogStats>;
     async fn get(&self, request_id: &str) -> Result<Option<TraceDetail>>;
     async fn set_mode(&self, mode: LogMode) -> Result<()>;
     async fn set_retention(&self, r: Retention) -> Result<()>;
@@ -482,6 +515,47 @@ impl TraceStore for SqliteTraceStore {
         Ok(())
     }
 
+    async fn stats(&self, q: &LogQuery) -> Result<LogStats> {
+        if q.search.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+            return Err(ta_core::error::TaError::MalformedRequest(
+                "搜索模式下不提供聚合统计：正文是压缩体，SQL 数不准".to_string(),
+            ));
+        }
+        let (where_sql, params) = trace_filter_sql(q, false);
+        let sql = format!(
+            // 口径**必须与 `map_trace_row` 一模一样**：表里**没有** `outcome` 列，
+            // 它是读时按 `status` / `error` / 尝试次数推导的（"ok" 还要求没有重试）。
+            // 这里用同一条规则在 SQL 里数，避免出现"列表说成功、统计说失败"。
+            "SELECT COUNT(*) AS total,
+                    SUM(CASE WHEN {ok_cond} THEN 1 ELSE 0 END) AS ok,
+                    SUM(CASE WHEN NOT ({ok_cond}) THEN 1 ELSE 0 END) AS failed,
+                    AVG(t.total_ms) AS avg_ms
+             FROM trace t WHERE 1=1 {where_sql}",
+            ok_cond = OK_CONDITION
+        );
+        let mut query = sqlx::query(&sql);
+        for p in &params {
+            query = query.bind(p.clone());
+        }
+        let row = query.fetch_one(&self.pool).await.store_err()?;
+        let total: i64 = row.try_get("total").unwrap_or(0);
+        let ok: i64 = row.try_get("ok").unwrap_or(0);
+        let failed: i64 = row.try_get("failed").unwrap_or(0);
+        let avg_ms: Option<f64> = row.try_get("avg_ms").ok();
+        Ok(LogStats {
+            total: total.max(0) as u64,
+            ok: ok.max(0) as u64,
+            failed: failed.max(0) as u64,
+            // **没有行就没有平均**：不依赖 `AVG` 的 NULL 语义（不同 sqlite 版本/driver
+            // 解出来可能是 `Some(0.0)`），先看 total —— 这条是"不编 0"的硬保证。
+            avg_total_ms: if total <= 0 {
+                None
+            } else {
+                avg_ms.filter(|v| v.is_finite() && *v >= 0.0).map(|v| v.round() as u32)
+            },
+        })
+    }
+
     async fn query(&self, q: &LogQuery) -> Result<LogPage> {
         let limit = q.limit.unwrap_or(100).clamp(1, 1000);
         // 游标只影响"取哪一页"，绝不影响 total（否则翻页时 total 会越来越小）
@@ -600,6 +674,8 @@ impl TraceStore for SqliteTraceStore {
         Ok(Some(TraceDetail {
             row: map_trace_row(&r),
             attempts,
+            // store 层不查用量表：由命令层补上（见字段注释）
+            token_kinds: None,
             header_diff,
             body_shape,
             request_headers: blob_to_value("req_headers")?,
@@ -748,6 +824,13 @@ impl TraceStore for SqliteTraceStore {
 }
 
 // ================================================================ SQL 片段 / 映射
+
+/// 与 `map_trace_row` **同一口径**的"这次算成功"：2xx/3xx、没有 `error`、且**没有重试**。
+///
+/// 写成一处常量，是为了"统计卡片"和"列表里的徽章"永远说同一件事
+/// （[docs/32] 的硬要求：不许出现列表说成功、统计说失败）。
+const OK_CONDITION: &str = "(t.status >= 200 AND t.status < 400 AND t.error IS NULL \
+     AND json_array_length(COALESCE(t.attempts, '[]')) <= 1)";
 
 const COLS: &str = "t.request_id, t.ts, t.client, t.model, t.protocol_in, t.protocol_out, \
      t.stream, t.policy_id, t.group_id, t.chosen_channel, t.attempts, t.tokens, t.status, \
@@ -1237,6 +1320,64 @@ pub fn shape_summary(shape: &serde_json::Value) -> String {
 ///
 /// 注意 body 是编译后压缩的 BLOB，这里直接对原始字节做匹配 —— 匹配不到才说明
 /// **连压缩前的明文都没有入库的机会**（压缩后仍命中说明脱敏漏了）。
+/// [docs/32] L1 聚合统计的**真库测试**：用真的 SQLite，插入三条不同结果的记录，看四个数对不对。
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+    use ta_core::types::RequestId;
+
+    /// **每个测试一个内存库**：用临时目录 + 进程号命名会让同一进程里的三个测试
+    /// 互相看到对方插入的行（这条我第一版就踩了，被 `empty_result_is_none_not_zero` 抓住）。
+    async fn store() -> SqliteTraceStore {
+        let pool = crate::open_memory().await.expect("开内存库");
+        SqliteTraceStore::new(pool)
+    }
+
+    /// `outcome` **不是** `TraceRecord` 的字段：它由 `status` / `error` / 尝试次数**推导**后落列
+    /// （见 `write` 里那三行）。所以这里按同一条规则造记录 —— 测试与生产用同一个口径。
+    fn rec(id: &str, ok: bool, total_ms: u32, ts: i64) -> TraceRecord {
+        let mut r = TraceRecord::new(RequestId::new(id), ts, "m");
+        r.status = if ok { 200 } else { 502 };
+        r.total_ms = total_ms;
+        r
+    }
+
+    #[tokio::test]
+    async fn counts_ok_failed_and_average() {
+        let s = store().await;
+        s.write(rec("a", true, 100, 1_000)).await.unwrap();
+        s.write(rec("b", true, 300, 2_000)).await.unwrap();
+        s.write(rec("c", false, 200, 3_000)).await.unwrap();
+
+        let all = s.stats(&LogQuery::default()).await.unwrap();
+        assert_eq!((all.total, all.ok, all.failed), (3, 2, 1));
+        // (100+300+200)/3 = 200
+        assert_eq!(all.avg_total_ms, Some(200));
+
+        // 时间窗过滤也走同一套 WHERE：只算第一条
+        let window = LogQuery { from_ms: Some(0), to_ms: Some(1_500), ..Default::default() };
+        let one = s.stats(&window).await.unwrap();
+        assert_eq!((one.total, one.ok, one.failed, one.avg_total_ms), (1, 1, 0, Some(100)));
+    }
+
+    #[tokio::test]
+    async fn empty_result_is_none_not_zero() {
+        let s = store().await;
+        let none = s.stats(&LogQuery::default()).await.unwrap();
+        assert_eq!((none.total, none.ok, none.failed), (0, 0, 0));
+        // **没有行 → 平均延迟是 `None`**：界面据此显示"—"，不是编一个 0ms
+        assert_eq!(none.avg_total_ms, None);
+    }
+
+    #[tokio::test]
+    async fn search_mode_refuses_instead_of_lying() {
+        let s = store().await;
+        s.write(rec("a", true, 100, 1_000)).await.unwrap();
+        let q = LogQuery { search: Some("a".into()), ..Default::default() };
+        // 正文在压缩体里，SQL 数不准 → **如实拒绝**，不给一个偏小的数字
+        assert!(s.stats(&q).await.is_err());
+    }
+}
 pub async fn count_plaintext_secret_rows(pool: &SqlitePool, needle: &str) -> Result<i64> {
     let n: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM trace WHERE instr(CAST(body AS TEXT), ?) > 0

@@ -31,17 +31,21 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ProvidersPage, { ProvidersBody, type ProvidersBodyProps } from "@/pages/providers";
+import { resetWizardSession } from "@/pages/providers/providerWizardModel";
 import ProviderDetailPage, {
   ProviderDetailBody,
+  linesOfProvider,
+  rawPreview,
+  readLine,
   type ProviderDetailBodyProps,
+  type ProviderLinesProps,
 } from "@/pages/providers/detail";
 import { mountOf, readCredential, readProvider } from "@/pages/providers/model";
-import { resetWizardSession } from "@/pages/providers/providerWizardModel";
 import { knownPages, resolvePage } from "@/app/pageRegistry";
 import { routeByKey } from "@/app/routes";
 import { TokenAgencyError, qk, registerMock } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
-import { i18n } from "@/shared/i18n";
+import { i18n, type I18nKey } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
 
 beforeAll(async () => {
@@ -49,9 +53,40 @@ beforeAll(async () => {
   registerBaselineMocks();
 });
 
+/**
+ * **默认 5s 对这个文件结构性不够**（不是页面缺陷）——与 `routes.test.tsx` 同一条理由。
+ *
+ * 这一份里有多条用例要**跑两轮完整渲染**（例如「附加头：真能加行 / 改值 / 删行」先加行保存、
+ * 再重挂一次详情页删行保存），单条独立跑就要 ~1.7s；`npm test` 会**并行**跑 34 个文件，
+ * 机器一忙就顶穿 5s。
+ *
+ * 这不是猜的：第 323 轮 `build.ps1` 里它**真的**超时红过一次，而
+ * `npx vitest run src/app/providers.test.tsx` 单独跑 69/69 全过。
+ * 给它显式预算，**判据一条都没放宽** —— 只是不再让"机器忙"伪装成"测试挂"。
+ *
+ * 必须在**模块作用域**设置：放进 `beforeAll` 太晚，收集测试时就已经定好超时了。
+ */
+vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
+
 afterEach(() => {
   cleanup();
 });
+
+/**
+ * 文案值 → 文本：**问 i18n 要同一份资源**，不在断言里写死中文。
+ *
+ * 为什么（与 `providerWizard.test.tsx` 的 `copy` 同一条理由）：本轮的文案改动走
+ * `.ta-tmp/ui-providers/i18n.json` 映射文件（i18n 由主管独占），改文案不许让测试变红。
+ * 断言"这句话不再内联 / 出现在 `?` 里"的**意图**不变，变的只是措辞的取值来源。
+ */
+function copy(key: string): string {
+  return i18n.t(key as I18nKey);
+}
+
+/** 带插值的键（挂载数那种 `凭据 {{credentials}} · 通道 {{channels}}`）。 */
+function copyVars(key: string, vars: Record<string, unknown>): string {
+  return i18n.t(key as I18nKey, vars);
+}
 
 // ================================================================ 夹具（两种后端形状各一份）
 
@@ -99,24 +134,23 @@ function rustCredential(overrides: Record<string, unknown> = {}): unknown {
       label: "自建 · 500万 token/月",
       secret: "${secret:rust}",
       lane: "lane-jp",
-      quota: {
-        metric: "tokens",
-        limit: 5_000_000,
-        currency: "CNY",
-        window: "month",
-        reset_day: 1,
-        soft_limit: 0.8,
-        hard_limit: 0.98,
-        reserve: 0.05,
-      },
       guard: { max_rpm: 60, max_concurrency: 8, max_input_tokens: null, on_exceed: "wait" },
       tags: ["cn-direct"],
       enabled: true,
     },
-    quota_state: { credential_id: "c-rust", state: "soft", used_tokens: 4_100_000 },
-    used_pct: 0.82,
     ...overrides,
   };
+}
+
+/**
+ * 同一家下的**第二份**凭据（只有旧数据才会出现）。
+ *
+ * 用来钉住"页面不会因为多了份凭据就退回凭据表/多选"，而是**如实说出**这件事
+ * （[docs/28 §1] 硬规则 3：一个服务商一把密钥；要多个账号 = 加多个服务商）。
+ */
+function secondRustCredential(): unknown {
+  const base = rustCredential() as { credential: Record<string, unknown> };
+  return { ...(rustCredential() as Record<string, unknown>), credential: { ...base.credential, id: "c-rust-2" } };
 }
 
 function viewCredential(overrides: Record<string, unknown> = {}): unknown {
@@ -127,23 +161,51 @@ function viewCredential(overrides: Record<string, unknown> = {}): unknown {
       label: "command code · 按量",
       secret: "${secret:commandcode}",
       lane: "lane-jp",
-      quota: {
-        metric: "cost",
-        limit: 20,
-        currency: "CNY",
-        window: "month",
-        reset_day: 1,
-        soft_limit: 0.8,
-        hard_limit: 1,
-        reserve: 0,
-      },
       guard: { max_rpm: null, max_concurrency: null, max_input_tokens: null, on_exceed: "next_candidate" },
       tags: ["backup"],
       enabled: true,
     },
     provider_name: "command code",
-    quota: { credential_id: "c-view", state: "ok", used_cost: 4.2 },
     channel_count: 1,
+    ...overrides,
+  };
+}
+
+/**
+ * `channel_list` 的一行（真机 `ChannelView` = `ChannelConfig` 逐字段 + 现算的 `models`）。
+ *
+ * 为什么带这么全：`channel_upsert` 是**整条覆盖写**，"改个网络代理"的载荷必须**以这条原始记录
+ * 为底**。少给一个键，测试就永远发现不了"少发一个键会抹掉配置"这个缺陷。
+ */
+function rustChannel(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    id: "ch-bytedance",
+    model: "deepseek-v4.1flash",
+    provider: "p-bytedance",
+    credential: "c-bytedance",
+    lane: "lane-jp",
+    upstream_model: "deepseek-v4.1flash",
+    transform: {
+      path: null,
+      headers_add: { "x-keep": "1" },
+      headers_remove: [],
+      headers_override: {},
+      body_patch: {},
+    },
+    priority: 100,
+    weight: 10,
+    tags: ["cn-direct"],
+    target_override: "https://upstream.example/v1",
+    enabled: true,
+    capabilities: {
+      vision: true,
+      tools: true,
+      reasoning: false,
+      context_tokens: 128_000,
+      max_output_tokens: null,
+      modalities: ["text"],
+    },
+    models: ["deepseek-v4.1flash"],
     ...overrides,
   };
 }
@@ -217,25 +279,19 @@ describe("读服务商：契约形状与 Rust 形状都认，缺的列不猜", (
 // ================================================================ ② 纯逻辑：读凭据与挂载
 
 describe("读凭据与挂载统计", () => {
-  it("Rust 形状：used_pct 与 quota_state 都读得到", () => {
+  it("Rust 形状：id / provider / 标签 / 开关都读得到", () => {
     const row = readCredential(rustCredential());
     expect(row.id).toBe("c-rust");
     expect(row.provider).toBe("p-rust");
-    expect(row.usedPct).toBe(0.82);
-    expect(row.quotaState).toBe("soft");
-    expect(row.limit).toBe(5_000_000);
-    expect(row.metric).toBe("tokens");
-    expect(row.window).toBe("month");
     expect(row.enabled).toBe(true);
     expect(row.tags).toEqual(["cn-direct"]);
   });
 
-  it("契约/mock 形状：只有 quota.state，没有 used_pct → usedPct 留 undefined（不推断比例）", () => {
+  it("契约/mock 形状：provider_name 与 channel_count 都能读出来", () => {
     const row = readCredential(viewCredential());
-    expect(row.usedPct).toBeUndefined();
-    expect(row.quotaState).toBe("ok");
-    expect(row.limit).toBe(20);
-    expect(row.metric).toBe("cost");
+    expect(row.id).toBe("c-view");
+    expect(row.provider).toBe("p-view");
+    expect(row.label).toBe("command code · 按量");
   });
 
   it("挂载统计：凭据列表读不到时是「未知」，不是 0", () => {
@@ -255,6 +311,36 @@ describe("读凭据与挂载统计", () => {
     const rows = [readCredential(rustCredential()), readCredential(viewCredential())];
     expect(mountOf(rust, rows).credentials).toBe(1);
   });
+});
+
+// ================================================================ ②b 纯逻辑：这一家的线路（[docs/28 §1]）
+
+describe("读线路：只认读得到的列；写载荷**以原始记录为底**", () => {
+  it("`channel_list` 的行按 provider 过滤；读不到的列是 undefined（不是默认值）", () => {
+    const rows = linesOfProvider(
+      [rustChannel(), rustChannel({ id: "ch-other", provider: "p-other" })],
+      "p-bytedance",
+    );
+    expect(rows).toHaveLength(1);
+    const only = rows![0]!;
+    expect(only.id).toBe("ch-bytedance");
+    expect(only.upstreamModel).toBe("deepseek-v4.1flash");
+    expect(only.laneId).toBe("lane-jp");
+    expect(only.priority).toBe(100);
+    expect(only.weight).toBe(10);
+    expect(only.enabled).toBe(true);
+
+    // 缺列 = 读不到（**不拿 `false` 冒充"已停用"**；`lane` 缺 = 不指定 → `null`）
+    const bare = readLine({ id: "ch-x", provider: "p-rust" });
+    expect(bare.enabled).toBeUndefined();
+    expect(bare.priority).toBeUndefined();
+    expect(bare.laneId).toBeNull();
+
+    // `channel_list` 读不到 ≠ 这一家没有线路（两件事不能混）
+    expect(linesOfProvider(undefined, "p-bytedance")).toBeUndefined();
+    expect(linesOfProvider([], "p-bytedance")).toEqual([]);
+  });
+
 });
 
 // ================================================================ ③ 展示层
@@ -281,6 +367,24 @@ function renderList(overrides: Partial<ProvidersBodyProps> = {}) {
   );
 }
 
+/**
+ * 线路区（[docs/28 §1]）的默认 props：**空线路 + 空目录**是一种真实的起点
+ * （数据层永远把这一份注入；"读不到"要显式传 `lines: undefined`）。
+ */
+function makeLinesProps(overrides: Partial<ProviderLinesProps> = {}): ProviderLinesProps {
+  return {
+    lines: [],
+    catalog: [],
+    scanPending: false,
+    onScan: () => {},
+    busy: false,
+    onToggleEnabled: () => {},
+    onBulkEnabled: () => {},
+    onRemove: () => {},
+    ...overrides,
+  };
+}
+
 function makeDetailProps(overrides: Partial<ProviderDetailBodyProps> = {}): ProviderDetailBodyProps {
   return {
     id: "p-rust",
@@ -291,9 +395,12 @@ function makeDetailProps(overrides: Partial<ProviderDetailBodyProps> = {}): Prov
     credentials: undefined,
     credentialsError: undefined,
     onRetryCredentials: () => {},
+    laneChoiceGroups: [],
+    autoSubscriptions: [],
     laneName: () => undefined,
     laneError: undefined,
     onBack: () => {},
+    lines: makeLinesProps(),
     ...overrides,
   };
 }
@@ -323,12 +430,80 @@ function renderAt(path: string) {
 }
 
 describe("[07 §3.1] 列表页：空 / 加载 / 错误 / 有数据", () => {
-  it("目录为空时给诚实空状态，不画 0 行的表", () => {
+  /**
+   * 这一节里有**整页**用例会临时改写 `provider_list`（"空态按钮接到向导"那条）。
+   * `registerMock` 是全局注册 → 跑完必须把基准 mock 放回去，否则后面的整页用例会看到 0 条。
+   */
+  afterEach(() => {
+    registerBaselineMocks();
+  });
+
+  it("目录为空时给诚实空状态：**只有一句话**，不画 0 行的表、也不重复页头那个按钮", () => {
     renderList();
 
-    expect(screen.getByTestId("providers-empty")).toBeTruthy();
-    expect(screen.getByText("配置里还没有服务商")).toBeTruthy();
+    const empty = screen.getByTestId("providers-empty");
+    expect(empty.textContent).toBe("配置里还没有服务商");
     expect(screen.queryByTestId("providers-table")).toBeNull();
+    // 第 2 轮补丁判据 A：页头已经有同标签同动作的「添加服务商」→ 空态里不再放第二个 primary
+    expect(within(empty).queryByRole("button")).toBeNull();
+    expect(screen.queryByTestId("providers-empty-add")).toBeNull();
+  });
+
+  it("整页空态：空态里没有按钮，添加入口就是页头那一个（不是本地假入口）", async () => {
+    registerBaselineMocks();
+    registerMock("provider_list", () => []);
+
+    renderAt("/providers");
+    const empty = await screen.findByTestId("providers-empty");
+    expect(within(empty).queryByRole("button")).toBeNull();
+    // 同一屏唯一的添加入口仍是真的：点了进两步向导
+    fireEvent.click(screen.getByTestId("providers-add-open"));
+    expect(await screen.findByTestId("provider-wizard-step1")).toBeTruthy();
+  });
+
+  it("只有 1 个服务商时**没有**多选（规则 3：没有多选场景就不出现勾选框）", () => {
+    renderList({
+      rows: [readProvider(viewProvider())],
+      onDelete: () => {},
+      selectedIds: [],
+      onToggleSelect: () => {},
+      onToggleSelectAll: () => {},
+      onDeleteSelected: () => {},
+    });
+
+    // 没有多选场景 → 勾选框、计数与「删除选中」一个都不出现
+    expect(screen.queryByTestId("providers-select")).toBeNull();
+    expect(screen.queryByTestId("providers-select-all")).toBeNull();
+    expect(screen.queryByTestId("providers-selected-count")).toBeNull();
+    expect(screen.queryByTestId("providers-delete-selected")).toBeNull();
+    // 唯一的删除需求仍有出口：行内那个真按钮
+    expect(screen.getByTestId("providers-delete")).toBeTruthy();
+  });
+
+  it("列收敛：「启用」并入「状态」，内容列一共 6 个（规则 4）", () => {
+    renderList({ rows: [readProvider(viewProvider())] });
+
+    const labels = screen
+      .getAllByRole("columnheader")
+      .map((cell) => (cell.textContent ?? "").trim())
+      .filter((text) => text !== "");
+    expect(labels).toEqual([
+      copy("providers.col.name"),
+      copy("providers.col.protocol"),
+      copy("providers.col.status"),
+      copy("providers.col.successRate"),
+      copy("providers.col.latency"),
+      copy("providers.col.mount"),
+    ]);
+    // 「启用」不再单独占一列：关闭的服务商在「状态」列里如实说「已禁用」
+    expect(labels).not.toContain("启用");
+  });
+
+  it("关闭的服务商在「状态」列里显示「已禁用」（合并不等于丢信息）", () => {
+    renderList({ rows: [readProvider(viewProvider({ enabled: false }))], credentials: [] });
+
+    const row = screen.getByTestId("providers-row");
+    expect(within(row).getByText("已禁用")).toBeTruthy();
   });
 
   it("加载中不与「没有服务商」混为一谈", () => {
@@ -376,11 +551,13 @@ describe("[07 §3.1] 列表页：空 / 加载 / 错误 / 有数据", () => {
     const rows = [readProvider(viewProvider())];
 
     renderList({ rows, credentials: [readCredential(viewCredential())] });
-    expect(screen.getByText("1 个凭据 · 3 条通道")).toBeTruthy();
+    expect(
+      screen.getByText(copyVars("providers.mount.both", { credentials: 1, channels: 3 })),
+    ).toBeTruthy();
     cleanup();
 
     renderList({ rows, credentials: undefined });
-    expect(screen.getByText("凭据数未知 · 3 条通道")).toBeTruthy();
+    expect(screen.getByText(copyVars("providers.mount.channelsOnly", { channels: 3 }))).toBeTruthy();
     expect(screen.getByTestId("providers-table")).toBeTruthy();
     cleanup();
 
@@ -434,72 +611,112 @@ describe("[07 §3.2] 详情页：目录里没有 / 连接配置不可用 / 有�
     expect(screen.getByTestId("providers-detail-error").textContent).toContain("TA-9001");
   });
 
-  it("后端只给了视图（没有连接配置字段）：明说不可用，不排一排空占位", () => {
+  it("后端只给了视图（没有连接配置字段）：整页只读并说清原因，不排一排空占位", () => {
     renderDetail({ id: "p-view", row: readProvider(viewProvider()) });
 
+    // 只读的原因写在最上面（[docs/23] 纪律 2）：覆盖写会用默认值抹掉线上配置
+    expect(screen.getByTestId("providers-view-only")).toBeTruthy();
+    expect(screen.getByText(copy("providers.edit.viewOnly"))).toBeTruthy();
+    // 「连接配置没读到」这句结论仍然一眼可见（[docs/22 §2] 红线第 1 条）
     expect(screen.getByTestId("providers-connection-unavailable")).toBeTruthy();
-    expect(screen.getByText(/后端返回的是服务商视图/)).toBeTruthy();
-    // 概览里的视图列照常显示
-    expect(screen.getByText("command code")).toBeTruthy();
-    expect(screen.getByText("https://api.commandcode.ai/v1")).toBeTruthy();
+    expect(screen.getByText(copy("providers.connection.unavailable"))).toBeTruthy();
+    // 视图里有的字段照常显示（值在只读控件里），但没有"假保存按钮"
+    expect(inputOf("providers-edit-name").value).toBe("command code");
+    expect(inputOf("providers-edit-name").disabled).toBe(true);
+    expect(inputOf("providers-edit-baseUrl").value).toBe("https://api.commandcode.ai/v1");
+    expect(screen.getByText("Anthropic")).toBeTruthy();
+    expect(screen.queryByTestId("providers-save-bar")).toBeNull();
+    expect(screen.queryByTestId("providers-detail-save")).toBeNull();
   });
 
-  it("完整配置：鉴权 / 超时 / TLS / 附加头 / 透传 / 默认线路名都渲染", () => {
+  it("完整配置：鉴权 / 超时 / TLS / 附加头 / 透传 / 默认线路都在可视化控件里，值就是后端那些字", () => {
     renderDetail({
       id: "p-rust",
       row: readProvider(rustProvider()),
+      laneChoiceGroups: [
+        {
+          group: "直连（本机网络）",
+          items: [{ value: "lane-jp", label: "日本线", kind: "lane", lane_id: "lane-jp" }],
+        },
+      ],
       laneName: (lane) => (lane === "lane-jp" ? "日本线" : undefined),
+      onSave: async () => {},
     });
 
-    const connection = within(screen.getByTestId("providers-connection"));
-    expect(connection.getByText("自定义头")).toBeTruthy();
-    expect(connection.getByText("x-api-key")).toBeTruthy();
-    expect(connection.getByText("Bearer")).toBeTruthy();
-    expect(connection.getByText("openai/")).toBeTruthy();
-    expect(connection.getByText("10s")).toBeTruthy();
-    expect(connection.getByText("120s")).toBeTruthy();
-    // 额外 CA 在字段网格里只显示"配没配"：PEM 内容不进这一块（它只在下方「原始字段」里原样可见）
-    expect(connection.getByText("已配置")).toBeTruthy();
-    expect(connection.queryByText(/BEGIN CERTIFICATE/)).toBeNull();
+    // 基本信息：值直接可改（不是一排只读文字）
+    expect(inputOf("providers-edit-name").value).toBe("自建网关");
+    expect(inputOf("providers-edit-baseUrl").value).toBe("https://llm.example.com/v1");
+    expect(inputOf("providers-edit-modelPrefix").value).toBe("openai/");
+    expect(selectTextOf("providers-edit-protocol")).toContain("OpenAI");
+    // 服务商级默认线路：下拉里是线路名，不是 id
+    expect(selectTextOf("providers-edit-lane")).toContain("日本线");
+    // id 是主键：只读显示，不给输入框
+    expect(screen.queryByTestId("providers-edit-id")).toBeNull();
+    expect(screen.getByText("p-rust")).toBeTruthy();
 
-    // 默认线路名 + id 都给（名字读不到时至少还有 id）
-    expect(document.body.textContent).toContain("日本线");
-    expect(document.body.textContent).toContain("lane-jp");
+    // 鉴权与连接
+    expect(selectTextOf("providers-edit-authScheme")).toContain("自定义头");
+    expect(inputOf("providers-edit-authHeader").value).toBe("x-api-key");
+    // 值前缀的尾随空格有意义（`Bearer ` ≠ `Bearer`）→ 原样带进控件
+    expect(inputOf("providers-edit-authPrefix").value).toBe("Bearer ");
+    expect(inputOf("providers-edit-timeoutConnect").value).toBe("10");
+    expect(inputOf("providers-edit-timeoutRead").value).toBe("120");
+    expect(textareaOf("providers-edit-extraCa").value).toContain("BEGIN CERTIFICATE");
 
-    const headers = within(screen.getByTestId("providers-headers"));
-    expect(headers.getByText("x-org")).toBeTruthy();
-    expect(headers.getByText("team-a")).toBeTruthy();
-    expect(headers.getByText("保留客户端的（只补缺）")).toBeTruthy();
+    // 附加头是一张可增删的行表（不是一段 JSON 文本）
+    const headerNames = screen.getAllByTestId("providers-header-name");
+    const headerValues = screen.getAllByTestId("providers-header-value");
+    expect(headerNames).toHaveLength(1);
+    expect(headerNames[0]!.querySelector("input")!.value).toBe("x-org");
+    expect(headerValues[0]!.querySelector("input")!.value).toBe("team-a");
+    expect(screen.getByTestId("providers-header-add")).toBeTruthy();
+    expect(selectTextOf("providers-edit-headerConflict")).toContain("保留客户端的（只补缺）");
+    expect(selectTextOf("providers-edit-passthroughHeader")).toContain("pass");
+    expect(selectTextOf("providers-edit-passthroughBody")).toContain("preserve");
   });
 
-  it("凭据按 provider 过滤；没有 used_pct 时不画假比例，改成上限 + 后端状态", () => {
+  it("密钥区只显示这一家的那条凭据（别家的一个字都不出现）", () => {
     const rows = [readCredential(rustCredential()), readCredential(viewCredential())];
     renderDetail({ id: "p-rust", row: readProvider(rustProvider()), credentials: rows });
 
-    const table = within(screen.getByTestId("providers-credentials-table"));
-    expect(table.getAllByTestId("providers-credential-row")).toHaveLength(1);
-    expect(table.getByText("自建 · 500万 token/月")).toBeTruthy();
-    expect(table.queryByText("command code · 按量")).toBeNull();
-    // [docs/15 §4.3] 百分比固定一位小数 —— 断言的是**文档要求的**形态，不是组件当前凑巧的形态。
-    // （原先这条断言被写成 "82%"，等于把 `QuotaBar` 少传 digits 的缺陷抄进了测试；
-    //   根因已在 QuotaBar.tsx 修掉：显式 `formatPercent(v, 1)`。）
-    expect(table.getByText("82.0%")).toBeTruthy();
-    cleanup();
-
-    // mock 形状：只有 quota.state + 上限 → 显示上限与状态，不推导百分比
-    renderDetail({
-      id: "p-view",
-      row: readProvider(viewProvider()),
-      credentials: [readCredential(viewCredential())],
-    });
-    expect(screen.getByText(/上限 ¥20/)).toBeTruthy();
-    expect(screen.getByText("正常")).toBeTruthy();
+    // 一个服务商一把密钥（[docs/28 §1] 硬规则 3）：页面上只有**一块**密钥区，没有凭据表
+    expect(screen.getByTestId("providers-key")).toBeTruthy();
+    expect(screen.queryByTestId("providers-credentials-table")).toBeNull();
+    expect(screen.getByTestId("providers-key-label").textContent).toBe("自建 · 500万 token/月");
+    // 密钥以**引用**形式显示
+    expect(screen.getByTestId("providers-key-secret").textContent).toBe("${secret:rust}");
+    // 别家的凭据一个字都不出现（按 `credential.provider` 过滤）
+    expect(screen.queryByText("command code · 按量")).toBeNull();
   });
 
-  it("凭据列表为空时说清楚「挂载关系写在凭据的 provider 字段上」", () => {
-    renderDetail({ id: "p-rust", row: readProvider(rustProvider()), credentials: [] });
-    expect(screen.getByTestId("providers-credentials-empty")).toBeTruthy();
+  it("这一家还没有凭据：**只留一句结论**，且不放点了没用的按钮", () => {
+    renderDetail({
+      id: "p-rust",
+      row: readProvider(rustProvider()),
+      credentials: [],
+    });
+
+    const empty = screen.getByTestId("providers-key-empty");
+    expect(empty).toBeTruthy();
+    expect(empty.textContent).toBe(copy("providers.credentials.empty"));
+    // 原来那半句"实现解释"（凭据的 provider 字段 / 通道候选）不再铺在版面上
+    expect(screen.queryByText(/provider 字段/)).toBeNull();
     expect(screen.queryByTestId("providers-credentials-table")).toBeNull();
+  });
+
+  it("旧数据里挂了多份凭据：如实说出来（而不是悄悄只显示第一份）", () => {
+    renderDetail({
+      id: "p-rust",
+      row: readProvider(rustProvider()),
+      credentials: [readCredential(rustCredential()), readCredential(secondRustCredential())],
+    });
+
+    const multiple = screen.getByTestId("providers-key-multiple");
+    // 文案键由主管补进 i18n（见任务汇报）→ 这里钉"这句话**出现**了"，不钉它的措辞
+    expect(multiple).toBeTruthy();
+    // 页面上仍然没有凭据表 / 多选（一个服务商一把密钥；要多个账号就多个服务商）
+    expect(screen.queryByTestId("providers-credentials-table")).toBeNull();
+    expect(screen.queryByTestId("providers-credential-select")).toBeNull();
   });
 
   it("原始字段原样打印（后端多给什么看得见）", () => {
@@ -511,6 +728,10 @@ describe("[07 §3.2] 详情页：目录里没有 / 连接配置不可用 / 有�
 // ================================================================ ④ 整页（浏览器 mock 路径）
 
 describe("整页在 mock 基准场景下能用（不依赖 Rust/Tauri）", () => {
+  beforeEach(() => {
+    resetWizardSession();
+  });
+
   it("/providers 渲染真实目录，且不再是占位壳", async () => {
     renderAt("/providers");
 
@@ -528,8 +749,6 @@ describe("整页在 mock 基准场景下能用（不依赖 Rust/Tauri）", () =>
     await waitFor(() => expect(screen.getByText("字节 · 500万 token/月")).toBeTruthy());
     // mock 的 provider_list 给的是视图形状 → 连接配置如实显示"未返回"
     expect(screen.getByTestId("providers-connection-unavailable")).toBeTruthy();
-    // 额度：mock 没给 used_pct，所以显示上限而不是一个编出来的百分比
-    expect(screen.getByText(/上限 5M/)).toBeTruthy();
   });
 
   it("文案里不留未替换的占位符", async () => {
@@ -598,11 +817,22 @@ function typeInto(testId: string, value: string): void {
   fireEvent.change(inputOf(testId), { target: { value } });
 }
 
+/** 多行控件的取法：MUI 的 `multiline` 渲染成 `<textarea>`，`querySelector("input")` 找不到它。 */
+function textareaOf(testId: string): HTMLTextAreaElement {
+  const area = screen.getByTestId(testId).querySelector("textarea");
+  if (area === null) throw new Error(`[data-testid="${testId}"] 里没有 textarea`);
+  return area;
+}
+
 /** 打开一个 MUI 下拉并点中某一项。 */
 async function chooseOption(testId: string, name: RegExp | string): Promise<void> {
   fireEvent.mouseDown(within(screen.getByTestId(testId)).getByRole("combobox"));
   fireEvent.click(await screen.findByRole("option", { name }));
 }
+
+/**
+ * 行内的下拉：线路列表里每一条线路都有自己的网络代理下拉，作用域必须收窄到**那一行**，
+
 
 /** 本轮向导该有的控件（[docs/17 §3.1]）。**不许改名**：真机 E2E 按它们驱动。 */
 const PROVIDER_WIZARD_CONTROLS = [
@@ -621,13 +851,14 @@ const CREDENTIAL_WIZARD_CONTROLS = [
   "credentials-add-label",
   "credentials-add-provider",
   "credentials-add-secret",
-  "credentials-add-quotaLimit",
-  "credentials-add-currency",
-  "credentials-add-window",
   "credentials-add-submit",
 ] as const;
 
 describe("[docs/17 §3.1] 高级添加（单步对话框）：真控件 → 真的调 provider_upsert → 显示后端真值", () => {
+  beforeEach(() => {
+    resetWizardSession();
+  });
+
   /*
    * 为什么这里的入口是 `providers-add-advanced-open`：本轮（[docs/19 §1]）`providers-add-open`
    * 改成**两步向导**（`src/app/providerWizard.test.tsx` 验它），而原来的单步对话框**原样保留**
@@ -806,189 +1037,108 @@ describe("[docs/17 §3.1] 高级添加（单步对话框）：真控件 → 真�
   });
 });
 
-describe("[docs/17 §3.1] 添加密钥：明文只进密钥仓库，界面永不回显", () => {
+// ================================================================ ⑦ [docs/28 §1] 一个服务商一把密钥
+//
+// 第 73 轮这里验的是「添加密钥」对话框（一次建一份凭据：自己的 id / 标签 / 服务商 / 明文 /
+// 额度上限 / 币种 / 窗口）。**第 80 轮那个对话框整条下线了**：owner 原话「一个服务商肯定就一个
+// 密钥，怎么还做多个删除的……我期望的操作是直接添加多个同一个服务商，取不同名字」。
+//
+// 所以这一节不再验"密钥对话框能填能发"，而是钉住**它真的没了**、以及替代它的两条规则：
+//
+// 1. **列表页没有「添加密钥」入口**（`credentials-add-open` / `credentials-add-*` 一个都不在）；
+// 2. **列表页一个 `credential_upsert` 调用点都没有**（用 recorder 数调用次数 = 0）——
+//    这是机械判据：只要有人把那个对话框接回来，计数立刻不为 0；
+// 3. **同一家的第二个账号 = 第二条服务商**：名称重复被本地预检挡住（一次命令都不发），
+//    换一个名字就能提交（`provider_upsert` 的载荷里也**没有任何密钥字段**）。
+//
+// 密钥本身的写入口（两步向导第 1 步 `pw-key`、详情页「密钥」块）分别由
+// `providerWizard.test.tsx` 与本节 ⑧ 覆盖。
+
+describe("[docs/28 §1] 一个服务商一把密钥：列表页没有第二个凭据入口", () => {
   beforeEach(() => {
     registerBaselineMocks();
   });
 
-  it("页头有「添加密钥」；打开后控件一个不少，secret 是 password", async () => {
+  it("页头没有「添加密钥」按钮，也没有任何 credentials-add-* 控件", async () => {
     renderAt("/providers");
+    // 等列表真的渲染出来（否则"找不到"可能只是还没渲染）
+    await screen.findByTestId("providers-table");
 
-    fireEvent.click(await screen.findByTestId("credentials-add-open"));
+    expect(screen.queryByTestId("credentials-add-open")).toBeNull();
+    expect(screen.queryByText("添加密钥")).toBeNull();
     for (const id of CREDENTIAL_WIZARD_CONTROLS) {
-      expect(screen.getByTestId(id), `缺控件 ${id}`).toBeTruthy();
+      expect(screen.queryByTestId(id), `${id} 是「添加密钥」的控件，应当随对话框一起下线`).toBeNull();
     }
-    expect(inputOf("credentials-add-id").tagName).toBe("INPUT");
-    expect(inputOf("credentials-add-secret").type).toBe("password");
-    // 服务商是下拉，选项来自 provider_list
-    fireEvent.mouseDown(within(screen.getByTestId("credentials-add-provider")).getByRole("combobox"));
-    expect(await screen.findByRole("option", { name: "字节方舟" })).toBeTruthy();
+    // 页头剩下的两个入口仍在（这一步是"删对了"的自证，不是"整页被删空"）
+    expect(screen.getByTestId("providers-add-open")).toBeTruthy();
+    expect(screen.getByTestId("providers-add-advanced-open")).toBeTruthy();
   });
 
-  it("填完真提交 → 先 credential_upsert（secret 只是引用、载荷里没有明文）→ 再 credential_set_secret", async () => {
-    const SECRET = "sk-live-plaintext-canary-123456"; // ta-allow-fake-secret —— 假的金丝雀值：它出现在这里，正是为了证明它不会出现在载荷 / 错误 / 页面上
-    let listCalls = 0;
-    registerMock("credential_list", () => {
-      listCalls += 1;
-      return [];
-    });
-    const upsert = recordingMock({
-      id: "c-backend",
-      provider: "p-bytedance",
-      label: "后端标签",
-      secret: "${secret:c-backend}",
-      quota: {
-        metric: "cost",
-        limit: 12,
-        currency: "CNY",
-        window: "month",
-        reset_day: 1,
-        soft_limit: 0.8,
-        hard_limit: 0.98,
-        reserve: 0,
-      },
-      guard: { max_rpm: null, max_concurrency: null, max_input_tokens: null, on_exceed: "wait" },
-      tags: [],
-      enabled: true,
-    });
-    const setSecret = recordingMock(undefined);
-    /** 两个命令的**真实调用顺序**（"先 upsert 再写密钥"是规格里的硬要求）。 */
-    const order: string[] = [];
-    registerMock("credential_upsert", (args) => {
-      order.push("upsert");
-      return upsert.handler(args);
-    });
-    registerMock("credential_set_secret", (args) => {
-      order.push("set_secret");
-      return setSecret.handler(args);
-    });
-
-    renderAt("/providers");
-    fireEvent.click(await screen.findByTestId("credentials-add-open"));
-    typeInto("credentials-add-id", "my-key");
-    typeInto("credentials-add-label", "我的套餐");
-    await chooseOption("credentials-add-provider", "字节方舟");
-    typeInto("credentials-add-secret", SECRET);
-    typeInto("credentials-add-quotaLimit", "12");
-    typeInto("credentials-add-currency", "CNY");
-    fireEvent.click(screen.getByTestId("credentials-add-submit"));
-
-    await waitFor(() => expect(setSecret.calls).toHaveLength(1));
-
-    // ① credential_upsert 的载荷：secret 是 `${secret:<条目名>}` 引用，明文一个字节都不在里面
-    const upArgs = upsert.calls[0]!;
-    expect(Object.keys(upArgs)).toEqual(["credential"]);
-    expect(JSON.stringify(upArgs)).not.toContain(SECRET);
-    const cred = upArgs["credential"] as Record<string, unknown>;
-    expect(cred["id"]).toBe("my-key");
-    expect(cred["provider"]).toBe("p-bytedance");
-    expect(cred["label"]).toBe("我的套餐");
-    expect(cred["secret"]).toBe("${secret:my-key}");
-    expect(cred["quota"]).toEqual({ limit: 12, currency: "CNY", window: "month" });
-    for (const key of Object.keys(cred)) expect(key).toMatch(/^[a-z][a-z0-9_]*$/);
-    // guard / tags / enabled / lane 在 Rust 侧都有 serde(default) —— 前端不替后端编
-    for (const absent of ["guard", "tags", "enabled", "lane"]) {
-      expect(absent in cred, `${absent} 有 Rust serde(default)`).toBe(false);
-    }
-
-    // ② 顺序：先建凭据（拿到后端 id），再把明文写进密钥仓库
-    expect(order).toEqual(["upsert", "set_secret"]);
-    expect(setSecret.calls[0]).toEqual({ id: "c-backend", plaintext: SECRET });
-
-    // ③ 成功后就地清空输入框：明文不留在一个还开着的对话框里
-    expect(inputOf("credentials-add-secret").value).toBe("");
-    expect(inputOf("credentials-add-id").value).toBe("");
-
-    // ④ 回显后端返回值 + 重取列表
-    const saved = await screen.findByTestId("credentials-add-result");
-    expect(saved.textContent).toContain("c-backend");
-    expect(saved.textContent).toContain("后端标签");
-    await waitFor(() => expect(listCalls).toBeGreaterThan(1));
-  });
-
-  it("没填 secret：只 credential_upsert，**不碰密钥仓库**", async () => {
-    const upsert = recordingMock({ id: "c-backend", provider: "p-bytedance", label: "x", secret: "${secret:c-backend}" });
-    const setSecret = recordingMock(undefined);
-    registerMock("credential_upsert", upsert.handler);
-    registerMock("credential_set_secret", setSecret.handler);
-
-    renderAt("/providers");
-    fireEvent.click(await screen.findByTestId("credentials-add-open"));
-    typeInto("credentials-add-id", "my-key");
-    typeInto("credentials-add-label", "我的套餐");
-    await chooseOption("credentials-add-provider", "字节方舟");
-    fireEvent.click(screen.getByTestId("credentials-add-submit"));
-
-    await waitFor(() => expect(upsert.calls).toHaveLength(1));
-    expect(setSecret.calls).toHaveLength(0);
-    // 空 secret 也不许把明文（空串以外的东西）塞进载荷
-    const cred = upsert.calls[0]!["credential"] as Record<string, unknown>;
-    expect(cred["secret"]).toBe("${secret:my-key}");
-  });
-
-  it("本地校验不过一次都不发：必填 / id 形状 / 与现有凭据 id 重复", async () => {
+  it("列表页把凭据挂到服务商上的调用次数 = 0（没有 credential_upsert 调用点）", async () => {
     const upsert = recordingMock({});
     const setSecret = recordingMock(undefined);
     registerMock("credential_upsert", upsert.handler);
     registerMock("credential_set_secret", setSecret.handler);
 
     renderAt("/providers");
-    fireEvent.click(await screen.findByTestId("credentials-add-open"));
+    await screen.findByTestId("providers-table");
 
-    fireEvent.click(screen.getByTestId("credentials-add-submit"));
-    expect((await screen.findByTestId("credentials-add-issues")).textContent).toContain("必填");
-    expect(upsert.calls).toHaveLength(0);
+    // 页头两个入口都点开再关掉：走一遍所有可达的 UI，计数仍然是 0
+    fireEvent.click(screen.getByTestId("providers-add-advanced-open"));
+    expect(screen.getByTestId("providers-add-submit")).toBeTruthy();
+    fireEvent.click(screen.getByText("取消"));
+    fireEvent.click(screen.getByTestId("providers-add-open"));
+    await screen.findByTestId("provider-wizard-step1");
 
-    typeInto("credentials-add-id", "Bad_Id");
-    typeInto("credentials-add-label", "套餐");
-    await chooseOption("credentials-add-provider", "字节方舟");
-    fireEvent.click(screen.getByTestId("credentials-add-submit"));
-    expect(screen.getByTestId("credentials-add-issues").textContent).toContain(
-      "id 只能用小写字母、数字与短横线",
-    );
-    expect(upsert.calls).toHaveLength(0);
-
-    // 与 credential_list 里已有的 id 重复
-    typeInto("credentials-add-id", "c-bytedance");
-    fireEvent.click(screen.getByTestId("credentials-add-submit"));
-    expect(screen.getByTestId("credentials-add-issues").textContent).toContain("已存在同 id 的条目");
-    expect(upsert.calls).toHaveLength(0);
+    expect(upsert.calls, "列表页不该有任何 credential_upsert 调用点").toHaveLength(0);
     expect(setSecret.calls).toHaveLength(0);
   });
 
-  it("写密钥失败：原样显示 TA 码，且页面上**任何地方**都没有明文", async () => {
-    const SECRET = "sk-leak-canary-987654321"; // ta-allow-fake-secret —— 同上：假值，用来断言"页面上任何地方都没有明文"
-    registerMock("credential_upsert", () => ({
-      id: "c-backend",
-      provider: "p-bytedance",
-      label: "我的套餐",
-      secret: "${secret:c-backend}",
-    }));
-    registerMock("credential_set_secret", () => {
-      throw new TokenAgencyError({ code: "TA-6001", message: "密钥仓库不可用（钥匙串被锁）" });
-    });
+  it("同一家的第二个账号：名称重复本地就挡住（一次都不发），换名字就能提交", async () => {
+    const upsert = recordingMock({ id: "p-2", name: "字节二号", protocol: "openai", base_url: "https://gw.example.com/v1" });
+    registerMock("provider_upsert", upsert.handler);
 
     renderAt("/providers");
-    fireEvent.click(await screen.findByTestId("credentials-add-open"));
-    typeInto("credentials-add-id", "my-key");
-    typeInto("credentials-add-label", "我的套餐");
-    await chooseOption("credentials-add-provider", "字节方舟");
-    typeInto("credentials-add-secret", SECRET);
-    fireEvent.click(screen.getByTestId("credentials-add-submit"));
+    fireEvent.click(await screen.findByTestId("providers-add-advanced-open"));
 
-    const error = await screen.findByTestId("credentials-add-error");
-    expect(error.textContent).toContain("TA-6001");
-    expect(error.textContent).toContain("钥匙串被锁");
-    // 明文不进日志、不进错误消息 —— 页面上任何渲染出来的文本都不含它
-    expect(document.body.textContent ?? "").not.toContain(SECRET);
-    // 失败时**不清空**输入框：用户还要重试
-    expect(inputOf("credentials-add-secret").value).toBe(SECRET);
+    // 名字与现有服务商（基准 mock 里的「字节方舟」）重复 → 本地预检点名名称，**不发命令**
+    typeInto("providers-add-id", "bytedance-2");
+    typeInto("providers-add-name", "字节方舟");
+    typeInto("providers-add-baseUrl", "https://gw.example.com/v1");
+    fireEvent.click(screen.getByTestId("providers-add-submit"));
+
+    const issues = await screen.findByTestId("providers-add-issues");
+    expect(issues.textContent).toContain("名称");
+    expect(issues.textContent).toContain("这个名称已经被占用，换一个");
+    expect(upsert.calls).toHaveLength(0);
+
+    // 取个**不同**的名字 → 这是 owner 说的"添加多个同一个服务商、取不同名字"，放行
+    typeInto("providers-add-name", "字节二号");
+    fireEvent.click(screen.getByTestId("providers-add-submit"));
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    const payload = upsert.calls[0]!["provider"] as Record<string, unknown>;
+    expect(payload["id"]).toBe("bytedance-2");
+    expect(payload["name"]).toBe("字节二号");
+    expect(payload["base_url"]).toBe("https://gw.example.com/v1");
+    // 服务商载荷里**没有任何密钥字段**：密钥只走 credential_set_secret（明文永不进载荷）
+    for (const key of Object.keys(payload)) expect(key).toMatch(/^[a-z][a-z0-9_]*$/);
+    for (const absent of ["secret", "key", "credential", "api_key"]) {
+      expect(absent in payload, `${absent} 不属于服务商载荷`).toBe(false);
+    }
   });
 });
 
-// ================================================================ ⑧ [docs/20 §4] 详情页的图形化编辑
 
-/** 一条挂在某个服务商下的凭据：第 2 步"已添加的模型"按凭据归属过滤。 */
+// ================================================================ ⑧ [docs/23] 详情页 = 查看 + 编辑一体
+//
+// 用户第 75 轮原话：「服务商编辑页面不走下一步下一步，直接把所有信息在点开服务商之后提供
+// 可视化编辑界面，相当于编辑和查看一体了，当然不是纯文本编辑」。
+//
+// 这一节全部走**整页**（`renderAt`）：编辑的语义一半在控件上、一半在"点了到底发了什么载荷"上
+// ——而载荷正是第 72 轮那个数据丢失缺陷的现场（编辑向导只发 4 个字段，覆盖写抹掉其余配置）。
+
+/** 一条挂在某个服务商下的凭据：模型区按凭据归属过滤。 */
 function boundCredential(id: string, provider: string): unknown {
   return {
     credential: {
@@ -997,22 +1147,11 @@ function boundCredential(id: string, provider: string): unknown {
       label: "默认凭据",
       secret: `\${secret:${id}}`,
       lane: null,
-      quota: {
-        metric: "cost",
-        limit: 20,
-        currency: "CNY",
-        window: "month",
-        reset_day: 1,
-        soft_limit: 0.8,
-        hard_limit: 1,
-        reserve: 0,
-      },
       guard: { max_rpm: null, max_concurrency: null, max_input_tokens: null, on_exceed: "wait" },
       tags: [],
       enabled: true,
     },
     provider_name: provider,
-    quota: { credential_id: id, state: "ok" },
     channel_count: 1,
   };
 }
@@ -1025,125 +1164,573 @@ function selectTextOf(testId: string): string {
 /** 基准 mock 的模型 id（`shared/api/mock.ts` 的场景常量）。 */
 const BASELINE_MODEL = "deepseek-v4.1flash";
 
-/** 从列表点进详情，再点 `providers-detail-edit` 打开编辑向导的第 1 步。 */
-async function openEditWizard(id = "p-bytedance"): Promise<void> {
-  renderAt(`/providers/${id}`);
-  await screen.findByTestId("providers-detail");
-  fireEvent.click(await screen.findByTestId("providers-detail-edit"));
-  await screen.findByTestId("provider-wizard-step1");
+/** 一份**完整**的 Rust `Provider`：编辑页要有真值可改、也要有真值可回写。 */
+function rustBytedance(overrides: Record<string, unknown> = {}): unknown {
+  return {
+    id: "p-bytedance",
+    name: "字节方舟",
+    protocol: "openai",
+    base_url: "https://ark.cn-beijing.volces.com/api/v3",
+    auth: { scheme: "bearer", header: null, prefix: null },
+    lane: "lane-direct",
+    headers: { "x-org": "team-a" },
+    on_header_conflict: "keep_client",
+    passthrough: { header_mode: "pass", body: "preserve" },
+    timeout: { connect_s: 10, read_s: 600, total_s: null },
+    tls: { insecure: false, extra_ca_pem: null, min_version: null },
+    model_prefix: null,
+    enabled: true,
+    ...overrides,
+  };
 }
 
-describe("[docs/20 §4] 详情页的图形化编辑：与新增同一个两步向导", () => {
+/** 打开一个服务商的详情页（这一页本身就是编辑器，没有"点编辑"这一步）。 */
+async function openDetail(id = "p-bytedance"): Promise<void> {
+  renderAt(`/providers/${id}`);
+  await screen.findByTestId("providers-detail");
+  // `providers-detail` 这个容器在"加载中"时就存在 → 必须再等这一行真的到齐
+  await screen.findByTestId("providers-edit-name");
+}
+
+function saveButton(): HTMLElement {
+  return screen.getByTestId("providers-detail-save");
+}
+
+/**
+ * [docs/28 §1.4] 上游原文的**单行预览**：只截断、不改写。
+ *
+ * 原文是"上游真的给了什么"的证据 —— 预览压掉换行只是为了让一行放得下，
+ * **不许**挑字段、不许重排、不许加自己的话（那样它就不是证据了）。
+ */
+describe("rawPreview：单行预览只截断，不改写原文", () => {
+  it("短的逐字给出（只压空白）；长的只加省略号", () => {
+    expect(rawPreview({ id: "m", object: "model" })).toBe('{"id":"m","object":"model"}');
+    // 值里的连续空白压成一个（只为放进一行；键与值的字符本身没动）
+    expect(rawPreview({ a: "x  y" })).toBe('{"a":"x y"}');
+    // JSON 里的换行本来就是转义的 `\n`（两个字符）→ 它天然是一行，不该被改掉
+    expect(rawPreview({ a: "x\ny" })).toBe('{"a":"x\\ny"}');
+    const long = rawPreview({ id: "m", note: "z".repeat(300) }, 40);
+    expect(long.endsWith("…")).toBe(true);
+    expect(long.length).toBe(41);
+    // 截断只是后缀省略号：保留的前缀与原文逐字一致
+    expect(long.slice(0, 40)).toBe(`{"id":"m","note":"${"z".repeat(22)}`);
+  });
+});
+describe("[docs/23] 详情页 = 查看 + 编辑一体：点开就能改，不再走下一步", () => {
   beforeEach(() => {
     registerBaselineMocks();
-    // 草稿活在模块级 store 里：每条用例从干净状态开始
-    resetWizardSession();
+    registerMock("provider_list", () => [rustBytedance()]);
   });
 
-  it("详情页有 providers-detail-edit；点开是向导第 1 步且预填与现有服务商一致", async () => {
-    await openEditWizard();
+  it("点开服务商直接就是编辑器：没有「编辑」按钮也没有下一步，控件里是后端真值", async () => {
+    await openDetail();
 
-    // 预填的是**现有服务商**的名字 / 地址 / 协议（不是空表单）
-    expect(inputOf("pw-name").value).toBe("字节方舟");
-    expect(inputOf("pw-baseUrl").value).toBe("https://ark.cn-beijing.volces.com/api/v3");
-    expect(selectTextOf("pw-protocol")).toContain("OpenAI");
-    // 标题与密钥说明是编辑模式那一套（留空 = 不改）
-    expect(screen.getByText("编辑服务商")).toBeTruthy();
-    expect(screen.getByText("留空表示不改动已保存的密钥")).toBeTruthy();
+    // 不再有"编辑 → 下一步 → 下一步"
+    expect(screen.queryByTestId("providers-detail-edit")).toBeNull();
+    expect(screen.queryByTestId("providers-next")).toBeNull();
+    expect(screen.queryByTestId("pw-next")).toBeNull();
+    expect(screen.queryByTestId("provider-wizard-step1")).toBeNull();
+
+    // 控件就在页面上，值是后端那一条（不是空表）
+    expect(inputOf("providers-edit-name").value).toBe("字节方舟");
+    expect(inputOf("providers-edit-baseUrl").value).toBe("https://ark.cn-beijing.volces.com/api/v3");
+    expect(inputOf("providers-edit-timeoutRead").value).toBe("600");
+    expect(selectTextOf("providers-edit-protocol")).toContain("OpenAI");
+
+    // 没有改动 → 保存不可点，并如实说"没有改动"（不是点了没反应的按钮）
+    expect(saveButton().hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("没有改动")).toBeTruthy();
   });
 
-  it("编辑模式留空密钥：只 provider_upsert（用现有 id 覆盖写），不发 credential_set_secret", async () => {
-    const provider = recordingMock({
-      id: "p-bytedance",
-      name: "字节方舟 v2",
-      protocol: "openai",
-      base_url: "https://ark.cn-beijing.volces.com/api/v3",
+  it("改一个字段再保存：载荷是**整条记录**（没碰过的连接配置一个字节都不丢）", async () => {
+    const upsert = recordingMock(rustBytedance({ name: "字节方舟 v2", status: "ok" }));
+    registerMock("provider_upsert", upsert.handler);
+
+    await openDetail();
+    typeInto("providers-edit-name", "字节方舟 v2");
+    expect(saveButton().hasAttribute("disabled")).toBe(false);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    const payload = upsert.calls[0]!["provider"] as Record<string, unknown>;
+    // 改动的字段 + id 复用（改名不等于新建一个服务商）
+    expect(payload["name"]).toBe("字节方舟 v2");
+    expect(payload["id"]).toBe("p-bytedance");
+    // 回归：整条覆盖写**不许**抹掉没碰过的配置（第 72 轮编辑向导就是在这里丢数据的）
+    expect(payload["auth"]).toMatchObject({ scheme: "bearer", header: null, prefix: null });
+    expect(payload["headers"]).toEqual({ "x-org": "team-a" });
+    expect(payload["on_header_conflict"]).toBe("keep_client");
+    expect(payload["passthrough"]).toMatchObject({ header_mode: "pass", body: "preserve" });
+    expect(payload["timeout"]).toMatchObject({ connect_s: 10, read_s: 600, total_s: null });
+    expect(payload["tls"]).toMatchObject({ insecure: false, extra_ca_pem: null, min_version: null });
+    expect(payload["lane"]).toBe("lane-direct");
+    expect(payload["enabled"]).toBe(true);
+    // 只读视图专有的列不是配置：不许被当成用户自定义字段写进 `extra`
+    expect(payload["status"]).toBeUndefined();
+    expect(payload["success_rate_24h"]).toBeUndefined();
+
+    // 成功的汇报 + 保存按钮回到"没有改动"
+    // （汇报**那句话的措辞**归 i18n 所有：这里钉"后端写入成功后界面真的说了这件事"）
+    expect((await screen.findByTestId("providers-detail-save-result")).textContent).not.toBe("");
+    await waitFor(() => expect(saveButton().hasAttribute("disabled")).toBe(true));
+  });
+
+  it("清空一个可选字段：载荷里是**显式 null**（不发这个键 = 默认值，那不是清空）", async () => {
+    const upsert = recordingMock(rustBytedance());
+    registerMock("provider_upsert", upsert.handler);
+    registerMock("provider_list", () => [rustBytedance({ model_prefix: "openai/" })]);
+
+    await openDetail();
+    expect(inputOf("providers-edit-modelPrefix").value).toBe("openai/");
+    typeInto("providers-edit-modelPrefix", "");
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    const payload = upsert.calls[0]!["provider"] as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(payload, "model_prefix")).toBe(true);
+    expect(payload["model_prefix"]).toBeNull();
+  });
+
+  it("本地预检不过就一次都不发：必填 / base_url 形状 / 超时不是正整数", async () => {
+    const upsert = recordingMock(rustBytedance());
+    registerMock("provider_upsert", upsert.handler);
+
+    await openDetail();
+    typeInto("providers-edit-name", "");
+    typeInto("providers-edit-baseUrl", "ftp://nope");
+    typeInto("providers-edit-timeoutRead", "abc");
+    fireEvent.click(saveButton());
+
+    expect(upsert.calls).toHaveLength(0);
+    const issues = await screen.findByTestId("providers-detail-issues");
+    expect(issues.textContent).toContain("必填");
+    expect(issues.textContent).toContain("必须是 http:// 或 https:// 开头的完整地址");
+    expect(issues.textContent).toContain("必须是数字（可留空）");
+  });
+
+  it("后端拒绝时原样显示 TA 码与原文（不吞错、不改写成一句「保存失败」）", async () => {
+    registerMock("provider_upsert", () => {
+      throw new TokenAgencyError({ code: "TA-5001", message: "providers[0].base_url 非法" });
     });
+
+    await openDetail();
+    typeInto("providers-edit-name", "改一下");
+    fireEvent.click(saveButton());
+
+    const error = await screen.findByTestId("providers-detail-save-error");
+    expect(error.textContent).toContain("TA-5001");
+    expect(error.textContent).toContain("providers[0].base_url 非法");
+  });
+
+  it("附加头：真能加行 / 改值 / 删行，载荷里就是那张表（不是一段 JSON 文本）", async () => {
+    const upsert = recordingMock(rustBytedance());
+    registerMock("provider_upsert", upsert.handler);
+
+    await openDetail();
+    // 加一行 → 填上 → 把原来那行的值改掉
+    fireEvent.click(screen.getByTestId("providers-header-add"));
+    const names = screen.getAllByTestId("providers-header-name");
+    const values = screen.getAllByTestId("providers-header-value");
+    expect(names).toHaveLength(2);
+    fireEvent.change(names[1]!.querySelector("input")!, { target: { value: "x-extra" } });
+    fireEvent.change(values[1]!.querySelector("input")!, { target: { value: "1" } });
+    fireEvent.change(values[0]!.querySelector("input")!, { target: { value: "team-b" } });
+
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
+    expect((upsert.calls[0]!["provider"] as Record<string, unknown>)["headers"]).toEqual({
+      "x-org": "team-b",
+      "x-extra": "1",
+    });
+    cleanup();
+
+    // 删行：只在点过保存之后才重新渲染太绕，再来一遍
+    registerBaselineMocks();
+    registerMock("provider_list", () => [rustBytedance()]);
+    const second = recordingMock(rustBytedance());
+    registerMock("provider_upsert", second.handler);
+    await openDetail();
+    fireEvent.click(screen.getByTestId("providers-header-remove"));
+    expect(screen.queryAllByTestId("providers-header-row")).toHaveLength(0);
+    expect(screen.getByTestId("providers-headers-empty")).toBeTruthy();
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(second.calls).toHaveLength(1));
+    expect((second.calls[0]!["provider"] as Record<string, unknown>)["headers"]).toEqual({});
+  });
+
+  it("密钥留空 = 不改：只 provider_upsert，一个字节都不碰密钥仓库", async () => {
+    const upsert = recordingMock(rustBytedance());
     const secret = recordingMock(undefined);
-    registerMock("provider_upsert", provider.handler);
+    registerMock("provider_upsert", upsert.handler);
     registerMock("credential_set_secret", secret.handler);
-    registerMock("credential_list", () => [boundCredential("c-bytedance", "p-bytedance")]);
 
-    await openEditWizard();
-    typeInto("pw-name", "字节方舟 v2");
-    fireEvent.click(screen.getByTestId("pw-next"));
-    await screen.findByTestId("provider-wizard-step2");
+    await openDetail();
+    typeInto("providers-edit-name", "字节方舟 v2");
+    fireEvent.click(saveButton());
 
-    // 密钥框留空 -> 一个字节都不碰密钥仓库
+    await waitFor(() => expect(upsert.calls).toHaveLength(1));
     expect(secret.calls).toHaveLength(0);
-    // 但服务商是**覆盖写**：id 必须还是现有那一个（不许派生新 id）
-    expect(provider.calls).toHaveLength(1);
-    expect(provider.calls[0]!["provider"]).toMatchObject({
-      id: "p-bytedance",
-      name: "字节方舟 v2",
-      protocol: "openai",
-      base_url: "https://ark.cn-beijing.volces.com/api/v3",
-    });
-    // 自己不算重名：改回自己的名字也不该被拦（第 1 步能过就说明去重排除了自己）
-    expect(screen.queryByText(/已经被占用/)).toBeNull();
   });
 
-  it("填了密钥才写：先 provider_upsert（同 id）→ credential_set_secret", async () => {
-    const provider = recordingMock({ id: "p-bytedance", name: "字节方舟" });
+  it("填了密钥才写：写的是这家**已有的那把**凭据，且明文不进载荷、不上屏、保存后清空", async () => {
+    const upsert = recordingMock(rustBytedance());
     const credential = recordingMock({ id: "c-bytedance" });
     const secret = recordingMock(undefined);
-    registerMock("provider_upsert", provider.handler);
+    registerMock("provider_upsert", upsert.handler);
     registerMock("credential_upsert", credential.handler);
     registerMock("credential_set_secret", secret.handler);
     registerMock("credential_list", () => [boundCredential("c-bytedance", "p-bytedance")]);
 
-    const KEY = "sk-edit-canary-0002"; // ta-allow-fake-secret —— 假值
-    await openEditWizard();
-    typeInto("pw-key", KEY);
-    fireEvent.click(screen.getByTestId("pw-next"));
-    await screen.findByTestId("provider-wizard-step2");
+    const KEY = "sk-detail-canary-0007"; // ta-allow-fake-secret —— 假值
+    await openDetail();
+    // [docs/30] 极简：**已经存在的凭据不再重复报一遍**（它就在下面那张凭据表里）。
+    // 那句话只在"这次会新建一份凭据"时才有信息量；这里已有凭据 → 不许再出现。
+    expect(screen.queryByText(/写入的凭据/)).toBeNull();
+    // 而"写的是哪一把"这个事实仍在页面上（凭据表里有它的 id）
 
-    // 写的是**这个服务商已有的那把凭据**，不是新造一个 `<id>-default`
-    expect(credential.calls[0]!["credential"]).toMatchObject({ id: "c-bytedance" });
+    typeInto("providers-edit-secret", KEY);
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(secret.calls).toHaveLength(1));
+    // 不新造 `<provider>-default`：写的是已有的那把
+    expect(credential.calls).toHaveLength(0);
     expect(secret.calls[0]).toEqual({ id: "c-bytedance", plaintext: KEY });
+    // 明文不进载荷、页面上任何地方都没有它
+    expect(JSON.stringify(upsert.calls[0]!["provider"])).not.toContain(KEY);
     expect(document.body.textContent ?? "").not.toContain(KEY);
+    // 写成功之后输入框清空（明文只活在内存里的那一次）
+    await waitFor(() => expect(inputOf("providers-edit-secret").value).toBe(""));
   });
 
-  /*
-   * [docs/21 §4.3] 这一条原来是"能就地改线路"（断言 `model_bulk_update({patch:{lane}})`）。
-   * 用户在第 73 轮明确要求"线路设置不能点进服务商里面去修改"，向导里的 `pw-model-lane`
-   * 已由 WP-73B 改成**只读展示**（`providerWizard.test.tsx` 里那一组是同一条规格的正式验收）。
-   * 本文件这一条与它重复，且**旧断言现在是错的**（它在要求一个已经被产品决定去掉的写入口），
-   * 所以按同一条规格改准：读到的是真值、但**一个字节都不写**。
+  it("这把服务商还没有凭据：填了密钥就先建一份默认凭据再写", async () => {
+    const upsert = recordingMock(rustBytedance());
+    const credential = recordingMock({ id: "p-bytedance-default" });
+    const secret = recordingMock(undefined);
+    registerMock("provider_upsert", upsert.handler);
+    registerMock("credential_upsert", credential.handler);
+    registerMock("credential_set_secret", secret.handler);
+    registerMock("credential_list", () => []);
+
+    const KEY = "sk-detail-canary-0008"; // ta-allow-fake-secret —— 假值
+    await openDetail();
+    // 界面上说清"这一填会新建哪一份凭据"（钉 id 本身，不钉那句话的措辞 —— 文案归 i18n）
+    expect(screen.getByText(/p-bytedance-default/)).toBeTruthy();
+    typeInto("providers-edit-secret", KEY);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(secret.calls).toHaveLength(1));
+    expect(credential.calls[0]!["credential"]).toMatchObject({
+      id: "p-bytedance-default",
+      provider: "p-bytedance",
+      secret: "${secret:p-bytedance-default}",
+    });
+    expect(secret.calls[0]).toEqual({ id: "p-bytedance-default", plaintext: KEY });
+  });
+
+  /**
+   * 用户第 82 轮的重构（[docs/28 §1.4]）：
+   * 「添加服务商默认添加所有线路，然后通过滑块来'启用'和'关闭'……直接写在在一个列表里面，
+   *  没有添加的线路也可以设置'网络代理'，只是有个滑块控制是否可见」
+   *
+   * 所以这一版：**扫描 = 扫上游 + 把目录里每条线路都建出来（默认关闭）**；
+   * 列表里每行 = 上游原文 + 网络代理 + 启用/关闭的滑块；列表头上有**全选**
+   * （一条批量命令，不是前端循环）。不再有"勾一下才创建"。
    */
-  it("编辑模式第 2 步：列出该服务商已有模型，线路是只读展示（[docs/21 §4.3]）", async () => {
-    registerMock("provider_upsert", () => ({ id: "p-bytedance", name: "字节方舟" }));
-    registerMock("credential_list", () => [boundCredential("c-bytedance", "p-bytedance")]);
+  it("[docs/28 §1.4] 扫描把清单里的每条线路都建出来（默认关闭）；一个列表里未启用的行也能设代理；全选走批量命令", async () => {
+    const scan = recordingMock({
+      preview_token: "tok-1",
+      models: [{ suggested_id: "m-new", upstream_model: "brand-new-model", exists: false }],
+      skipped: [],
+    });
+    registerMock("model_import_from_provider", scan.handler);
+    const createAll = recordingMock({ created: 1, total: 2 });
+    registerMock("provider_lines_create_all", createAll.handler);
     const bulk = recordingMock({
       applied: true,
       restart_required: false,
       kernel_reload: false,
       channels_created: 0,
     });
-    registerMock("model_bulk_update", bulk.handler);
+    registerMock("channel_bulk_set_enabled", bulk.handler);
+    // [docs/28 §4] 目录里记着**上游原文**（键序都原样）；刻意给一个我们"不认识"的字段，
+    // 证明页面是把 `raw` 原样画出来的，而不是只挑自己认识的键。
+    const UPSTREAM_RAW = {
+      id: "brand-new-model",
+      object: "model",
+      owned_by: "some-vendor-we-never-modeled",
+      created: 1712345678,
+    };
+    registerMock("provider_model_catalog", () => [
+      {
+        provider_id: "p-bytedance",
+        upstream_model: "brand-new-model",
+        suggested_id: "m-new",
+        seen_in_last_scan: true,
+        first_seen_ms: 1,
+        last_seen_ms: 2,
+        added: true,
+        channel_ids: ["ch-new"],
+        enabled: false,
+        raw: UPSTREAM_RAW,
+      },
+      {
+        provider_id: "p-bytedance",
+        upstream_model: BASELINE_MODEL,
+        suggested_id: BASELINE_MODEL,
+        seen_in_last_scan: true,
+        first_seen_ms: 1,
+        last_seen_ms: 2,
+        added: true,
+        channel_ids: ["ch-bytedance"],
+        enabled: true,
+        // 上游那一条不是对象 / 没记到 → `{}`：页面要**如实说**，不许编一个对象出来
+        raw: {},
+      },
+    ]);
+    registerMock("channel_list", () => [
+      rustChannel(),
+      rustChannel({ id: "ch-new", upstream_model: "brand-new-model", enabled: false, lane: null }),
+    ]);
 
-    await openEditWizard();
-    fireEvent.click(screen.getByTestId("pw-next"));
-    await screen.findByTestId("provider-wizard-step2");
+    await openDetail();
 
-    // 基准 mock 的 channel_matrix 里，c-bytedance 上挂着这个模型
-    const row = await screen.findByTestId("pw-model-row");
-    expect(row.textContent).toContain(BASELINE_MODEL);
-    // 「已添加的模型」不是空态
-    expect(screen.queryByTestId("pw-added-models-empty")).toBeNull();
+    // ① 扫描：先记录目录，再把缺的线路补建出来（两步各自是一件事实）
+    fireEvent.click(screen.getByTestId("providers-model-scan"));
+    await waitFor(() => expect(scan.calls).toHaveLength(1));
+    expect(scan.calls[0]).toEqual({ provider_id: "p-bytedance" });
+    await waitFor(() => expect(createAll.calls).toHaveLength(1));
+    // 新线路的默认代理 = 这家服务商自己那条 `lane`（fixture 里是 `lane-direct`）；
+    // 服务商没配就是 `null`（继承），**不编一个 id**
+    expect(createAll.calls[0]).toEqual({ provider_id: "p-bytedance", lane: "lane-direct" });
+    // 扫描结果如实说：扫到几个、这次新建几条、目录里共几条
+    expect((await screen.findByTestId("providers-model-notice")).textContent).toContain("1");
 
-    // 线路只读：没有下拉（也没有 textbox），显示的是后端给的真值；点它不会发任何写命令
-    const laneBox = within(row).getByTestId("pw-model-lane");
-    expect(within(laneBox).queryByRole("combobox")).toBeNull();
-    expect(within(laneBox).queryByRole("textbox")).toBeNull();
-    expect(within(row).getByTestId("pw-model-lane-name").textContent).not.toBe("");
-    fireEvent.click(laneBox);
-    expect(bulk.calls).toHaveLength(0);
+    // ② 一个列表：两条线路都在，滑块反映真实状态
+    const rows = await screen.findAllByTestId("providers-line-row");
+    expect(rows).toHaveLength(2);
+    const offRow = rows.find((r) => (r.textContent ?? "").includes("brand-new-model"))!;
+    const onRow = rows.find((r) => (r.textContent ?? "").includes(BASELINE_MODEL))!;
+    expect(
+      (within(offRow).getByTestId("providers-line-enabled").querySelector("input") as HTMLInputElement)
+        .checked,
+    ).toBe(false);
+    expect(
+      (within(onRow).getByTestId("providers-line-enabled").querySelector("input") as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+
+    // **没有添加的线路（未启用）也能设网络代理** —— 用户原话
+    // [docs/29 §2.1] **线路不再有自己的代理**：出口只由服务商决定（同一服务商一个 URL，
+    // 不同出口 IP 会被上游当成"同账号多地并发"）→ 行里**没有**代理下拉。
+    expect(within(offRow).queryByTestId("providers-line-lane")).toBeNull();
+    // [docs/29 §2.1] **列头里也不许再有「网络代理」那一列** —— 第 88 轮只删了行内控件，
+    // 列头漏了一处（替换静默失败，`tsc` 不报），用户第 117 轮看出来的。这条断言就是防它再回来。
+    const header = screen.getByTestId("providers-lines-header");
+    expect(header.textContent).toContain("名称");
+    expect(header.textContent).not.toContain("网络代理");
+    // 行里**不许**显示上游原文 / 线路 id / 优先级权重 —— 它们在点开的「详情」里。
+    expect(within(offRow).queryByTestId("providers-line-raw-json")).toBeNull();
+    expect(within(offRow).queryByTestId("providers-line-id")).toBeNull();
+    expect(within(offRow).queryByTestId("providers-line-priority")).toBeNull();
+    // 但"点一下详情看原文"这条路还在（上一轮用户认可的那条路径）
+    fireEvent.click(within(offRow).getByTestId("providers-line-info"));
+    const panel = await within(offRow).findByTestId("providers-line-info-panel");
+    const rawJson = within(panel).getByTestId("providers-line-raw-json").textContent ?? "";
+    expect(JSON.parse(rawJson)).toEqual(UPSTREAM_RAW);
+    expect(rawJson.indexOf('"id"')).toBeLessThan(rawJson.indexOf('"owned_by"'));
+    expect(within(panel).getByTestId("providers-line-id")).toBeTruthy();
+    expect(within(panel).getByTestId("providers-line-priority").textContent).toBe("100 / 10");
+    // 目录里记的是 `{}` → 详情里如实说"上游没给对象"，不画空 JSON 框
+    fireEvent.click(within(onRow).getByTestId("providers-line-info"));
+    const onPanel = await within(onRow).findByTestId("providers-line-info-panel");
+    expect(within(onPanel).queryByTestId("providers-line-raw-json")).toBeNull();
+    expect(within(onPanel).getByTestId("providers-line-raw-empty").textContent).toBeTruthy();
+
+    // ③ 全选：计数如实 + 一次动作 → 一条批量命令（不是前端循环）
+    expect(screen.getByTestId("providers-lines-all-count").textContent).toContain("1/2");
+    fireEvent.click(
+      within(screen.getByTestId("providers-lines-all")).getByRole("switch"),
+    );
+    await waitFor(() => expect(bulk.calls).toHaveLength(1));
+    expect(bulk.calls[0]).toEqual({ channel_ids: ["ch-bytedance", "ch-new"], enabled: true });
+  });
+
+  it("[docs/28 §4] 目录里没记到上游原文（`{}`）→ 行里如实说「上游没给对象」，不编一个出来", async () => {
+    registerMock("provider_model_catalog", () => [
+      {
+        provider_id: "p-bytedance",
+        upstream_model: BASELINE_MODEL,
+        suggested_id: BASELINE_MODEL,
+        seen_in_last_scan: true,
+        first_seen_ms: 1,
+        last_seen_ms: 2,
+        added: true,
+        channel_ids: ["ch-bytedance"],
+        enabled: true,
+        raw: {},
+      },
+    ]);
+    registerMock("channel_list", () => [rustChannel()]);
+
+    await openDetail();
+
+    const row = (await screen.findAllByTestId("providers-line-row"))[0]!;
+    // 列表行里没有原文块；点开详情后：没有任何 JSON 框（不画 `{}` 冒充"上游说了个空对象"），
+    // 只有那句实话
+    expect(within(row).queryByTestId("providers-line-raw-json")).toBeNull();
+    fireEvent.click(within(row).getByTestId("providers-line-info"));
+    const panel = await within(row).findByTestId("providers-line-info-panel");
+    expect(within(panel).queryByTestId("providers-line-raw-json")).toBeNull();
+    expect(within(panel).getByTestId("providers-line-raw-empty").textContent).toBeTruthy();
+  });
+
+  it("[docs/28 §1] 线路列表：一行一条（上游模型名 / 网络代理 / 优先级权重 / 启用），启停真调 channel_set_enabled", async () => {
+    const setEnabled = recordingMock(undefined);
+    registerMock("channel_set_enabled", setEnabled.handler);
+    registerMock("provider_model_catalog", () => [
+      {
+        provider_id: "p-bytedance",
+        upstream_model: BASELINE_MODEL,
+        suggested_id: BASELINE_MODEL,
+        seen_in_last_scan: false,
+        first_seen_ms: 1,
+        last_seen_ms: 2,
+        added: true,
+        channel_ids: ["ch-bytedance"],
+        enabled: true,
+      },
+    ]);
+    registerMock("channel_list", () => [rustChannel()]);
+
+    await openDetail();
+
+    const row = (await screen.findAllByTestId("providers-line-row"))[0]!;
+    // [docs/28 §1.5] 列表行 = 名字 + 网络代理 + 滑块（用户原话："一条就是左边名字，
+    // 右边选择滑块就好了"）：**id / 优先级权重不在行里**
+    expect(within(row).getByTestId("providers-line-upstream").textContent).toBe(BASELINE_MODEL);
+    expect(within(row).queryByTestId("providers-line-id")).toBeNull();
+    expect(within(row).queryByTestId("providers-line-priority")).toBeNull();
+    // 网络代理：这一行**自己的** lane，下拉里显示的是线路名（不是 id）
+    // [docs/29 §2.1] 线路行里不再有代理（list 只放名字 + 滑块）
+    expect(within(row).queryByTestId("providers-line-lane")).toBeNull();
+    expect(within(row).getByTestId("providers-line-stale")).toBeTruthy();
+    // 启用状态来自配置本身
+    expect(
+      (within(row).getByTestId("providers-line-enabled").querySelector("input") as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    // 点开「详情」：线路 id 与优先级权重在这里（证据一个不少，只是不占列表版面）
+    fireEvent.click(within(row).getByTestId("providers-line-info"));
+    const panel = await within(row).findByTestId("providers-line-info-panel");
+    expect(within(panel).getByTestId("providers-line-id").textContent).toBe("ch-bytedance");
+    expect(within(panel).getByTestId("providers-line-priority").textContent).toBe("100 / 10");
+
+    // 停用 → `channel_set_enabled({id, enabled:false})`（可逆，绝不删）
+    fireEvent.click(within(row).getByTestId("providers-line-enabled").querySelector("input")!);
+    await waitFor(() => expect(setEnabled.calls).toHaveLength(1));
+    expect(setEnabled.calls[0]).toEqual({ id: "ch-bytedance", enabled: false });
+  });
+
+
+
+
+  it("[docs/28 §3] 移除线路：先确认、写清删的是哪条、channel_delete 没有 force 所以也没有级联按钮", async () => {
+    const remove = recordingMock(undefined);
+    registerMock("channel_delete", remove.handler);
+    registerMock("channel_list", () => [rustChannel()]);
+
+    await openDetail();
+
+    const row = (await screen.findAllByTestId("providers-line-row"))[0]!;
+    // 「移除线路」在**点开的详情**里（[docs/28 §1.5]：列表行只放名字 + 代理 + 滑块）
+    fireEvent.click(within(row).getByTestId("providers-line-info"));
+    fireEvent.click(within(row).getByTestId("providers-line-remove"));
+
+    expect(screen.getByTestId("providers-line-delete-dialog")).toBeTruthy();
+    const target = screen.getByTestId("providers-line-delete-target").textContent ?? "";
+    expect(target).toContain(BASELINE_MODEL);
+    expect(target).toContain("ch-bytedance");
+    // 确认之前一条命令都不发
+    expect(remove.calls).toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId("providers-line-delete-confirm"));
+    await waitFor(() => expect(remove.calls).toHaveLength(1));
+    expect(remove.calls[0]).toEqual({ id: "ch-bytedance" });
+    // 成功的事实写在结果区（只讲刚发生的事）
+    expect((await screen.findByTestId("providers-line-delete-result")).textContent).toContain("已删除");
+    // `channel_delete` 没有 `force` → 级联按钮永远不出现（那是假按钮）
+    expect(screen.queryByTestId("providers-line-delete-cascade")).toBeNull();
+  });
+
+  it("[docs/28 §3] 移除被策略点名引用：原样显示后端原文，且仍然没有级联按钮", async () => {
+    registerMock("channel_delete", () => {
+      throw new TokenAgencyError({
+        code: "TA-5002",
+        message: "channel ch-bytedance 仍被 1 条策略引用（pol-default）",
+      });
+    });
+    registerMock("channel_list", () => [rustChannel()]);
+
+    await openDetail();
+    const removeRow = (await screen.findAllByTestId("providers-line-row"))[0]!;
+    fireEvent.click(within(removeRow).getByTestId("providers-line-info"));
+    fireEvent.click(within(removeRow).getByTestId("providers-line-remove"));
+    fireEvent.click(screen.getByTestId("providers-line-delete-confirm"));
+
+    const error = await screen.findByTestId("providers-line-delete-error");
+    expect(error.textContent).toContain("TA-5002");
+    expect(error.textContent).toContain("仍被 1 条策略引用（pol-default）");
+    // 失败不许写成功
+    expect(screen.queryByTestId("providers-line-delete-result")).toBeNull();
+    expect(screen.queryByTestId("providers-line-delete-cascade")).toBeNull();
+  });
+
+  it("[docs/25] 重新扫描真调 model_import_from_provider，并把「已全部记录」如实说出来", async () => {
+    const scan = recordingMock({
+      preview_token: "tok-1",
+      models: [{ suggested_id: "m-new", upstream_model: "brand-new-model", exists: false }],
+      skipped: [{ upstream_model: "bad model", reason: "名称不合法" }],
+    });
+    registerMock("model_import_from_provider", scan.handler);
+
+    await openDetail();
+    fireEvent.click(await screen.findByTestId("providers-model-scan"));
+
+    await waitFor(() => expect(scan.calls).toHaveLength(1));
+    expect(scan.calls[0]).toEqual({ provider_id: "p-bytedance" });
+    // 1 个模型 + 1 条派生不出 id 的，都记下来了 —— 数字如实说
+    const notice = await screen.findByTestId("providers-model-notice");
+    expect(notice.textContent).toContain("2");
+  });
+
+  it("[docs/28 §1] 空态与读不到是两件事：目录空 / 没有线路 / 线路清单读不到，各有各的话", async () => {
+    // ① 目录还没扫过 + 这一家一条线路都没有
+    // 目录读到了但**是空的** —— 与"读不到"是两件事，页面各说各的话（见下面的 ②）。
+    // 不注册这条 mock 的话 `catalog` 是 `undefined`（读不到），落到的是另一条分支。
+    registerMock("provider_model_catalog", () => []);
+    registerMock("channel_list", () => []);
+    await openDetail();
+    expect(await screen.findByTestId("providers-model-empty")).toBeTruthy();
+    expect(screen.queryAllByTestId("providers-model-row")).toHaveLength(0);
+    // 没有线路 ≠ 画一行破折号：如实说"到上面扫描入口去创建"
+    expect(screen.getByTestId("providers-lines-empty")).toBeTruthy();
+    expect(screen.queryAllByTestId("providers-line-row")).toHaveLength(0);
+    cleanup();
+
+    // ② `channel_list` 读失败：后端原文照旧摆出来 + 说"读不到线路清单"（**不是**"没有线路"）
+    registerBaselineMocks();
+    registerMock("provider_list", () => [rustBytedance()]);
+    registerMock("channel_list", () => {
+      throw new TokenAgencyError({ code: "TA-9001", message: "未注册 mock：channel_list" });
+    });
+    await openDetail();
+    expect((await screen.findByTestId("providers-lines-error")).textContent).toContain("TA-9001");
+    expect(screen.getByTestId("providers-lines-unreadable")).toBeTruthy();
+    expect(screen.queryByTestId("providers-lines-empty")).toBeNull();
+    expect(screen.queryAllByTestId("providers-line-row")).toHaveLength(0);
   });
 });
 
-// ================================================================ ⑨ [docs/21 §1] 删除服务商 / 凭据
-//
+// ================================================================ ⑩ [docs/21 §1] 删除服务商 / 凭据
 // 为什么这一节全部走**整页**（`renderAt`）而不是只看 `ProvidersBody`：
 // 「删除」的语义一半在展示层（行内按钮 / 多选 / 确认框），一半在数据层
 // （载荷到底是 `{id, force:false}` 还是 `force:true`、成功后失效哪些查询、后端原文怎么摆出来）。
@@ -1269,8 +1856,10 @@ describe("[docs/21 §1] 服务商删除：先确认、再 force=false、被引�
     // 基准 mock：c-bytedance 挂在 p-bytedance 下（凭据数来自 credential_list）
     expect(listed).toContain("1");
     expect(listed).toContain("凭据");
-    // 通道数来自 provider_list 的 channel_count 这一列
-    expect(listed).toContain("通道");
+    // 线路数来自 provider_list 的 channel_count 这一列。
+    // 名词（「线路」/「通道」）归 i18n 所有，这里钉的是"这一维被说出来了" ——
+    // 把它收进问号、或干脆不提，才是这条断言要拦的缺陷。
+    expect(listed).toMatch(/线路|通道/);
     // 本页读不到策略清单 → **不许编**"被 N 条策略引用"
     expect(listed).not.toContain("策略");
   });
@@ -1340,7 +1929,7 @@ describe("[docs/21 §1] 服务商删除：先确认、再 force=false、被引�
   });
 });
 
-describe("[docs/21 §1] 详情页删除：页头删服务商 + 凭据表逐行/批量删凭据", () => {
+describe("[docs/21 §1] 详情页删除：页头删服务商（凭据表随「一把密钥」下线）", () => {
   beforeEach(() => {
     registerBaselineMocks();
   });
@@ -1387,86 +1976,51 @@ describe("[docs/21 §1] 详情页删除：页头删服务商 + 凭据表逐行/�
     expect(calls[1]).toEqual({ id: "p-bytedance", force: true });
   });
 
-  it("凭据表每行有 providers-credential-delete；确认后 credential_delete({id, force:false})", async () => {
+  it("[docs/28 §1] 凭据表下线：这一页没有任何凭据多选 / 批量删除 / credential_delete 调用点", async () => {
     const remove = recordingMock(undefined);
     registerMock("credential_delete", remove.handler);
 
     renderAt("/providers/p-bytedance");
-    await screen.findByTestId("providers-credentials-table");
-    fireEvent.click(screen.getByTestId("providers-credential-delete"));
+    await screen.findByTestId("providers-key");
 
-    expect(screen.getByTestId("providers-credential-delete-dialog")).toBeTruthy();
-    const target = screen.getByTestId("providers-credential-delete-target").textContent ?? "";
-    expect(target).toContain("c-bytedance");
+    // 凭据表、行、多选、批量删除 —— 一个都不许留下（一个服务商就一把密钥）
+    for (const gone of [
+      "providers-credentials-table",
+      "providers-credential-row",
+      "providers-credential-select",
+      "providers-credential-select-all",
+      "providers-credential-selected-count",
+      "providers-credential-delete",
+      "providers-credential-delete-selected",
+      "providers-credential-delete-dialog",
+    ]) {
+      expect(screen.queryByTestId(gone), `${gone} 应当随凭据表下线`).toBeNull();
+    }
+    // 页面只剩两条删除入口：删服务商（页头）+ 移除线路（每行）
+    expect(screen.getByTestId("providers-detail-delete")).toBeTruthy();
+    // 而这两条都还没有被点过：一条删除命令都没发
     expect(remove.calls).toHaveLength(0);
 
-    fireEvent.click(screen.getByTestId("providers-credential-delete-confirm"));
-    await waitFor(() => expect(remove.calls).toHaveLength(1));
-    expect(remove.calls[0]).toEqual({ id: "c-bytedance", force: false });
-    expect((await screen.findByTestId("providers-credential-delete-result")).textContent).toContain(
-      "已删除",
-    );
+    // 要撤掉这把密钥 = 删掉这个服务商；页面**不**提供"删掉唯一一把密钥"的按钮
+    fireEvent.click(screen.getByTestId("providers-detail-delete"));
+    expect(screen.getByTestId("providers-delete-dialog")).toBeTruthy();
+    expect(remove.calls).toHaveLength(0);
   });
 
-  it("凭据被引用：原样显示后端原文，此时才出现 providers-credential-delete-cascade（force=true）", async () => {
-    const calls: Record<string, unknown>[] = [];
-    registerMock("credential_delete", (args) => {
-      calls.push(args ?? {});
-      if (args?.["force"] !== true) {
-        throw new TokenAgencyError({ code: "TA-5001", message: "credential c-bytedance 仍被 1 条通道引用" });
-      }
-      return undefined;
-    });
-
-    renderAt("/providers/p-bytedance");
-    await screen.findByTestId("providers-credentials-table");
-    fireEvent.click(screen.getByTestId("providers-credential-delete"));
-    expect(screen.queryByTestId("providers-credential-delete-cascade")).toBeNull();
-
-    fireEvent.click(screen.getByTestId("providers-credential-delete-confirm"));
-    const error = await screen.findByTestId("providers-credential-delete-error");
-    expect(error.textContent).toContain("TA-5001");
-    expect(error.textContent).toContain("仍被 1 条通道引用");
-
-    fireEvent.click(await screen.findByTestId("providers-credential-delete-cascade"));
-    await waitFor(() => expect(calls).toHaveLength(2));
-    expect(calls[0]).toEqual({ id: "c-bytedance", force: false });
-    expect(calls[1]).toEqual({ id: "c-bytedance", force: true });
-  });
-
-  it("凭据批量：逐行 providers-credential-select + 表头全选 + providers-credential-delete-selected 逐条 force=false", async () => {
+  it("[docs/28 §1] 旧数据里挂了两份凭据：页面如实说，但仍然不退回表格 / 批量删除", async () => {
     registerMock("credential_list", () => [
       boundCredential("c-a", "p-bytedance"),
       boundCredential("c-b", "p-bytedance"),
     ]);
-    const calls: Record<string, unknown>[] = [];
-    registerMock("credential_delete", (args) => {
-      calls.push(args ?? {});
-      if (args?.["id"] === "c-b") {
-        throw new TokenAgencyError({ code: "TA-5001", message: "仍被 1 条通道引用" });
-      }
-      return undefined;
-    });
 
     renderAt("/providers/p-bytedance");
-    await screen.findByTestId("providers-credentials-table");
-    fireEvent.click(selectBoxAt("providers-credential-select-all", 0));
-    expect(screen.getByTestId("providers-credential-selected-count").textContent).toContain("2");
+    const multiple = await screen.findByTestId("providers-key-multiple");
+    // 文案键还没落地 → 只钉这句话**出现**了（不该悄悄只显示第一份）
+    expect(multiple).toBeTruthy();
 
-    fireEvent.click(screen.getByTestId("providers-credential-delete-selected"));
-    expect(screen.getByTestId("providers-credential-delete-dialog")).toBeTruthy();
-    expect(calls).toHaveLength(0);
-    fireEvent.click(screen.getByTestId("providers-credential-delete-confirm"));
-
-    await waitFor(() => expect(calls).toHaveLength(2));
-    expect(calls).toEqual([
-      { id: "c-a", force: false },
-      { id: "c-b", force: false },
-    ]);
-    const text = (await screen.findByTestId("providers-credential-delete-result")).textContent ?? "";
-    expect(text).toContain("成功 1 条，失败 1 条");
-    expect(text).toContain("c-b");
-    expect(text).toContain("TA-5001");
+    expect(screen.queryByTestId("providers-credentials-table")).toBeNull();
+    expect(screen.queryByTestId("providers-credential-delete-selected")).toBeNull();
+    expect(screen.queryByTestId("providers-credential-select-all")).toBeNull();
   });
 });
 
@@ -1501,20 +2055,20 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
     });
 
     // 先钉"不再内联"（旧代码上这一条先红：四行灰字正铺在表的下面）
-    expect(screen.queryByText(/状态灯只取后端返回的 status 列/)).toBeNull();
+    expect(screen.queryByText(copy("providers.honesty.status"))).toBeNull();
 
     const label = helpLabel("providers-table-help");
-    expect(label).toContain("状态灯只取后端返回的 status 列");
-    expect(label).toContain("成功率、平均延迟、通道数来自服务商的只读视图");
-    expect(label).toContain("「挂载」里的凭据数按凭据自己的 provider 字段归并");
+    expect(label).toContain(copy("providers.honesty.status"));
+    expect(label).toContain(copy("providers.honesty.fields"));
+    expect(label).toContain(copy("providers.honesty.mounted"));
     expect(label).toContain("点名称进入详情");
     // 多句合成一条、一个区块只有一个问号（[docs/22 §3]：一排问号比一排字更糟）
     expect(label).toContain("\n");
     expect(screen.getAllByTestId("providers-table-help")).toHaveLength(1);
 
     // 正文不再内联（原来的四行灰字一行都不剩）
-    expect(screen.queryByText(/成功率、平均延迟、通道数来自服务商的只读视图/)).toBeNull();
-    expect(screen.queryByText(/「挂载」里的凭据数按凭据自己的 provider 字段归并/)).toBeNull();
+    expect(screen.queryByText(copy("providers.honesty.fields"))).toBeNull();
+    expect(screen.queryByText(copy("providers.honesty.mounted"))).toBeNull();
     expect(screen.queryByText(/点名称进入详情/)).toBeNull();
   });
 
@@ -1525,17 +2079,24 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
     });
     // §2 第 5 条：任何数值与单位一眼可见
     expect(screen.getByText("共 1 个服务商")).toBeTruthy();
-    expect(screen.getByText("1 个凭据 · 3 条通道")).toBeTruthy();
+    expect(
+      screen.getByText(copyVars("providers.mount.both", { credentials: 1, channels: 3 })),
+    ).toBeTruthy();
     const withData = helpLabel("providers-table-help");
     expect(withData).not.toContain("个服务商");
-    expect(withData).not.toContain("个凭据");
+    // 数值与单位留在版面上：提示里不许出现**这一格渲染出来的那句话**
+    expect(withData).not.toContain(
+      copyVars("providers.mount.both", { credentials: 1, channels: 3 }),
+    );
     cleanup();
 
-    // §2 第 1 条：空态是结论，不是解释
+    // §2 第 1 条 + 第 2 轮判据 A：空态是**一句结论**，不是解释、也不再重复页头的动作
     renderList();
-    expect(screen.getByTestId("providers-empty")).toBeTruthy();
-    expect(screen.getByText("配置里还没有服务商")).toBeTruthy();
-    expect(screen.getByText(/服务商来自配置文件的 providers 段/)).toBeTruthy();
+    const empty = screen.getByTestId("providers-empty");
+    expect(empty.textContent).toBe("配置里还没有服务商");
+    expect(within(empty).queryByRole("button")).toBeNull();
+    // 旧版那句"服务商来自配置文件的 providers 段……尚未接线"是**解释**，已整条下线
+    expect(screen.queryByText(/providers 段/)).toBeNull();
     expect(helpLabel("providers-table-help")).not.toContain("配置里还没有服务商");
     cleanup();
 
@@ -1545,7 +2106,7 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
     expect(helpLabel("providers-table-help")).not.toContain("TA-5001");
   });
 
-  it("详情页：五个区块各一个问号，长解释不再内联", () => {
+  it("详情页：六个区块各一个问号（含线路与密钥），长解释不再内联", () => {
     renderDetail({
       id: "p-rust",
       row: readProvider(rustProvider()),
@@ -1554,19 +2115,21 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
     });
 
     // 先钉"不再内联"（旧代码上这一条先红：概览下面正铺着那句灰字）
-    expect(screen.queryByText(/健康状态、成功率、平均延迟、通道数只有后端视图才提供/)).toBeNull();
+    expect(screen.queryByText(copy("providers.honesty.detailFields"))).toBeNull();
 
-    expect(helpLabel("providers-overview-help")).toContain(
-      "健康状态、成功率、平均延迟、通道数只有后端视图才提供",
-    );
+    expect(helpLabel("providers-overview-help")).toContain(copy("providers.honesty.detailFields"));
     const connection = helpLabel("providers-connection-help");
-    expect(connection).toContain("「—」表示后端没有返回这一列");
-    expect(connection).toContain("读取超时要给流式留足余量");
-    expect(connection).toContain("额外 CA 在这里只显示是否配置");
+    // 第 2 轮：`connection.partial` 这一条里同时放了「—」的含义与读取超时的结论；
+    // 「不会用默认值覆盖线上值」那条**破坏性后果**留在版面上（见下面 `providers-connection-protect`）。
+    expect(connection).toContain(copy("providers.connection.partial"));
+    expect(connection).toContain(copy("providers.tls.extraCaHint"));
+    expect(connection).not.toContain(copy("providers.connection.hint"));
     expect(connection).toContain("\n");
 
-    expect(helpLabel("providers-headers-help")).toContain("附加头默认只补缺");
-    expect(helpLabel("providers-credentials-help")).toContain("密钥以引用形式显示");
+    expect(helpLabel("providers-headers-help")).toContain(copy("providers.headers.hint"));
+    expect(helpLabel("providers-key-help")).toContain(copy("providers.credentials.secretHint"));
+    // 线路区是这一页的主体（[docs/28 §1]）：它**有**自己的那一个问号
+    expect(helpLabel("providers-lines-help")).toBeTruthy();
     expect(helpLabel("providers-raw-section-help")).toContain("原样显示（未做任何清洗与删减）");
 
     // 每个区块**只有**一个问号
@@ -1574,47 +2137,54 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
       "providers-overview-help",
       "providers-connection-help",
       "providers-headers-help",
-      "providers-credentials-help",
+      "providers-key-help",
+      "providers-lines-help",
       "providers-raw-section-help",
     ]) {
       expect(screen.getAllByTestId(testId), `${testId} 只能有一个`).toHaveLength(1);
     }
 
     // 正文不再内联
-    expect(screen.queryByText(/健康状态、成功率、平均延迟、通道数只有后端视图才提供/)).toBeNull();
-    expect(screen.queryByText(/「—」表示后端没有返回这一列/)).toBeNull();
-    expect(screen.queryByText(/读取超时要给流式留足余量/)).toBeNull();
-    expect(screen.queryByText(/额外 CA 在这里只显示是否配置/)).toBeNull();
-    expect(screen.queryByText(/附加头默认只补缺/)).toBeNull();
-    expect(screen.queryByText(/密钥以引用形式显示/)).toBeNull();
+    expect(screen.queryByText(copy("providers.honesty.detailFields"))).toBeNull();
+    expect(screen.queryByText(copy("providers.connection.partial"))).toBeNull();
+    expect(screen.queryByText(copy("providers.tls.extraCaHint"))).toBeNull();
+    expect(screen.queryByText(copy("providers.headers.hint"))).toBeNull();
+    expect(screen.queryByText(copy("providers.credentials.secretHint"))).toBeNull();
     expect(screen.queryByText(/原样显示（未做任何清洗与删减）/)).toBeNull();
   });
 
-  it("详情页红线仍内联：不可用结论、超时秒数、已用比例都没被收进去", () => {
-    // §2 第 1 条：「后端没有连接配置字段」是一句**结论**，必须一眼可见
+  it("详情页红线仍内联：不可用结论、破坏性后果与数值都没被收进去", () => {
+    // §2 第 1 条：「连接配置没读到」是一句**结论**，必须一眼可见
     renderDetail({ id: "p-view", row: readProvider(viewProvider()) });
     expect(screen.getByTestId("providers-connection-unavailable")).toBeTruthy();
-    expect(screen.getByText(/后端返回的是服务商视图/)).toBeTruthy();
-    expect(helpLabel("providers-connection-help")).not.toContain("后端返回的是服务商视图");
+    expect(screen.getByText(copy("providers.connection.unavailable"))).toBeTruthy();
+    // 结论**不许**被收进 tooltip（收了就是"藏问题"）
+    expect(helpLabel("providers-connection-help")).not.toContain(copy("providers.connection.unavailable"));
+    // 只读时**不重复**那句承诺：上面 `providers-view-only` 已经说过了（同一屏同一事实说一遍）
+    expect(screen.queryByTestId("providers-connection-protect")).toBeNull();
+    // 可编辑的那一行必须看得见这条承诺（第 2 轮补丁：破坏性后果留在版面，原因才进 `?`）
+    cleanup();
+    renderDetail({ id: "p-rust", row: readProvider(rustProvider()), onSave: async () => {} });
+    expect(screen.getByTestId("providers-connection-protect").textContent).toBe(
+      copy("providers.connection.hint"),
+    );
+    expect(helpLabel("providers-connection-help")).not.toContain(copy("providers.connection.hint"));
+    expect(screen.queryByTestId("providers-view-only")).toBeNull();
     cleanup();
 
-    // §2 第 5 条：数值与单位
+    // §2 第 5 条：数值与单位（超时秒数在控件里也是**一眼可见**的值，不是藏在提示里的）
     renderDetail({
       id: "p-rust",
       row: readProvider(rustProvider()),
       credentials: [readCredential(rustCredential())],
       laneName: () => undefined,
+      onSave: async () => {},
     });
-    const connectionSection = within(screen.getByTestId("providers-connection"));
-    expect(connectionSection.getByText("10s")).toBeTruthy();
-    expect(connectionSection.getByText("120s")).toBeTruthy();
-    expect(
-      within(screen.getByTestId("providers-credentials-table")).getByText("82.0%"),
-    ).toBeTruthy();
-    expect(helpLabel("providers-connection-help")).not.toContain("120s");
-    expect(helpLabel("providers-credentials-help")).not.toContain("82.0%");
-    // 明文密钥那条**状态**（不是解释）也留在版面上
-    expect(screen.getByText("已配置")).toBeTruthy();
+    expect(inputOf("providers-edit-timeoutConnect").value).toBe("10");
+    expect(inputOf("providers-edit-timeoutRead").value).toBe("120");
+    expect(helpLabel("providers-connection-help")).not.toContain("120");
+    // 密钥**引用**（`${secret:rust}`）原样留在版面上 —— 它是这一条凭据的状态，不是解释
+    expect(screen.getByTestId("providers-key-secret").textContent).toBe("${secret:rust}");
   });
 
   it("详情页：连接配置没返回时，概览与附加头区块不画问号也不留空占位", () => {
@@ -1637,7 +2207,7 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
     expect(screen.getByText("会连带删除 / 影响：")).toBeTruthy();
     const consequences = screen.getByTestId("providers-delete-consequences").textContent ?? "";
     expect(consequences).toContain("凭据");
-    expect(consequences).toContain("通道");
+    expect(consequences).toMatch(/线路|通道/);
 
     // 按钮文案永远留在按钮上
     expect(screen.getByTestId("providers-delete-confirm").textContent).toBe("删除");
@@ -1650,5 +2220,21 @@ describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", 
       expect(help.getAttribute("aria-label") ?? "").not.toContain("无法撤销");
     }
     expect(remove.calls).toHaveLength(0);
+  });
+});
+
+// ================================================================ [docs/26 §2] 一级界面省略
+
+describe("[docs/26 §2] 服务商名：省略后两条恢复路径都在（进详情 + 悬停/聚焦提示）", () => {
+  it("长名字整段留在 DOM 里；没溢出时既不挂提示，也不是 Tab 站", () => {
+    const name = "自建网关（东京 B 机 · 团队 A 专用 · 仅供白天批处理任务）";
+    renderList({ rows: [readProvider(rustProvider({ id: "p-long", name }))] });
+
+    const element = screen.getByTestId("providers-name-ellipsis");
+    // 名字还可以照旧点进详情页；DOM 里也是完整原文（省略只发生在 CSS 层）
+    expect(element.textContent).toBe(name);
+    expect(screen.getByRole("button", { name })).toBeTruthy();
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(element.getAttribute("tabindex")).toBeNull();
   });
 });

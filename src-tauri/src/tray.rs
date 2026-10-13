@@ -100,8 +100,6 @@ pub struct HealthInput {
     pub usable_channels: usize,
     /// 处于冷却的通道数
     pub cooling_channels: usize,
-    /// 额度进入 soft 告警的通道数
-    pub soft_quota_channels: usize,
     /// 配了节点的 lane 总数
     pub lanes_total: usize,
     /// 其中有可达节点的 lane 数
@@ -122,7 +120,6 @@ pub fn judge_status(input: &HealthInput) -> TrayStatus {
         return TrayStatus::Error;
     }
     let degraded = input.cooling_channels > 0
-        || input.soft_quota_channels > 0
         || input.usable_channels < input.enabled_channels
         || input.lanes_reachable < input.lanes_total;
     if degraded {
@@ -332,10 +329,6 @@ pub struct TrayChannelItem {
     pub id: String,
     pub label: String,
     pub enabled: bool,
-    /// 额度文案，如 `4.1M/5M 82%` / `未知`
-    pub quota_text: String,
-    /// 额度状态：ok / soft / exhausted / unknown
-    pub quota_state: String,
 }
 
 /// 组装菜单与 tooltip 所需的一切（由 T1 从 state 里填）。
@@ -394,7 +387,6 @@ pub enum TrayAction {
         channel: String,
         enabled: bool,
     },
-    ResetChannelQuota(String),
     Emergency(EmergencyMode),
     CopyAccessInfo,
     OpenPanel,
@@ -420,7 +412,6 @@ impl TrayAction {
             TrayAction::UseLane(_) => "切换出口节点",
             TrayAction::RetestLanes => "重新测速",
             TrayAction::SetChannelEnabled { .. } => "启用/停用通道",
-            TrayAction::ResetChannelQuota(_) => "清零额度",
             TrayAction::Emergency(_) => "紧急开关",
             TrayAction::CopyAccessInfo => "复制接入信息",
             TrayAction::OpenPanel => "打开面板",
@@ -512,10 +503,6 @@ pub mod id {
         format!("channel:{channel_id}:{verb}")
     }
 
-    pub fn channel_reset_quota(channel_id: &str) -> String {
-        format!("channel:{channel_id}:reset_quota")
-    }
-
     pub fn emergency(mode: EmergencyMode) -> String {
         format!("emergency:{}", mode.as_str())
     }
@@ -591,39 +578,22 @@ pub fn build_menu_spec(s: &TraySnapshot) -> MenuSpec {
         items: lanes,
     });
 
-    // 通道状态（每项带"禁用/启用"与"清零额度"）
+    // 通道状态（每项带"禁用/启用"）
     let mut channels = Vec::new();
     for c in &s.channels {
-        // [15 §2.1] 托盘文案**不许用 emoji**（`⛔ ⚠️ ❔ ✅` 都被点名）。
-        // 托盘菜单只有文本、没有颜色，所以这里用**文字后缀**表达额度状态 ——
-        // 正常态不加后缀（少即是多），异常态才说清楚。
-        let quota_note = match c.quota_state.as_str() {
-            "exhausted" => "（已耗尽）",
-            "soft" => "（额度临界）",
-            "unknown" => "（额度未知）",
-            _ => "",
-        };
-        let children = vec![
-            MenuNode::Item {
-                id: id::channel_toggle(&c.id, !c.enabled),
-                label: if c.enabled {
-                    "禁用该凭据".to_string()
-                } else {
-                    "启用该凭据".to_string()
-                },
-                enabled: true,
-                checked: None,
+        let children = vec![MenuNode::Item {
+            id: id::channel_toggle(&c.id, !c.enabled),
+            label: if c.enabled {
+                "禁用该凭据".to_string()
+            } else {
+                "启用该凭据".to_string()
             },
-            MenuNode::Item {
-                id: id::channel_reset_quota(&c.id),
-                label: "清零额度（我充值了）".to_string(),
-                enabled: true,
-                checked: None,
-            },
-        ];
+            enabled: true,
+            checked: None,
+        }];
         channels.push(MenuNode::Submenu {
             id: format!("channel:{}", c.id),
-            label: format!("{}  {}{}", c.label, c.quota_text, quota_note),
+            label: c.label.clone(),
             enabled: true,
             items: children,
         });
@@ -759,7 +729,7 @@ pub fn parse_action(menu_id: &str) -> TrayAction {
         }
     }
     if let Some(rest) = menu_id.strip_prefix("channel:") {
-        // 形如 `channel:<id>:enable|disable|reset_quota`
+        // 形如 `channel:<id>:enable|disable`
         if let Some((channel, verb)) = rest.rsplit_once(':') {
             match verb {
                 "enable" => {
@@ -774,7 +744,6 @@ pub fn parse_action(menu_id: &str) -> TrayAction {
                         enabled: false,
                     }
                 }
-                "reset_quota" => return TrayAction::ResetChannelQuota(channel.to_string()),
                 _ => {}
             }
         }
@@ -1056,7 +1025,6 @@ mod tests {
             enabled_channels: 3,
             usable_channels: 3,
             cooling_channels: 0,
-            soft_quota_channels: 0,
             lanes_total: 2,
             lanes_reachable: 2,
         };
@@ -1066,13 +1034,9 @@ mod tests {
         let paused = HealthInput { gateway_paused: true, cooling_channels: 1, ..healthy };
         assert_eq!(judge_status(&paused), TrayStatus::Paused);
 
-        // 冷却 / soft 额度 / 通道减少 / lane 不可达 → 降级
+        // 冷却 / 通道减少 / lane 不可达 → 降级
         assert_eq!(
             judge_status(&HealthInput { cooling_channels: 1, ..healthy }),
-            TrayStatus::Degraded
-        );
-        assert_eq!(
-            judge_status(&HealthInput { soft_quota_channels: 1, ..healthy }),
             TrayStatus::Degraded
         );
         assert_eq!(
@@ -1229,8 +1193,6 @@ mod tests {
                 id: "relay-a".into(),
                 label: "中转站A".into(),
                 enabled: true,
-                quota_text: "4.1M/5M 82%".into(),
-                quota_state: "soft".into(),
             }],
             emergency: EmergencyMode::Restore,
         }
@@ -1352,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn channel_section_exposes_quota_and_two_actions() {
+    fn channel_section_exposes_the_toggle_action() {
         let spec = build_menu_spec(&snapshot());
         let channels = find_submenu(&spec, id::CHANNEL_MENU);
         let node =
@@ -1362,10 +1324,9 @@ mod tests {
             other => panic!("通道项应是子菜单，实际 {other:?}"),
         };
         assert_eq!(sub_id, "channel:relay-a");
-        assert!(label.contains("中转站A") && label.contains("82%"), "{label}");
-        // [15 §2.1] 不许用 emoji；soft 额度用**文字后缀**表达
-        assert!(label.contains("额度临界"), "soft 额度应有文字提示：{label}");
-        assert!(!label.contains('⚠'), "托盘文案里不许出现 emoji：{label}");
+        assert_eq!(label, "中转站A");
+        // [15 §2.1] 托盘文案里不许出现 emoji
+        assert!(!label.contains('\u{26a0}'), "托盘文案里不许出现 emoji：{label}");
         let ids: Vec<&str> = items
             .iter()
             .filter_map(|n| match n {
@@ -1373,13 +1334,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            ids,
-            vec![
-                id::channel_toggle("relay-a", false).as_str(),
-                id::channel_reset_quota("relay-a").as_str()
-            ]
-        );
+        assert_eq!(ids, vec![id::channel_toggle("relay-a", false).as_str()]);
     }
 
     #[test]
@@ -1464,10 +1419,6 @@ mod tests {
             parse_action(&id::channel_toggle("relay-a", true)),
             TrayAction::SetChannelEnabled { channel: "relay-a".to_string(), enabled: true }
         );
-        assert_eq!(
-            parse_action(&id::channel_reset_quota("relay-a")),
-            TrayAction::ResetChannelQuota("relay-a".to_string())
-        );
         for mode in EmergencyMode::ENTRIES {
             assert_eq!(parse_action(&id::emergency(mode)), TrayAction::Emergency(mode));
         }
@@ -1483,10 +1434,6 @@ mod tests {
         assert_eq!(
             parse_action(&id::channel_toggle("relay:a", false)),
             TrayAction::SetChannelEnabled { channel: "relay:a".to_string(), enabled: false }
-        );
-        assert_eq!(
-            parse_action(&id::channel_reset_quota("relay:a")),
-            TrayAction::ResetChannelQuota("relay:a".to_string())
         );
     }
 
@@ -1510,7 +1457,9 @@ mod tests {
         let spec = build_menu_spec(&snapshot());
         let mut ids = Vec::new();
         collect_ids(&spec.items, &mut ids);
-        assert!(ids.len() >= 20, "菜单项太少，可能漏了：{ids:?}");
+        // 19 项 = 去掉"通道清零额度"那条之后的实有数量（额度功能已下线）。
+        // 这个数是**下界**：它挡的是"菜单生成悄悄少了一整节"，不是精确快照。
+        assert!(ids.len() >= 19, "菜单项太少，可能漏了：{ids:?}");
         for menu_id in ids {
             let action = parse_action(&menu_id);
             assert!(

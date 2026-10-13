@@ -42,9 +42,53 @@ import { EventName, subscribeAll } from "./events";
 import { EVENT_INVALIDATIONS, qk } from "./keys";
 // ================================================================ 错误
 
-/** 面向用户的一句话错误信息（含错误码，便于对着 [11 §5] 查）。 */
+/**
+ * `TA-5001` 的 `details` 里带出来的**逐字段**错误
+ * （Rust 侧 `ta_core::error::FieldError` = `{ path, code, message }`）。
+ */
+export type FieldErrorDetail = { path: string; code: string; message: string };
+
+/**
+ * 从错误的 `details` 里取出字段错误清单（形状不对就返回空数组 —— 不猜、不抛）。
+ *
+ * 为什么需要它：`IpcError::from_field_errors` 把**具体字段路径**放在 `details`，
+ * 而 `message` 只有一句「配置校验失败：N 处问题」。只显示 `message` 的话，
+ * 用户看到的就是一个**没有任何可执行信息**的报错
+ * —— 这一条是第 320 轮用户真机报上来的（删订阅被拦，只看到"1 处问题"）。
+ */
+export function fieldErrorsOf(err: unknown): FieldErrorDetail[] {
+  if (!(err instanceof TokenAgencyError)) return [];
+  const raw = err.details;
+  if (!Array.isArray(raw)) return [];
+  const out: FieldErrorDetail[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null) continue;
+    const o = item as Record<string, unknown>;
+    if (typeof o.path !== "string" || typeof o.message !== "string") continue;
+    out.push({ path: o.path, code: typeof o.code === "string" ? o.code : "", message: o.message });
+  }
+  return out;
+}
+
+/**
+ * 面向用户的一句话错误信息（含错误码，便于对着 [11 §5] 查）。
+ *
+ * **`TA-5001` 会把逐字段路径一并带上**（[docs/21 §1.1 第 3 条]：被拒绝时要说清
+ * 是**哪一处**、以及怎么出去）。原来这里只返回 `message`，而它的内容只有
+ * 「配置校验失败：1 处问题」—— 结构化的 `details` 被整个丢掉，
+ * 于是用户唯一的线索是一个 TA 码（第 320 轮真机报的就是这个）。
+ *
+ * 其它错误码原样返回 `message`（它们本来就是人话）。
+ */
 export function errorMessage(err: unknown): string {
-  if (err instanceof TokenAgencyError) return `[${err.code}] ${err.message}`;
+  if (err instanceof TokenAgencyError) {
+    const head = `[${err.code}] ${err.message}`;
+    const fields = fieldErrorsOf(err);
+    if (fields.length === 0) return head;
+    // 逐条「路径：说明」；多条用 `；` 分隔（与仓里其它多处并列的写法一致）
+    const detail = fields.map((f) => `${f.path}：${f.message}`).join("；");
+    return `${head} · ${detail}`;
+  }
   if (err instanceof Error) return err.message;
   return String(err);
 }

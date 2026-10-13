@@ -879,9 +879,9 @@ pub fn credential_entry_name(provider_id: &str) -> String {
 
 /// 用 `serde_json` 构造领域实体：**其余字段全部走 `ta-core` 自己的 `#[serde(default)]`**。
 ///
-/// 为什么不用 `Provider { … }` 手写字面量：`QuotaConfig` / `TimeoutConfig` 这些没有
-/// `Default`，手写就得把 `currency: "USD"` / `reset_day: 1` / `soft_limit: 0.8` …
-/// **在命令层再抄一遍**，schema 一改就静默漂移。反序列化走的是同一套默认值。
+/// 为什么不用 `Provider { … }` 手写字面量：`TimeoutConfig` 这类没有 `Default`，
+/// 手写就得把每个默认值**在命令层再抄一遍**，schema 一改就静默漂移。
+/// 反序列化走的是同一套默认值。
 fn from_defaults<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> IpcResult<T> {
     serde_json::from_value(value).map_err(|e| {
         IpcError::from(TaError::Internal(format!(

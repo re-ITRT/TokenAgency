@@ -451,6 +451,13 @@ fn set_path_at(cursor: &mut Value, parts: &[&str], value: Value) -> bool {
 ///
 /// 例：`https://api.anthropic.com/v1` + `/v1/messages` → `.../v1/messages`
 /// （取 base 末尾与 path 开头的最长公共段并去掉 path 的那一段；否则会拼成 `/v1/v1/...`）。
+///
+/// **版本段按"槽位"相等**（[docs/46 §305]，真机踩过）：客户端路径永远是 `/v1/...`（OpenAI 兼容
+/// 客户端的硬约定），而服务商的 `base_url` 常常**自己就带 API 根**，版本号还不一定叫 `v1`：
+/// `https://ark.cn-beijing.volces.com/api/coding/v3`。按"字符串完全相同"去重会拼成
+/// `/api/coding/v3/v1/chat/completions` —— 上游没有这个路径，**火山实测返回 404**，
+/// 客户端看到的就是那句 `404 status code (no body)`。
+/// 所以：base 末尾的 `v1`/`v3`/`v1beta` 与 path 开头的 `v1` 视为**同一个版本槽**，去掉 path 那一段。
 pub fn join_upstream_url(base_url: &str, path: &str, query: Option<&str>) -> String {
     let base = base_url.trim_end_matches('/');
     let (base_origin, base_path) = match base.split_once("://") {
@@ -468,10 +475,13 @@ pub fn join_upstream_url(base_url: &str, path: &str, query: Option<&str>) -> Str
     let path_segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
     // 最长公共段：base 的末尾 k 段 == path 的开头 k 段
+    // （版本段按"槽位"相等：`v3` 与 `v1` 都算版本段 —— 见上面的注释与 [docs/46 §305]）
     let max_k = base_segments.len().min(path_segments.len());
     let mut overlap = 0;
     for k in 1..=max_k {
-        if base_segments[base_segments.len() - k..] == path_segments[..k] {
+        let tail = &base_segments[base_segments.len() - k..];
+        let head = &path_segments[..k];
+        if tail.iter().zip(head).all(|(a, b)| segments_match(a, b)) {
             overlap = k;
         }
     }
@@ -492,6 +502,29 @@ pub fn join_upstream_url(base_url: &str, path: &str, query: Option<&str>) -> Str
         }
     }
     url
+}
+
+/// 两个 URL 段能不能当成"同一段"来去重。
+///
+/// 只有一种放宽：**两边都是 API 版本段**（`v1` / `v2` / `v3` / `v1beta` …）时算相同 ——
+/// 客户端路径开头永远是 `/v1`，而服务商 base 的版本号可能是 `v3`（火山 `/api/coding/v3`）。
+/// 其它段仍然必须逐字相等（`openai` ≠ `api`，不许多吃掉一段）。
+fn segments_match(base_segment: &str, path_segment: &str) -> bool {
+    base_segment == path_segment
+        || (is_version_segment(base_segment) && is_version_segment(path_segment))
+}
+
+/// `v1` / `v12` / `v1beta` / `v2alpha` 这种"版本段"。
+fn is_version_segment(segment: &str) -> bool {
+    let Some(digits_and_rest) = segment.strip_prefix('v') else {
+        return false;
+    };
+    let digits: String = digits_and_rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return false;
+    }
+    let rest = &digits_and_rest[digits.len()..];
+    rest.is_empty() || rest == "beta" || rest == "alpha"
 }
 
 /// `auth.scheme: query` 时把 key 追加到 URL（参数名取 `auth.header`，默认 `key`）。
@@ -1178,6 +1211,26 @@ pub(crate) mod tests {
             join_upstream_url("https://api.anthropic.com/v1", "/v1/messages", None),
             "https://api.anthropic.com/v1/messages"
         );
+        // [docs/46 §305] **真机踩过的那条**：火山 Ark 的 base 带自己的 API 根（`/api/coding/v3`），
+        // 客户端路径是 `/v1/chat/completions` —— 版本段按槽位去重，不能拼成 `.../v3/v1/...`
+        // （上游没有这个路径，实测 404，客户端只看到 `404 status code (no body)`）。
+        assert_eq!(
+            join_upstream_url(
+                "https://ark.cn-beijing.volces.com/api/coding/v3",
+                "/v1/chat/completions",
+                None
+            ),
+            "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
+        );
+        assert_eq!(
+            join_upstream_url("https://host.example/api/v3", "/v1/messages", Some("beta=1")),
+            "https://host.example/api/v3/messages?beta=1"
+        );
+        // 非版本段仍然逐字比：`api` ≠ `openai`，不许把 base 的路径吃掉一段
+        assert_eq!(
+            join_upstream_url("https://host.example/openai/api", "/v1/chat/completions", None),
+            "https://host.example/openai/api/v1/chat/completions"
+        );
         assert_eq!(
             join_upstream_url("https://relay.example.com/v1", "/v1/chat/completions", Some("a=1")),
             "https://relay.example.com/v1/chat/completions?a=1"
@@ -1197,6 +1250,15 @@ pub(crate) mod tests {
                 None
             ),
             "https://relay.example.com/v1beta/models/gemini:gen"
+        );
+        // `v1alpha`/`v2` 也算版本段；`version`（不以 v+数字开头）不算
+        assert!(
+            is_version_segment("v1") && is_version_segment("v1beta") && is_version_segment("v12")
+        );
+        assert!(
+            !is_version_segment("version")
+                && !is_version_segment("api")
+                && !is_version_segment("v")
         );
     }
 

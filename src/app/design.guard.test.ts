@@ -74,6 +74,23 @@ const SPACING_JSX_PATTERN = /spacing=\{([^}]+)\}/g;
 
 type Finding = { file: string; line: number; text: string };
 
+/**
+ * **已铺在版面上的长句记账清单**（[22 §2] 极简，用户第 89 轮）。**只许减不许增**。
+ *
+ * 判据见守卫 6：`t("key")` 的 zh 值 ≥40 字且不在问号里。
+ *
+ * 第 336 轮（用户「优化全部的界面，文字内容太多了」）之后**从 6 条降到 1 条**：
+ * 另外 5 条要么被重写短了、要么搬进了 `?`、要么随元素一起删了。
+ * 留下的这一条是"红线型"的 —— 必须一眼看见：
+ *
+ * * `cost.tsx:cost.provenance.unpriced` —— 缺定价的口径，缺了它会让人把"没算钱"当成"不要钱"。
+ *
+ * 纪律没变：**新写一句 ≥40 字的正文就会红**；要加回来，得先说明它为什么是红线。
+ */
+const INLINE_LONG_COPY_BASELINE: readonly string[] = [
+  "pages/cost.tsx:cost.provenance.unpriced",
+];
+
 function listSources(dir: string = SRC_ROOT, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     const full = path.join(dir, entry);
@@ -210,6 +227,81 @@ describe("[15 §8] 设计系统守卫（机械检查，违反即红）", () => {
     expect(
       findings,
       `[15 §4.2] 粗体在深色底上会糊；强调用 500。\n${format(findings)}`,
+    ).toEqual([]);
+  });
+
+  /**
+   * 5. **用户可见的文案里不许出现 markdown 强调**（`**…**`）。
+   *
+   * 真机截图抓到过：`providers.lines.scanHint` 里写了 `**每条**`，界面就**原样**渲染成
+   * 「**每条**」——i18n 的值是纯文本，没有任何地方会把它当 markdown 解析。
+   * 强调要靠结构（分行、`aria-label`、组件层级），不靠星号。
+   *
+   * 例外只有一个：脱敏说明里的 `***`（它的意思是"这里被抹成三个星号"，不是强调）。
+   */
+  it("5. i18n 的文案值里没有 markdown 强调（`**`）——界面不会解析它", () => {
+    const findings: Finding[] = [];
+    for (const rel of ["src/shared/i18n/zh-CN.ts", "src/shared/i18n/en.ts"]) {
+      const text = readFileSync(new URL(`../${rel.replace(/^src\//, "")}`, import.meta.url), "utf8");
+      text.split(/\r?\n/).forEach((line, index) => {
+        const trimmed = line.trim();
+        // 跳过注释（文件头、分组说明）：只查真会进界面的那一部分
+        if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) return;
+        // 值可能写在键的**下一行**（多行格式），所以按"这一行有没有 `**`"判，不要求带冒号。
+        // `(?<!\*)\*\*(?!\*)` = 前后都不能还是星号：这样脱敏说明里的 `***`
+        //（它的意思是"被抹成三个星号"，不是强调）不会被误判。
+        if (/(?<!\*)\*\*(?!\*)/.test(line)) findings.push({ file: rel, line: index + 1, text: trimmed });
+      });
+    }
+    expect(
+      findings,
+      `[15 §2] i18n 的值是纯文本，界面不会解析 markdown：把 ** 换成结构性强调。\n${format(findings)}`,
+    ).toEqual([]);
+  });
+
+  /**
+   * 6. **长解释不许铺在版面上**（[22 §2]；用户第 89 轮「优化每一个界面，走极简风格」）。
+   *
+   * 判据：`t("key")` 的 zh-CN 值 ≥40 字，且那一行**不在**问号 / 无障碍名称 / 错误原文 /
+   * 占位符 / 提示里 —— 也就是它真的画在页面上，而不是收在 `?` 里（"藏在问号里"正是要的形式）。
+   *
+   * 为什么做成守卫：长解释是**静默劣化**的最大来源 —— 一屏里多三句，功能没变、界面就废了。
+   * 已经铺着的那几处记在 `INLINE_LONG_COPY_BASELINE`（每条都写了"为什么它必须留着"），
+   * **只许减不许增**：新写一句 ≥40 字的正文就会红。
+   *
+   * 工具：`node scripts/audit-inline-copy.mjs` 会打印当前清单（按页面分组 + 最长的那几条）。
+   */
+  it("6. 版面上没有 ≥40 字的长句（记账清单只许减不许增）", () => {
+    const zh = readFileSync(new URL("../shared/i18n/zh-CN.ts", import.meta.url), "utf8");
+    const values = new Map<string, string>();
+    for (const line of zh.split(/\r?\n/)) {
+      const m = line.match(/^\s*"([^"]+)":\s*"(.*)",?\s*$/);
+      if (m) values.set(m[1]!, m[2]!);
+    }
+
+    const findings: Finding[] = [];
+    for (const abs of listSources(path.resolve(SRC_ROOT, "pages"))) {
+      const rel = relOf(abs);
+      if (!rel.endsWith(".tsx") || rel.includes(".test.")) continue;
+      readFileSync(abs, "utf8")
+        .split(/\r?\n/)
+        .forEach((line, index) => {
+          for (const m of line.matchAll(/t\("([^"]+)"/g)) {
+            const value = values.get(m[1]!);
+            if (value === undefined || value.length < 40) continue;
+            if (/help|aria|title|description|error|placeholder|notice|hint/i.test(line)) continue;
+            if (INLINE_LONG_COPY_BASELINE.includes(`${rel}:${m[1]}`)) continue;
+            findings.push({
+              file: rel,
+              line: index + 1,
+              text: `${m[1]} → ${value.slice(0, 40)}`,
+            });
+          }
+        });
+    }
+    expect(
+      findings,
+      `[22 §2] 极简：≥40 字的解释收进「?」或删掉，别铺在版面上（红线可记账豁免）。\n${format(findings)}`,
     ).toEqual([]);
   });
 });

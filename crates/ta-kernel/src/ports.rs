@@ -4,9 +4,10 @@
 //!
 //! 1. **落库复用**：同一个 lane 尽量拿回上一次的端口（内核 reload / 重启后端口不变，
 //!    上层已经建立的连接池不用重建）；
-//! 2. **bind 试探**：复用前先 `bind(127.0.0.1:port)` 试一下，被别人占了就换一个，
-//!    并把新端口写回存储 —— **端口变更对上层透明**（拿到的永远是一个当前可用的端口）；
-//! 3. 只在 **127.0.0.1** 上试探/分配，绝不碰 0.0.0.0（[04 §9]）。
+//! 2. **信任持久化的端口，不做事先 bind 探测**：绑定这个端口的往往就是**我们自己的
+//!    mihomo listener**，探测会把"自家占着"读成"被别人占了"，于是每次保存端口都漂移
+//!    （[docs/59] 第 326 轮修的真机缺陷）。真正的占用由内核启动失败来表达；
+//! 3. 只在 **127.0.0.1** 上分配，绝不碰 0.0.0.0（[04 §9]）。
 //!
 //! 存储用 [`PortStore`] 抽象：真实应用接 SQLite（ta-store），测试用内存/文件实现。
 //! ta-kernel 不依赖 ta-store（见 `docs/11` §1.1）。
@@ -46,6 +47,14 @@ impl PortMap {
 
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    /// 遍历 `lane → port`。
+    ///
+    /// [docs/59] 加它是为了让"端口表热更新"能记下**哪几条变了** —— 诊断"端口漂移"
+    /// 这类只有真机上才看得见的问题，靠的就是这条日志。
+    pub fn iter(&self) -> impl Iterator<Item = (&LaneId, &u16)> {
+        self.map.iter()
     }
 }
 
@@ -279,14 +288,25 @@ impl PortAllocator for RangePortAllocator {
     fn allocate(&self, lane: &LaneId) -> Result<u16> {
         let mut assigned = self.inner.lock().expect("allocator 锁被毒化");
 
-        // 1) 先试复用落库的端口
+        // 1) 先试复用落库的端口。
+        //
+        // [docs/59]（第 326 轮）**这里不再用 bind 探针判断"能不能复用"。**
+        //
+        // 原来的写法是 `if self.probe.is_free(port) { 复用 }`，否则当"被占用"重新分配。
+        // 那个判据在运行期**必然为假**：这个端口此刻正被**我们自己的 mihomo listener**
+        // 占着（内核 listen 在 `127.0.0.1:<port>` 上）。于是每写一次配置就把所有 lane
+        // 的端口整体前移一位（39100→39102→…），而网关拨号器手里的表还是 boot 那份
+        // —— 两边一起漂，请求打到旧端口上。
+        // `docs/46-bundled-kernel.md` 里那条
+        // `WARN … 落库的 lane 端口已被占用，重新分配（对上层透明）… port=39104 → 39105`
+        // 就是它（文档当时把它归因于"复制数据目录"，其实是自家内核占的）。
+        //
+        // 改判据：**落库且仍在区间内、且没被同一个分配器分给别的 lane ⇒ 就是我们的端口**。
+        // 端口归属这件事的唯一真源是 `ports.json` + `inner`（我们自己写的），
+        // 而不是"现在能不能 bind" —— 后者问的是"有没有人在听"，而答案通常是"我们自己"。
+        // 真被外来进程抢了，会在内核 listen 那一刻暴露（那是内核要报的错，不该靠这里猜）。
         if let Some(port) = assigned.get(lane).copied() {
-            if self.probe.is_free(port) {
-                return Ok(port);
-            }
-            tracing::warn!(lane_id = %lane, port, "落库的 lane 端口已被占用，重新分配（对上层透明）");
-            assigned.remove(lane);
-            self.store.remove(lane)?;
+            return Ok(port);
         }
 
         // 2) 在 range 里找第一个能 bind 的空位
@@ -430,18 +450,28 @@ mod tests {
         assert_eq!(a2.map().get(&lane("lane-a")), Some(first));
     }
 
+    /// [docs/59]（第 326 轮）**落库端口被"占用"时也必须继续用它**。
+    ///
+    /// 这条测试原来断言的是相反的语义（"被占用 → 换一个"），而那个语义在真机上是**错的**：
+    /// 端口此刻正被我们自己的 mihomo listener 占着，于是每写一次配置端口就整体前移一位，
+    /// 而网关拨号器手里的表还是 boot 那份 —— 两边一起漂，请求打到旧端口。
+    /// 用户第 326 轮报的"网络代理只有直连可用"里就有这一条。
+    ///
+    /// 现在的判据是：**落库的端口就是我们的**（唯一真源是 `ports.json` + 分配器自己），
+    /// 只按"能不能 bind"判断会把自家内核当成入侵者。
     #[test]
-    fn reallocates_when_persisted_port_is_taken() {
+    fn keeps_the_persisted_port_even_when_something_is_listening_on_it() {
         let store = Arc::new(MemoryPortStore::new());
         store.save(&lane("lane-a"), 40_000).unwrap();
 
+        // 探针说这个端口"被占"——模拟我们自己的 mihomo 正 listen 在上面
         let probe = Arc::new(ScriptedProbe::with_occupied(&[40_000]));
         let a = alloc([40_000, 40_005], store.clone(), &probe);
         let p = a.allocate(&lane("lane-a")).unwrap();
-        assert_eq!(p, 40_001, "被占用的落库端口必须换掉");
-        assert_eq!(store.snapshot()[&lane("lane-a")], p, "新端口要写回存储");
+        assert_eq!(p, 40_000, "落库端口必须**保持不变**（端口漂移是个真 bug）");
+        assert_eq!(store.snapshot()[&lane("lane-a")], p, "存储里也不该变");
 
-        // 对上层透明：下一次问还是同一个（新）端口
+        // 对上层透明：下一次问还是同一个端口
         assert_eq!(a.allocate(&lane("lane-a")).unwrap(), p);
     }
 

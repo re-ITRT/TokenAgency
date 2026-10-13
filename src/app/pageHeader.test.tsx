@@ -5,7 +5,6 @@
  * 断言三类东西：
  * - 标题必须是 `text.page`（20/500）—— `MuiTypography-h2` 这一档就是 [15 §4.2] 的 `text.page`；
  *   **不能**用 `h1`（那是 `text.hero`，留给看板主数字，一页最多一个）；
- * - `docRef` 必须渲染出来（契约出处是给人看的，不能悄悄丢），缺省时不许留空行；
  * - 间距与配色走令牌：这里用"没有硬编码颜色、没有刻度外间距"的守卫兜底（design.guard）。
  */
 
@@ -54,7 +53,7 @@ describe("[15 §4.2] PageHeader：页面标题只有一档", () => {
   });
 
   it("[docs/22] 说明不再铺在版面上：收进标题右边的问号圆圈，悬停/聚焦才展开", () => {
-    renderHeader({ title: "请求日志", description: "每一次转发都留痕", docRef: "07 §2 请求日志" });
+    renderHeader({ title: "请求日志", description: "每一次转发都留痕" });
 
     // 正文一个字都没丢：它是问号圆圈的 `aria-label`（读屏与"只看无障碍树"的调用方仍拿得到全文）
     const help = screen.getByTestId("page-header-help");
@@ -63,13 +62,14 @@ describe("[15 §4.2] PageHeader：页面标题只有一档", () => {
     // 但页面上**不再**有那段正文（用户原话："简介好长，好多字"）
     expect(screen.queryByText("每一次转发都留痕")).toBeNull();
 
-    const doc = screen.getByText(/07 §2 请求日志/);
-    expect(doc.className).toContain("MuiTypography-caption");
-    // 出处是开发向信息：必须带前缀（"契约出处："），否则用户看不懂这行是什么
-    expect(doc.textContent).toContain("契约出处");
+    // [极简] **契约出处已经彻底删除**：它是给四个包对照文档用的开发向信息，
+    // 不是给用户看的 —— 页头里不该再出现文档编号。
+    const header = screen.getByTestId("page-header");
+    expect(header.textContent).not.toContain("§");
+    expect(header.textContent).not.toContain("契约");
   });
 
-  it("缺省项不占位：没有 description/docRef/actions 时页头只有标题", () => {
+  it("缺省项不占位：没有 description/actions 时页头只有标题", () => {
     renderHeader({ title: "成本中心" });
     const header = screen.getByTestId("page-header");
     expect(header.textContent).toBe("成本中心");

@@ -61,6 +61,10 @@ pub async fn config_apply(state: State<'_, AppState>, doc: ConfigDoc) -> IpcResu
     }
     state.config.save(&doc).await?;
     state.config.snapshot(&doc, "apply").await?;
+    // [docs/59] `request_log.*` 是**配置里的**字段，而真正管写入的是 trace store 的
+    // `store_setting` —— 两份真相源。改完配置必须同步一次，否则用户改了日志设置
+    // 却看不出任何变化（第 330 轮那个"日志一条都没有"就是这么来的）。
+    crate::commands::log::sync_request_log_settings(&state, &doc).await?;
     state.set_doc(doc);
     Ok(ApplyResult {
         applied: true,

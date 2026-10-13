@@ -102,6 +102,16 @@ export type SubscriptionFormat =
 export type LaneKind =
   | "direct"
   | "subscription_auto"
+  /**
+   * **遗留（第 321 轮取消的概念，[docs/54]）**：用订阅里自带的组。
+   *
+   * 它**还在这个联合类型里**，因为契约必须逐字对齐 Rust 的 `LaneKind`，而那个 variant
+   * 不能删 —— 迁移跑在**已经反序列化完**的文档上，删了会让老配置在 `config.load()`
+   * 就解析失败，迁移根本没机会跑（用户升一次版本就丢配置）。
+   *
+   * 但它**不是可选项**：v2 → v3 迁移会把它转成 `subscription_auto` + 显式 `select`，
+   * 迁移之后还出现就是配置损坏，校验器与内核配置生成都会明确报错。
+   */
   | "subscription_group"
   | "subscription_node"
   | "filter";
@@ -109,19 +119,22 @@ export type LaneKind =
 export type GroupType = "select" | "url-test" | "fallback" | "load-balance";
 export type AuthScheme = "bearer" | "header" | "query" | "none";
 export type HeaderConflict = "keep_client" | "override";
-export type QuotaMetric = "unknown" | "tokens" | "requests" | "cost";
-export type QuotaWindow = "hour" | "day" | "month" | "none";
 export type OnExceed = "wait" | "next_candidate";
-export type Selector =
-  | "priority"
-  | "sticky_then_priority"
-  | "quota_first"
-  | "cheapest"
-  | "lowest_latency"
-  | "weighted_random"
-  | "round_robin";
+/**
+ * 选路策略。**现在只有一种**（[docs/48]）。
+ *
+ * 为什么收敛到一种：`docs/47` 查清"各家额度耗尽返回什么"之后确认**分码也分不干净**
+ * （同一家 429 既表限流也表额度耗尽、有的家把额度耗尽藏在 400 里），于是
+ * "引擎自动挑线路"这条路放弃，改成**用户用开关手动调度 + 引擎只做平均**。
+ *
+ * **平均粘性**：按会话标识粘住同一条线路；未命中（新会话）挑 token 用量最少的；
+ * 没有会话标识时在"最轻的那一档"里随机；这条线路报错就把会话改粘到另一条。
+ *
+ * 旧取值（`priority` / `cheapest` / …）在 Rust 侧仍能被解析成这一个值
+ * （`#[serde(alias)]`），所以老配置不会因为升级而读不出来。
+ */
+export type Selector = "balanced_sticky";
 export type ReleaseReason =
-  | "quota_exhausted"
   | "hard_error"
   | "cooldown"
   | "user_pin_change"
@@ -132,7 +145,6 @@ export type FailoverTrigger =
   | "http5xx"
   | "timeout"
   | "connect_error"
-  | "quota_exhausted"
   | "channel_tagged_out"
   | "capability_mismatch";
 export type NoCandidateAction = "error" | "use_any";
@@ -168,13 +180,31 @@ export type GatewayConfig = {
   local_key?: string | null;
   max_body_mb: number;
   debug_headers: boolean;
-  expose_models_with_capabilities: boolean;
+  /** [docs/28 §4] **已删除的死开关**：不再有"要不要对外暴露模型能力标签"这回事（标签本来就是从我们记录的信息派生的）。老配置里带这个键仍然能解析（落进 `extra`）。 */
   fallback_provider?: ProviderId | null;
   passthrough: PassthroughConfig;
   retry: RetryConfig;
   metering: MeteringConfig;
+  /** [docs/59] 下游 API 家族开关（勾选式）。 */
+  downstream: DownstreamConfig;
 };
 
+/**
+ * [docs/59] 下游对外提供哪几种 API 家族 —— 每个一批的**勾选式开关**。
+ *
+ * 用户第 326 轮的需求 2："可以在设置页面选择我们下游是统一成 OPENAI 的两种还是
+ * Anthropic 的"，补一句"是打开关闭形式，按需求勾选"。所以这是**三个独立的开关**，
+ * 不是"选一个"。关掉的端点会在网关侧**当场明确报错**（错误里点出是哪个开关），
+ * 而不是被转发到上游。
+ */
+export type DownstreamConfig = {
+  /** `POST /v1/chat/completions` —— OpenAI 兼容客户端最常用的一种 */
+  openai_chat: boolean;
+  /** `POST /v1/responses` —— OpenAI 新的 Responses API */
+  openai_responses: boolean;
+  /** `POST /v1/messages` —— Anthropic / Claude Code */
+  anthropic_messages: boolean;
+};
 export type RequestLogConfig = {
   mode: LogMode;
   retention: Retention;
@@ -242,6 +272,13 @@ export type Subscription = {
   enabled: boolean;
   /** 内核里的 provider key（由 id 派生，稳定；全局唯一）。 */
   provider_key?: string | null;
+  /**
+   * **用户关掉的节点名**（省略/空 = 全部启用）。
+   *
+   * 用户第 202 轮：订阅里的节点像服务商的「模型」一样可以单独启用/关闭，带全选、默认全选。
+   * 存"关掉的"而不是"开着的"：机场新增的节点默认就是启用的，不需要用户回来补勾。
+   */
+  disabled_nodes?: string[];
 };
 
 export type Lane = {
@@ -249,8 +286,12 @@ export type Lane = {
   name: string;
   kind: LaneKind;
   subscription?: SubscriptionId | null;
-  /** `kind: subscription_group` 时，订阅里自带的组名（如 "🇯🇵 日本"）。 */ // ta-allow-emoji —— 这是用户数据示例（[15 §2.2]），不是我们产生的文本
+  /** **遗留（[docs/54]）**：`kind: subscription_group` 时订阅里自带的组名。理由见 `LaneKind`。 */ // ta-allow-emoji —— 这是用户数据示例（[15 §2.2]），不是我们产生的文本
   group?: string | null;
+  /**
+   * 组策略。**「自动选择」必须是 `select`** —— `url-test` 会按自己的 interval 周期性重选，
+   * 出口 IP 自己就变了，粘性不成立（[docs/54] §1）。
+   */
   group_type?: GroupType | null;
   /** `kind: subscription_node` 时的固定节点名。 */
   node?: string | null;
@@ -326,19 +367,6 @@ export type ProviderInput = Pick<Provider, "id" | "name" | "protocol" | "base_ur
   enabled?: boolean;
 };
 
-export type QuotaConfig = {
-  metric: QuotaMetric;
-  limit?: number | null;
-  currency: string;
-  window: QuotaWindow;
-  reset_day: number;
-  /** 0~1 的比率：告警线。 */
-  soft_limit: number;
-  /** 0~1 的比率：耗尽线。 */
-  hard_limit: number;
-  reserve: number;
-};
-
 export type GuardConfig = {
   max_rpm?: number | null;
   max_concurrency?: number | null;
@@ -354,7 +382,6 @@ export type Credential = {
   secret: string;
   /** 这份套餐默认走哪条线。 */
   lane?: LaneId | null;
-  quota: QuotaConfig;
   guard: GuardConfig;
   tags: string[];
   enabled: boolean;
@@ -372,12 +399,31 @@ export type Model = {
   display: DisplayConfig;
   expose: boolean;
   /**
+   * **模型级总开关**（[docs/48 §5]）。
+   *
+   * `false` = **彻底停用**：`GET /v1/models` 不再列出它，调用它直接按"模型不存在"拒绝。
+   * 关掉**不删除**任何东西 —— 这正是这个字段的意义：想暂时下线一个模型时不用删了再建。
+   *
+   * 与 `expose` 的分工：`expose` 管"列不列进 `/v1/models`"，`enabled` 管"能不能用"；
+   * 停用需要两者同时成立，所以实际判据是 `enabled && expose`。
+   */
+  enabled: boolean;
+  /**
+   * **这个模型要用哪几条线路**（[docs/28 §2]）—— 关系的唯一真源，由模型侧持有。
+   *
+   * 线路归服务商（在服务商详情页里创建/编辑），模型只负责"用"：一条线路可以服务多个模型，
+   * 一个模型由多条线路构成。**至少一条**（[docs/28 §2]：零条线路的模型对外可调用却必然失败）。
+   *
+   * 删除只往一个方向传：删模型不动线路；删线路会从所有模型的这个列表里摘掉它，
+   * 摘完一条都不剩的模型会被自动删除（[docs/27 §1.2]）。
+   */
+  lines: ChannelId[];
+  /**
    * 这个模型**默认走哪条线路**（[docs/19 §1.5]）。
    *
-   * 为什么落在 `Model` 上而不是只落 `Channel.lane`：用户在「添加模型」那一步能改的**只有网络代理**
-   * （其余字段只读），而那时该模型可能还没有 channel。所以这个值既是"下一次为它建 channel 时的默认 lane"，
-   * 也会被 `model_bulk_update({ patch: { lane } })` 同步写到它**现有**的每个 channel 上。
    * 省略 / null = 直连（与 `net.default_lane` 链一致）。
+   * 注意：**没有"给模型挑网络代理"这回事**（[docs/28 §1.1]）—— 代理是**线路**的属性，
+   * 只在服务商详情页的「编辑线路」里改；这个字段只表达"这个模型的线路默认继承哪条代理"。
    */
   default_lane?: LaneId | null;
 };
@@ -418,7 +464,24 @@ export type ChannelCapabilities = {
 
 export type Channel = {
   id: ChannelId;
-  model: string;
+  /**
+   * **过渡期遗留字段**（[docs/28 §2]）：老配置里"这条线路属于哪个模型"。
+   *
+   * 关系已经翻转到 `Model.lines`（一条线路可以服务多个模型）。后端目前仍会把它发出来
+   * （老配置里就是它），但**新代码不要依赖它**：读"哪些模型在用这条线路"请看下面那个派生值。
+   * 标成可选：新写入的线路本来就没有这个值（写命令会把它当空字符串）。
+   */
+  model?: string;
+  /**
+   * **哪些模型在用这条线路**（[docs/28 §2]，**只读派生值**，由后端现算）。
+   *
+   * 关系的真源在 `Model.lines` 上：线路不再写"我是哪个模型的"（一条线路可以同时服务多个模型）。
+   * 写命令**不接受**这个字段（要改关系请用 `model_upsert({ model: { lines } })`）。
+   *
+   * **可选**：S1 阶段后端还没把它加进响应（[docs/28 §4] 的 S2 补上），
+   * 所以读它的界面必须按"可能没有"处理（`channel.models ?? []`），不许当成空数组去下结论。
+   */
+  models?: ModelId[];
   provider: ProviderId;
   credential: CredentialId;
   /** 不填则继承 credential.lane → provider.lane → net.default_lane → direct。 */
@@ -473,7 +536,6 @@ export type PolicyMatch = {
   input_tokens_lt?: number | null;
   input_tokens_gt?: number | null;
   stream?: boolean | null;
-  quota_remaining_lt?: number | null;
   time_window?: string | null;
   provider_in: ProviderId[];
 };
@@ -491,7 +553,9 @@ export type PolicyAction = {
   exclude_channels: ChannelId[];
   require_tag?: string | null;
   exclude_tag?: string | null;
-  selector?: Selector | null;
+  // 这里曾有 `selector?: Selector | null`（策略级选路覆盖）。选路策略收敛为唯一一种之后
+  // （[docs/48]）它没有第二种取值，字段删除；老配置里残留的键由 Rust 侧的 `extra` 吸收，
+  // 解析不失败（只是不再生效）。
   failover?: FailoverPolicy | null;
   on_no_candidate: NoCandidateAction;
   error_code?: number | null;
@@ -516,10 +580,19 @@ export type PriceMatch = {
   credential?: CredentialId | null;
 };
 
+/**
+ * 套餐费的计费周期（Rust 侧 `PlanFeeCycle`）。
+ *
+ * 注意它**不是**"额度窗口"：这里说的是"这笔套餐费按什么周期摊到每一天"
+ * （成本中心把月费摊成日成本）。早先它叫 `QuotaWindow`，与已下线的额度功能同名。
+ */
+export type PlanFeeCycle = "hour" | "day" | "month" | "none";
+
 export type PlanFee = {
   amount: number;
   currency: string;
-  window: QuotaWindow;
+  /** 套餐费按什么周期摊到每一天（Rust 侧 `PlanFeeCycle`）。 */
+  window: PlanFeeCycle;
 };
 
 export type PriceEntry = {
@@ -584,6 +657,16 @@ export type ValidationReport = {
   ok: boolean;
   errors: FieldError[];
   warnings: FieldError[];
+};
+
+/**
+ * `provider_lines_create_all` 的结果（[docs/28 §1.4]）。
+ */
+export type LinesCreateAllResult = {
+  /** 这次**真新建**了几条线路（0 = 目录里每一条都早就有线路了，一条都没写） */
+  created: number;
+  /** 上游目录里一共有多少条（列表里会显示多少行；`created <= total`） */
+  total: number;
 };
 
 export type ApplyResult = {
@@ -655,20 +738,6 @@ export type AutostartState = {
   unsupported_reason?: string | null;
 };
 
-export type QuotaStateValue = "ok" | "soft" | "exhausted" | "unknown";
-
-export type QuotaState = {
-  credential_id: CredentialId;
-  state: QuotaStateValue;
-  used_tokens?: number;
-  used_requests?: number;
-  used_cost?: number;
-  /** 上游/响应头报的剩余量（若有）。 */
-  reported_remaining?: number | null;
-  window_start_ms?: number | null;
-  window_end_ms?: number | null;
-  updated_at_ms?: number | null;
-};
 
 export type ProviderView = {
   id: ProviderId;
@@ -687,10 +756,54 @@ export type ProviderView = {
 export type CredentialView = {
   credential: Credential;
   provider_name: string;
-  quota: QuotaState;
   /** 挂载了多少条通道。 */
   channel_count: number;
   has_plaintext_secret?: boolean;
+};
+
+/**
+ * 服务商模型目录里的一条（[docs/25]）：**扫描记录下来的**上游模型。
+ *
+ * 目录 = "这家服务商扫描到过哪些模型"的**观察记录**（存在 SQLite 里，不进配置真源）；
+ * `added` = "已经接入这一家了吗"（配置里真有对应的 Model + 通道）。
+ * 所以一条目录记录**不等于**一个通道 —— 那正是本轮要改的地方：
+ * 扫描只记录，用户在服务商里勾一下才接入。
+ *
+ * **没有 `origin`：目录里的每一行都来自真实扫描。** 用户明确不要手动添加 ——
+ * 手填一行会让"目录 = 上游真实提供了什么"这条不变量失效，而自动化全建在它上面。
+ */
+export type ModelCatalogEntry = {
+  provider_id: ProviderId;
+  /** 上游真实模型名（扫描给的）。 */
+  upstream_model: string;
+  /** 扫描派生出的**逻辑模型名**（客户端调用它；接入时以它建 `Model`）。 */
+  suggested_id: string;
+  /** 上一次扫描返回过它吗（本次未返回 = false；行还在，因为它可能已经接入）。 */
+  seen_in_last_scan: boolean;
+  first_seen_ms: number;
+  last_seen_ms: number;
+  /** 已经接入这一家了吗（该服务商下存在对应通道）。 */
+  added: boolean;
+  /**
+   * 已接入时：这条目录行对应的**全部**通道 id（可能多条 —— 同一模型挂在不同凭据下）。
+   *
+   * 为什么是数组而不是"第一条 + 条数"：取消勾选要**把这几个都停用**，
+   * 只停第一条会让勾选框下一帧又自己弹回勾上（`enabled` 看的是"有一个启用就算启用"）。
+   */
+  channel_ids: string[];
+  /** 已接入的通道里**有启用的**（`added=false` 时为 false）。 */
+  enabled: boolean;
+  /**
+   * **上游原样返回的对象**（[docs/28 §4]）：这条目录行对应的 `GET {base_url}/models` 里
+   * `data[i]` 的**完整** JSON —— 我们不改写、不补字段，键序也保持原样。
+   *
+   * 用它干两件事：让用户看到"上游到底声明了什么"（`owned_by` / `created` / 中转自造字段都在），
+   * 以及给能力字段提供**唯一**可核对的来源 —— [docs/28 §3] 定死了"上游没给的字段一个都不编"。
+   *
+   * 上游那一条不是对象、或那次没记到 → `{}`（**不是**我们编出来的对象）。
+   * 类型是任意 JSON：Rust 侧 `serde_json::Value` 经 `specta(type = Any)` 出来，与 `IpcError.details` 同款。
+   */
+  raw: unknown;
 };
 
 export type ProbeResult = {
@@ -725,11 +838,34 @@ export type PlaintextFinding = {
   hint: string;
 };
 
+/**
+ * 一个模型**对外暴露的**信息（[docs/46 §304]）—— 客户端在 `/v1/models` 里看到的那一份。
+ *
+ * 后端只有**一份**聚合口径（`ConfigDoc::public_model_info`），网关与模型页信息面板都从它取，
+ * 所以「查看模型信息」里显示的就是客户端拿到的那一份。
+ */
+export type PublicModelInfo = {
+  /** 各线路声明过的上下文窗口取**最小**；一条都没声明 = `null`（**不是 0**）。 */
+  context_window: number | null;
+  /** 同上（单次最大输出）。 */
+  max_output_tokens: number | null;
+  /** 能力：只要有一条线路支持就算支持（并集）。 */
+  vision: boolean;
+  tools: boolean;
+  reasoning: boolean;
+  /** 输入模态（并集，已排序）。 */
+  modalities: string[];
+  /** 对外暴露的服务商标识（第一条线路所属服务商的 id）。 */
+  owned_by: string;
+};
+
 export type ModelView = {
   model: Model;
   channel_count: number;
   /** 该模型在各通道上的上游名映射。 */
   upstream_names: string[];
+  /** 对外暴露的信息（上下文/最大输出/能力/owned_by）。 */
+  public_info: PublicModelInfo;
   /** 是否已定价（未定价会在看板提醒）。 */
   priced: boolean;
   cost_hint?: string | null;
@@ -802,7 +938,6 @@ export type CredentialCol = {
   credential_id: CredentialId;
   label: string;
   provider_name: string;
-  quota: QuotaState;
 };
 
 export type Cell = {
@@ -828,24 +963,43 @@ export type LaneView = {
 
 export type LaneTestResult = { node: string; latency_ms?: number | null; ok: boolean };
 
-export type LaneAssignment = {
-  model_id: ModelId;
-  channel_id: ChannelId;
-  lane_id: LaneId;
-  /** 这条线路来自哪一级（五级继承，[04 §8.1]）。 */
-  source: "policy" | "channel" | "credential" | "provider" | "default";
+// [docs/55] `LaneAssignment` / `LanePickOption` 两个类型已删除 ——
+// 它们只被 `lane_assignments` / `lane_pick_options` 用，而那条命令与那个页面都没了。
+// 「生效线路来自哪一级」这个问题本身也不再成立：现在只有服务商级一处。
+
+/**
+ * [docs/28 §1.2] 线路（网络代理）下拉里的一项。
+ *
+ * 为什么要有它：这个下拉是用户**唯一**能给一条线路选网络的地方。如果没有它，
+ * 用户"刚加好订阅、还没建线路"时那个下拉里什么都没得选 ——
+ * 于是"给这家服务商切网络"在界面上根本做不到。
+ * 这个清单把**用户真正拥有的网络**都给出来：已配置线路 + 订阅里解析出来的节点。
+ *
+ * * `kind: "lane"`：`value` 就是 lane id，选中直接写；
+ * * `kind: "node"`：`value` 形如 `node:<订阅id>:<节点名>`，要先调
+ *   `lane_ensure_for_node` 拿到线路 id（**已有等价线路就复用**），再写。
+ *
+ * [docs/55] 写进去的是**服务商**的 `lane`（`channel.lane` / `credential.lane` /
+ * `policy.use_lane` 三个字段已删除）—— 每个服务商统一一个节点。
+ *
+ * 节点只来自**已采纳的订阅版本**：没有版本时这里一个节点都不出现（那是"还没解析"，
+ * 不是"没有节点"）。
+ */
+export type LaneChoice = {
+  /** `lane` 类 = lane id；`direct` 类 = `direct:`；`node` 类 = `node:<订阅id>:<节点名>` */
+  value: string;
+  /** 人能读的名字（节点名原样，可能含 emoji） */
+  label: string;
+  kind: "lane" | "direct" | "node";
+  /** `lane` 类一定有；`node` 类若已有等价线路也有（选中 = 复用，不新建） */
+  lane_id?: LaneId;
+  subscription_id?: SubscriptionId;
+  node?: string;
 };
 
-export type LanePickOption = {
-  /** 分组标题（直连 / 某个机场订阅）。 */
+export type LaneChoiceGroup = {
   group: string;
-  options: {
-    lane_id: LaneId;
-    name: string;
-    kind: LaneKind;
-    node_count?: number;
-    latency_ms?: number | null;
-  }[];
+  items: LaneChoice[];
 };
 
 /**
@@ -922,6 +1076,8 @@ export type NodeView = {
   group?: string | null;
   latency_ms?: number | null;
   ok?: boolean;
+  /** 这条节点用户有没有关掉（默认 true = 启用；用户第 202 轮）。 */
+  enabled: boolean;
 };
 
 export type PreviewResult = {
@@ -1009,14 +1165,6 @@ export type DashboardData = {
     success_rate: number[];
   };
   trend: { bucket_ts: number; input: number; input_cached: number; output: number; cost: number }[];
-  quota: {
-    credential_id: CredentialId;
-    label: string;
-    /** 0~1；**`null` = 未设上限**（[05 §2.1] 要求显式显示，不能静默）。 */
-    used_pct: number | null;
-    state: QuotaStateValue;
-    detail: string;
-  }[];
   lanes: { lane_id: LaneId; name: string; node?: string | null; latency_ms?: number | null; ok: boolean }[];
   /** 最近 500 条。 */
   live: RequestSummary[];
@@ -1030,12 +1178,6 @@ export type UsageTotals = {
   tokens: number;
   cost: Money;
   success_rate: number;
-};
-
-export type QuotaDelta = {
-  credential_id: CredentialId;
-  used_pct: number | null;
-  state: QuotaStateValue;
 };
 
 export type UsageQuery = {
@@ -1098,6 +1240,12 @@ export type TraceRow = {
   error_type?: string | null;
 };
 
+export type LogStats = {
+  total: bigint;
+  ok: bigint;
+  failed: bigint;
+  avg_total_ms: number | null;
+};
 export type LogPage = {
   rows: TraceRow[];
   total: number;
@@ -1116,6 +1264,11 @@ export type TraceAttempt = {
 export type TraceDetail = {
   row: TraceRow;
   attempts: TraceAttempt[];
+  /**
+   * [docs/32] L6：这次请求的**按 kind token 明细**（来自用量表）。
+   * `null`/缺省 = 用量侧没有这笔账 → 界面显示「—」，**不拿 `row.tokens` 凑分项**。
+   */
+  token_kinds?: Record<string, number> | null;
   /** 自检：客户端发的头 vs 上游收到的头。**正常应恒为空**（非空 = 网关有 bug）。 */
   header_diff?: Record<string, { client?: string; upstream?: string }> | null;
   body_shape_in?: unknown;
@@ -1149,6 +1302,13 @@ export type SimulateInput = {
   headers?: Record<string, string>;
   session_key?: string;
   now?: number;
+  /**
+   * 各线路在时间窗内的 token 用量（[docs/48 §3]）—— 模拟"平均粘性"要用的运行态输入。
+   *
+   * 省略 = **不知道**用量（选路退化为按 `priority`）；给了就按它挑最轻的那条。
+   * 键是 `ChannelId`，值是累计 token 数。
+   */
+  balance?: Record<ChannelId, number>;
 };
 
 export type SimulateResult = {
@@ -1254,9 +1414,7 @@ export type CommandMap = {
   // ---- credential / secrets
   credential_list: { args: undefined; result: CredentialView[] };
   credential_upsert: { args: { credential: Credential }; result: Credential };
-  credential_delete: { args: { id: CredentialId; force: boolean }; result: void };
   credential_set_secret: { args: { id: CredentialId; plaintext: string }; result: void };
-  credential_clear_quota: { args: { id: CredentialId }; result: QuotaState };
   credential_set_enabled: { args: { id: CredentialId; enabled: boolean }; result: void };
   secrets_scan_plaintext: { args: undefined; result: PlaintextFinding[] };
   secrets_migrate: { args: { names: string[] }; result: void };
@@ -1274,6 +1432,34 @@ export type CommandMap = {
     result: ApplyResult;
   };
   model_bulk_update: { args: { ids: ModelId[]; patch: ModelPatch }; result: ApplyResult };
+  /**
+   * 这家服务商的**模型目录**（[docs/25]）：扫描记录下来的全部上游模型。
+   *
+   * 目录是"扫描到过什么"的观察记录（SQLite，不进配置）；`added` 才是"接入了没有"。
+   * 界面据此画那一列勾选框 —— 勾 = 接入（`provider_model_attach`），取消 = 停用通道。
+   */
+  provider_model_catalog: { args: { provider_id: ProviderId }; result: ModelCatalogEntry[] };
+  /**
+   * 把目录里的这一条**接到**这家服务商上（[docs/25]）：建 `Model`（若缺）+ 建启用通道。
+   *
+   * 只给 `upstream_model`：逻辑名从**目录行**里取（单一真源，界面没有机会传错）。
+   * 目录里没有这一条 → `TA-1004`（「先扫描一次」）；已经接入过 → 幂等。
+   */
+  provider_model_attach: {
+    args: { provider_id: ProviderId; upstream_model: string };
+    result: ApplyResult;
+  };
+  /**
+   * [docs/28 §1.4] 「添加服务商就把**所有**线路建出来」：把上游目录里每条都建成线路，
+   * **默认关闭**（`enabled: false`），之后无论向导还是详情都只用滑块控制启用/关闭。
+   *
+   * 幂等：已经有线路的条目**一个字节都不动**（不覆盖用户改过的 lane / enabled / 优先级）；
+   * 一条都没补时**不写库**（`created: 0` 如实说"这次一条都没建"）。仍然**不建模型**。
+   */
+  provider_lines_create_all: {
+    args: { provider_id: ProviderId; lane?: LaneId | null };
+    result: LinesCreateAllResult;
+  };
 
   // ---- channel / group
   // Rust 侧类型名是 `ChannelConfig`（crates/ta-core/src/domain/mod.rs:1009），与 TS 的 `Channel`
@@ -1283,14 +1469,18 @@ export type CommandMap = {
   channel_upsert: { args: { channel: Channel }; result: Channel };
   channel_delete: { args: { id: ChannelId }; result: void };
   channel_set_enabled: { args: { id: ChannelId; enabled: boolean }; result: void };
+  // [docs/55] `channel_bulk_assign_lane` 已删除：线路分配只剩**服务商级**一处
+  //（用户："线路级别的分配逻辑我们已经放弃了，取而代之的，每个服务商统一一个节点"），
+  // 而 `ChannelConfig.lane` 字段本身也删了 —— 这条命令已经没有可写的地方。
   /**
-   * 把一批通道钉到同一条线路上（[docs/21 §4.1]）。
+   * [docs/28 §1.4] 把一批线路**一起启用或一起关闭**（列表里的"全选"）。
    *
-   * `lane_id: null` = **清空**这批通道的 lane（回到五级继承链，末端就是直连）——
-   * 通道页的「直连（继承）」选的就是这一档；`"<id>"` = 该 id 必须存在于配置里。
+   * 语义就是 `channel_set_enabled` 的批量版（可逆，不删任何东西）。做成一条命令而不是前端循环：
+   * 全选是**一次用户动作**，循环会让"改了 200 条"变成 200 个配置快照 + 200 次内核重载，
+   * 中途失败还会留下半开半关的状态。
    */
-  channel_bulk_assign_lane: {
-    args: { channel_ids: ChannelId[]; lane_id: LaneId | null };
+  channel_bulk_set_enabled: {
+    args: { channel_ids: ChannelId[]; enabled: boolean };
     result: ApplyResult;
   };
   channel_set_tags: {
@@ -1317,9 +1507,38 @@ export type CommandMap = {
   lane_delete: { args: { id: LaneId }; result: void };
   lane_test: { args: { id: LaneId; node?: string }; result: LaneTestResult[] };
   lane_set_node: { args: { id: LaneId; node: string }; result: void };
-  lane_assignments: { args: undefined; result: LaneAssignment[] };
-  lane_reverse_lookup: { args: { lane_id: LaneId }; result: { channel_ids: ChannelId[]; model_ids: ModelId[] } };
-  lane_pick_options: { args: undefined; result: LanePickOption[] };
+  // [docs/55] `lane_assignments` / `lane_reverse_lookup` / `lane_pick_options` 已删除。
+  //
+  // 它们只服务于"**线路级别的分配**"：把五级继承链（策略 → 通道 → 套餐 → 服务商 → 全局默认）
+  // 算出来给界面看。用户裁决放弃那套逻辑（"取而代之的，每个服务商统一一个节点"）之后：
+  //   * 生效线路只剩 `provider.lane ?? net.default_lane ?? direct`，没有"来自哪一级"可报；
+  //   * 展示它们的页面（`/network/assignments`）整页删除，三条命令**没有任何调用方**。
+  //
+  // 留着它们只会返回一条恒为 `provider`/`default` 的"来源"—— 那是个过期的说法，比删掉更容易误导。
+  /**
+   * [docs/28 §1.2] 线路（网络代理）下拉的可选来源：**已配置线路 + 订阅节点**（按订阅分组）。
+   * 节点那一项选中后要配合 `lane_ensure_for_node`。
+   *
+   * [docs/55] 这是**唯一**给一条线路选网络的地方（原来还有个 `lane_pick_options`
+   * 给指派页用，随那页一起删了）。
+   */
+  lane_options: { args: undefined; result: LaneChoiceGroup[] };  /**
+   * [docs/28 §1.2] 让"这个订阅的这个节点"在配置里有一条线路，返回那条线路（**幂等**：
+   * 已有等价线路就复用）。节点必须真的在已采纳的订阅版本里，否则原样报错。
+   */
+  lane_ensure_for_node: {
+    args: { subscription_id: SubscriptionId; node: string };
+    result: Lane;
+  };
+  /**
+   * [docs/28 §1.2] 让配置里**有一条直连线路**，返回那条线路（**幂等**：已有 `kind: direct`
+   * 的线路就复用）。
+   *
+   * 为什么需要它：「直连」是网络代理里最重要的选项，而下拉里要能**明确选中**它 ——
+   * 不是只能选一个叫"继承"的东西（继承会跟着凭据 / 服务商 / 默认线路走，
+   * 而直连是把它钉死在本机网络上）。
+   */
+  lane_ensure_direct: { args: undefined; result: Lane };
   subscription_list: { args: undefined; result: SubscriptionView[] };
   subscription_upsert: { args: { subscription: Subscription }; result: Subscription };
   subscription_delete: { args: { id: SubscriptionId }; result: void };
@@ -1333,6 +1552,14 @@ export type CommandMap = {
     result: { name: string; type: GroupType; node_count: number }[];
   };
   subscription_nodes: { args: { id: SubscriptionId; group?: string }; result: NodeView[] };
+  /**
+   * 批量设置若干节点的启用状态（用户第 202 轮：节点级开关 + 全选，默认全选）。
+   * `nodes` 为空清单 → 后端**报错**（空清单不是「全部」）；返回**改完之后**的清单。
+   */
+  subscription_nodes_enabled: {
+    args: { id: SubscriptionId; nodes: string[]; enabled: boolean };
+    result: NodeView[];
+  };
   subscription_rollback: { args: { id: SubscriptionId; version_index: number }; result: void };
   subscription_rules_raw: { args: { id: SubscriptionId }; result: string | null };
   subscription_traffic: { args: undefined; result: SubscriptionTrafficRow[] };
@@ -1366,20 +1593,8 @@ export type CommandMap = {
   };
   pricing_import_builtin: { args: undefined; result: ApplyResult };
   pricing_unpriced_models: { args: undefined; result: string[] };
-  /**
-   * 未配可用额度的凭据 + **后端原文**提醒（[06 §10.1 B2]）。
-   *
-   * 形状与 Rust 侧 `QuotaLimitGap`（src-tauri/src/commands/usage.rs:75）一致：
-   * `{ credential_id: String, message: String }`；`message` 是
-   * `ta_core::quota::LimitGap::message()` 的**原文**，命令层一个字都不改写。
-   * UI 消费契约：三处（套餐列表 / 通道矩阵 / 首启向导）用同一个 `LimitGapNotice`
-   * 渲染"名字 + message"，**不许自己写第二份文案**。
-   */
-  quota_limit_gaps: {
-    args: undefined;
-    result: { credential_id: CredentialId; message: string }[];
-  };
   log_query: { args: { query: LogQuery }; result: LogPage };
+  log_stats: { args: { query: LogQuery }; result: LogStats };
   /**
    * 日志查询能力位（[06 §10.2 D2]）。
    *

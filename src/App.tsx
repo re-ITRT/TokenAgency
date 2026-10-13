@@ -12,6 +12,7 @@
  */
 
 import { CssBaseline, ThemeProvider } from "@mui/material";
+import { useEffect, useState } from "react";
 import { HashRouter } from "react-router-dom";
 
 // 注意：用显式路径 `@/app/AppShell` 而不是 `@/app`：Windows 文件系统大小写不敏感，
@@ -19,7 +20,8 @@ import { HashRouter } from "react-router-dom";
 // 导致 TS 报"only in casing"错误。四个包同理：请 `import { ROUTES } from "@/app/routes"`。
 import { AppShell } from "@/app/AppShell";
 import { registerDevMocks } from "@/shared/api";
-import { useUiStore } from "@/stores";
+import { useUiStore } from "@/stores/ui";
+import { resolveThemeMode, systemPrefersDark } from "@/stores/ui";
 
 import { buildTheme } from "./theme";
 
@@ -31,9 +33,34 @@ registerDevMocks();
 
 export default function App() {
   const themeMode = useUiStore((s) => s.themeMode);
+  /**
+   * [用户第 147 轮] **主题默认跟随系统**：`system` 不是一种配色，它必须解析成 dark/light。
+   * 这里同时订阅系统的变化 —— 用户在系统里切深浅色时，界面**当场**跟着变，
+   * 而不是等下一次刷新（`matchMedia` 的 change 事件）。
+   */
+  // 惰性初值 + 容错：`matchMedia` 缺失或被 CSP 拦掉时**退回浅色**，绝不因此让整个界面白屏
+  const [prefersDark, setPrefersDark] = useState(() => {
+    try {
+      return systemPrefersDark();
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    } catch {
+      return;
+    }
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = (event: MediaQueryListEvent) => setPrefersDark(event.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  const resolvedTheme = resolveThemeMode(themeMode, prefersDark);
 
   return (
-    <ThemeProvider theme={buildTheme(themeMode)}>
+    <ThemeProvider theme={buildTheme(resolvedTheme)}>
       <CssBaseline />
       <HashRouter>
         <AppShell />

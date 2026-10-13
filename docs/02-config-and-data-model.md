@@ -111,13 +111,21 @@ quota:
 
 > Lane **没有 `port` 字段**——它不是一个监听端口，只是"用哪个节点、怎么选节点"的一组参数。出站由 `KernelDialer` 经该 lane 对应的内核 loopback 入站完成（见 [04 §7.1](04-network-core.md)）。
 
-**线路解析优先级**（从具体到一般，见 [04 §8.1](04-network-core.md)）：
+**线路解析**（[docs/55]（第 322 轮）起只有一级覆盖 + 全局默认，见 [04 §8.1](04-network-core.md)）：
 
 ```
-policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.default_lane ?? direct
+provider.lane ?? net.default_lane ?? direct
 ```
 
-所以 Channel、Credential、Provider 上都有一个可选 `lane` 字段，用来做"手动指定谁走哪条线，或者直连"。`direct` 永远是选项之一。
+用户裁决：*"线路级别的分配逻辑我们已经放弃了，取而代之的，**每个服务商统一一个节点**"*。
+所以**只有 `Provider` 上还有一个可选 `lane` 字段**；`Channel.lane` / `Credential.lane` /
+`PolicyAction.use_lane` 三个字段**已删除**（老配置里的值落进各自的 `extra`，能解析、不再生效）。
+`direct` 永远是兜底。
+
+> 历史：这一行原来写的是
+> `policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.default_lane ?? direct`。
+> 那三级覆盖的用户可见入口早已全部删除，却仍参与解析 —— 一个看不见也改不掉的覆盖项
+> 会静默压过用户当前的选择。详见 [docs/55](55-provider-owns-the-lane.md)。
 
 ### 2.4 ProxySubscription（Clash 格式订阅）
 
@@ -167,22 +175,22 @@ policy.use_lane ?? channel.lane ?? credential.lane ?? provider.lane ?? net.defau
 - id: grp-gpt-4o
   model: gpt-4o
   members: [ch-openai-personal, ch-relay-a, ch-relay-b]
-  selector: sticky_then_priority
+  selector: balanced_sticky
   sticky: { enabled: true, ttl_h: 12, key: [header:x-session-id, body_hash] }
-  release_on: [quota_exhausted, hard_error, user_pin_change]
+  release_on: [hard_error, user_pin_change]
 ```
 
-选择器枚举：
+选择器枚举（**现在只有一种**，[docs/48]）：
 
 | selector | 语义 | 适用 |
 |---|---|---|
-| `priority` | 严格按 `priority` 升序取第一个可用 | "官方优先，挂了才用中转" |
-| `sticky_then_priority` | 先查粘性表；未命中则按 priority 并写入粘性 | **默认，解决痛点 9** |
-| `quota_first` | 优先消耗 `剩余额度/总额度` 最大的 | "把快过期的先用掉" |
-| `cheapest` | 按单价（用户填写或内置表）最低 | |
-| `lowest_latency` | 按 EWMA 延迟（近 5 分钟） | |
-| `weighted_random` | 按 `weight` 加权随机 | 分摊多账号风控 |
-| `round_robin` | 轮询 | |
+| `balanced_sticky` | 先查粘性表；未命中挑 **token 用量最少**的线路（并列按 priority；无会话标识时在"最轻的那一档"里随机）；线路报错则释放粘性、改粘到另一条 | **唯一取值**：会话固定 + 新会话往轻的线路偏 |
+
+> **这里原本有七种**（`priority` / `sticky_then_priority` / `quota_first` / `cheapest` /
+> `lowest_latency` / `weighted_random` / `round_robin`），为什么收敛成一种见
+> [docs/47](47-quota-exhaustion-error-shapes.md)（各家额度耗尽的返回形状**分码也分不干净**，
+> 自动判断不可靠）与 [docs/48](48-balanced-sticky-only-routing.md)（改成**用户用开关手动调度**）。
+> 旧取值仍能被解析（`#[serde(alias)]` 一律落到 `balanced_sticky`），老配置不会因为升级而读不出来。
 
 ### 2.8 RoutePolicy（使用策略）
 

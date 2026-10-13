@@ -11,7 +11,6 @@
 //!    （为什么要包：[`evidence_envelope`] 的说明）。
 //! 2. **一次请求只调一次**：流式必须在流结束（或客户端断连）时拿最终形态调，
 //!    绝不在每个分片上各调一次 —— 分片上没有 usage 证据，逐片调会得到一串估算再相加。
-//! 3. **同步记账 + 异步落库**：额度账本（`QuotaLedger::observe`）与价格快照在**请求时刻**
 //!    同步完成（配额判定不能等落库），只有写 `usage` 表是 spawn 出去的。
 //!
 //! # 流式为什么能"看"而不"攒"
@@ -27,7 +26,6 @@ use serde_json::Value;
 use ta_core::clock::Clock;
 use ta_core::metering::{metered_usage_for, usage_paths};
 use ta_core::pricing::PricingEngine;
-use ta_core::quota::{QuotaLedger, QuotaObservation};
 use ta_core::types::{Protocol, RequestId, UsageRecord};
 
 use crate::dispatch::{BoxError, ByteStream};
@@ -52,7 +50,6 @@ struct MeterCore {
     store: Arc<dyn GatewayStore>,
     clock: Arc<dyn Clock>,
     pricing: Arc<dyn PricingEngine>,
-    quota: Arc<dyn QuotaLedger>,
 }
 
 impl UsageMeter {
@@ -60,14 +57,13 @@ impl UsageMeter {
         store: Arc<dyn GatewayStore>,
         clock: Arc<dyn Clock>,
         pricing: Arc<dyn PricingEngine>,
-        quota: Arc<dyn QuotaLedger>,
     ) -> Self {
-        Self { core: Arc::new(MeterCore { store, clock, pricing, quota }) }
+        Self { core: Arc::new(MeterCore { store, clock, pricing }) }
     }
 
     /// 从 [`GatewayDeps`] 装配（生产路径：四件依赖都在里面）。
     pub fn from_deps(deps: &Arc<GatewayDeps>) -> Self {
-        Self::new(deps.store.clone(), deps.clock.clone(), deps.pricing.clone(), deps.quota.clone())
+        Self::new(deps.store.clone(), deps.clock.clone(), deps.pricing.clone())
     }
 }
 
@@ -97,11 +93,10 @@ impl ResponseMeter for UsageMeter {
 }
 
 impl MeterCore {
-    /// 结算的**同步部分**：定价格 → 喂账本 → 造记录。返回 `None` = 这条响应不记账。
+    /// 结算的**同步部分**：定价格 → 造记录。返回 `None` = 这条响应不记账。
     ///
-    /// 同步做完的原因：额度账本是**路由决策的输入**（`quota_remaining_lt` / `quota_first`），
-    /// 让它等一次 SQLite 写，就是把配额判定挂在磁盘上。价格也必须在这里取：
-    /// `price_snapshot` 的语义是"**请求发生时**生效的费率"，落库慢一点不能改成"落库时的费率"。
+    /// 价格必须在这里取：`price_snapshot` 的语义是"**请求发生时**生效的费率"，
+    /// 落库慢一点不能改成"落库时的费率"。
     fn settle(
         &self,
         ctx: &MeterContext,
@@ -119,15 +114,6 @@ impl MeterCore {
         let model = ctx.model.clone().unwrap_or_else(|| ctx.upstream_model.clone());
         let price = self.pricing.resolve(&model, &ctx.provider_id, &ctx.credential_id);
         let cost = price.cost_of(&metered.usage);
-
-        self.quota.observe(
-            &ctx.credential_id,
-            QuotaObservation::Local {
-                tokens: metered.usage.total(),
-                requests: 1,
-                cost: cost.amount,
-            },
-        );
 
         Some(UsageRecord {
             request_id: RequestId::new(ctx.request_id.clone()),
@@ -307,33 +293,19 @@ impl UsageAccumulator {
     }
 }
 
-/// 一个事件里的 usage 容器，**路径口径来自 `ta_core::metering::usage_paths`**
-/// （唯一落点；网关侧再写一张表就是第二套口径）。
+/// 一个事件里的 usage 容器：**只在 `ta_core::metering::usage_paths` 这张表上找**，
+/// 首个命中的对象胜出（与 ta-core 的 `usage_container` 同序）。
 ///
-/// 另看一层"**信封**"：Anthropic 流式的 input 在 `message_start.message.usage` 里，
-/// 而 `usage_paths(Anthropic)` 只列了 `/usage`（那是 `message_delta` 的形态）。
-/// 不做这层回退，**每一条 Anthropic 流式请求都会把 input / 缓存 token 整份丢掉**。
-///
-/// 回退只在"协议路径一条都没命中"时生效，命中时取值顺序与 ta-core 的
-/// `usage_container`（首个对象胜出）一致。
+/// **路径口径只有一处**。这里曾经还有一层"信封回退"（去每个顶层对象里再试一次同样的路径），
+/// 理由是 Anthropic 流式的 input 在 `message_start.message.usage` 而不在 `/usage`。
+/// 第 12 轮 E2 把 `/message/usage` 补进了那张表（并把 `normalize_anthropic` 也改成用表），
+/// 于是 `message_start` 在**顶层**就能命中 —— 回退成了死分支，已删（[docs/16] 主管裁决）。
+/// 留着它的唯一作用是让下一个人以为"路径口径有两处"。
 fn container_of(protocol: Protocol, payload: &Value) -> Option<Value> {
     for path in usage_paths(protocol) {
         if let Some(v) = payload.pointer(path) {
             if v.is_object() {
                 return Some(v.clone());
-            }
-        }
-    }
-    let obj = payload.as_object()?;
-    for value in obj.values() {
-        if !value.is_object() {
-            continue;
-        }
-        for path in usage_paths(protocol) {
-            if let Some(v) = value.pointer(path) {
-                if v.is_object() {
-                    return Some(v.clone());
-                }
             }
         }
     }
@@ -396,8 +368,7 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
 // ================================================================ 测试
 
 /// 测试替身。**放在独立模块里**：管线侧的端到端测试也要复用它们 ——
-/// "接上生产计量器之后记录到底对不对"只能用**真** [`UsageMeter`] + 可读回的
-/// store / ledger 证明，替身 meter 只能证明"接缝被调用了"。
+/// "接上生产计量器之后记录到底对不对"只能用**真** [`UsageMeter`] + 可读回的 store 证明。
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -407,7 +378,6 @@ pub(crate) mod test_support {
     use ta_core::clock::ManualClock;
     use ta_core::error::Result;
     use ta_core::pricing::{PriceSourceKind, ResolvedPrice};
-    use ta_core::quota::QuotaState;
     use ta_core::types::{CredentialId, ProviderId, RequestSummary, TokenKind};
 
     /// 固定费率：input 3 / 1M、output 15 / 1M（乘数 1）
@@ -436,34 +406,6 @@ pub(crate) mod test_support {
         }
     }
 
-    #[derive(Default)]
-    pub(crate) struct RecordingLedger {
-        observed: Mutex<Vec<(CredentialId, QuotaObservation)>>,
-    }
-
-    impl RecordingLedger {
-        pub(crate) fn observed(&self) -> Vec<(CredentialId, QuotaObservation)> {
-            self.observed.lock().expect("ledger 锁被毒化").clone()
-        }
-    }
-
-    impl QuotaLedger for RecordingLedger {
-        fn state(&self, cred: &CredentialId) -> QuotaState {
-            QuotaState { credential_id: cred.clone(), ..Default::default() }
-        }
-        fn observe(&self, cred: &CredentialId, obs: QuotaObservation) {
-            self.observed.lock().expect("ledger 锁被毒化").push((cred.clone(), obs));
-        }
-        fn mark_exhausted(&self, _cred: &CredentialId, _hint: Option<i64>) {}
-        fn mark_invalid(&self, _cred: &CredentialId) {}
-        fn roll_window(&self, _now_ms: i64) -> Vec<CredentialId> {
-            vec![]
-        }
-        fn remaining_ratio(&self, _cred: &CredentialId) -> Option<f64> {
-            None
-        }
-    }
-
     struct FixedPricing;
 
     impl PricingEngine for FixedPricing {
@@ -487,17 +429,15 @@ pub(crate) mod test_support {
         }
     }
 
-    /// 真 [`UsageMeter`] + 可读回的 store / ledger。
-    pub(crate) fn recording_meter() -> (UsageMeter, Arc<RecordingStore>, Arc<RecordingLedger>) {
+    /// 真 [`UsageMeter`] + 可读回的 store。
+    pub(crate) fn recording_meter() -> (UsageMeter, Arc<RecordingStore>) {
         let store = Arc::new(RecordingStore::default());
-        let ledger = Arc::new(RecordingLedger::default());
         let meter = UsageMeter::new(
             store.clone(),
             Arc::new(ManualClock::new(1_700_000_000_000)),
             Arc::new(FixedPricing),
-            ledger.clone(),
         );
-        (meter, store, ledger)
+        (meter, store)
     }
 
     /// 把 spawn 出去的落库任务推到完成（`#[tokio::test]` 默认单线程运行时）。
@@ -539,23 +479,15 @@ mod tests {
         }
     }
 
-    /// 真计量器 + 可读回的 store / ledger（假件在 [`test_support`]，管线侧测试也复用）。
+    /// 真计量器 + 可读回的 store（假件在 [`test_support`]，管线侧测试也复用）。
     struct Harness {
         meter: UsageMeter,
         store: Arc<RecordingStore>,
-        ledger: Arc<RecordingLedger>,
     }
 
     fn harness() -> Harness {
-        let (meter, store, ledger) = recording_meter();
-        Harness { meter, store, ledger }
-    }
-
-    fn local_tokens(obs: &QuotaObservation) -> (u64, u64, f64) {
-        match obs {
-            QuotaObservation::Local { tokens, requests, cost } => (*tokens, *requests, *cost),
-            other => panic!("账本应当收到 Local 观测，实际是 {other:?}"),
-        }
+        let (meter, store) = recording_meter();
+        Harness { meter, store }
     }
 
     fn stream_of(chunks: &[&'static [u8]]) -> ByteStream {
@@ -576,7 +508,7 @@ mod tests {
     // ---------------------------------------------------------- 非流式
 
     #[tokio::test]
-    async fn non_stream_records_usage_cost_snapshot_and_ledger_once() {
+    async fn non_stream_records_usage_cost_snapshot_once() {
         let h = harness();
         let body = Bytes::from_static(
             br#"{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":1000,"completion_tokens":500,"total_tokens":1500}}"#,
@@ -607,14 +539,6 @@ mod tests {
         // 价格快照必须留下**当时**的费率（改价不改历史）
         assert_eq!(r.price_snapshot["rates"]["input"], json!(3.0));
         assert_eq!(r.price_snapshot["divisor"], json!(1_000_000.0));
-
-        let observed = h.ledger.observed();
-        assert_eq!(observed.len(), 1, "账本恰好观测一次");
-        assert_eq!(observed[0].0.as_str(), "cred-a");
-        let (tokens, requests, cost) = local_tokens(&observed[0].1);
-        assert_eq!(tokens, 1500);
-        assert_eq!(requests, 1);
-        assert!((cost - 0.0105).abs() < 1e-12);
     }
 
     #[tokio::test]
@@ -655,7 +579,6 @@ mod tests {
         drain_tasks().await;
 
         assert!(h.store.records().is_empty(), "4xx 不该记用量（尝试链另有记录）");
-        assert!(h.ledger.observed().is_empty(), "4xx 不该动额度账本");
     }
 
     // ---------------------------------------------------------- 流式
@@ -698,10 +621,6 @@ mod tests {
         assert_eq!(r.usage_raw["output_tokens"], json!(250));
         assert_eq!(r.status, 200);
         assert_eq!(r.ttfb_ms, Some(12));
-
-        let observed = h.ledger.observed();
-        assert_eq!(observed.len(), 1);
-        assert_eq!(local_tokens(&observed[0].1).0, 4250);
     }
 
     #[tokio::test]
@@ -832,7 +751,6 @@ mod tests {
         assert_eq!(out, sse);
         drain_tasks().await;
         assert!(h.store.records().is_empty());
-        assert!(h.ledger.observed().is_empty());
     }
 
     #[tokio::test]
@@ -850,13 +768,22 @@ mod tests {
 
     // ---------------------------------------------------------- 容器口径
 
+    /// **路径口径全部来自 `ta_core::metering::usage_paths` 那一张表**，
+    /// 首个命中的对象胜出。这条测试守的是**规则**（表里有什么路径就该命中什么），
+    /// 不是实现细节 —— 所以它逐条覆盖表里的形态，而不是断言"有没有信封回退"。
+    ///
+    /// Anthropic 那两条尤其重要：`message_start`（input/缓存）与 `message_delta`（output）
+    /// 分散在两个事件里，而合并成最终形态的正是 [`UsageAccumulator`]；
+    /// 端到端的守门人是 `anthropic_stream_merges_message_start_and_delta_into_one_record`
+    /// （它的 RED 实证：把这条路径从表里拿掉 → input 丢成 0）。
     #[test]
-    fn container_lookup_uses_ta_core_paths_and_one_envelope_level() {
-        // 协议表里的路径：OpenAI 的 `/usage`、Responses 的 `/response/usage`
+    fn container_lookup_uses_only_the_ta_core_path_table() {
+        // OpenAI 的 `/usage`
         assert_eq!(
             container_of(Protocol::Openai, &json!({"usage":{"prompt_tokens":5}})),
             Some(json!({"prompt_tokens":5}))
         );
+        // Responses 的 `/response/usage`
         assert_eq!(
             container_of(
                 Protocol::OpenaiResponses,
@@ -864,7 +791,7 @@ mod tests {
             ),
             Some(json!({"input_tokens":7}))
         );
-        // Anthropic 的信封回退（`message_start`）
+        // Anthropic 的 `/message/usage`（`message_start` 的真实形态，第 12 轮补进表里）
         assert_eq!(
             container_of(
                 Protocol::Anthropic,
@@ -872,7 +799,15 @@ mod tests {
             ),
             Some(json!({"input_tokens":9}))
         );
-        // 命中协议路径时不看信封（优先级与 ta-core 一致）
+        // Anthropic 的 `/usage`（`message_delta` 的真实形态）
+        assert_eq!(
+            container_of(
+                Protocol::Anthropic,
+                &json!({"type":"message_delta","usage":{"output_tokens":3}})
+            ),
+            Some(json!({"output_tokens":3}))
+        );
+        // 两条同时出现 → 表里的**第一条**（`/usage`）胜出，与 ta-core 的取值顺序一致
         assert_eq!(
             container_of(
                 Protocol::Anthropic,
@@ -880,9 +815,15 @@ mod tests {
             ),
             Some(json!({"output_tokens":3}))
         );
+        // Gemini 的 `/usageMetadata`
+        assert_eq!(
+            container_of(Protocol::Gemini, &json!({"usageMetadata":{"totalTokenCount":11}})),
+            Some(json!({"totalTokenCount":11}))
+        );
         // 没有证据
         assert_eq!(container_of(Protocol::Openai, &json!({"choices":[]})), None);
         assert_eq!(container_of(Protocol::Openai, &json!({"usage":null})), None);
+        assert_eq!(container_of(Protocol::Anthropic, &json!({"type":"content_block_delta"})), None);
     }
 
     #[test]

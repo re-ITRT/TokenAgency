@@ -2,7 +2,7 @@
  * 页面头：**F2–F4 每个页面的第一块**，统一"标题 — 说明 — 契约出处 — 右侧操作"的排布。
  *
  * 为什么要做成共享组件而不是各页自己写：这四件事的**字号层级**在 [15] 里是定死的
- * （标题 `text.page` 20/500、说明正文、出处弱化），四个包各写一遍必然写出四种大小。
+ * （标题 `text.page` 20/500、说明正文），四个包各写一遍必然写出四种大小。
  *
  * 规则（[15]）：
  * - 标题只有一档 `text.page`（**hero 留给看板主数字，一页最多一个**）；
@@ -16,8 +16,6 @@
 import { Box, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 
-import { useTranslation } from "@/shared/i18n";
-import { typography } from "@/theme";
 
 import { HelpTip } from "./HelpTip";
 
@@ -30,13 +28,9 @@ export type PageHeaderProps = {
   badge?: ReactNode;
   /** 右侧操作区（按钮）。不传就不占位。 */
   actions?: ReactNode;
-  /** 契约出处（如 `07 §1 首页看板`）——开发向信息，弱化显示。 */
-  docRef?: string;
 };
 
-export function PageHeader({ title, description, badge, actions, docRef }: PageHeaderProps) {
-  const { t } = useTranslation();
-
+export function PageHeader({ title, description, badge, actions }: PageHeaderProps) {
   return (
     <Box
       component="header"
@@ -64,23 +58,15 @@ export function PageHeader({ title, description, badge, actions, docRef }: PageH
             正文一个字都没丢：`aria-label` 就是全文，测试与读屏都拿得到。
           */}
           {description !== undefined && description !== "" ? (
-            <HelpTip text={description} testId="page-header-help" />
+            /* [docs/31 §35] 问号不能被挤到右侧操作区下面（`/providers` 三个按钮把左列挤窄时，
+               20px 的圆圈会落进 `actions` 的命中区 → 悬停/聚焦都不出气泡，真机 step22 就是这样红的）。 */
+            <Box sx={{ display: "flex", flexShrink: 0 }}>
+              <HelpTip text={description} testId="page-header-help" />
+            </Box>
           ) : null}
-        </Box>
+          </Box>
 
 
-        {docRef !== undefined ? (
-          <Typography
-            variant="caption"
-            sx={{
-              color: "text.secondary",
-              fontFamily: typography.fontMono,
-              fontVariantNumeric: "tabular-nums",
-            }}
-          >
-            {t("component.pageHeader.docRef", { doc: docRef })}
-          </Typography>
-        ) : null}
       </Box>
 
       {actions !== undefined ? (

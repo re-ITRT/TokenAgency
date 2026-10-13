@@ -16,7 +16,7 @@ pub use engine::PricingEngineImpl;
 
 use std::collections::BTreeMap;
 
-use crate::domain::{PlanFee, PriceUnit, QuotaWindow};
+use crate::domain::{PlanFee, PlanFeeCycle, PriceUnit};
 use crate::types::*;
 
 /// 匹配到的一组费率（已解析，可直接参与计算）。
@@ -209,14 +209,14 @@ pub fn parse_unit(s: &str) -> Option<PriceUnit> {
     }
 }
 
-/// 周期长度（毫秒）。`QuotaWindow::None` = 不周期（一次性费用）。
-pub fn plan_fee_period_ms(window: QuotaWindow) -> Option<i64> {
+/// 周期长度（毫秒）。`PlanFeeCycle::None` = 不周期（一次性费用）。
+pub fn plan_fee_period_ms(window: PlanFeeCycle) -> Option<i64> {
     match window {
-        QuotaWindow::Hour => Some(3_600_000),
-        QuotaWindow::Day => Some(86_400_000),
+        PlanFeeCycle::Hour => Some(3_600_000),
+        PlanFeeCycle::Day => Some(86_400_000),
         // 财务惯例：一个月按 30 天摊
-        QuotaWindow::Month => Some(30 * 86_400_000),
-        QuotaWindow::None => None,
+        PlanFeeCycle::Month => Some(30 * 86_400_000),
+        PlanFeeCycle::None => None,
     }
 }
 
@@ -224,7 +224,7 @@ pub fn plan_fee_period_ms(window: QuotaWindow) -> Option<i64> {
 ///
 /// **不摊进单次请求**（见 [07 §6.2](../../../docs/07-ui-pages-and-cost.md)）：
 /// 单次请求只记按量成本，套餐费单独一行展示。
-pub fn amortize_plan_fee(fee: &PlanFeeResolved, window: QuotaWindow, elapsed_ms: i64) -> Money {
+pub fn amortize_plan_fee(fee: &PlanFeeResolved, window: PlanFeeCycle, elapsed_ms: i64) -> Money {
     match plan_fee_period_ms(window) {
         Some(period) if period > 0 => {
             let ratio = (elapsed_ms.max(0) as f64 / period as f64).clamp(0.0, 1.0);
@@ -242,7 +242,7 @@ pub fn plan_fee_amortized(fee: &PlanFee, elapsed_ms: i64) -> Money {
 }
 
 /// 套餐费的日均摊销（周期未知时用 1 天算）。
-pub fn plan_fee_daily(fee: &PlanFeeResolved, window: QuotaWindow) -> Money {
+pub fn plan_fee_daily(fee: &PlanFeeResolved, window: PlanFeeCycle) -> Money {
     amortize_plan_fee(fee, window, plan_fee_period_ms(window).unwrap_or(86_400_000))
 }
 
@@ -288,7 +288,7 @@ pub fn plan_cost_summary(
     total_tokens: u64,
     limit_tokens: Option<u64>,
     divisor: f64,
-    fee: Option<(&PlanFeeResolved, QuotaWindow)>,
+    fee: Option<(&PlanFeeResolved, PlanFeeCycle)>,
     elapsed_ms: i64,
 ) -> PlanCostSummary {
     PlanCostSummary {
@@ -470,7 +470,7 @@ mod tests {
         let fee = PlanFee {
             amount: 99.0,
             currency: "CNY".into(),
-            window: QuotaWindow::Month,
+            window: PlanFeeCycle::Month,
             ..Default::default()
         };
         // 月初：0
@@ -487,7 +487,7 @@ mod tests {
         let hourly = PlanFee {
             amount: 1.2,
             currency: "USD".into(),
-            window: QuotaWindow::Hour,
+            window: PlanFeeCycle::Hour,
             ..Default::default()
         };
         approx(plan_fee_amortized(&hourly, 1_800_000).amount, 0.6);
@@ -495,14 +495,14 @@ mod tests {
         let daily = PlanFee {
             amount: 10.0,
             currency: "USD".into(),
-            window: QuotaWindow::Day,
+            window: PlanFeeCycle::Day,
             ..Default::default()
         };
         approx(plan_fee_amortized(&daily, 86_400_000).amount, 10.0);
         approx(
             plan_fee_daily(
                 &PlanFeeResolved { amount: 10.0, currency: "USD".into() },
-                QuotaWindow::Day,
+                PlanFeeCycle::Day,
             )
             .amount,
             10.0,
@@ -512,11 +512,11 @@ mod tests {
         let one_off = PlanFee {
             amount: 500.0,
             currency: "USD".into(),
-            window: QuotaWindow::None,
+            window: PlanFeeCycle::None,
             ..Default::default()
         };
         approx(plan_fee_amortized(&one_off, 0).amount, 500.0);
-        assert_eq!(plan_fee_period_ms(QuotaWindow::None), None);
+        assert_eq!(plan_fee_period_ms(PlanFeeCycle::None), None);
     }
 
     #[test]
@@ -550,7 +550,7 @@ mod tests {
             4_100_000,
             Some(5_000_000),
             1_000_000.0,
-            Some((&fee, QuotaWindow::Month)),
+            Some((&fee, PlanFeeCycle::Month)),
             15 * 86_400_000,
         );
         approx(s.metered_cost.amount, 18.40);

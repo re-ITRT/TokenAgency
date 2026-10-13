@@ -317,6 +317,21 @@ pub trait KernelController: Send + Sync {
     async fn set_select(&self, lane: &LaneId, node: &str) -> Result<()>;
     /// `GET /proxies/{name}/delay`
     async fn delay_of(&self, name: &str, timeout_ms: u64) -> Result<u32>;
+    /// **provider 里节点的延迟只能这样测**（[docs/46 §297] 实测）：先
+    /// `GET /providers/proxies/{key}/healthcheck?url=<probe>` 触发整份订阅体检，
+    /// 再读 `GET /providers/proxies/{key}` 里每个节点的 `history[].delay`。
+    ///
+    /// 为什么不用 [`KernelController::delay_of`]：proxy-provider 的节点**不在 `/proxies` 顶层**
+    /// （顶层只有内核内置 8 项 + 我们建的组），`/proxies/<name>/delay` 与三种带 provider
+    /// 前缀的写法**全部 404** —— 这就是「自动」出口一直 `all_unreachable` 的原因。
+    ///
+    /// 返回：节点名 → 实测延迟（`None` = 不通 / 没测出来）。**绝不编造一个延迟**。
+    async fn provider_delays(
+        &self,
+        key: &str,
+        probe_url: &str,
+        wait_ms: u64,
+    ) -> Result<std::collections::BTreeMap<String, Option<u32>>>;
     /// `PUT /providers/proxies/{key}` —— 刷新订阅
     async fn refresh_provider(&self, key: &str) -> Result<()>;
     async fn snapshot(&self) -> Result<ProvidersSnapshot>;

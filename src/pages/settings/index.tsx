@@ -1,6 +1,7 @@
 /**
  * 设置页 `/settings`（[07 §7]、[09 §1.2] E1–E5）—— 用户要求"不许再有占位页面"，所以这一页是真页面。
  *
+        </Box>
  * 三条纪律（这一页最容易违反，所以写在最上面）：
  *
  * 1. **I2：只展示系统网络信息，绝不提供"改系统设置"的入口。**
@@ -77,8 +78,10 @@ import type {
   LogMode,
   Retention,
 } from "@/shared/bindings";
-import { PageHeader, StatusDot, HelpTip } from "@/shared/components";
-import { formatBytes, formatDuration, formatInt, formatLocalTime } from "@/shared/format";
+import { SECTION_SX, Caption, AutoEllipsis, PageHeader, StatItem, StatusDot, HelpTip } from "@/shared/components";
+// [docs/52] 「区块说明放哪儿」的唯一判定（原先本文件自己写了一份，阈值是裸字面量 12）
+import { sectionHelpMode } from "@/shared/helpTip";
+import { DASH, formatBytes, formatDuration, formatInt, formatLocalTime } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { useAppStore } from "@/stores/app";
 import { radius, typography } from "@/theme";
@@ -106,10 +109,8 @@ import {
 
 // ================================================================ 常量与文案映射
 
-const SECTION_SX = { p: 4, borderRadius: `${radius.surface}px` } as const;
 
 /** 数值缺失一律画"—"（**不画 0**：0 是"确实是 0"，缺失是"不知道"）。 */
-const DASH = "—";
 
 const LOG_MODES: readonly LogMode[] = ["off", "meta", "shape", "full"];
 
@@ -152,30 +153,8 @@ async function writeClipboard(text: string): Promise<boolean> {
 
 // ================================================================ 小组件
 
-function Caption({ children }: { children: ReactNode }) {
-  return (
-    <Typography variant="caption" sx={{ color: "text.secondary" }}>
-      {children}
-    </Typography>
-  );
-}
 
-/** 一个统计格（标签 + 等宽数字）。 */
-function StatItem({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <Box sx={{ minWidth: 0 }}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
-        {label}
-      </Typography>
-      <Typography
-        variant="body1"
-        sx={{ fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere" }}
-      >
-        {value}
-      </Typography>
-    </Box>
-  );
-}
+// [docs/52] 统计格收敛到共享件（原先本文件自己写了一份）
 
 /** 只读一行：标签 + 值。**只读块里不放任何控件**（I2 的机械检查点）。 */
 function ReadonlyRow({ label, value }: { label: string; value: ReactNode }) {
@@ -195,33 +174,46 @@ function ReadonlyRow({ label, value }: { label: string; value: ReactNode }) {
 }
 
 /**
- * 区块说明的呈现方式（[docs/22 §2]）：**超过 12 个字符**就收进问号圆圈，
- * 短的（如「只读」「来自配置」）留在标题右边。
+ * 区块说明的呈现方式（[docs/22 §2]）。
  *
- * 抽成纯函数是为了让这条阈值能被机械钉住 —— 判据写在测试里，不靠"看着差不多"。
+ * [docs/52] 收敛到 `@/shared/helpTip`，这里**保留再导出**：`settings.test.tsx`
+ * 是 `import SettingsPage, { sectionHelpMode } from "@/pages/settings"` 这样取的，
+ * 直接删掉会让那条测试编译失败。实现只有一份（阈值不再各写一遍）。
  */
-export function sectionHelpMode(text: string): "help" | "inline" {
-  return text.length > 12 ? "help" : "inline";
-}
+export { sectionHelpMode } from "@/shared/helpTip";
 
 /**
  * 一个区块（[docs/22 §2] 的"区块说明"）。
  *
  * `descriptionKey` 是**这一段是干什么的**那一句：> 12 字符收进标题右边的问号圆圈
  * （`testId` 就是 `<区块 testid>-help`，§3），≤ 12 字符留在版面上。
- * **一个区块最多一个问号**（§3）—— 一排问号比一排字更糟，所以其它说明行照旧留在版面上；
- * §2 的红线（读不到 / 未读取 / 校验失败 / 破坏性后果 / 数值）更是一句都不许收。
+ * **一个区块最多一个问号**（§3）—— 一排问号比一排字更糟；所以另外还想收进来的长解释
+ * 走 `helpTip` **并进同一个问号**，而不是再画一个。
+ * §2 的红线（读不到 / 未读取 / 校验失败 / 破坏性后果 / 数值）一句都不许收。
  */
 function SectionPaper({
   titleKey,
   testId,
   descriptionKey,
+  helpTip,
   children,
 }: {
   titleKey: I18nKey;
   testId: string;
   /** 区块说明的 i18n 键（不传就不占位）。 */
   descriptionKey?: I18nKey;
+  /**
+   * 调用点自己给的问号（与 `descriptionKey` 二选一，给了就用它）。
+   *
+   * 为什么需要这条路：本组件把键 **join 成一段文本**再交给 `<HelpTip>`，
+   * 而"哪些键只在问号里出现"这种检查只能看到**字面量**（键名必须直接写在 `<HelpTip … />` 里）。
+   * 就一两句、看一眼就懂的区块（如服务区块）把 `t("键")` 直接写在问号元素里，
+   * 读者不必再跳到本组件的 `parts.join` 去反推，检查器也不至于把它们误当成版面文案。
+   * 几段解释要并进**同一个问号**时，在这里 `join("\n")`（`HelpTip` 的气泡 `whiteSpace: pre-line`，
+   * 仓库里同样的做法见 `network/index.tsx` 的 `mergeHelpText`）—— 收进来的句子一个字都不许丢：
+   * 全文仍是那个问号的 `aria-label`。
+   */
+  helpTip?: ReactNode;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -231,11 +223,12 @@ function SectionPaper({
       <Stack spacing={4}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
           <Typography variant="h4">{t(titleKey)}</Typography>
-          {description === "" ? null : sectionHelpMode(description) === "help" ? (
-            <HelpTip text={description} testId={`${testId}-help`} />
-          ) : (
-            <Caption>{description}</Caption>
-          )}
+          {helpTip ??
+            (description === "" ? null : sectionHelpMode(description) === "help" ? (
+              <HelpTip text={description} testId={`${testId}-help`} />
+            ) : (
+              <Caption>{description}</Caption>
+            ))}
         </Box>
         {children}
       </Stack>
@@ -773,7 +766,6 @@ export default function SettingsPage() {
       <PageHeader
         title={t("nav.settings")}
         description={t("settings.description")}
-        docRef="07 §7 设置 · 09 §1.2 E1–E5（自启动）· I2（只展示系统网络信息）"
         actions={
           <>
             <Button variant="outlined" onClick={() => void config.refetch()}>
@@ -816,7 +808,27 @@ export default function SettingsPage() {
         <SectionPaper
           titleKey="settings.section.service"
           testId="settings-section-service"
-          descriptionKey="settings.service.editHint"
+          /* [极简 · 判据 2「长解释收进问号」] 本区块**两段非红线解释**都并进同一个问号：
+             - [settings.service.editHint]（46 字：这一组改的是草稿、要按下面才生效）——
+               它是"这一段是干什么的"的成句说明；
+             - [settings.service.localKey.hint]（62 字：这个密钥是什么 + 用下面哪个按钮）——
+               它说的两件事在版面上都已经有出处（"值不外显"写在密钥状态那行的值里，
+               按钮的名字就写在按钮上）；
+             - [settings.service.downstream.hint]（34 字：勾选的作用）—— 它是一句成句的说明，
+               而三个开关的名字本身已经说清"勾什么"；规则 2 的取向是句子级说明进 tooltip。
+             三个键的正文一个字都没改（"搬进问号"不是"删掉"）。
+             键名直接写在 `<HelpTip>` 里（而不是让本区块按 `descriptionKey` 去取）：
+             渲染结果一模一样，但"这三句只在问号里出现"这件事在调用点就看得见。 */
+          helpTip={
+            <HelpTip
+              testId="settings-section-service-help"
+              text={[
+                t("settings.service.editHint"),
+                t("settings.service.localKey.hint"),
+                t("settings.service.downstream.hint"),
+              ].join("\n")}
+            />
+          }
         >
           <Stack spacing={3}>
             <ReadonlyRow
@@ -880,18 +892,45 @@ export default function SettingsPage() {
               onChange={onChange}
               kind="bool"
             />
+
+          </Stack>
+
+          {/*
+            [docs/59] **下游 API 家族开关**（用户第 326 轮需求 2）。
+
+            三个**独立**的勾选框，不是"选一个" —— 用户原话是"打开关闭形式，按需求勾选"。
+            关掉的端点会在网关侧当场明确报错（错误里点出是哪个开关），不会被转发上游。
+
+            用同一个 `EditableField`（`path` 直接落进配置文档），所以这里不需要任何新管道：
+            保存走的就是设置页既有的那条路径。
+          */}
+          {/* [极简 · 判据 2] 原来这里铺着一行 34 字的成句说明（[settings.service.downstream.hint]）；
+              它已并进本区块唯一的问号（见上面的 `helpTip`）。三个开关的名字留在版面上。 */}
+          <Stack spacing={1}>
             <EditableField
-              testId="settings-field-exposeModels"
-              labelKey="settings.service.exposeModels"
-              path={["gateway", "expose_models_with_capabilities"]}
+              testId="settings-field-downstreamOpenaiChat"
+              labelKey="settings.service.downstream.openaiChat"
+              path={["gateway", "downstream", "openai_chat"]}
               doc={draft}
               onChange={onChange}
               kind="bool"
             />
-          </Stack>
-
-          <Stack spacing={1}>
-            <Caption>{t("settings.service.localKey.hint")}</Caption>
+            <EditableField
+              testId="settings-field-downstreamOpenaiResponses"
+              labelKey="settings.service.downstream.openaiResponses"
+              path={["gateway", "downstream", "openai_responses"]}
+              doc={draft}
+              onChange={onChange}
+              kind="bool"
+            />
+            <EditableField
+              testId="settings-field-downstreamAnthropicMessages"
+              labelKey="settings.service.downstream.anthropicMessages"
+              path={["gateway", "downstream", "anthropic_messages"]}
+              doc={draft}
+              onChange={onChange}
+              kind="bool"
+            />
           </Stack>
 
           <Box sx={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
@@ -960,30 +999,38 @@ export default function SettingsPage() {
               </Typography>
             ) : (
               <Stack spacing={2}>
-                {/* 开关绑 `actual`（系统事实）；按下去真的注册/移除系统启动项 */}
+                {/* 开关绑 `actual`（系统事实）；按下去真的注册/移除系统启动项。
+                    [极简 · 判据 2] 下面只留**一行真相**「系统实际状态」。
+                    原来那两行被删掉的：
+                    - 「配置里的期望值：X」—— 期望值不是用户要看的东西，它只在"系统和期望不一致"
+                      时有意义，而那种情况由下面那句提示 + 「修复自启动」按钮表达；
+                    - 「注册机制：windows-run-key」—— 那是内部实现值（判据 1 禁止）。
+                    读屏名称仍靠 `aria-label`（一个字不少）。 */}
                 <Box data-testid="settings-autostart-switch">
                   <Stack spacing={1}>
-                    <FormControlLabel
-                      control={
-                        <Switch
-                          checked={autostart.data.actual}
-                          disabled={
-                            setAutostart.isPending ||
-                            autostart.data.mechanism === "unsupported"
-                          }
-                          onChange={(event) =>
-                            setAutostart.mutate({
-                              enabled: event.target.checked,
-                              mode: autostart.data.mode,
-                              delay_s: autostart.data.delay_s,
-                            })
-                          }
-                        />
-                      }
-                      label={t("settings.startup.actual", {
-                        value: autostart.data.actual ? t("settings.startup.yes") : t("settings.startup.no"),
-                      })}
-                    />
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <Switch
+                        checked={autostart.data.actual}
+                        disabled={
+                          setAutostart.isPending ||
+                          autostart.data.mechanism === "unsupported"
+                        }
+                        onChange={(event) =>
+                          setAutostart.mutate({
+                            enabled: event.target.checked,
+                            mode: autostart.data.mode,
+                            delay_s: autostart.data.delay_s,
+                          })
+                        }
+                        inputProps={{
+                          "aria-label": t("settings.startup.actual", {
+                            value: autostart.data.actual
+                              ? t("settings.startup.yes")
+                              : t("settings.startup.no"),
+                          }),
+                        }}
+                      />
+                    </Stack>
                     <Caption>{t("settings.startup.switch.hint")}</Caption>
                   </Stack>
                 </Box>
@@ -997,23 +1044,6 @@ export default function SettingsPage() {
                     value: autostart.data.actual ? t("settings.startup.yes") : t("settings.startup.no"),
                   })}
                 </Typography>
-                <Typography
-                  variant="body1"
-                  data-testid="settings-autostart-desired"
-                  data-value={String(autostart.data.desired)}
-                >
-                  {t("settings.startup.desired", {
-                    value: autostart.data.desired ? t("settings.startup.yes") : t("settings.startup.no"),
-                  })}
-                </Typography>
-                <Typography
-                  variant="body1"
-                  data-testid="settings-autostart-mechanism"
-                  data-value={autostart.data.mechanism}
-                  sx={{ color: "text.secondary" }}
-                >
-                  {t("settings.startup.mechanism", { value: autostart.data.mechanism })}
-                </Typography>
 
                 {autostart.data.mechanism === "unsupported" ? (
                   <Typography variant="body1" data-testid="settings-autostart-unsupported" sx={{ color: "warning.main" }}>
@@ -1023,17 +1053,12 @@ export default function SettingsPage() {
                   </Typography>
                 ) : null}
 
+                {/* [极简 · 判据 2] 漂移时不再把两个值念一遍（期望值已不上版面）：
+                    只留一句"不一致" + 一个修复入口 —— 那正是用户需要的信息与动作。 */}
                 {autostart.data.drifted ? (
                   <Stack spacing={1} data-testid="settings-autostart-drifted">
                     <Typography variant="body1" sx={{ color: "warning.main" }}>
-                      {t("settings.startup.drifted", {
-                        desired: autostart.data.desired
-                          ? t("settings.startup.yes")
-                          : t("settings.startup.no"),
-                        actual: autostart.data.actual
-                          ? t("settings.startup.yes")
-                          : t("settings.startup.no"),
-                      })}
+                      {t("settings.startup.drifted")}
                     </Typography>
                     <Box>
                       <Button
@@ -1081,9 +1106,11 @@ export default function SettingsPage() {
           <Caption>{t("settings.startup.writeHint")}</Caption>
         </SectionPaper>
 
-        {/* ③ 托盘行为 —— 这一节**故意没有问号**：唯一的说明行 [settings.tray.fileWatch.hint]
-            里写着"它开着时用界面写回配置会覆盖文件里的改动"（破坏性后果，§2 第 4 条），
-            整段留在版面上；§3 的"同一区块最多一个问号"是上限，不是配额。 */}
+        {/* ③ 托盘行为 —— 版面上只留**破坏性后果**那一句（§2 第 4 条：这类后果不许藏进悬停）。
+            原来那 132 字的 [settings.tray.fileWatch.hint] 里，函数名（config_set_file_watch_mode）、
+            "监听器还没实现"、"只在下次启动时被读取"都是实现交代（判据 1）→ 已从文案里去掉
+            （见映射文件）；"结果只可能是「需要重启」"由开关下面那条**结果行**在真的发生时说出来，
+            所以没有任何用户需要的事实被丢掉。这一节因此仍然**没有问号**（上限不是配额）。 */}
         <SectionPaper titleKey="settings.section.tray" testId="settings-section-tray">
           <EditableField
             testId="settings-field-trayShowLatency"
@@ -1115,18 +1142,12 @@ export default function SettingsPage() {
                 label={t("settings.tray.fileWatch")}
               />
             </Box>
-            <Typography
-              variant="body1"
-              data-testid="settings-file-watch-config"
-              data-value={String(draft?.system_integration.file_watch_mode === true)}
-            >
-              {t("settings.tray.fileWatch.configValue", {
-                value:
-                  draft?.system_integration.file_watch_mode === true
-                    ? t("settings.tray.on")
-                    : t("settings.tray.off"),
-              })}
-            </Typography>
+            {/* [极简 · 判据 1「同一屏里同一个事实不许说两遍」] 这里**不再**画一行
+                「配置里的值：开/关」：上面那个开关的位置**就是**这个布尔值
+                （读的是同一个 `draft.system_integration.file_watch_mode`），而且开关自己
+                的名字（[settings.tray.fileWatch]）留在版面上，所以没有丢任何信息。
+                删掉它顺带修掉一处不诚实：草稿还没读出来时（`draft === undefined`）
+                那行会写着「配置里的值：关」，可它那时**并不知道**配置里是什么。 */}
             <Caption>{t("settings.tray.fileWatch.hint")}</Caption>
           </Stack>
 
@@ -1230,7 +1251,12 @@ export default function SettingsPage() {
             <Stack spacing={1}>
               <Caption>
                 {savedMode === undefined
-                  ? t("logs.mode.currentUnknown")
+                  ? /* [极简 · 判据 1] 这一行**不**再复用 [logs.mode.currentUnknown]：那个值的括号里
+                       写着「后端只有设置接口、没有读取接口，这里不猜」，而同一节的保留期那行
+                       （[logs.retention.currentUnknown]）写着**一模一样的一句理由** —— 同一屏里
+                       同一个事实说两遍。理由留在**保留期**那行（它永远是"未读取"），
+                       这里只留结论（"未读取"这个红线一个字没少）。 */
+                    t("settings.storage.modeUnknown")
                   : t("settings.storage.modeWritten", { mode: savedMode })}
               </Caption>
               <Typography variant="caption" data-testid="settings-storage-mode-evidence" sx={{ color: "text.secondary" }}>
@@ -1396,6 +1422,11 @@ export default function SettingsPage() {
             </Stack>
           ) : null}
 
+        {/* [docs/30 §3.18] 长页面（1838 行）的主操作固定在底部：照抄 `providers-save-bar` 的 sticky 做法 */}
+        <Box
+          sx={{ position: "sticky", bottom: 0, zIndex: 1, bgcolor: "background.paper", py: 2 }}
+          data-testid="settings-apply-bar"
+        >
           <Box sx={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
             <Button
               variant="contained"
@@ -1420,6 +1451,7 @@ export default function SettingsPage() {
             <Button variant="outlined" data-testid="settings-revert" disabled={!isDirty} onClick={onRevert}>
               {t("settings.config.revert")}
             </Button>
+        </Box>
           </Box>
 
           {report !== undefined ? (
@@ -1588,7 +1620,17 @@ export default function SettingsPage() {
                   <TableBody>
                     {snapshots.map((snapshot) => (
                       <TableRow key={snapshot.id} data-testid="settings-snapshot-row">
-                        <TableCell>{`${snapshot.label} · ${snapshot.id}`}</TableCell>
+                        <TableCell>
+                          {/* [docs/26 §2] 「标签 · id」两个用户可见值拼在一格，可能很长。
+                              恢复路径：①「回滚」按钮开的那张确认框里带着同一个 id（本页既有入口）；
+                              ②悬停/聚焦的 tooltip 给完整原文。 */}
+                          <AutoEllipsis
+                            testId="settings-snapshot-label-ellipsis"
+                            sx={{ maxWidth: 320 }}
+                          >
+                            {`${snapshot.label} · ${snapshot.id}`}
+                          </AutoEllipsis>
+                        </TableCell>
                         <TableCell sx={{ fontVariantNumeric: "tabular-nums", color: "text.secondary" }}>
                           {snapshot.createdAtMs === undefined
                             ? DASH

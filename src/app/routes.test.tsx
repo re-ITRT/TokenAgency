@@ -12,7 +12,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -20,10 +20,11 @@ import { api, isTauri } from "@/shared/api";
 import { registerBaselineMocks, registerDevMocks } from "@/shared/api/mock";
 import { i18n } from "@/shared/i18n";
 import { zhCN } from "@/shared/i18n/zh-CN";
+import { useUiStore } from "@/stores/ui";
 
 import { AppShell } from "./AppShell";
-import { primaryCandidate, resolvePage } from "./pageRegistry";
-import { HOME_PATH, NAV_ROUTES, ROUTES, routeByKey } from "./routes";
+import { resolvePage } from "./pageRegistry";
+import { HOME_PATH, NAV_ROUTES, navSections, ROUTES, routeByKey } from "./routes";
 
 // 这条文件里"每个路由都能渲染"要**逐个真实挂载 13 条路由**（含懒加载分包）。
 // 页面全落地之前它 1.3s 就跑完；13 个页面都在之后，光"非 network 的 11 条"实测就要 ~4.2s，
@@ -61,13 +62,8 @@ function renderAt(path: string) {
   );
 }
 
-/** 占位壳里显示的"该放哪个文件"——用它判断这一页确实渲染了。 */
-function placeholderMarker(path: string): string {
-  return `src/pages/${path}.tsx`;
-}
-
 describe("路由外壳", () => {
-  it("每个路由都能渲染：有页面就渲染页面，没页面就给占位壳（都不白屏）", async () => {
+  it("每个路由都能渲染：有页面就渲染页面，没页面就给 404（都不白屏）", async () => {
     for (const route of ROUTES) {
       const url = route.path.replace(":id", "p-bytedance");
       const page = resolvePage(route.pages);
@@ -79,17 +75,14 @@ describe("路由外壳", () => {
       });
 
       if (page === undefined) {
-        const expected = placeholderMarker(primaryCandidate(route.pages));
+        // [极简] 占位壳已整块删除：缺页面时给**用户能看懂的 404**（不再显示"该放哪个文件"）
         expect(
-          screen.queryByText(expected),
-          `${url} 没有页面文件时应当渲染占位壳（找 ${expected}）`,
+          screen.queryByTestId("page-not-found"),
+          `${url} 没有页面文件时应当渲染 404 页`,
         ).toBeTruthy();
       } else {
-        // 页面已就位：不许再显示占位壳，且必须渲染出自己的页头
-        expect(
-          screen.queryByTestId("page-placeholder"),
-          `${url} 页面已存在，不应再走占位壳`,
-        ).toBeNull();
+        // 页面已就位：必须渲染出自己的页头（而不是任何回退壳）
+        expect(screen.queryByTestId("page-not-found"), `${url} 不该走 404`).toBeNull();
         // 逐条串行挂载 + 懒加载分包 + 每页自带查询，默认 1s 的 waitFor 会偶发超时；
         // 10s 只是等待上限，断言本身没有放宽。
         await waitFor(
@@ -104,13 +97,12 @@ describe("路由外壳", () => {
     // 断言一条没动，只是给它足够的预算。
   }, 60_000);
 
-  it("`/` 重定向到看板（看板已有页面，不再是占位壳）", async () => {
+  it("`/` 重定向到看板（看板已有页面）", async () => {
     renderAt("/");
     const dashboard = routeByKey("dashboard");
     expect(dashboard).toBeDefined();
     expect(resolvePage(dashboard!.pages)).toBeDefined();
     await waitFor(() => expect(screen.queryByTestId("page-header")).toBeTruthy());
-    expect(screen.queryByText(placeholderMarker(primaryCandidate(dashboard!.pages)))).toBeNull();
   });
 
   it("未知路径渲染 404，而不是空白", () => {
@@ -132,7 +124,6 @@ describe("路由外壳", () => {
       expect(zhCN[route.titleKey], `${route.key} 的 titleKey 不存在`).toBeTruthy();
       expect(route.icon, `${route.key} 缺图标`).toBeTruthy();
       expect(route.pages.length, `${route.key} 必须有页面候选路径`).toBeGreaterThan(0);
-      expect(route.docRef.length, `${route.key} 必须标注契约出处`).toBeGreaterThan(0);
     }
   });
 
@@ -146,6 +137,152 @@ describe("路由外壳", () => {
         false,
       );
     }
+  });
+
+  // ================================================================ [docs/56] 信息架构
+
+  /**
+   * 侧边栏的**顺序与分组**是设计决定，不是"谁先被写进数组"的副产品。
+   *
+   * 用户第 323 轮原话：「侧边栏几个页面重新排序一下，现在这样有点不合理，
+   * 从用户体验工程和直觉上来说」。改之前是
+   * `概览 | 服务商 模型 网络 | 成本 日志 | 设置 | 访问密钥` ——
+   * 语义是**配置(3) → 观察(2) → 系统(1) → 又回到配置(1)**：
+   * 配置链的**终点**（访问密钥）被丢在「设置」之后，读起来像设置的子项。
+   *
+   * 这一组把它钉死：**顺序错了、组断了、组名没登记，都当场红**。
+   */
+  describe("[docs/56] 侧边栏顺序与分组", () => {
+    it("顺序 = 概览 → 配置四项 → 记录两项 → 设置（按任务流，不按频率）", () => {
+      expect(NAV_ROUTES.map((r) => r.key)).toEqual([
+        "dashboard",
+        // 配置：接谁 → 提供什么 → 怎么出网 → **谁可以调用**（链的终点）
+        "providers",
+        "models",
+        "network",
+        "api-keys",
+        // 记录：明细 → 聚合
+        "logs",
+        "cost",
+        // 系统：永远最后
+        "settings",
+      ]);
+    });
+
+    it("分组后：首页不归组、三组连续、组名都在 zh-CN 里", () => {
+      const sections = navSections();
+      expect(sections, "分组算不出来（同组不连续 / 组名没登记）").not.toBeNull();
+      const list = sections!;
+
+      // 首页自成一段且在最前：不塞进任何组（组名与项名都是"概览"会显得重复）
+      expect(list[0]?.groupKey).toBeUndefined();
+      expect(list[0]?.routes.map((r) => r.key)).toEqual(["dashboard"]);
+
+      expect(list.slice(1).map((s) => s.groupKey)).toEqual([
+        "navGroup.setup",
+        "navGroup.records",
+        "navGroup.system",
+      ]);
+      for (const section of list.slice(1)) {
+        expect(zhCN[section.groupKey!], `${section.groupKey} 不存在`).toBeTruthy();
+      }
+
+      // 组名与它下面的项名不许撞（"配置 / 配置"那种读起来像 bug）
+      for (const section of list.slice(1)) {
+        const groupLabel = zhCN[section.groupKey!];
+        for (const route of section.routes) {
+          expect(zhCN[route.titleKey]).not.toBe(groupLabel);
+        }
+      }
+    });
+
+    it("**每一组内的项在 NAV_ROUTES 里是连续的一段**（这是 `navSections` 的硬前提）", () => {
+      // 把 `navSections` 的连续性判定用**独立的方式**再算一遍：直接看分组序列有没有回摆。
+      // 两边都算 = 万一哪天 `navSections` 的判定写松了，这条仍然会红。
+      const groups = NAV_ROUTES.map((r) => r.navGroup ?? "__ungrouped__");
+      const seen = new Set<string>();
+      let previous: string | undefined;
+      for (const group of groups) {
+        if (group !== previous) {
+          expect(seen.has(group), `分组 ${group} 被切成了两段（第 ${groups.indexOf(group) + 1} 项又回来了）`).toBe(
+            false,
+          );
+          seen.add(group);
+          previous = group;
+        }
+      }
+    });
+
+    /**
+     * **画出来的和算出来的一致** —— 上面几条测的是 `navSections()` 的返回值，
+     * 这一条测**侧边栏真的渲染了那几个组名**（算对了但没画 = 用户还是看不到结构）。
+     *
+     * 同时也钉住"顺序"这件事的**用户可见形式**：DOM 文本流里组名与项名的先后。
+     */
+    it("侧边栏真的把三个组名画出来，且顺序是 概览 → 配置 → 记录 → 系统", async () => {
+      renderAt("/dashboard");
+      await waitFor(() => expect(screen.queryByTestId("page-header")).toBeTruthy());
+
+      const nav = document.querySelector("nav");
+      expect(nav, "侧边栏没渲染").not.toBeNull();
+
+      const headings = Array.from(nav!.querySelectorAll('[data-testid="sidebar-group-heading"]'))
+        .map((el) => el.textContent)
+        .filter(Boolean);
+      expect(headings).toEqual([
+        zhCN["navGroup.setup"],
+        zhCN["navGroup.records"],
+        zhCN["navGroup.system"],
+      ]);
+
+      // 组名与它下面的项名在 DOM 里的先后：用文本流位置判（不依赖 CSS 布局）
+      const text = nav!.textContent ?? "";
+      const at = (s: string) => {
+        const i = text.indexOf(s);
+        expect(i, `侧边栏里找不到「${s}」`).toBeGreaterThanOrEqual(0);
+        return i;
+      };
+      expect(at(zhCN["nav.dashboard"])).toBeLessThan(at(zhCN["navGroup.setup"]!));
+      expect(at(zhCN["nav.providers"])).toBeGreaterThan(at(zhCN["navGroup.setup"]!));
+      // 配置链的**终点**（访问密钥）在配置组内、且早于记录组 —— 这正是本轮修的那一处
+      expect(at(zhCN["nav.apiKeys"])).toBeGreaterThan(at(zhCN["navGroup.setup"]!));
+      expect(at(zhCN["nav.apiKeys"])).toBeLessThan(at(zhCN["navGroup.records"]!));
+      // 记录组：明细（日志）在聚合（成本）之前
+      expect(at(zhCN["nav.logs"])).toBeGreaterThan(at(zhCN["navGroup.records"]!));
+      expect(at(zhCN["nav.logs"])).toBeLessThan(at(zhCN["nav.cost"]));
+      // 系统最后一项
+      expect(at(zhCN["nav.settings"])).toBeGreaterThan(at(zhCN["navGroup.system"]!));
+    });
+
+    /**
+     * **折叠态不画组名** —— 这条是`Sidebar.tsx` 里那句注释的可执行版本。
+     *
+     * 为什么必须不画：折叠后整条栏只有 56px，一个组名（哪怕 11px）也放不下，
+     * 硬塞会把图标挤歪。折叠态的识别靠 `Tooltip`（原本就有），不受影响。
+     *
+     * 注释里写了断言却没测 = 下一个人改坏了不会有人发现，所以这里真的点一次折叠。
+     */
+    it("折叠后不画组名（56px 放不下），但导航项一个都不少", async () => {
+      useUiStore.getState().setSidebarCollapsed(false);
+      renderAt("/dashboard");
+      await waitFor(() => expect(screen.queryByTestId("page-header")).toBeTruthy());
+      expect(document.querySelectorAll('[data-testid="sidebar-group-heading"]').length).toBe(3);
+
+      // 真的点那个折叠按钮（不是直接改 store）——顺便验证按钮接线
+      fireEvent.click(screen.getByTestId("sidebar-collapse-toggle"));
+      await waitFor(() =>
+        expect(document.querySelectorAll('[data-testid="sidebar-group-heading"]').length).toBe(0),
+      );
+
+      // 组名没了，但**每一项都还在**（图标态可点、hover 有 Tooltip）
+      const nav = document.querySelector("nav")!;
+      expect(nav.querySelectorAll('[role="button"], .MuiListItemButton-root').length).toBe(
+        NAV_ROUTES.length,
+      );
+
+      // 复位：别把状态漏给后面的用例（store 是全局单例）
+      useUiStore.getState().setSidebarCollapsed(false);
+    });
   });
 
   it("浏览器开发路径可用：非 Tauri 下 mock 生效，不需要 Rust/Tauri（DoD 3）", async () => {

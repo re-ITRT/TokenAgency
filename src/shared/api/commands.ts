@@ -31,15 +31,16 @@ import type {
   KernelProvider,
   KernelStatus,
   Lane,
-  LaneAssignment,
+  LaneChoiceGroup,
   LaneId,
-  LanePickOption,
   LaneTestResult,
   LaneView,
+  LinesCreateAllResult,
   LogMode,
   LogPage,
   LogQuery,
   Model,
+  ModelCatalogEntry,
   ModelId,
   ModelPatch,
   ModelView,
@@ -54,7 +55,6 @@ import type {
   ProviderId,
   ProviderView,
   PreviewResult,
-  QuotaState,
   RefreshResult,
   RequestId,
   RequestSummary,
@@ -137,10 +137,8 @@ export const provider = {
 export const credential = {
   list: () => invokeCommand("credential_list", undefined) as Promise<CredentialView[]>,
   upsert: (c: Credential) => invokeCommand("credential_upsert", { credential: c }) as Promise<Credential>,
-  remove: (id: CredentialId, force = false) => invokeCommand("credential_delete", { id, force }),
   setSecret: (id: CredentialId, plaintext: string) =>
     invokeCommand("credential_set_secret", { id, plaintext }),
-  clearQuota: (id: CredentialId) => invokeCommand("credential_clear_quota", { id }) as Promise<QuotaState>,
   setEnabled: (id: CredentialId, enabled: boolean) =>
     invokeCommand("credential_set_enabled", { id, enabled }),
 };
@@ -172,17 +170,49 @@ export const model = {
     }) as Promise<ApplyResult>,
   bulkUpdate: (ids: ModelId[], patch: ModelPatch) =>
     invokeCommand("model_bulk_update", { ids, patch }) as Promise<ApplyResult>,
+  /**
+   * [docs/25] 这家服务商的**模型目录**（扫描记录下来的全部上游模型）。
+   *
+   * 与 `importFromProvider` 的区别：那个是"这次扫描的结果"（内存、5 分钟），
+   * 这个是"这家扫描到过什么"（落库、活得久）—— 用户在服务商里回头勾一个没勾过的模型，
+   * 走的就是它，不需要再扫一遍。
+   */
+  catalog: (providerId: ProviderId) =>
+    invokeCommand("provider_model_catalog", { provider_id: providerId }) as Promise<ModelCatalogEntry[]>,
+  /**
+   * [docs/25] 把目录里的这一条**接入**这家服务商：建 `Model`（缺才建）+ 建一条启用通道。
+   *
+   * 只给上游名 —— 逻辑名从目录行取（单一真源）。幂等；目录里没有这一条 → `TA-1004`。
+   */
+  attach: (providerId: ProviderId, upstreamModel: string) =>
+    invokeCommand("provider_model_attach", {
+      provider_id: providerId,
+      upstream_model: upstreamModel,
+    }) as Promise<ApplyResult>,
+  /**
+   * [docs/28 §1.4] 「添加服务商就把**所有**线路建出来」：把目录里每条都建成线路，
+   * **默认关闭**（之后只用滑块控制启用/关闭）。幂等；`created: 0` = 这次一条都没补。
+   */
+  createAllLines: (providerId: ProviderId, lane?: LaneId | null) =>
+    invokeCommand("provider_lines_create_all", {
+      provider_id: providerId,
+      ...(lane === undefined ? {} : { lane }),
+    }) as Promise<LinesCreateAllResult>,
 };
 
 // ================================================================ channel / group
 export const channel = {
+  /** 全部线路（[docs/28 §2]：返回的每一条还会带一个只读派生值 `models`）。 */
+  list: () => invokeCommand("channel_list", undefined) as Promise<Channel[]>,
   matrix: () => invokeCommand("channel_matrix", undefined),
   upsert: (c: Channel) => invokeCommand("channel_upsert", { channel: c }) as Promise<Channel>,
   remove: (id: ChannelId) => invokeCommand("channel_delete", { id }),
   setEnabled: (id: ChannelId, enabled: boolean) => invokeCommand("channel_set_enabled", { id, enabled }),
-  /** [docs/21 §4.1]：`laneId = null` = 清空（回到继承链，末端直连）。 */
-  bulkAssignLane: (channelIds: ChannelId[], laneId: LaneId | null) =>
-    invokeCommand("channel_bulk_assign_lane", { channel_ids: channelIds, lane_id: laneId }) as Promise<ApplyResult>,
+  // [docs/55] `bulkAssignLane` 已删除：线路分配只剩**服务商级**一处
+  //（用户："线路级别的分配逻辑我们已经放弃了，取而代之的，每个服务商统一一个节点"）。
+  /** [docs/28 §1.4] 全选：一次动作把一批线路一起启用/一起关闭（可逆）。 */
+  bulkSetEnabled: (channelIds: ChannelId[], enabled: boolean) =>
+    invokeCommand("channel_bulk_set_enabled", { channel_ids: channelIds, enabled }) as Promise<ApplyResult>,
   setTags: (channelIds: ChannelId[], add: string[], remove: string[]) =>
     invokeCommand("channel_set_tags", { channel_ids: channelIds, add, remove }) as Promise<ApplyResult>,
 };
@@ -214,13 +244,15 @@ export const lane = {
   test: (id: LaneId, node?: string) =>
     invokeCommand("lane_test", { id, node }) as Promise<LaneTestResult[]>,
   setNode: (id: LaneId, node: string) => invokeCommand("lane_set_node", { id, node }),
-  assignments: () => invokeCommand("lane_assignments", undefined) as Promise<LaneAssignment[]>,
-  reverseLookup: (laneId: LaneId) =>
-    invokeCommand("lane_reverse_lookup", { lane_id: laneId }) as Promise<{
-      channel_ids: ChannelId[];
-      model_ids: ModelId[];
-    }>,
-  pickOptions: () => invokeCommand("lane_pick_options", undefined) as Promise<LanePickOption[]>,
+  // [docs/55] `assignments` / `reverseLookup` / `pickOptions` 已删除 ——
+  // 它们只服务于"线路级别的分配"（`/network/assignments` 那一页），而那页整页删除了。
+  /** [docs/28 §1.2] 线路下拉的全部可选来源：已配置线路 + 订阅节点（按订阅分组）。 */
+  options: () => invokeCommand("lane_options", undefined) as Promise<LaneChoiceGroup[]>,
+  /** [docs/28 §1.2] 让"这个订阅的这个节点"有一条线路（幂等：已有等价线路则复用）。 */
+  ensureForNode: (subscription_id: SubscriptionId, node: string) =>
+    invokeCommand("lane_ensure_for_node", { subscription_id, node }) as Promise<Lane>,
+  /** [docs/28 §1.2] 让配置里有一条**直连线路**（幂等：已有 direct 线路则复用）。 */
+  ensureDirect: () => invokeCommand("lane_ensure_direct", undefined) as Promise<Lane>,
 };
 
 export const subscription = {

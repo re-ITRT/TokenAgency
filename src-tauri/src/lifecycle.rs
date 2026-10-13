@@ -38,6 +38,17 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, Window, WindowEvent};
 
 use ta_core::clock::{Clock, SystemClock};
 use ta_core::domain::behavior::MAX_AUTOSTART_DELAY_S;
+/// 启动时要不要把主窗口藏进托盘（[docs/33]）。
+///
+/// **`TA_E2E` 在场时永不隐藏**：真机端到端需要一个**可见**窗口 —— 驱动器只能驱动一个真正
+/// 渲染出来的 WebView；隐藏窗口时它拿到的是**空页面**（真机上表现为"窗口起来了但页面文本为空"，
+/// 排查了很久才定位到这里）。
+///
+/// 抽成纯函数是为了能断言：`e2e = true` 必须压过"托盘模式"。
+fn hide_window_for_start(args: &StartupArgs, e2e: bool) -> bool {
+    !e2e && args.hide_window_at_start()
+}
+
 use ta_core::domain::AutostartMode;
 
 use crate::autostart::{CLI_DELAY_PREFIX, CLI_FLAG, CLI_MODE_PREFIX, CLI_UNINSTALL_FLAG};
@@ -751,15 +762,33 @@ pub fn on_setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     }
 
     if let Some(window) = app.get_webview_window(tray::MAIN_WINDOW) {
-        if args.hide_window_at_start() {
+        if hide_window_for_start(&args, std::env::var_os("TA_E2E").is_some()) {
             let _ = window.hide();
             tracing::info!("开机自启动（mode=tray）：静默进托盘，不弹窗口");
         } else {
             // 显式 show：window-state 插件会把上次会话的可见性也恢复回来
             // （用户上次"关窗退托盘"过 → 这次普通启动会带着 hidden 状态），
             // 所以非托盘模式必须把它显示出来，否则用户双击图标看不到窗口。
+            tracing::info!(
+                e2e = std::env::var_os("TA_E2E").is_some(),
+                "主窗口：显式显示（非托盘模式；E2E 下还会再延迟显示一次）"
+            );
             let _ = window.show();
             let _ = window.set_focus();
+            // [docs/31 §19] **真机 E2E：延迟再显示一次**。
+            //
+            // 为什么需要它：驱动器建完会话后，窗口会被 `window-state` 插件（恢复上次会话的
+            // 可见性）或托盘逻辑**再次藏起来** —— 真机表现是"会话即刻失效"：
+            // `wd.exec` / `pageText` / `window/handles` **全部返回 null**（协议层证据，第 160 轮）。
+            // 上面那次 `show()` 发生在插件恢复**之前**，所以这里再补一次、确保晚于它。
+            if std::env::var_os("TA_E2E").is_some() {
+                let w = window.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                });
+            }
         }
     }
 

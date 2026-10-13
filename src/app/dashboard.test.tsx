@@ -85,9 +85,6 @@ function makeData(overrides: Partial<DashboardData> = {}): DashboardData {
     },
     sparklines: { requests: [1, 2, 3], tokens: [1, 2, 3], cost: [1, 2, 3], success_rate: [1, 2, 3] },
     trend: [],
-    quota: [
-      { credential_id: "c-1", label: "字节方舟 · 500万 token/月", used_pct: 0.82, state: "ok", detail: "410万 / 500万" },
-    ],
     lanes: [],
     live: [],
     top_models: [],
@@ -109,7 +106,7 @@ describe("[07 §1] 看板：诚实优先", () => {
 
     // 可用性四行（网关/内核/provider 检查/出口）都得是"未知"
     expect(screen.getAllByText("未知").length).toBeGreaterThanOrEqual(3);
-    // 数字卡不给 0 填坑，给空状态（卡片区与套餐区各一处）
+    // 数字卡不给 0 填坑，给空状态
     expect(screen.getAllByText("暂无数据").length).toBeGreaterThanOrEqual(1);
     expect(container.textContent).not.toContain("1,284");
   });
@@ -153,7 +150,7 @@ describe("[07 §1] 看板：诚实优先", () => {
     expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
   });
 
-  it("有数据时：数字卡、出口、套餐额度、未定价提示都按契约渲染", () => {
+  it("有数据时：数字卡、出口、未定价提示都按契约渲染", () => {
     renderBody({
       status: KERNEL_READY_STATUS,
       data: makeData({ unpriced_models: ["gpt-5-preview", "claude-next"] }),
@@ -164,15 +161,8 @@ describe("[07 §1] 看板：诚实优先", () => {
     expect(screen.getByText("¥18.62")).toBeTruthy();
     expect(screen.getByText("99.2%")).toBeTruthy();
     expect(screen.getByText(/日本线/)).toBeTruthy();
-    expect(screen.getByText("字节方舟 · 500万 token/月")).toBeTruthy();
     // 未定价模型必须明说"成本不完整"（不许让用户以为是全量）
     expect(screen.getByText("2 个模型未定价：成本数字不完整")).toBeTruthy();
-  });
-
-  it("套餐列表为空时给空状态，不画一个假的 0%", () => {
-    renderBody({ status: KERNEL_READY_STATUS, data: makeData({ quota: [] }) });
-    expect(screen.getByText("套餐额度")).toBeTruthy();
-    expect(screen.getByText("暂无数据")).toBeTruthy();
   });
 
   it("整页在 mock 基准场景下能渲染真实数字（浏览器开发路径，不依赖 Rust/Tauri）", async () => {

@@ -347,11 +347,18 @@ describe("启停、删除（二次确认）、用量", () => {
     );
   });
 
-  it("删除：先弹二次确认，未确认前一次都不调用；确认后调 api_key_delete({id})", async () => {
+  // 真机 E2E `scripts/e2e/smoke.mjs` 的 step18 依赖两个 testid：行内的 `api-key-delete`
+  // 与共享确认组件的 `<prefix>-delete-confirm`（= `api-key-delete-confirm`）。
+  // 本组用例就是那份契约的单测版本 —— 谁改了名字，E2E 会红，这里会先红。
+  it("删除：先弹二次确认（点名删的是哪一个），未确认前一次都不调用；确认后调 api_key_delete({id})", async () => {
     renderPage();
     await waitForList();
 
     fireEvent.click(screen.getByTestId("api-key-delete"));
+    // 确认框里写清删的是**哪一个**（名称 + id）—— 旧实现只有一个"确认删除"，删完才知道是什么
+    const target = screen.getByTestId("api-key-delete-target");
+    expect(target.textContent).toContain("笔记本");
+    expect(target.textContent).toContain("k-1");
     expect(screen.getByTestId("api-key-delete-confirm")).toBeTruthy();
     expect(deleteCalls).toEqual([]);
 
@@ -359,7 +366,88 @@ describe("启停、删除（二次确认）、用量", () => {
 
     await waitFor(() => expect(deleteCalls.length).toBe(1));
     expect(deleteCalls[0]).toEqual({ id: "k-1" });
+    // 成功：结果区如实写"已删除 <名称>"（[docs/21 §1.1 第 4 条]）
+    const result = await screen.findByTestId("api-key-delete-result");
+    expect(result.textContent).toContain("已删除");
+    expect(result.textContent).toContain("笔记本");
     await waitFor(() => expect(screen.getByTestId("api-keys-empty")).toBeTruthy());
+  });
+
+  it("删除失败：后端原文（含 TA 码）留在确认框里、框**不关** —— 失败不再静默（旧缺陷）", async () => {
+    registerMock("api_key_delete", () => {
+      throw new TokenAgencyError({ code: "TA-9001", message: "密钥表写入失败（测试夹具）" });
+    });
+    renderPage();
+    await waitForList();
+
+    fireEvent.click(screen.getByTestId("api-key-delete"));
+    fireEvent.click(screen.getByTestId("api-key-delete-confirm"));
+
+    const error = await screen.findByTestId("api-key-delete-error");
+    expect(error.textContent).toContain("[TA-9001]");
+    expect(error.textContent).toContain("密钥表写入失败（测试夹具）");
+    // 框留着（原文就在这里）；没有 force 语义 → 不许给"强行删除"按钮（那会是假按钮）
+    expect(screen.getByTestId("api-key-delete-dialog")).toBeTruthy();
+    expect(screen.queryByTestId("api-key-delete-cascade")).toBeNull();
+    // 没有假装成功：行还在，也没有任何"已删除"的结果行
+    expect(screen.getAllByTestId("api-key-row")).toHaveLength(1);
+    expect(screen.queryByTestId("api-key-delete-result")).toBeNull();
+  });
+
+  it("批量：逐行多选 + 表头全选 → 一次确认 → **逐条**调用；部分失败如实逐条汇报（不许盖成成功）", async () => {
+    keys = [
+      keyView({ id: "k-1", name: "笔记本" }),
+      keyView({ id: "k-2", name: "服务器" }),
+      keyView({ id: "k-3", name: "CI" }),
+    ];
+    registerMock("api_key_delete", (args) => {
+      const id = (args as { id: string }).id;
+      deleteCalls.push({ ...(args as Record<string, unknown>) });
+      if (id === "k-3") {
+        throw new TokenAgencyError({ code: "TA-9001", message: "这一条删不掉（测试夹具）" });
+      }
+      keys = keys.filter((k) => k.id !== id);
+      return undefined;
+    });
+    renderPage();
+    await waitForList();
+
+    // 表头全选（`api-key-select-all`）把当前列表全选上
+    fireEvent.click(within(screen.getByTestId("api-key-select-all")).getByRole("checkbox"));
+    expect(screen.getByTestId("api-key-selected-count").textContent).toContain("3");
+
+    fireEvent.click(screen.getByTestId("api-key-delete-selected"));
+    // 一次确认：确认之前一条命令都没发
+    expect(deleteCalls).toEqual([]);
+    expect(screen.getByTestId("api-key-delete-target").textContent).toContain("3");
+    fireEvent.click(screen.getByTestId("api-key-delete-confirm"));
+
+    await waitFor(() => expect(deleteCalls).toHaveLength(3));
+    // 逐条调用、顺序不乱、**一条失败不中止其余条**
+    expect(deleteCalls.map((call) => call["id"])).toEqual(["k-1", "k-2", "k-3"]);
+
+    const summary = await screen.findByTestId("api-key-delete-result-summary");
+    expect(summary.textContent).toContain("成功 2 条");
+    expect(summary.textContent).toContain("失败 1 条");
+    const failedLine = screen.getByTestId("api-key-delete-result-k-3");
+    expect(failedLine.textContent).toContain("k-3");
+    expect(failedLine.textContent).toContain("TA-9001");
+    // 成功的那两条真的从列表上消失了；失败的还留着
+    await waitFor(() => expect(screen.getAllByTestId("api-key-row")).toHaveLength(1));
+    // 失败的那条仍在选中里（用户可以直接重试）
+    expect(screen.getByTestId("api-key-selected-count").textContent).toContain("1");
+  });
+
+  it("批量：一条都没选时「删除选中」不发命令、也不开确认框", async () => {
+    renderPage();
+    await waitForList();
+
+    const button = screen.getByTestId("api-key-delete-selected") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(screen.queryByTestId("api-key-delete-dialog")).toBeNull();
+    expect(deleteCalls).toEqual([]);
+    expect(screen.getByTestId("api-key-selected-count").textContent).toContain("0");
   });
 
   it("用量：点了那一行才调 api_key_usage({id, limit})，结果画在该行下面", async () => {
@@ -482,5 +570,21 @@ describe("[docs/22] 页头说明收进问号圆圈，明文/哈希这些红线�
     const hint = await screen.findByTestId("api-keys-created-hint");
     expect(hint.textContent).toBe(zhCN["apiKeys.createdHint"]);
     expect(within(hint).queryAllByRole("button")).toEqual([]);
+  });
+});
+
+// ================================================================ [docs/26 §2] 一级界面省略
+
+describe("[docs/26 §2] 密钥名：省略后全文仍在 DOM", () => {
+  it("长名字整段留在 DOM 里；没溢出时一个提示都不挂", async () => {
+    const name = "Cursor 专用（团队共享 · 只读用量 · 仅工作日）";
+    keys = [keyView({ name })];
+    renderPage();
+    await waitForList();
+
+    const element = await screen.findByTestId("api-key-name-ellipsis");
+    expect(element.textContent).toBe(name);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(element.getAttribute("tabindex")).toBeNull();
   });
 });

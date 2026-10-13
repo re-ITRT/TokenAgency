@@ -41,6 +41,35 @@ src/shared/bindings.ts.bak
 /kernel/
 /providers/
 
+# 本地暂存区（AI/会话的工作目录）
+#
+# ⚠️ 为什么单独列一条（2026-10-13）：这个目录**从来没人跟踪过**，所以一直没出事，
+# 但它也不在忽略列表里 —— 也就是说 `git add -A` 就会把它一起提交。
+# 而里面躺着两类**绝不能公开**的东西：
+#   * `targets.json`   —— 验证用的两台服务器的 IP；
+#   * `proxy_creds.json` —— 一次性代理账号口令；
+#   * `deploy/` 下的部署脚本与订阅文件（含同样的口令）。
+# 仓库要公开，所以这条不是洁癖：它挡的是一次**不可撤销**的泄露（GitHub 历史会被 fork 永久保留）。
+# 同理挡掉任何临时凭据文件，避免以后有人手滑把凭据写进仓库根。
+/.ta-tmp/
+/.ta-tools-local/
+密码*.json
+*_creds.json
+*targets.json
+
+# 随包内核（第三方 GPL 二进制）—— **不入库**，构建时按钉死的版本+校验和拉取
+#
+# 为什么不入库（2026-10-13）：
+#   * `mihomo.exe` 58.27MB + `Country.mmdb` 7.35MB = 65MB，GitHub 超 50MB 就报警，
+#     而且每一次 clone 都要拖着这 65MB；
+#   * 它们是**第三方产物**，不是本仓的源码。放进仓库还会让"改了内核"和"没改内核"
+#     这件事变得**看不出来** —— 而这对 GPL 合规是要命的信息（改过就必须公开改动）。
+# 替代做法：`scripts/fetch-mihomo.ps1` 按固定 tag + sha256 拉取，校验不过就拒绝。
+# （如果你更想让干净 clone 直接能构建，可以改用 git-lfs；但 LFS 有配额，公开仓库
+#   每个克隆都要吃掉带宽，作者倾向"脚本拉取"。）
+src-tauri/resources/mihomo/mihomo.exe
+src-tauri/resources/mihomo/Country.mmdb
+
 # 图标源文件由 scripts/make-icon.mjs 生成，生成物在 src-tauri/icons 需要入库
 /app-icon.png
 /src-tauri/icons/android/

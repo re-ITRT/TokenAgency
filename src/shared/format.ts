@@ -11,6 +11,17 @@
 import dayjs from "dayjs";
 
 /** 千分位整数。`1284` → `1,284`。 */
+/**
+ * 缺值占位符（U+2014 EM DASH）。
+ *
+ * **为什么放在这里**：这个字符原先在 **7 个文件**各写了一遍 `const DASH = "—";`
+ * （[docs/50] 的重复清单）。它出现在"后端没给这个字段"的每一个格子里 ——
+ * 一旦有人写成 `-`/`--`/`N/A`，界面就会同时出现几种缺值写法。
+ * 收敛成一处之后，全站只有一个缺值符号。
+ *
+ * 注意它**不是 0**：`—` 表示"读不到"，`0` 表示"确实是 0"（[docs/22 §2] 的红线）。
+ */
+export const DASH = "\u2014";
 export function formatInt(n: number): string {
   return Math.round(n).toLocaleString("en-US");
 }

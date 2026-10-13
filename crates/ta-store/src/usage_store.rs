@@ -1,11 +1,11 @@
-//! 用量与账本存储：`usage_request` / `usage_daily` / `api_key_usage` / `quota_state`。
+//! 用量存储：`usage_request` / `usage_daily` / `api_key_usage`。
 //!
 //! 契约：`docs/11-internal-contracts.md` §1.3 + §4.3、`docs/07-ui-pages-and-cost.md` §6。
 //!
 //! 硬约束：
 //! - `usage_daily.token_kind` 是**行维度**（不是列）→ 新增 token 类型无需改表；
 //! - `usage_request.price_snapshot` **必写** → 改价不改历史；
-//! - 一次请求的写入（`usage_request` + `usage_daily` + `quota_state`）在**单事务**内完成，
+//! - 一次请求的写入（`usage_request` + `usage_daily`）在**单事务**内完成，
 //!   任何一步失败整笔回滚（11 §4.3）；
 //! - 时间一律按**本地时区**分桶（`Clock::local_offset_minutes`）。
 //!
@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 
 use ta_core::clock::{Clock, SystemClock, TimeRange};
-use ta_core::domain::{Credential, Policy, QuotaMetric};
+use ta_core::domain::Policy;
 use ta_core::error::Result;
 use ta_core::types::{
     ChannelId, ClientId, LaneId, Money, RequestId, TokenKind, TokenUsage, UsageRecord, UsageSource,
@@ -393,18 +393,6 @@ pub struct TrendPoint {
 
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QuotaBar {
-    pub credential_id: String,
-    pub label: String,
-    /// 0.0–1.0（无限额时 0）
-    pub used_pct: f64,
-    /// `ok` | `soft` | `exhausted` | `unknown`
-    pub state: String,
-    pub detail: String,
-}
-
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LaneHealthItem {
     pub lane_id: String,
     pub name: String,
@@ -439,7 +427,6 @@ pub struct DashboardData {
     pub cards: DashboardCards,
     pub sparklines: Sparklines,
     pub trend: Vec<TrendPoint>,
-    pub quota: Vec<QuotaBar>,
     pub lanes: Vec<LaneHealthItem>,
     pub live: Vec<ta_core::types::RequestSummary>,
     pub top_models: Vec<TopModel>,
@@ -448,30 +435,6 @@ pub struct DashboardData {
 }
 
 // ================================================================ 额度状态 DTO
-
-#[cfg_attr(feature = "specta", derive(specta::Type))]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QuotaStateRow {
-    pub credential_id: String,
-    pub window_start: i64,
-    /// 0 表示"窗口未知/无限"
-    pub window_end: i64,
-    pub used_tokens: i64,
-    pub used_requests: i64,
-    pub used_cost: f64,
-    pub currency: String,
-    pub reported_remaining: Option<f64>,
-    pub reported_reset_at: Option<i64>,
-    /// 0.0–1.0；None = 完全未知
-    pub used_ratio: Option<f64>,
-    /// `ok` | `soft` | `exhausted` | `unknown`
-    pub state: String,
-    /// D 源/手动标记"额度没了"（窗口滚动可解除）
-    pub hard_exhausted: bool,
-    /// 401/403 "key 失效"（**窗口滚动不解除**）
-    pub invalid: bool,
-    pub updated_at: i64,
-}
 
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -490,8 +453,13 @@ pub struct ApiKeyUsageRow {
 #[async_trait]
 pub trait UsageStore: Send + Sync {
     /// 一次请求的账：`usage_request` INSERT + `usage_daily` UPSERT（按 token_kind 展开多行）
-    /// + `quota_state` UPSERT，**同一个事务**。
+    /// ，**同一个事务**。
     async fn record(&self, rec: UsageRecord) -> Result<()>;
+    /// [docs/32] L6：取某次请求的**按 kind token 明细**（`usage_request.token_kinds`）。
+    ///
+    /// `None` = 这次请求**没有用量记录**（日志保留期比用量长、或那笔还没落账）——
+    /// 调用方据此显示「—」，**绝不用日志里的总 token 去凑一张分项表**。
+    async fn token_kinds_of(&self, request_id: &str) -> Result<Option<TokenUsage>>;
     async fn query(&self, q: &UsageQuery) -> Result<UsageTable>;
     async fn dashboard(&self, range: TimeRange) -> Result<DashboardData>;
     async fn token_kinds_seen(&self) -> Result<Vec<TokenKind>>;
@@ -570,7 +538,7 @@ impl SqliteUsageStore {
         .await
         .store_err()?;
 
-        // 同一个 request_id 只记一次账（幂等）：重复写入不重复累加 daily/quota。
+        // 同一个 request_id 只记一次账（幂等）：重复写入不重复累加 daily。
         if inserted.rows_affected() == 0 {
             return Ok(());
         }
@@ -605,26 +573,6 @@ impl SqliteUsageStore {
             .store_err()?;
         }
 
-        // 账本累加（窗口与 state 由 QuotaLedger 通过 upsert_quota_state/begin_quota_window 维护）
-        sqlx::query(
-            "INSERT INTO quota_state (
-                credential_id, window_start, window_end,
-                used_tokens, used_requests, used_cost, state, updated_at
-             ) VALUES (?, 0, 0, ?, 1, ?, 'unknown', ?)
-             ON CONFLICT(credential_id) DO UPDATE SET
-                used_tokens = used_tokens + excluded.used_tokens,
-                used_requests = used_requests + 1,
-                used_cost = used_cost + excluded.used_cost,
-                updated_at = excluded.updated_at",
-        )
-        .bind(rec.credential_id.as_str())
-        .bind(to_i64(rec.usage.total()))
-        .bind(rec.cost.amount)
-        .bind(rec.ts_ms)
-        .execute(&mut **tx)
-        .await
-        .store_err()?;
-
         Ok(())
     }
 
@@ -639,115 +587,6 @@ impl SqliteUsageStore {
                 Err(e)
             }
         }
-    }
-
-    // -------------------------------------------------- 额度状态 / api key 用量
-
-    pub async fn upsert_quota_state(&self, row: &QuotaStateRow) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO quota_state (
-                credential_id, window_start, window_end, used_tokens, used_requests, used_cost,
-                currency, reported_remaining, reported_reset_at, used_ratio, state,
-                hard_exhausted, invalid, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(credential_id) DO UPDATE SET
-                window_start = excluded.window_start,
-                window_end = excluded.window_end,
-                used_tokens = excluded.used_tokens,
-                used_requests = excluded.used_requests,
-                used_cost = excluded.used_cost,
-                currency = excluded.currency,
-                reported_remaining = excluded.reported_remaining,
-                reported_reset_at = excluded.reported_reset_at,
-                used_ratio = excluded.used_ratio,
-                state = excluded.state,
-                hard_exhausted = excluded.hard_exhausted,
-                invalid = excluded.invalid,
-                updated_at = excluded.updated_at",
-        )
-        .bind(&row.credential_id)
-        .bind(row.window_start)
-        .bind(row.window_end)
-        .bind(row.used_tokens)
-        .bind(row.used_requests)
-        .bind(row.used_cost)
-        .bind(&row.currency)
-        .bind(row.reported_remaining)
-        .bind(row.reported_reset_at)
-        .bind(row.used_ratio)
-        .bind(&row.state)
-        .bind(if row.hard_exhausted { 1_i64 } else { 0_i64 })
-        .bind(if row.invalid { 1_i64 } else { 0_i64 })
-        .bind(row.updated_at)
-        .execute(&self.pool)
-        .await
-        .store_err()?;
-        Ok(())
-    }
-
-    /// 账本滚窗口：清空用量、设置新窗口（`QuotaLedger::roll_window` 用）。
-    ///
-    /// **只解除 `hard_exhausted`，绝不动 `invalid`** —— 换计费周期不等于换 key，
-    /// 失效的凭据必须一直是失效的（见 `ta_core::quota::backend::QuotaRecord`）。
-    pub async fn begin_quota_window(
-        &self,
-        credential_id: &str,
-        window_start: i64,
-        window_end: i64,
-        state: &str,
-        now_ms: i64,
-    ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO quota_state (
-                credential_id, window_start, window_end, used_tokens, used_requests, used_cost,
-                used_ratio, state, hard_exhausted, invalid, updated_at
-             ) VALUES (?, ?, ?, 0, 0, 0, NULL, ?, 0, 0, ?)
-             ON CONFLICT(credential_id) DO UPDATE SET
-                window_start = excluded.window_start,
-                window_end = excluded.window_end,
-                used_tokens = 0, used_requests = 0, used_cost = 0,
-                used_ratio = NULL,
-                reported_remaining = NULL,
-                reported_reset_at = NULL,
-                state = excluded.state,
-                hard_exhausted = 0,
-                invalid = invalid,
-                updated_at = excluded.updated_at",
-        )
-        .bind(credential_id)
-        .bind(window_start)
-        .bind(window_end)
-        .bind(state)
-        .bind(now_ms)
-        .execute(&self.pool)
-        .await
-        .store_err()?;
-        Ok(())
-    }
-
-    pub async fn quota_state(&self, credential_id: &str) -> Result<Option<QuotaStateRow>> {
-        let row = sqlx::query(
-            "SELECT credential_id, window_start, window_end, used_tokens, used_requests,
-                    used_cost, currency, reported_remaining, reported_reset_at, used_ratio, state, hard_exhausted, invalid, updated_at
-             FROM quota_state WHERE credential_id = ?",
-        )
-        .bind(credential_id)
-        .fetch_optional(&self.pool)
-        .await
-        .store_err()?;
-        Ok(row.map(map_quota_row))
-    }
-
-    pub async fn list_quota_states(&self) -> Result<Vec<QuotaStateRow>> {
-        let rows = sqlx::query(
-            "SELECT credential_id, window_start, window_end, used_tokens, used_requests,
-                    used_cost, currency, reported_remaining, reported_reset_at, used_ratio, state, hard_exhausted, invalid, updated_at
-             FROM quota_state ORDER BY credential_id",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .store_err()?;
-        Ok(rows.into_iter().map(map_quota_row).collect())
     }
 
     /// 每个本地 key 的用量（网关鉴权后调用；`key_id` 是本地 key 的标识，不是上游 key）。
@@ -807,6 +646,41 @@ impl SqliteUsageStore {
                 cost: r.get("cost"),
                 currency: r.get("currency"),
             })
+            .collect())
+    }
+
+    // -------------------------------------------------- 平均粘性的用量快照
+
+    /// **时间窗内各线路的 token 累计**（平均粘性的"平均"依据，[docs/48 §4]）。
+    ///
+    /// 为什么走 `usage_request` 而不是 `usage_daily`：汇总表的维度是
+    /// `(day, credential_id, provider_id, model, client, token_kind)`，**没有 `channel_id`** ——
+    /// 线路维度的用量只在明细表里。给汇总表加线路维度要改主键（v1 就有的核心表），
+    /// 代价远大于这一条查询。
+    ///
+    /// **它按 `ts` 过滤 + `GROUP BY channel_id`，走 `ix_usage_channel_ts (channel_id, ts)`。**
+    /// 调用方**必须**自己缓存（[`ta_core::routing::BalanceSource`] 的约定）：
+    /// 这个函数每次都真的查库。
+    ///
+    /// 返回的 map 里**没有 0 行的线路**（不是补 0）—— 调用方要能区分
+    /// "这条时间窗内没用过"（缺席）与"查询根本没数据"（空表）。
+    pub async fn channel_token_usage(
+        &self,
+        since_ms: i64,
+    ) -> Result<std::collections::BTreeMap<String, i64>> {
+        let rows = sqlx::query(
+            "SELECT channel_id, SUM(total_tokens) AS tokens
+               FROM usage_request
+              WHERE ts >= ? AND channel_id <> ''
+              GROUP BY channel_id",
+        )
+        .bind(since_ms)
+        .fetch_all(&self.pool)
+        .await
+        .store_err()?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get::<String, _>("channel_id"), r.get::<i64, _>("tokens")))
             .collect())
     }
 
@@ -881,8 +755,17 @@ impl SqliteUsageStore {
         select_cols.push("day".to_string());
         group_cols.push("day".to_string());
 
+        // [真机 E2E 抓到的崩溃] `SUM(cost)` 的**返回类型取决于数据**：`usage_daily.cost` 是
+        // `REAL`，但只要这一组里所有 cost 都是整数值，SQLite 的 `SUM` 就按 INTEGER 给你
+        // （聚合表达式**没有列亲和性**，与 1300 行那条 `COALESCE(SUM(cost), 0)` 同一个坑：
+        // 空表返回整数字面量 0）。sqlx 按 `f64` 解码遇到 INTEGER 会直接 `ColumnDecode` 报错，
+        // 而这里历史上是 `.unwrap()` → **tokio worker panic**（app 日志里那一串
+        // `usage_store.rs:1112 panicked at cost is not compatible with SQL type INTEGER`）。
+        //
+        // 所以这一格必须**显式 CAST 成 REAL**：SQLite 的 REAL 亲和性把整数结果转成浮点，
+        // 于是"全是整数"和"有小数"两条路径得到同一个类型 —— 类型不再随数据变。
         let sql = format!(
-            "SELECT {cols}, token_kind, SUM(tokens) AS tokens, SUM(cost) AS cost
+            "SELECT {cols}, token_kind, SUM(tokens) AS tokens, CAST(SUM(cost) AS REAL) AS cost
              FROM usage_daily
              WHERE day >= ? AND day < ?
              GROUP BY {group_cols}, token_kind",
@@ -1198,45 +1081,6 @@ impl SqliteUsageStore {
         }))
     }
 
-    async fn quota_bars(&self) -> Result<Vec<QuotaBar>> {
-        let creds: Vec<Credential> = self.config_entities("credential").await?;
-        let states = self.list_quota_states().await?;
-        let by_id: BTreeMap<&str, &QuotaStateRow> =
-            states.iter().map(|s| (s.credential_id.as_str(), s)).collect();
-
-        let mut out = Vec::new();
-        for c in &creds {
-            let id = c.id.as_str();
-            let state = by_id.get(id).copied();
-            let used_tokens = state.map(|s| s.used_tokens as f64).unwrap_or(0.0);
-            let used_requests = state.map(|s| s.used_requests as f64).unwrap_or(0.0);
-            let used_cost = state.map(|s| s.used_cost).unwrap_or(0.0);
-            let limit = c.quota.limit.unwrap_or(0.0);
-            let (used, unit) = match c.quota.metric {
-                QuotaMetric::Tokens => (used_tokens, "tokens"),
-                QuotaMetric::Requests => (used_requests, "requests"),
-                QuotaMetric::Cost => (used_cost, c.quota.currency.as_str()),
-                QuotaMetric::Unknown => (used_tokens, "tokens"),
-            };
-            let used_pct = if limit > 0.0 { (used / limit).clamp(0.0, 10.0) } else { 0.0 };
-            let detail = if limit > 0.0 {
-                format!("{} / {} {unit}", human_tokens(used), human_tokens(limit))
-            } else if c.quota.metric == QuotaMetric::Unknown {
-                format!("已用 {} tokens（未设限额，按响应头观测）", human_tokens(used))
-            } else {
-                format!("已用 {} {unit}（未设限额）", human_tokens(used))
-            };
-            out.push(QuotaBar {
-                credential_id: id.to_string(),
-                label: c.label.clone(),
-                used_pct,
-                state: state.map(|s| s.state.clone()).unwrap_or_else(|| "unknown".to_string()),
-                detail,
-            });
-        }
-        Ok(out)
-    }
-
     async fn lane_health(&self) -> Result<Vec<LaneHealthItem>> {
         let lanes: Vec<ta_core::domain::Lane> = self.config_entities("lane").await?;
         let mut out = Vec::new();
@@ -1374,25 +1218,6 @@ fn usage_source_str(s: UsageSource) -> &'static str {
     }
 }
 
-fn map_quota_row(r: sqlx::sqlite::SqliteRow) -> QuotaStateRow {
-    QuotaStateRow {
-        credential_id: r.get("credential_id"),
-        window_start: r.get("window_start"),
-        window_end: r.get("window_end"),
-        used_tokens: r.get("used_tokens"),
-        used_requests: r.get("used_requests"),
-        used_cost: r.get("used_cost"),
-        currency: r.get("currency"),
-        reported_remaining: r.get("reported_remaining"),
-        reported_reset_at: r.get("reported_reset_at"),
-        used_ratio: r.get("used_ratio"),
-        state: r.get("state"),
-        hard_exhausted: r.get::<i64, _>("hard_exhausted") != 0,
-        invalid: r.get::<i64, _>("invalid") != 0,
-        updated_at: r.get("updated_at"),
-    }
-}
-
 /// `t.attempts` 的 JSON 数组长度（带 json_valid 守卫，脏数据不会让查询报错）。
 const ATTEMPT_COUNT_SQL: &str = "(CASE WHEN t.attempts IS NOT NULL AND json_valid(t.attempts) \
      THEN json_array_length(t.attempts) ELSE 0 END)";
@@ -1447,7 +1272,6 @@ fn filters_sql(filters: &Option<UsageFilters>) -> (String, Vec<String>) {
     }
     (sql, params)
 }
-
 /// 把请求总成本分摊到各 token_kind（07 §6.5 的 `usage_daily.cost`）。
 ///
 /// - 有价格快照且能算出份额 → 按份额分摊，残差修正到最大份额，**保证求和精确等于总成本**；
@@ -1504,6 +1328,19 @@ fn per_kind_costs(
 
 #[async_trait]
 impl UsageStore for SqliteUsageStore {
+    async fn token_kinds_of(&self, request_id: &str) -> Result<Option<TokenUsage>> {
+        let raw: Option<String> =
+            sqlx::query_scalar("SELECT token_kinds FROM usage_request WHERE request_id = ?")
+                .bind(request_id)
+                .fetch_optional(&self.pool)
+                .await
+                .store_err()?;
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        // 存的是一段 JSON；解不开就**如实报错**，不要假装"没有用量"
+        Ok(Some(from_json_or_default::<TokenUsage>(&raw)))
+    }
     async fn record(&self, rec: UsageRecord) -> Result<()> {
         self.record_usage(&rec).await
     }
@@ -1632,7 +1469,6 @@ impl UsageStore for SqliteUsageStore {
             },
             sparklines,
             trend,
-            quota: self.quota_bars().await?,
             lanes: self.lane_health().await?,
             live: self.recent_summaries(500).await?,
             top_models,
@@ -1793,6 +1629,58 @@ pub fn money_display(amount: f64, currency: &str) -> String {
 }
 
 #[cfg(test)]
+mod token_kinds_tests {
+    use super::*;
+    use ta_core::types::{RequestId, TokenKind};
+
+    /// [docs/32] L6：按 request_id 取**按 kind 的 token 明细**。
+    ///
+    /// 三条断言对应界面的三条路：有记录 → 显示分项；没记录 → 「—」（不是 0）；
+    /// 存量数据解不开 → 如实报错（不假装"没有用量"）。
+    #[tokio::test]
+    async fn reads_per_kind_tokens_and_reports_absence_honestly() {
+        let pool = crate::open_memory().await.expect("开内存库");
+        let store = SqliteUsageStore::new(pool);
+        let rid = RequestId::new("req_usage_1");
+
+        let mut usage = TokenUsage::new();
+        usage.add(TokenKind::Input, 100);
+        usage.add(TokenKind::Output, 25);
+        let _ = &usage;
+        let rec = UsageRecord {
+            request_id: rid.clone(),
+            ts_ms: 1_000,
+            credential_id: ta_core::types::CredentialId::new("cred-1"),
+            provider_id: ta_core::types::ProviderId::new("prov-1"),
+            channel_id: ta_core::types::ChannelId::new("ch-1"),
+            model: "m".to_string(),
+            upstream_model: "m-2026".to_string(),
+            client: None,
+            lane_id: None,
+            node: None,
+            status: 200,
+            error_type: None,
+            latency_ms: 100,
+            ttfb_ms: Some(30),
+            usage,
+            usage_raw: serde_json::Value::Null,
+            usage_source: UsageSource::Upstream,
+            cost: ta_core::types::Money::new(0.0, "USD"),
+            price_snapshot: serde_json::Value::Null,
+        };
+        store.record_usage(&rec).await.expect("落账");
+
+        let got = store.token_kinds_of(rid.as_str()).await.expect("读得到");
+        let got = got.expect("应当有分项");
+        assert_eq!(got.get(&TokenKind::Input), 100);
+        assert_eq!(got.get(&TokenKind::Output), 25);
+
+        // 没记过账的请求 → `None`（界面显示「—」，**不许**显示 0）
+        assert!(store.token_kinds_of("req_never_seen").await.expect("查询本身要成功").is_none());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -1915,6 +1803,54 @@ mod tests {
         assert_eq!(
             back.metrics,
             vec![Metric::Requests, Metric::Cost, Metric::Tokens(TokenKind::InputCached)]
+        );
+    }
+
+    /// **守卫：凡按 `f64` 解码的 `SUM(cost)` 必须显式 `CAST(... AS REAL)`。**
+    ///
+    /// 为什么用**源码扫描**而不是"造数据跑一遍"：`usage_daily.cost` 声明成 `REAL`，
+    /// 而 SQLite 的 REAL 亲和性会把写进去的整数**转成浮点存**，所以单元测试里造不出
+    /// "聚合结果变成 INTEGER"那一刻 —— 我试过，修与不修都绿（那是**假覆盖**）。
+    /// 而 app 日志里出现过真实的
+    /// `ColumnDecode { index: "cost", ... Rust type f64 (as SQL type REAL) is not compatible
+    ///  with SQL type INTEGER }` 崩溃（tokio worker panic）。
+    ///
+    /// SQLite 的语义本来就写着：**聚合表达式没有列亲和性**，`SUM` 的结果类型由输入值决定
+    /// （"全是整数"→ INTEGER，空表上的 `COALESCE(SUM(cost), 0)` → 整数字面量 0）。
+    /// 所以这条纪律不能靠"跑一遍看看"，只能钉住 SQL 的形状。
+    ///
+    /// 已知的例外：`dominant_currency` 里那句 `SUM(cost) AS c` **只用于 `ORDER BY`**，
+    /// 结果被当成字符串读，不涉 `f64` 解码 —— 它在下面的白名单里，且**只有**这一处。
+    #[test]
+    fn cost_aggregations_are_cast_to_real() {
+        let src = include_str!("usage_store.rs");
+        // ★ 只扫**生产代码**那一段：本函数自己的断言文案里就写着 `SUM(cost)`，
+        //   整文件扫会自匹配（第一次写就是这么红的）。
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        // 白名单：这一处 SUM(cost) 只做排序，不解码成 f64（改它就得改这个测试的意图）
+        const ORDER_BY_ONLY: &str = "SELECT currency, SUM(cost) AS c FROM usage_request";
+        let mut bare: Vec<(usize, String)> = Vec::new();
+        for (i, line) in prod.lines().enumerate() {
+            // 只看**真的 SQL 行**：注释里提到 `SUM(cost)`（本改动自己的说明、以及 1300 行
+            // 附近那条既有注释）不是查询，不该被当成违规。
+            let code = line.trim_start();
+            if code.starts_with("//") || !line.contains('"') {
+                continue;
+            }
+            if !line.contains("SUM(cost)") {
+                continue;
+            }
+            if line.contains(ORDER_BY_ONLY) {
+                continue;
+            }
+            if !line.contains("CAST(") {
+                bare.push((i + 1, line.trim().to_string()));
+            }
+        }
+        assert!(
+            bare.is_empty(),
+            "这些 SUM(cost) 没有 CAST 成 REAL —— 聚合结果可能是 INTEGER，\
+             按 f64 解码会直接 panic（真机上出过）：{bare:#?}"
         );
     }
 }

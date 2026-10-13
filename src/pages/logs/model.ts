@@ -36,6 +36,8 @@ import type {
   TraceDetail,
   TraceRow,
 } from "@/shared/bindings";
+// [docs/52] 读后端原始对象的唯一实现（原先这里自己写了 pickStr/pickNum/pickBool 三份）
+import { pickBool, pickNum, pickStr, type Row } from "@/shared/row";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -235,32 +237,6 @@ export function filterSummary(
 }
 
 // ================================================================ 行 → 视图
-
-type Row = Record<string, unknown>;
-
-function pickStr(row: Row, ...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const v = row[key];
-    if (typeof v === "string" && v !== "") return v;
-  }
-  return undefined;
-}
-
-function pickNum(row: Row, ...keys: string[]): number | undefined {
-  for (const key of keys) {
-    const v = row[key];
-    if (typeof v === "number" && Number.isFinite(v)) return v;
-  }
-  return undefined;
-}
-
-function pickBool(row: Row, ...keys: string[]): boolean | undefined {
-  for (const key of keys) {
-    const v = row[key];
-    if (typeof v === "boolean") return v;
-  }
-  return undefined;
-}
 
 /**
  * 归一化后的一行（列表列与展开区都用它）。
@@ -498,6 +474,11 @@ export type TraceView = {
   attempts: AttemptView[];
   /** `undefined` = 记录里没有这一项（未知）。 */
   headerDiff?: HeaderDiffView;
+  /**
+   * [docs/32] L6：按 kind 的 token 明细（来自用量表）。
+   * `undefined`/`null` = **用量账本里没有这次请求**（日志保留期可能比用量长）→ 界面如实说"没有"。
+   */
+  tokenKinds?: Record<string, number> | null;
   /** Rust 是 `body_shape`；契约是 `body_shape_in` / `body_shape_out`。 */
   bodyShape?: unknown;
   bodyShapeOut?: unknown;
@@ -547,6 +528,10 @@ export function readTraceDetail(detail: TraceDetail): TraceView {
         : "",
     row: readLogRow((rowRaw ?? {}) as TraceRow),
     attempts,
+    // 认不出的形状一律当"没有"（`null`），由界面如实显示 —— 不在这里编一份出来
+    tokenKinds: typeof raw["token_kinds"] === "object" && raw["token_kinds"] !== null
+      ? (raw["token_kinds"] as Record<string, number>)
+      : null,
     headerDiff: readHeaderDiff(raw["header_diff"]),
     // 契约里请求体的结构叫 `body_shape_in`，Rust 里只有一个 `body_shape`（请求体）
     bodyShape: raw["body_shape"] ?? raw["body_shape_in"],

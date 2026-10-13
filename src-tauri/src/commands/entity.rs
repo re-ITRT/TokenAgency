@@ -40,12 +40,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use ta_core::domain::capabilities::{policy_capability_mismatches, CapabilityMismatchDetail};
+use ta_core::domain::capabilities::{
+    capability_mismatches_for_channels, policy_capability_mismatches, CapabilityMismatchDetail,
+};
 use ta_core::domain::{ChannelConfig, ChannelGroup, ConfigDoc, Credential, Model, Policy};
 use ta_core::error::TaError;
 use ta_core::pricing::PricingEngine;
-use ta_core::types::{ChannelGroupId, LaneId, StickyKey};
-use ta_store::{SecretMetaStore, StickyStore};
+use ta_core::types::{ChannelGroupId, StickyKey};
+use ta_store::{ModelCatalogStore, SecretMetaStore, StickyStore};
 
 use crate::commands::catalog::save_validated;
 use crate::commands::config::ApplyResult;
@@ -91,7 +93,11 @@ fn not_found(what: &str, id: &str) -> IpcError {
 /// "要连带删除请传 force=true"：`channel_delete` / `group_delete` 没有这个参数，
 /// 对它们说这句话就是**撒谎**（第 73 轮真机 E2E 抓到的原文里就带着这句），
 /// 所以这类调用方只报"先解除引用"。
-fn referenced(what: &str, refs: &[String], force_capable: bool) -> IpcError {
+///
+/// `pub(crate)`：`net.rs` 的 `delete_subscription` / `delete_lane` 也用同一条口径
+/// （[docs/53] —— 它们原先不做前置检查，靠校验层兜底，于是用户拿到的是
+/// `TA-5001 配置校验失败：1 处问题` 这种**指不出怎么办**的报错）。
+pub(crate) fn referenced(what: &str, refs: &[String], force_capable: bool) -> IpcError {
     let hint = if force_capable {
         "；要连带删除请传 force=true"
     } else {
@@ -153,59 +159,91 @@ fn prune_group_refs(doc: &mut ConfigDoc, removed: &BTreeSet<String>) {
     }
 }
 
-// ================================================================ DTO：额度状态
-
-/// `docs/10 §2.2` / `bindings.ts` 的 `QuotaState`（**不是** `ta-store` 的 `QuotaStateRow`：
-/// 那个是库的行，字段与线上契约不同）。
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
-pub struct QuotaState {
-    pub credential_id: String,
-    /// `ok` | `soft` | `exhausted` | `unknown`（`QuotaStateKind` 的线上写法）
-    pub state: String,
-    #[serde(default)]
-    pub used_tokens: u64,
-    #[serde(default)]
-    pub used_requests: u64,
-    #[serde(default)]
-    pub used_cost: f64,
-    #[serde(default)]
-    pub reported_remaining: Option<f64>,
-    #[serde(default)]
-    pub window_start_ms: i64,
-    #[serde(default)]
-    pub window_end_ms: Option<i64>,
-    #[serde(default)]
-    pub updated_at_ms: i64,
+/// [docs/27 §1.2] **哪些模型用着这条线路？** —— 按 `Model.lines` 反查。
+/// 关系已经翻转到模型侧（[docs/27]）：线路行上的 `channel.model` 现在是**遗留字段、恒为空串**，
+/// 按它反查等于谁都查不到 —— 于是"删线路"会漏掉对模型的清理，`save_validated` 直接报
+/// `TA-5001 配置校验失败`（真机上抓到过）。这里按**模型自己的 lines** 反查，才是唯一真相。
+fn model_ids_of_channels(doc: &ConfigDoc, channel_ids: &BTreeSet<String>) -> BTreeSet<String> {
+    // **两条路都认**：① 模型侧的 `lines`（[docs/27] 翻转后的真相）；
+    // ② 遗留的 `channel.model` —— 迁移期/老配置里这个字段还在写，只认 ① 会让这些配置
+    //    在删线路时漏掉模型侧的清理（真机上表现为 `TA-5001 配置校验失败`）。
+    let legacy_names: BTreeSet<&str> = doc
+        .channels
+        .iter()
+        .filter(|c| channel_ids.contains(c.id.as_str()))
+        .map(|c| c.model.as_str())
+        .collect();
+    doc.models
+        .iter()
+        .filter(|m| {
+            m.lines.iter().any(|l| channel_ids.contains(l.as_str()))
+                || m.names().any(|n| legacy_names.contains(n))
+        })
+        .map(|m| m.id.as_str().to_string())
+        .collect()
 }
 
-impl QuotaState {
-    fn from_core(s: &ta_core::quota::QuotaState) -> Self {
-        Self {
-            credential_id: s.credential_id.as_str().to_string(),
-            state: ta_store::quota_backend::kind_str(s.kind).to_string(),
-            used_tokens: s.used_tokens,
-            used_requests: s.used_requests,
-            used_cost: s.used_cost,
-            reported_remaining: s.reported_remaining,
-            window_start_ms: s.window_start_ms,
-            window_end_ms: s.window_end_ms,
-            updated_at_ms: s.updated_at_ms,
-        }
+/// 线路被删了 → 把模型里指向它的那条 line **摘掉**（模型还在，只是不再走这条线路）。
+fn prune_model_lines(doc: &mut ConfigDoc, removed: &BTreeSet<String>) {
+    for m in doc.models.iter_mut() {
+        m.lines.retain(|l| !removed.contains(l.as_str()));
+    }
+}
+/// [docs/27 §1.2] 线路没了之后，把"**一条线路都不剩**"的模型也删掉。
+///
+/// 用户的模型是"记录自己该向哪条线路要数据"的：一条都不剩 = 对外暴露着却永远路由不到任何地方，
+/// 留着只会让 agent 请求一个必然失败的模型名（`TA-2003`）。所以它跟着线路一起消失。
+///
+/// `candidates` 只包含**本来确实在用被删线路**的那些模型名：用户刚建好、还没接线的模型
+/// **不动** —— 那是"还没配好"，不是"线路没了"。
+///
+/// 模型消失后，以它为 `model` 的**通道组**也会悬空（校验错误），所以一并摘掉并清理策略引用。
+fn prune_orphan_models(doc: &mut ConfigDoc, candidates: &BTreeSet<String>) -> Vec<String> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    // 先只读地算出"谁成了孤儿"（借用检查器不允许在 `models.retain` 里读 `channels`）
+    let orphaned: Vec<(String, BTreeSet<String>)> = doc
+        .models
+        .iter()
+        .filter(|m| {
+            candidates.contains(m.id.as_str())
+                || m.aliases.iter().any(|a| candidates.contains(a.as_str()))
+        })
+        .filter_map(|m| {
+            let names: BTreeSet<String> = m.names().map(str::to_string).collect();
+            // ★ **判据必须是模型自己的 `lines`**（[docs/28 §2] 之后的唯一真相）。
+            //
+            // 这里曾经**只看** `doc.channels[].model`（遗留的反向字段）。而写命令层强制
+            // "新写入一律写空字符串"（见 `ChannelConfig::model` 的注释），于是新配置里
+            // 那个字段恒为 `""`，`names.contains("")` 永远为假 → `still_wired` 恒为假
+            // → **只要某条线路被删，用过它的模型就被判成孤儿、连同它剩下的线路一起消失**。
+            //
+            // 真机实测（[docs/48 §7.4]，e2e step24）：模型 `ta-e2e-m-add` 有两条线路，
+            // 删掉其中**一条**之后模型被整条删除 —— 这是**数据丢失**，不是"清理"。
+            //
+            // 遗留字段留着当**兼容兜底**（迁移期/老配置里还在写它），但不再单独决定生死。
+            let still_wired = !m.lines.is_empty()
+                || doc.channels.iter().any(|c| names.contains(c.model.as_str()));
+            (!still_wired).then(|| (m.id.clone(), names))
+        })
+        .collect();
+    if orphaned.is_empty() {
+        return Vec::new();
     }
 
-    fn from_row(r: &ta_store::QuotaStateRow) -> Self {
-        Self {
-            credential_id: r.credential_id.clone(),
-            state: r.state.clone(),
-            used_tokens: r.used_tokens.max(0) as u64,
-            used_requests: r.used_requests.max(0) as u64,
-            used_cost: r.used_cost,
-            reported_remaining: r.reported_remaining,
-            window_start_ms: r.window_start,
-            window_end_ms: if r.window_end == 0 { None } else { Some(r.window_end) },
-            updated_at_ms: r.updated_at,
+    let mut removed_groups: BTreeSet<String> = BTreeSet::new();
+    let mut removed: Vec<String> = Vec::new();
+    for (id, names) in &orphaned {
+        for g in doc.channel_groups.iter().filter(|g| names.contains(g.model.as_str())) {
+            removed_groups.insert(g.id.as_str().to_string());
         }
+        removed.push(id.clone());
     }
+    doc.models.retain(|m| !removed.contains(&m.id));
+    doc.channel_groups.retain(|g| !removed_groups.contains(g.id.as_str()));
+    prune_group_refs(doc, &removed_groups);
+    removed
 }
 
 // ================================================================ provider
@@ -278,9 +316,16 @@ pub async fn delete_provider(state: &AppState, id: &str, force: bool) -> IpcResu
     // ---- 级联（force 或本来就没有引用）
     doc.providers.retain(|p| p.id.as_str() != id);
     doc.credentials.retain(|c| c.provider.as_str() != id);
+    // 先记下"这些线路服务着哪些模型"：线路删完之后要拿它判断"哪个模型一条线路都不剩了"
+    let affected_models = model_ids_of_channels(&doc, &ch_ids);
     let emptied = prune_channels(&mut doc, &ch_ids);
     doc.channels.retain(|c| !ch_ids.contains(c.id.as_str()));
     prune_group_refs(&mut doc, &emptied);
+    // 同一个道理：模型侧引用的那些线路也要摘掉（否则留一条指向已删线路的 line → TA-5001）
+    prune_model_lines(&mut doc, &ch_ids);
+    // [docs/27 §1.2] 线路是服务商那边定义的；服务商没了 → 它的线路从各个模型里消失。
+    // 一条线路都不剩的模型也就没有存在意义了（对外暴露着却永远路由不到任何地方）→ 一并删掉。
+    let orphaned = prune_orphan_models(&mut doc, &affected_models);
     for p in doc.policies.iter_mut() {
         p.r#match.provider_in.retain(|x| x.as_str() != id);
     }
@@ -292,7 +337,19 @@ pub async fn delete_provider(state: &AppState, id: &str, force: bool) -> IpcResu
         doc.gateway.fallback_provider = None;
     }
 
-    save_validated(state, doc, "provider_delete").await
+    save_validated(state, doc, "provider_delete").await?;
+    if !orphaned.is_empty() {
+        tracing::info!(
+            provider_id = %id,
+            "服务商删除后，{} 个模型已没有任何可用线路，一并删除：{}",
+            orphaned.len(),
+            orphaned.join(", ")
+        );
+    }
+    // [docs/25] 模型目录也跟着走：服务商没了，"它提供过哪些模型"这条观察记录就不再有意义
+    // （留着会在库里积一份没有归属的数据，重建同名 id 时会显示成"以前扫到过的旧模型"）。
+    state.model_catalog.remove_provider(id).await?;
+    Ok(())
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -375,18 +432,18 @@ pub async fn delete_credential(state: &AppState, id: &str, force: bool) -> IpcRe
         .entries
         .retain(|e| !e.r#match.credential.as_ref().is_some_and(|c| c.as_str() == id));
 
-    save_validated(state, doc, "credential_delete").await
+    save_validated(state, doc, "credential_delete").await?;
+    Ok(())
 }
 
-#[tauri::command(rename_all = "snake_case")]
-#[specta::specta]
-pub async fn credential_delete(
-    state: State<'_, AppState>,
-    id: String,
-    force: bool,
-) -> IpcResult<()> {
-    delete_credential(&state, &id, force).await
-}
+// `credential_delete` **已从命令面下线**（[docs/28 §1.3]）：
+//
+// 一个服务商就是**一把密钥**，密钥的生命周期跟着服务商走 —— 要撤掉密钥就删这个服务商
+// （`provider_delete` 会连它的凭据一起清）。留着"删掉唯一那把密钥"的命令，等于给用户留了
+// 一条把服务商变成空壳（有服务商、没凭据 → 所有线路都 401）的后门，而界面上根本没有入口。
+//
+// `delete_credential` 这个**实现体**保留：`provider_delete` 内部清凭据用的是同一段纪律，
+// 测试也直接调它（证明"有引用必须 force"没变）—— 但它**不再是一条 IPC 命令**。
 
 /// `credential_set_enabled`：只翻转一个凭据的启用状态。
 pub async fn set_credential_enabled(state: &AppState, id: &str, enabled: bool) -> IpcResult<()> {
@@ -492,41 +549,6 @@ pub async fn credential_set_secret(
     set_credential_secret_with(&state, &store, &id, &plaintext).await
 }
 
-// ================================================================ credential_clear_quota
-
-/// `credential_clear_quota`：用户手动"我充值了 / 这是新周期"。
-///
-/// 走既有账本（`ta_core::quota::QuotaLedgerImpl` + `QuotaObservation::ManualReset`）：
-/// 清计数、解除 hard_exhausted 与 invalid、把状态推到 `ok`，然后**照常落库**
-/// （`SqliteQuotaBackend` 的内存快照立刻可见，后台任务写 `quota_state` 表）。
-pub async fn clear_credential_quota(state: &AppState, id: &str) -> IpcResult<QuotaState> {
-    if !state.doc().credentials.iter().any(|c| c.id.as_str() == id) {
-        return Err(not_found("凭据", id));
-    }
-    // C 源（手工额度）的真源是配置表：配置刚被改过时先把快照刷一遍，
-    // 否则 `recompute` 会拿旧的 limit/threshold 算这次清零后的状态。
-    state.quota.refresh_quota_configs(&state.db).await?;
-
-    let ledger =
-        ta_core::quota::QuotaLedgerImpl::with_clock(state.quota.clone(), state.clock.clone());
-    let cred = ta_core::types::CredentialId::new(id);
-    ta_core::quota::QuotaLedger::observe(
-        &ledger,
-        &cred,
-        ta_core::quota::QuotaObservation::ManualReset,
-    );
-    Ok(QuotaState::from_core(&ta_core::quota::QuotaLedger::state(&ledger, &cred)))
-}
-
-#[tauri::command(rename_all = "snake_case")]
-#[specta::specta]
-pub async fn credential_clear_quota(
-    state: State<'_, AppState>,
-    id: String,
-) -> IpcResult<QuotaState> {
-    clear_credential_quota(&state, &id).await
-}
-
 // ================================================================ channel
 
 /// `channel_delete`（契约里**没有** `force`）。
@@ -573,11 +595,25 @@ pub async fn delete_channel(state: &AppState, id: &str) -> IpcResult<()> {
     }
 
     let removed: BTreeSet<String> = [id.to_string()].into_iter().collect();
+    // [docs/27 §1.2] 这条线路服务着哪些模型？删完之后"一条线路都不剩"的模型跟着消失
+    let affected_models = model_ids_of_channels(&doc, &removed);
     let emptied = prune_channels(&mut doc, &removed);
     prune_group_refs(&mut doc, &emptied);
     doc.channels.retain(|c| c.id.as_str() != id);
+    // 模型侧也要摘干净：否则模型里留着一条指向已删线路的 line → 校验直接失败（TA-5001）
+    prune_model_lines(&mut doc, &removed);
+    let orphaned = prune_orphan_models(&mut doc, &affected_models);
 
-    save_validated(state, doc, "channel_delete").await
+    save_validated(state, doc, "channel_delete").await?;
+    if !orphaned.is_empty() {
+        tracing::info!(
+            channel_id = %id,
+            "线路删除后，{} 个模型已没有任何可用线路，一并删除：{}",
+            orphaned.len(),
+            orphaned.join(", ")
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -637,36 +673,31 @@ pub async fn channel_set_tags(
     set_channel_tags(&state, &channel_ids, &add, &remove).await
 }
 
-/// `channel_bulk_assign_lane`：把一批通道的**线路设置**改成同一种取值（[docs/21 §4.1]）。
+// [docs/55]（第 322 轮）`bulk_assign_lane` / `channel_bulk_assign_lane` 已删除。
+//
+// 它们做的是"把一批通道的线路设置改成同一个值"—— 那正是用户裁决放弃的
+// **线路级别的分配**（"取而代之的，每个服务商统一一个节点"）。
+// 而且 `ChannelConfig.lane` 字段本身已经删除，这个命令**已经没有可写的地方**了。
+//
+// 要改走哪个节点，请改**服务商**：`provider_upsert` 的 `lane` 字段 /
+// 服务商详情页的「网络代理」下拉（`lane_options` 给出的那份清单）。
+
+/// `channel_bulk_set_enabled`：把一批通道**一起启用或一起关闭**（[docs/28 §1.4] 的"全选"）。
 ///
-/// 两种取值的语义**完全不同**，各自写清：
+/// 为什么要批量命令而不是前端循环发 `channel_set_enabled`：全选是**一次用户动作**，
+/// 循环发 N 条命令会让"改了 200 条"变成 200 个配置快照、200 次内核重载，中途失败还会留下
+/// 半开半关的状态。这里一次校验、一次事务、一次快照。
 ///
-/// * `Some("<id>")` —— 把这批通道**钉到**这条线路上。该 id 必须存在于 `doc.lanes`：
-///   写一个不存在的 id 会让校验器以 `channels[i].lane not_found` 拒绝整份文档 ——
-///   那是个"看起来成功、其实哪条都没改"的坑，所以这里先给出**指名道姓**的报错（TA-1004）。
-/// * `None` —— 把这批通道的 `lane` **清空**，也就是通道页那条下拉里的"直连（继承）"。
-///   清空后该通道回到五级继承链（`channel -> credential -> provider -> net.default_lane`，
-///   见 `domain::behavior::resolve_lane`），末端就是直连。这里**不**替它写死 `lane-direct`、
-///   也不替用户挑一条线路 —— 写死一条就成了"假装继承"。
-///
-/// 两种取值都只走 [`save_validated`]（校验 -> 事务写库 -> 留快照 -> 换内存快照），
-/// 不另开写路径；而且判错一律发生在**动 `doc` 之前**，所以被拒绝时一个字节都不会落库。
-pub async fn bulk_assign_lane(
+/// 语义就是 `channel_set_enabled` 的批量版（可逆：关掉的还能再开），**不删任何东西**。
+pub async fn bulk_set_enabled(
     state: &AppState,
     channel_ids: &[String],
-    lane_id: Option<&str>,
+    enabled: bool,
 ) -> IpcResult<ApplyResult> {
     if channel_ids.is_empty() {
         return Err(empty_list("channel_ids"));
     }
     let mut doc = (*state.doc()).clone();
-    // 只有"指名道姓给了 id"才需要查这条线路在不在。`None` 的表达是**清空**、
-    // 不是一个"空 id"，所以不能把它降级成空字符串丢进同一张查表（那会报"线路不存在："）。
-    if let Some(id) = lane_id {
-        if !doc.lanes.iter().any(|l| l.id.as_str() == id) {
-            return Err(not_found("线路", id));
-        }
-    }
     let missing: Vec<String> = channel_ids
         .iter()
         .filter(|id| !doc.channels.iter().any(|c| c.id.as_str() == id.as_str()))
@@ -675,26 +706,24 @@ pub async fn bulk_assign_lane(
     if !missing.is_empty() {
         return Err(not_found("通道", &missing.join(", ")));
     }
-
     for id in channel_ids {
         if let Some(c) = doc.channels.iter_mut().find(|c| c.id.as_str() == id.as_str()) {
-            // Some(id) -> 钉到该线路；None -> 清空（回到继承链）。一支表达式覆盖两种取值，
-            // 免得再写一遍 `if let`（那正是"两条分支口径不一致"的温床）。
-            c.lane = lane_id.map(ta_core::types::LaneId::new);
+            c.enabled = enabled;
         }
     }
-    save_validated(state, doc, "channel_bulk_assign_lane").await?;
+    save_validated(state, doc, "channel_bulk_set_enabled").await?;
+    tracing::info!(count = channel_ids.len(), enabled, "批量设置通道启用状态");
     Ok(applied())
 }
 
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
-pub async fn channel_bulk_assign_lane(
+pub async fn channel_bulk_set_enabled(
     state: State<'_, AppState>,
     channel_ids: Vec<String>,
-    lane_id: Option<String>,
+    enabled: bool,
 ) -> IpcResult<ApplyResult> {
-    bulk_assign_lane(&state, &channel_ids, lane_id.as_deref()).await
+    bulk_set_enabled(&state, &channel_ids, enabled).await
 }
 
 // ---------------------------------------------------------------- channel_matrix
@@ -717,7 +746,6 @@ pub struct CredentialCol {
     pub credential_id: String,
     pub label: String,
     pub provider_name: String,
-    pub quota: QuotaState,
 }
 
 /// `MatrixView.cells[]`。一个通道一行。
@@ -753,24 +781,27 @@ pub struct MatrixView {
 
 /// `channel_matrix`：模型 × 凭据 × 通道的**只读**视图（纯计算，不查业务表之外的存储）。
 ///
-/// 数据全部来自已有的真源：配置热读快照（模型/通道/凭据/线路）+ 额度行
-/// （`usage.list_quota_states`）+ **同一个**定价引擎（`PricingEngineImpl`，
-/// 判定"未定价"用的是引擎自己那份口径，不是这里另写一套）。
+/// 数据全部来自已有的真源：配置热读快照（模型/通道/凭据/线路）+ **同一个**定价引擎
+/// （`PricingEngineImpl`，判定"未定价"用的是引擎自己那份口径，不是这里另写一套）。
 pub async fn build_channel_matrix(state: &AppState) -> IpcResult<MatrixView> {
     let doc = state.doc();
-    let quota_rows = state.usage.list_quota_states().await.unwrap_or_default();
     let engine = ta_core::pricing::PricingEngineImpl::new(&doc.pricing);
 
     let mut models: Vec<ModelRow> = Vec::with_capacity(doc.models.len());
     for m in doc.models.iter() {
-        let chans: Vec<&ChannelConfig> =
-            doc.channels.iter().filter(|c| m.matches(&c.model)).collect();
-        // 没有任何通道的模型不打"未定价"标：它现在不参与计费，标红了只会成为噪音
-        // （与校验器 `unpriced_model` 警告的口径一致：只对"有通道"的模型提醒）。
+        // ⚠️ 必须走 [`ConfigDoc::lines_of_model`]（**唯一**口径），不能自己写
+        // `m.matches(&c.model)`：`ChannelConfig.model` 是 [docs/28 §2] 翻转**之前**的遗留字段，
+        // 新写入的线路里它恒为空串 ⇒ 那种写法算出的 `chans` **永远为空** ⇒
+        // 「未定价」徽标**永远不会亮**（一个不会报错的静默失效）。
+        // 关系的真源在 `Model.lines`，`lines_of_model` 同时兼容遗留字段。
+        let chans: Vec<&ChannelConfig> = doc.lines_of_model(m);
+        // 没有任何线路的模型不打"未定价"标：它现在不参与计费，标红了只会成为噪音
+        // （与校验器 `unpriced_model` 警告的口径一致：只对"有线路"的模型提醒）。
+        //
+        // 解析用的是**模型自己的对外名字**（`m.id`），不是线路的遗留字段：
+        // 定价条目按「对外模型」匹配，所以这里必须问"这个**模型**有没有价"。
         let unpriced = !chans.is_empty()
-            && chans
-                .iter()
-                .all(|c| !engine.resolve(&c.model, &c.provider, &c.credential).is_priced());
+            && chans.iter().all(|c| !engine.resolve(&m.id, &c.provider, &c.credential).is_priced());
         models.push(ModelRow { model_id: m.id.clone(), display_name: m.id.clone(), unpriced });
     }
 
@@ -785,34 +816,41 @@ pub async fn build_channel_matrix(state: &AppState) -> IpcResult<MatrixView> {
                 .map(|p| p.name.clone())
                 // 服务商不存在是配置错误（校验器会报），这里如实回 id 而不是编一个名字
                 .unwrap_or_else(|| c.provider.as_str().to_string());
-            let quota = match quota_rows.iter().find(|r| r.credential_id == c.id.as_str()) {
-                Some(row) => QuotaState::from_row(row),
-                // 从未观测过：全 0 + `unknown`（不是"可用"也不是"耗尽"）
-                None => QuotaState {
-                    credential_id: c.id.as_str().to_string(),
-                    state: "unknown".to_string(),
-                    used_tokens: 0,
-                    used_requests: 0,
-                    used_cost: 0.0,
-                    reported_remaining: None,
-                    window_start_ms: 0,
-                    window_end_ms: None,
-                    updated_at_ms: 0,
-                },
-            };
             CredentialCol {
                 credential_id: c.id.as_str().to_string(),
                 label: c.label.clone(),
                 provider_name,
-                quota,
             }
         })
         .collect();
 
     let mut cells: Vec<Cell> = Vec::with_capacity(doc.channels.len());
     for ch in doc.channels.iter() {
-        let canon =
-            doc.find_model(&ch.model).map(|m| m.id.clone()).unwrap_or_else(|| ch.model.clone());
+        // 这一格服务哪个**规范模型 id**。
+        //
+        // 三条路，按"有多确定"排：
+        // 1. 遗留字段 `Channel.model` **非空** → 老规矩：能解析出模型就用它的规范 id，
+        //    解析不出来就**原样回显**那个名字（老配置、迁移前的导出走这条，行为一字不变）；
+        // 2. 遗留字段为空 → 按**关系真源** `Model.lines` 反查这条线路被哪些模型用：
+        //    - **恰好一个** → 就是它。这不是猜：整份配置里只有一个模型声明用它；
+        //    - 零个或多个 → **空串**。零个是"没有模型用它"；多个是这条单值字段
+        //      表达不了的形状（`Cell.model_id` 是遗留的单值字段，"一条线路服务多个模型"
+        //      它装不下），随便挑一个就是**静默错报** —— 前端要完整关系请用
+        //      `model_list` + `Model.lines`，那里才是真源。
+        //
+        // 为什么非要补第 2 条：[docs/28 §2] 翻转之后**新写入的线路 `Channel.model` 恒为空串**，
+        // 只走第 1 条会得到空串 —— 服务商向导"这家已有哪些模型"那一块
+        // （`addedModelsOf` 按 `cell.model_id` 聚合）对新配置就整块空掉。
+        let legacy = ch.model.trim();
+        let by_lines: Vec<&Model> =
+            if legacy.is_empty() { doc.models_of_channel(ch) } else { Vec::new() };
+        let canon = if !legacy.is_empty() {
+            doc.find_model(legacy).map(|m| m.id.clone()).unwrap_or_else(|| ch.model.clone())
+        } else if by_lines.len() == 1 {
+            by_lines[0].id.clone()
+        } else {
+            String::new()
+        };
         let cred = doc.credentials.iter().find(|c| c.id == ch.credential);
         let provider = doc.providers.iter().find(|p| p.id == ch.provider);
         let lane_id = ch.effective_lane(cred, provider, &doc.net).map(|l| l.as_str().to_string());
@@ -947,12 +985,13 @@ pub async fn group_release_sticky(
 
 // ================================================================ model
 
-/// `ModelPatch`（`bindings.ts`：`Partial<Pick<Model, "expose" | "aliases" | "display">>` + `lane`）。
+/// `ModelPatch`（`bindings.ts`：`Partial<Pick<Model, "expose" | "aliases" | "display">>`）。
 ///
 /// `expose` / `aliases` / `display` 是 `Option`：**没给的字段不动**（`null`/缺省都不等于"清空"）。
 ///
-/// `lane` 是**三态**（[docs/20 §1.3]）：字段缺失 = 不动；`null` = 清空（回到继承链，末端直连）；
-/// 值 = 写该 lane。`Option<Option<_>>` 正是这三态：外层 `None` = 没给，内层 `None` = 清空。
+/// [docs/28 §1.1] **`lane` 已删除**（它以前是三态 `Option<Option<LaneId>>`）：网络代理归线路，
+/// 模型不再有"默认线路"。老客户端仍可能发这个键 —— 它会被当成未知字段忽略（`extra` 纪律），
+/// 但**不会**再改动任何线路的代理：改代理请对**那条线路**调 `channel_upsert`。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
 pub struct ModelPatch {
     #[serde(default)]
@@ -961,17 +1000,56 @@ pub struct ModelPatch {
     pub aliases: Option<Vec<String>>,
     #[serde(default)]
     pub display: Option<ta_core::domain::DisplayConfig>,
-    #[serde(default)]
-    pub lane: Option<Option<LaneId>>,
 }
 
 /// `model_upsert`：同 id 覆盖、不存在则新增（幂等）。
+///
+/// [docs/28 §2] 两条**创建纪律**（用户原话："添加模型至少选一个线路"）：
+/// * `lines` 不能为空 —— 零线路的模型对外可调用却永远路由不到任何地方；
+/// * `lines` 里每一条都必须真实存在（不同步就点名报错，不写出悬空引用）。
+///
+/// 为什么这两条在**命令层**而不是文档校验器里：校验器必须容忍"配置里有个还没接线的模型"
+/// 这种**存量状态**（老库里就有；删线路导致的孤儿模型是自动消失的），
+/// 但**用户主动造一个零线路的模型**是错的。
 pub async fn upsert_model(state: &AppState, model: Model) -> IpcResult<Model> {
+    if model.lines.is_empty() {
+        return Err(IpcError::from(TaError::MalformedRequest(format!(
+            "模型 {} 至少要有一条线路：没有线路的模型对外可调用却永远路由不到任何地方。\
+             请先到服务商页把线路建出来，再回到模型页把它们分配给这个模型。",
+            model.id
+        ))));
+    }
+    {
+        let doc = state.doc();
+        let missing: Vec<&str> = model
+            .lines
+            .iter()
+            .filter(|l| !doc.channels.iter().any(|c| &c.id == *l))
+            .map(|l| l.as_str())
+            .collect();
+        if !missing.is_empty() {
+            return Err(IpcError::from(TaError::MalformedRequest(format!(
+                "模型 {} 指定的线路不存在：{}（线路清单与你在模型页看到的不同步，请刷新后重试）",
+                model.id,
+                missing.join(", ")
+            ))));
+        }
+    }
+
     let mut doc = (*state.doc()).clone();
     match doc.models.iter_mut().find(|x| x.id == model.id) {
         Some(slot) => *slot = model.clone(),
         None => doc.models.push(model.clone()),
     }
+
+    // [docs/28 §2] **一个模型的线路必须能力等价**（[docs/17 §2] 的原意：只有各条线路能力一致，
+    // 路由到它们才是等价的）。翻转之后这条检查的**执行点就在这里** —— 因为"哪些线路属于同一个
+    // 模型"这件事，现在只有模型自己知道（`lines`）。
+    let line_ids: Vec<String> = model.lines.iter().map(|l| l.as_str().to_string()).collect();
+    if let Some(detail) = capability_mismatches_for_channels(&doc, &line_ids).into_iter().next() {
+        return Err(capability_mismatch_ipc(detail));
+    }
+
     save_validated(state, doc, "model_upsert").await?;
     Ok(model)
 }
@@ -984,9 +1062,14 @@ pub async fn model_upsert(state: State<'_, AppState>, model: Model) -> IpcResult
 
 /// `model_delete`：无引用直接删；有引用必须 `force=true`。
 ///
-/// `force` 时的级联：删掉挂在它下面的**全部通道**（`channel.model` 可以写 id 或任一别名）、
-/// 删掉以它为 model 的**通道组**（通道组的 `model` 悬空是校验错误），
-/// 再摘掉策略里对已删通道/组的引用。
+/// `force` 时的级联：删掉以它为 model 的**通道组**（通道组的 `model` 悬空是校验错误），
+/// 再摘掉策略里对已删组的引用。
+///
+/// **[docs/27 §1.2] 线路一条都不动。** 线路是"服务商那边定义的"、归服务商所有，
+/// 模型只负责**用**它们：所以这里**永远不删通道** —— 被线路引用时无论 `force` 都拒绝
+/// （`TA-5002`），并说清"先在服务商界面删掉指向它的线路（或删服务商）；
+/// 最后一条线路消失时这个模型会自动消失"。
+/// 删模型而把线路一起带走，正是用户说的"级联删除做的太大了"。
 ///
 /// **定价条目不动**：校验器不要求 `pricing.entries[].match.model` 指向存在的模型
 /// （它是 glob），照着删会误删一条通配条目。删模型后这些条目自然变成不命中的死条目，
@@ -1011,26 +1094,27 @@ pub async fn delete_model(state: &AppState, id: &str, force: bool) -> IpcResult<
         .map(|g| g.id.as_str().to_string())
         .collect();
 
-    if !force {
-        let mut refs: Vec<String> = Vec::new();
-        if !ch_ids.is_empty() {
-            refs.push(format!(
-                "{} 条通道（{}）",
+    // 线路：**删模型绝不动它**（[docs/27 §1.2]）。哪怕 force=true 也拒绝，并把"该怎么做"说清楚。
+    if !ch_ids.is_empty() {
+        let list: Vec<String> = ch_ids.iter().cloned().collect();
+        return Err(IpcError::from(TaError::Referenced {
+            what: format!(
+                "模型 {id} 还被 {} 条线路用着（{}）。线路是**服务商那边**定义的，模型只负责用它们 —— \
+                 删模型不会删线路：请先去服务商界面把指向它的线路删掉（或删掉整个服务商），\
+                 最后一条线路消失时这个模型会自动消失。",
                 ch_ids.len(),
-                ch_ids.iter().cloned().collect::<Vec<_>>().join(", ")
-            ));
-        }
-        if !group_ids.is_empty() {
-            refs.push(format!("{} 个通道组（{}）", group_ids.len(), group_ids.join(", ")));
-        }
-        if !refs.is_empty() {
-            return Err(referenced("模型", &refs, true));
-        }
+                list.join(", ")
+            ),
+        }));
+    }
+
+    if !force && !group_ids.is_empty() {
+        let refs = vec![format!("{} 个通道组（{}）", group_ids.len(), group_ids.join(", "))];
+        return Err(referenced("模型", &refs, true));
     }
 
     doc.models.retain(|m| m.id != id);
-    let mut removed_groups = prune_channels(&mut doc, &ch_ids);
-    doc.channels.retain(|c| !names.contains(c.model.as_str()));
+    let mut removed_groups = BTreeSet::new();
     for g in doc.channel_groups.iter().filter(|g| names.contains(g.model.as_str())) {
         removed_groups.insert(g.id.as_str().to_string());
     }
@@ -1051,15 +1135,10 @@ pub async fn model_delete(state: State<'_, AppState>, id: String, force: bool) -
 /// **要么全改、要么全不改**：任何一个 id 不存在就整体报错（不做"跳过不存在的"那种
 /// 静默半成功 —— 那会让用户以为改上了）。
 ///
-/// `patch.lane` 一给就要写**两处**（[docs/20 §1.3]）：
-/// * `Model.default_lane`（"下一次给这个模型建通道默认走哪条"）；
-/// * 该模型**现有所有通道**的 `lane`（通道匹配用与 `delete_model` 同一口径：
-///   `channel.model` 写模型 id 或任一别名都算）。
-///
-/// 为什么必须写通道：lane 是 channel 级字段，模型自己不承载流量 —— 只改一个"默认值"
-/// 而通道还是老样子，就是"界面上改了、线上没变"（第 71 轮踩过的坑）。
-///
-/// `lane: null` 是**清空**（三处一起清），不是"没给"：外层 `Option` 才是"没给"。
+/// [docs/28 §1.1] `patch.lane` **已删除**：网络代理是**线路自己的属性**（`ChannelConfig.lane`），
+/// 模型不再有"默认线路"这回事 —— 旧实现要写"模型默认 + 该模型现有通道"两处，现在没有第一处了，
+/// 而第二处属于**线路页/服务商页**的编辑口（直接改那条线路的 `lane`）。留着一个"通过模型改所有
+/// 线路代理"的批量口，等于给模型侧留了第二个代理真相源。
 pub async fn bulk_update_models(
     state: &AppState,
     ids: &[String],
@@ -1089,22 +1168,7 @@ pub async fn bulk_update_models(
         }
     }
 
-    // `lane` 单独一轮（不与上面的字段补丁混在一起）：写 `default_lane` 与写通道的 `lane`
-    // 是同一件事的两面，分开写让"改了哪些模型、连带改了哪些通道"一眼可见。
-    // 通道匹配口径与 `delete_model` 完全一致：`model.names()` —— id 或任一别名。
-    if let Some(lane) = &patch.lane {
-        for id in ids {
-            let Some(model) = doc.models.iter_mut().find(|m| m.id == *id) else {
-                continue; // 上面已经证明过每个 id 都存在
-            };
-            model.default_lane = lane.clone();
-            let names: BTreeSet<String> = model.names().map(str::to_string).collect();
-            for ch in doc.channels.iter_mut().filter(|c| names.contains(c.model.as_str())) {
-                ch.lane = lane.clone();
-            }
-        }
-    }
-
+    // [docs/28 §1.1] 这里**没有** `lane` 这一轮：代理归线路，模型侧不再承载它。
     save_validated(state, doc, "model_bulk_update").await?;
     Ok(applied())
 }
@@ -1293,7 +1357,7 @@ pub struct SimulateInput {
 impl SimulateInput {
     /// 转成 `ta-core` 的模拟器输入。
     ///
-    /// ta-core 那一版还有四个"运行态注入"字段（quota_remaining / latency_ms /
+    /// ta-core 那一版还有"运行态注入"字段（latency_ms /
     /// channel_state / lane_health，TS 契约里没有）——这里**不编**：留空 = 冷启动视角
     /// （与 `simulate_input` 的纯函数语义一致：同一输入必得同一结果）。
     fn to_core(&self) -> ta_core::routing::SimulateInput {
@@ -1640,8 +1704,7 @@ mod tests {
     use ta_core::domain::{
         ChannelConfig, Model, Policy, PriceEntry, PriceMatch, PriceSource, Provider,
     };
-    use ta_core::quota::QuotaBackend;
-    use ta_core::types::{ChannelId, LaneId, Protocol};
+    use ta_core::types::{ChannelId, Protocol};
     use ta_secrets::mock::MockStore;
     use ta_secrets::SecretStore;
     use ta_store::ConfigStore;
@@ -1702,8 +1765,8 @@ mod tests {
     async fn model_upsert_and_delete_cascade_like_the_docs_say() {
         let state = seeded("model-crud").await;
 
-        // upsert 新增 + 读回
-        let m2 = Model::new("m-b").with_aliases(["alias-b"]);
+        // upsert 新增 + 读回（[docs/28 §2]：模型必须带上**至少一条已存在的线路**）
+        let m2 = Model::new("m-b").with_aliases(["alias-b"]).with_lines([ChannelId::new("ch-a")]);
         upsert_model(&state, m2.clone()).await.expect("新增模型");
         let back = state.config.load().await.expect("load");
         assert!(back.models.iter().any(|m| m.id == "m-b"), "写进去的必须读得回来");
@@ -1719,26 +1782,53 @@ mod tests {
             Some(vec!["alias-b2".to_string()])
         );
 
-        // m-a 有通道 + 通道组引用 → 未 force 必须拒绝且不改配置
-        let err = delete_model(&state, "m-a", false).await.expect_err("有引用必须拒绝");
-        assert_eq!(err.code, "TA-5002");
-        assert!(
-            err.message.contains("force=true"),
-            "模型删除**真有** force 参数，就该在拒绝时说清怎么级联：{}",
-            err.message
-        );
-        assert!(state.doc().models.iter().any(|m| m.id == "m-a"), "被拒绝时不许改配置");
+        // m-a 有线路在用（[docs/27 §1.2]）→ **无论 force 都拒绝**，而且一个字节都不改。
+        // 线路归服务商管、模型只负责用：删模型把线路一起带走正是用户说的"级联太大"。
+        for force in [false, true] {
+            let err = delete_model(&state, "m-a", force).await.expect_err("有线路必须拒绝");
+            assert_eq!(err.code, "TA-5002");
+            assert!(
+                err.message.contains("删模型不会删线路") && err.message.contains("线路"),
+                "要说清「删模型不动线路」以及去哪儿删线路：{}",
+                err.message
+            );
+            assert!(state.doc().models.iter().any(|m| m.id == "m-a"), "被拒绝时不许改配置");
+            assert!(
+                state.doc().channels.iter().any(|c| c.model == "m-a"),
+                "被拒绝时线路一条都不许少"
+            );
+        }
 
-        // force → 通道 + 通道组一起走，策略对组的引用摘掉
-        delete_model(&state, "m-a", true).await.expect("force 级联");
+        // 线路没了之后模型才会消失 —— 这里直接手工把 m-a 的线路摘掉，验证"删模型本身不删线路"
+        {
+            let mut doc = (*state.doc()).clone();
+            let doomed: Vec<String> = doc
+                .channels
+                .iter()
+                .filter(|c| c.model == "m-a")
+                .map(|c| c.id.as_str().to_string())
+                .collect();
+            doc.channels.retain(|c| !doomed.contains(&c.id.as_str().to_string()));
+            doc.channel_groups.retain(|g| g.model != "m-a");
+            // [docs/28 §2] 关系在模型侧：摘掉线路之后，各模型的 `lines` 也必须不再指向它
+            // （否则校验器会以"引用了不存在的线路"拒绝整份配置 —— 那正是它该做的事）
+            for m in doc.models.iter_mut() {
+                m.lines.retain(|l| !doomed.contains(&l.as_str().to_string()));
+            }
+            for p in doc.policies.iter_mut() {
+                if p.action.use_group.is_some() {
+                    p.action.use_group = None;
+                }
+            }
+            state.config.save(&doc).await.expect("手工摘线路");
+            state.set_doc(doc);
+        }
+        // m-a 自己已经一条线路都不剩（它本来就是靠遗留字段挂着的）→ 能删
+        delete_model(&state, "m-a", false).await.expect("没线路了就能删");
         let after = state.config.load().await.expect("load");
         assert!(!after.models.iter().any(|m| m.id == "m-a"));
-        assert!(after.channels.iter().all(|c| c.model != "m-a"), "挂载的通道必须一起删");
-        assert!(
-            after.channel_groups.iter().all(|g| g.model != "m-a"),
-            "以它为 model 的组必须一起删"
-        );
-        assert!(after.policies.iter().all(|p| p.action.use_group.is_none()), "策略引用要摘掉");
+        // 别的模型的线路一条没动
+        assert!(after.channels.iter().all(|c| c.model != "m-a"));
 
         // 别名也能命中（"模型"的删除范围是 id + 全部别名）
         assert!(delete_model(&state, "m-nope", false).await.is_err());
@@ -1747,9 +1837,12 @@ mod tests {
     #[tokio::test]
     async fn model_bulk_update_patches_all_or_nothing() {
         let state = seeded("model-bulk").await;
-        upsert_model(&state, Model::new("m-b")).await.expect("加第二个模型");
+        // [docs/28 §2] 创建模型要带线路（零线路会被命令层拒绝）
+        upsert_model(&state, Model::new("m-b").with_lines([ChannelId::new("ch-a")]))
+            .await
+            .expect("加第二个模型");
 
-        let patch = ModelPatch { expose: Some(false), aliases: None, display: None, lane: None };
+        let patch = ModelPatch { expose: Some(false), aliases: None, display: None };
         let r =
             bulk_update_models(&state, &["m-a".into(), "m-b".into()], &patch).await.expect("批量");
         assert!(
@@ -1807,109 +1900,33 @@ mod tests {
         assert!(bulk_update_models(&state, &[], &ModelPatch::default()).await.is_err());
     }
 
-    /// `model_bulk_update` 的 `lane`（[docs/20 §1.3]）：写 `Model.default_lane`，
-    /// **并把该模型现有所有通道的 `lane` 写成同值**；三态 = 缺省不动 / `null` 清空 / 值写该线路。
+    /// [docs/28 §1.1] `ModelPatch.lane` **已删除**：老客户端可能还在发 `lane`，但它必须**什么都改不了**
+    /// —— 代理归线路（`ChannelConfig.lane`），改代理只有一个入口：对那条线路调 `channel_upsert`。
+    ///
+    /// 这条用例就是把"删了字段"钉成**可验证的事实**：发一个带 `lane` 的补丁，模型与它名下所有线路的
+    /// `lane` 一个字节都不许变（而不是只依赖"编译不过"来证明）。
     #[tokio::test]
-    async fn model_bulk_update_writes_lane_to_the_model_and_every_channel() {
-        let state = seeded("model-lane").await;
-        // 前置：两条线路；m-b 的通道写的是**别名**（匹配口径与 delete_model 同）；m-c 没有通道
+    async fn model_bulk_update_ignores_the_removed_lane_patch() {
+        let state = seeded("model-lane-gone").await;
         rewrite_doc(&state, |d| {
             d.lanes.push(ta_core::domain::Lane::direct("lane-a", "线路 A"));
-            d.lanes.push(ta_core::domain::Lane::direct("lane-b", "线路 B"));
-            d.models.push(Model::new("m-b").with_aliases(["alias-b"]));
-            d.models.push(Model::new("m-c"));
-            d.channels.push(ChannelConfig::new("ch-b", "alias-b", "p-a", "c-a", "upstream-b"));
         })
         .await;
-
-        // ① 有通道的模型：模型侧与通道侧一起变
-        let patch = ModelPatch { lane: Some(Some(LaneId::new("lane-a"))), ..Default::default() };
-        bulk_update_models(&state, &["m-a".into()], &patch).await.expect("写 lane");
-        let back = state.config.load().await.expect("load");
-        assert_eq!(
-            back.models.iter().find(|m| m.id == "m-a").and_then(|m| m.default_lane.clone()),
-            Some(LaneId::new("lane-a")),
-            "模型侧要记下默认线路（下一次给它建通道用）"
-        );
-        assert_eq!(
-            back.channels.iter().find(|c| c.id.as_str() == "ch-a").and_then(|c| c.lane.clone()),
-            Some(LaneId::new("lane-a")),
-            "通道的 lane 必须跟着变：lane 是通道级字段，模型自己不承载流量"
-        );
-
-        // ② 别名命中：`channel.model` 写别名也算这个模型的通道
-        bulk_update_models(&state, &["m-b".into()], &patch).await.expect("按别名写");
-        let back = state.config.load().await.expect("load");
-        assert_eq!(
-            back.channels.iter().find(|c| c.id.as_str() == "ch-b").and_then(|c| c.lane.clone()),
-            Some(LaneId::new("lane-a")),
-            "通道匹配口径与 delete_model 一致：模型 id 或任一别名"
-        );
-
-        // ③ 没有任何通道的模型：只写模型侧，**不凭空造一条通道**
-        let channels_before = back.channels.len();
-        bulk_update_models(&state, &["m-c".into()], &patch).await.expect("无通道也能写");
-        let back = state.config.load().await.expect("load");
-        assert_eq!(
-            back.models.iter().find(|m| m.id == "m-c").and_then(|m| m.default_lane.clone()),
-            Some(LaneId::new("lane-a"))
-        );
-        assert_eq!(back.channels.len(), channels_before, "不许为它凭空建通道");
-
-        // ④ 字段缺失 = 不动
-        bulk_update_models(&state, &["m-c".into()], &ModelPatch::default()).await.expect("空补丁");
-        let back = state.config.load().await.expect("load");
-        assert_eq!(
-            back.models.iter().find(|m| m.id == "m-c").and_then(|m| m.default_lane.clone()),
-            Some(LaneId::new("lane-a")),
-            "没给 lane 就不许动"
-        );
-
-        // ⑤ `null` = 清空（模型与它的通道一起清，回到继承链）
-        let clear = ModelPatch { lane: Some(None), ..Default::default() };
-        bulk_update_models(&state, &["m-a".into()], &clear).await.expect("清空");
-        let back = state.config.load().await.expect("load");
-        assert_eq!(
-            back.models.iter().find(|m| m.id == "m-a").and_then(|m| m.default_lane.clone()),
-            None,
-            "null = 清空"
-        );
-        assert_eq!(
-            back.channels.iter().find(|c| c.id.as_str() == "ch-a").and_then(|c| c.lane.clone()),
-            None,
-            "通道也要一起清"
-        );
-    }
-
-    /// `lane` 指向**不存在的线路** → 校验器拦下（`TA-5001`），**库一个字节都不变**。
-    #[tokio::test]
-    async fn model_bulk_update_rejects_an_unknown_lane_without_writing() {
-        let state = seeded("model-lane-bad").await;
         let before = state.config.load().await.expect("load");
 
-        let patch = ModelPatch { lane: Some(Some(LaneId::new("lane-nope"))), ..Default::default() };
-        let err = bulk_update_models(&state, &["m-a".into()], &patch)
-            .await
-            .expect_err("不存在的线路必须报错");
-        assert_eq!(err.code, "TA-5001");
-        let details = err.details.expect("details").to_string();
-        assert!(details.contains("models[0].default_lane"), "要带出字段路径：{details}");
+        // 老形状的载荷：字段已经不在 `ModelPatch` 里，但 JSON 里仍然可以有它
+        let legacy = serde_json::json!({ "lane": "lane-a" });
+        let patch: ModelPatch = serde_json::from_value(legacy).expect("老载荷仍要能解析");
+        bulk_update_models(&state, &["m-a".into()], &patch).await.expect("发老补丁不许报错");
 
-        assert_eq!(
-            state.doc().models.iter().find(|m| m.id == "m-a").and_then(|m| m.default_lane.clone()),
-            None,
-            "被拒绝时内存快照也不许变"
-        );
-
-        // `d.channels[0].lane` 自己没法当证据：模型侧被改坏了而通道没写，两份都会被校验器拒。
-        // 直接比对整份文档，才是"一个字节都不许变"。
         let after = state.config.load().await.expect("load");
         assert_eq!(
             serde_json::to_value(&after).expect("序列化"),
             serde_json::to_value(&before).expect("序列化"),
-            "校验不过 = 库一个字节都不许变"
+            "带 lane 的老补丁必须什么都不改（代理不在模型侧了）"
         );
-        assert_eq!(after.channels[0].lane, None, "通道的 lane 也不许被写坏");
+        // [docs/55] 通道上已经没有 lane 字段可查了 —— 上面那句**整份文档逐字节相等**
+        // 本来就是更强的证据（连"出现 lane 这个键"都不可能发生）。
     }
 
     /// 拒绝消息里**只说真话**：`force=true` 只能出现在**真有** `force` 参数的命令上。
@@ -1990,6 +2007,63 @@ mod tests {
         assert_eq!(delete_channel(&state, "ch-nope").await.expect_err("未知 id").code, "TA-1004");
     }
 
+    /// **数据丢失回归**（[docs/48 §7.4]，e2e step24 真机抓到）：删掉模型**两条线路中的一条**，
+    /// 模型**必须还在**，只是少一条线路。
+    ///
+    /// 修之前这里会把模型整条删掉：判"孤儿"用的是遗留的反向字段 `channel.model`，
+    /// 而写命令层强制新写入把它留空（`""`）→ `still_wired` 恒为假 → 只要删过线路，
+    /// 用过它的模型就跟着消失。真机上模型 `ta-e2e-m-add` 就是这么丢的。
+    ///
+    /// 这条用例盯的是**"还有别的线路"这个事实**，所以故意把 `channel.model` 留空
+    /// （新配置的真实形状），从而让"只看遗留字段"的实现必然红。
+    #[tokio::test]
+    async fn deleting_one_of_two_lines_keeps_the_model() {
+        let state = seeded("ch-del-keeps-model").await;
+        // 第二条线路 + 模型同时列出两条。
+        //
+        // **两条线路的遗留 `model` 字段都清空** —— 这正是写命令层"新写入一律写空字符串"
+        // 之后的真实形状，也是这个 bug 的触发条件：只看遗留字段的实现会因为
+        // `names.contains("")` 恒假而把模型误判成孤儿。
+        rewrite_doc(&state, |d| {
+            d.channels.push(ChannelConfig::new("ch-b", "", "p-a", "c-a", "upstream-b"));
+            d.channels[0].model = String::new();
+            d.models[0].lines = vec![ChannelId::new("ch-a"), ChannelId::new("ch-b")];
+        })
+        .await;
+
+        delete_channel(&state, "ch-b").await.expect("另一条还在 → 删得掉");
+
+        let after = state.config.load().await.expect("load");
+        let model = after
+            .models
+            .iter()
+            .find(|m| m.id == "m-a")
+            .expect("模型还有一条线路，**不该被删**（这是数据丢失）");
+        assert_eq!(
+            model.lines.iter().map(|l| l.as_str()).collect::<Vec<_>>(),
+            vec!["ch-a"],
+            "被删的那条要从 lines 里摘掉，另一条必须留着"
+        );
+        assert_eq!(after.channels.len(), 1, "只该少一条线路");
+    }
+
+    /// 反向：**确实一条线路都不剩**时，模型跟着消失（[docs/27 §1.2] 的既定语义，没被上面那条改掉）。
+    ///
+    /// 两条一起钉住，才不会为了让前一条绿而把"清理孤儿"整个关掉。
+    #[tokio::test]
+    async fn deleting_the_last_line_still_removes_the_model() {
+        let state = seeded("ch-del-orphans-model").await;
+        delete_channel(&state, "ch-a").await.expect("唯一一条 → 删得掉");
+
+        let after = state.config.load().await.expect("load");
+        assert!(
+            !after.models.iter().any(|m| m.id == "m-a"),
+            "一条线路都不剩的模型必须跟着消失：{:?}",
+            after.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>()
+        );
+        assert!(after.channels.is_empty());
+    }
+
     #[tokio::test]
     async fn channel_set_tags_and_bulk_lane_write_then_read_back() {
         let state = seeded("ch-bulk").await;
@@ -2010,21 +2084,9 @@ mod tests {
         let back = state.config.load().await.expect("load");
         assert_eq!(back.channels[0].tags, vec!["cheap".to_string()], "写进去的必须读得回来");
 
-        let r =
-            bulk_assign_lane(&state, &["ch-a".into()], Some("lane-direct")).await.expect("钉线路");
-        assert!(r.applied);
-        assert_eq!(
-            state.config.load().await.expect("load").channels[0].lane.as_ref().map(|l| l.as_str()),
-            Some("lane-direct")
-        );
-
-        // 不存在的线路 / 不存在的通道 / 空清单，都要如实报错且不写库
-        let err = bulk_assign_lane(&state, &["ch-a".into()], Some("lane-nope"))
-            .await
-            .expect_err("线路不存在");
-        assert_eq!(err.code, "TA-1004");
-        assert!(bulk_assign_lane(&state, &["ch-nope".into()], Some("lane-direct")).await.is_err());
-        assert!(bulk_assign_lane(&state, &[], Some("lane-direct")).await.is_err());
+        // [docs/55] 这里原来接着测 `bulk_assign_lane`（批量改通道的 lane）——
+        // 那条命令随"线路级别的分配"一起删除了，所以这一段整块去掉。
+        // `set_channel_tags` 自己的错误分支仍然逐条钉住：
         assert!(set_channel_tags(&state, &["ch-nope".into()], &["x".into()], &[]).await.is_err());
         assert!(set_channel_tags(&state, &[], &["x".into()], &[]).await.is_err());
         assert!(
@@ -2033,82 +2095,43 @@ mod tests {
         );
     }
 
-    /// 测试用：**从库里**读一条通道当前钉的 lane（`None` = 没钉，走继承链）。
-    async fn db_lane(state: &AppState, channel_id: &str) -> Option<String> {
-        state
-            .config
-            .load()
-            .await
-            .expect("load")
-            .channels
-            .iter()
-            .find(|c| c.id.as_str() == channel_id)
-            .and_then(|c| c.lane.as_ref().map(|l| l.as_str().to_string()))
-    }
-
-    /// `channel_bulk_assign_lane` 的两种取值（[docs/21 §4.1]）：
-    /// `Some("<存在的 id>")` = 把这批通道**钉到**该线路；`None` = **清空**它们的 lane
-    /// （回到五级继承链，末端就是直连）。
+    /// [docs/28 §1.4] 全选：`channel_bulk_set_enabled` 一次动作把一批线路一起启用 / 一起关闭。
     ///
-    /// 每一步都**读库**断言 —— 这条命令唯一值得测的就是"库里那条通道的 lane 到底成了什么"。
+    /// 为什么单独立一条：它是"全选"的**唯一**写路径。循环发 `channel_set_enabled` 会让一次用户
+    /// 动作变成 N 个配置快照 + N 次内核重载，中途失败还会留下半开半关的状态 —— 这里钉住
+    /// "一次调用、一次写库"，以及"被拒绝时一个字节都不落库"。
     #[tokio::test]
-    async fn channel_bulk_assign_lane_some_pins_and_none_clears() {
-        let state = seeded("ch-lane-null").await;
-        // 种两条真实线路：`channel.lane` 指向不存在的线路会被校验器整份拒绝，
-        // 所以"钉"和"清空"两步都得先让这两个 id 真的存在。
-        let mut doc = (*state.doc()).clone();
-        doc.lanes.push(ta_core::domain::Lane::direct("lane-direct", "直连（本机网络）"));
-        doc.lanes.push(ta_core::domain::Lane::direct("lane-jp", "日本"));
-        state.config.save(&doc).await.expect("种线路");
-        state.set_doc(doc);
+    async fn bulk_set_enabled_sets_all_then_refuses_a_missing_id_without_writing() {
+        let state = seeded("bulk-enabled").await;
+        // 种两条线路：一条开、一条关
+        rewrite_doc(&state, |d| {
+            d.channels.push(ChannelConfig::new("ch-b", "", "p-a", "c-a", "upstream-b"));
+            d.channels[0].enabled = true;
+            d.channels[1].enabled = false;
+        })
+        .await;
 
-        // 前置：先钉一条，后面才谈得上"由 Some(..) 变成 None"。
-        bulk_assign_lane(&state, &["ch-a".into()], Some("lane-direct")).await.expect("前置钉线路");
-        assert_eq!(
-            db_lane(&state, "ch-a").await.as_deref(),
-            Some("lane-direct"),
-            "前置：库里必须真的钉上了"
-        );
+        // 一起关闭（可逆，不删东西）
+        bulk_set_enabled(&state, &["ch-a".into(), "ch-b".into()], false).await.expect("一起关闭");
+        assert!(!state.doc().channels[0].enabled);
+        assert!(!state.doc().channels[1].enabled);
+        assert_eq!(state.doc().channels.len(), 2, "关闭不是删除");
 
-        // (1) Some("<存在的 id>") → 正常写入，读得回来
-        let r = bulk_assign_lane(&state, &["ch-a".into()], Some("lane-jp"))
+        // 一起打开
+        bulk_set_enabled(&state, &["ch-a".into(), "ch-b".into()], true).await.expect("一起打开");
+        assert!(state.doc().channels.iter().all(|c| c.enabled));
+
+        // 有一个 id 不存在 → TA-4004，且**一处都不改**（判错发生在动 doc 之前）
+        let err = bulk_set_enabled(&state, &["ch-a".into(), "ch-没有这条".into()], false)
             .await
-            .expect("改钉 lane-jp");
-        assert!(r.applied);
-        assert_eq!(
-            db_lane(&state, "ch-a").await.as_deref(),
-            Some("lane-jp"),
-            "Some(id) 必须写进库并读得回来"
-        );
+            .expect_err("缺 id 必须拒绝");
+        assert_eq!(err.code, "TA-1004", "不存在的通道按 not_found 报（与单条命令同一码）");
+        assert!(err.message.contains("ch-没有这条"), "要点名：{}", err.message);
+        assert!(state.doc().channels.iter().all(|c| c.enabled), "被拒绝时一条都不许改");
 
-        // (2) Some("<不存在的 id>") → TA-1004 且**指名道姓**，库一个字节都不许变
-        let err = bulk_assign_lane(&state, &["ch-a".into()], Some("lane-nope"))
-            .await
-            .expect_err("不存在的线路必须报错");
+        // 空列表 → TA-1004（"没给 id"不是"改 0 条"）
+        let err = bulk_set_enabled(&state, &[], false).await.expect_err("空列表必须拒绝");
         assert_eq!(err.code, "TA-1004");
-        assert!(err.message.contains("lane-nope"), "报错要指名道姓：{}", err.message);
-        assert_eq!(db_lane(&state, "ch-a").await.as_deref(), Some("lane-jp"), "被拒绝时不许改库");
-
-        // (3) None → 清空（Some(..) → None），回到继承链
-        let r = bulk_assign_lane(&state, &["ch-a".into()], None).await.expect("清空 lane");
-        assert!(r.applied);
-        assert_eq!(
-            state.config.load().await.expect("load").channels[0].lane,
-            None,
-            "None 必须把**库里**的 lane 清空（不再指向 lane-jp）"
-        );
-        assert_eq!(state.doc().channels[0].lane, None, "内存快照也要跟着清空");
-
-        // (4) 空 channel_ids 仍然报错（空清单什么也改不了），两种取值都一样，且不写库
-        let err = bulk_assign_lane(&state, &[], None).await.expect_err("空清单必须报错");
-        assert_eq!(err.code, "TA-1004");
-        let err = bulk_assign_lane(&state, &[], Some("lane-jp")).await.expect_err("空清单必须报错");
-        assert_eq!(err.code, "TA-1004");
-        assert_eq!(db_lane(&state, "ch-a").await, None, "报错之后 lane 仍是清空态");
-
-        // 清空是幂等的：本来就 None 再清一次也成功，且不写出别的东西
-        bulk_assign_lane(&state, &["ch-a".into()], None).await.expect("重复清空也要成功");
-        assert_eq!(db_lane(&state, "ch-a").await, None, "重复清空不该写出别的东西");
     }
 
     #[tokio::test]
@@ -2137,12 +2160,14 @@ mod tests {
 
         // upsert 覆盖（同 id 不新增）
         upsert_group(&state, ChannelGroup::new("g-b", "m-a", ["ch-a"])).await.expect("加组");
-        let mut g = ChannelGroup::new("g-b", "m-a", ["ch-a"]);
-        g.selector = ta_core::domain::Selector::Cheapest;
+        // 选路策略只有一种，所以这个字段**现在没法造出差异**（[docs/48]）：
+        // 用 `with_selector` 显式再设一遍，验的是"写进去能读回来"，不是"能存多种策略"。
+        let g = ChannelGroup::new("g-b", "m-a", ["ch-a"])
+            .with_selector(ta_core::domain::Selector::BalancedSticky);
         upsert_group(&state, g).await.expect("覆盖");
         let back = state.config.load().await.expect("load");
         assert_eq!(back.channel_groups.len(), 1);
-        assert_eq!(back.channel_groups[0].selector, ta_core::domain::Selector::Cheapest);
+        assert_eq!(back.channel_groups[0].selector, ta_core::domain::Selector::BalancedSticky);
 
         // 粘性配置（落库可读）
         let sticky = ta_core::domain::StickyConfig {
@@ -2195,10 +2220,6 @@ mod tests {
         assert_eq!(m.credentials[0].credential_id, "c-a");
         assert_eq!(m.credentials[0].label, "A");
         assert_eq!(m.credentials[0].provider_name, "A");
-        assert_eq!(
-            m.credentials[0].quota.state, "unknown",
-            "从未观测 → unknown，不是 ok 也不是 exhausted"
-        );
 
         assert_eq!(m.cells.len(), 2);
         for cell in &m.cells {
@@ -2225,8 +2246,156 @@ mod tests {
         assert!(local.unpriced, "既没配价也没内置价的模型必须被标未定价");
     }
 
-    /// routing 场景（模拟器用）：两条通道 + 一个组 + 两条策略。
+    /// [docs/51] 「未定价」徽标的判据必须走 `Model.lines`，不能走遗留的 `Channel.model`。
     ///
+    /// 这是本轮修掉的一个**不会报错的静默失效**：`build_channel_matrix` 原来自己写
+    /// `m.matches(&c.model)`，而 [docs/28 §2] 翻转之后新写入的线路 `Channel.model` **恒为空串**
+    /// ⇒ `chans` 永远为空 ⇒ 前端那个"未定价"徽标**永远不会亮**。
+    /// 断言用**新式线路**（`model.lines` 有值、`Channel.model` 是空串）构造，正是原来算不出来的形状。
+    #[tokio::test]
+    async fn channel_matrix_flags_unpriced_models_through_model_lines_not_the_legacy_field() {
+        let state = seeded("matrix-lines").await;
+        let mut doc = (*state.doc()).clone();
+        let ch_id = doc.channels[0].id.clone();
+        // 新式写法：关系写在模型侧，线路的遗留字段留空
+        doc.models[0].lines = vec![ch_id.clone()];
+        doc.channels[0].model = String::new();
+        // 清掉价 → 这个模型必须被标"未定价"
+        doc.pricing.entries.clear();
+        state.config.save(&doc).await.expect("种新式线路");
+        state.set_doc(doc);
+
+        let m = build_channel_matrix(&state).await.expect("矩阵");
+        let row = m.models.iter().find(|r| r.model_id == "m-a").expect("m-a 在矩阵里");
+        assert!(
+            row.unpriced,
+            "有线路（Model.lines）却没价 → 必须标未定价；\
+             走遗留 Channel.model 的话 chans 恒为空，这个徽标永远不会亮"
+        );
+        // 单元格的 `model_id` 也必须是**规范模型 id**：它喂着服务商向导"这家已有哪些模型"
+        // 那一块（`addedModelsOf`）。`Channel.model` 为空时旧写法给出空串，那一块就整块空掉。
+        assert!(
+            m.cells
+                .iter()
+                .any(|c| c.model_id == "m-a" && c.channel_id.as_deref() == Some(ch_id.as_str())),
+            "新式线路（Model.lines 有值、Channel.model 为空）也要给出规范 model_id：{:?}",
+            m.cells.iter().map(|c| (c.model_id.clone(), c.channel_id.clone())).collect::<Vec<_>>()
+        );
+
+        // 补一条**只按模型**的价（本轮界面上唯一会写出来的形状）→ 徽标必须灭
+        let mut doc = (*state.doc()).clone();
+        doc.pricing.entries.clear();
+        doc.pricing.entries.push(ta_core::domain::PriceEntry {
+            r#match: ta_core::domain::PriceMatch {
+                model: Some("m-a".to_string()),
+                provider: None,
+                credential: None,
+                extra: Default::default(),
+            },
+            rates: [("input".to_string(), 1.5)].into_iter().collect(),
+            multiplier: 1.0,
+            currency: None,
+            plan_fee: None,
+            source: ta_core::domain::PriceSource::Manual,
+            effective_from: None,
+            extra: Default::default(),
+        });
+        state.config.save(&doc).await.expect("种模型价");
+        state.set_doc(doc);
+
+        let m = build_channel_matrix(&state).await.expect("矩阵");
+        let row = m.models.iter().find(|r| r.model_id == "m-a").expect("m-a 在矩阵里");
+        assert!(!row.unpriced, "只按模型定价就该让这个模型不再被标未定价");
+    }
+
+    /// [docs/27 §1.2] 删模型**绝不动线路**：被线路用着时无论 force 都拒绝，且配置一字未改。
+    #[tokio::test]
+    async fn delete_model_is_refused_while_lines_use_it() {
+        let state = seeded_routing("model-del-refused").await;
+        let before = (*state.doc()).clone();
+
+        let err = delete_model(&state, "m-g", true).await.expect_err("还有线路在用着，必须拒绝");
+        assert_eq!(err.code, "TA-5002", "{}", err.message);
+        assert!(err.message.contains("线路"), "要说清被什么引用：{}", err.message);
+        assert!(
+            err.message.contains("删模型不会删线路"),
+            "要说清「删模型不动线路」这条语义：{}",
+            err.message
+        );
+
+        let after = state.doc();
+        assert_eq!(after.models.len(), before.models.len(), "模型不该被删掉");
+        assert_eq!(after.channels.len(), 2, "线路一条都不许少（正是用户说的「级联太大」那个毛病）");
+        assert_eq!(after.channel_groups.len(), 1);
+    }
+
+    /// 删线路时：**还有别的线路**的模型留着；**一条线路都不剩**的模型跟着消失（[docs/27 §1.2]）。
+    #[tokio::test]
+    async fn deleting_the_last_line_removes_the_model() {
+        let state = seeded_routing("model-orphan-channel").await;
+        // 先把"策略通过只有一条成员的组依赖它"这层解开（那是另一条既有规则，本用例测的不是它）
+        {
+            let mut doc = (*state.doc()).clone();
+            for p in doc.policies.iter_mut() {
+                p.action.use_group = None;
+            }
+            state.config.save(&doc).await.expect("解组依赖");
+            state.set_doc(doc);
+        }
+
+        // ch-a 与 ch-b 都服务于 m-g：先删一条，模型必须还在
+        delete_channel(&state, "ch-a").await.expect("删 ch-a");
+        assert_eq!(state.doc().models.len(), 1, "还有 ch-b 在用着 m-g，模型要留着");
+        assert_eq!(state.doc().channels.len(), 1);
+
+        // 再删最后一条 → 没有任何线路的模型（m-g）自动消失
+        delete_channel(&state, "ch-b").await.expect("删 ch-b");
+        let after = state.doc();
+        assert!(after.channels.is_empty());
+        // 精确断言"这个模型没了"（夹具里可能还有别的空模型，不该被这条用例牵连）
+        assert!(
+            !after.models.iter().any(|m| m.id.as_str() == "m-g"),
+            "一条线路都不剩的模型应当自动删除"
+        );
+        assert!(after.channel_groups.is_empty(), "以它为 model 的通道组会悬空，必须一并摘掉");
+        assert!(after.policies.iter().all(|p| p.action.use_group.is_none()));
+    }
+
+    /// 删服务商：它的线路从各个模型里消失；**没线路的模型跟着删掉**，还有别的线路的模型完整保留。
+    #[tokio::test]
+    async fn provider_delete_prunes_models_that_lose_their_last_line() {
+        let state = seeded_routing("prov-del-orphan").await;
+        // m-g 同时挂在 p-a（ch-a）与 p-b（ch-b）上；再给 p-a 单独加一个模型 m-a（只有 p-a 的线路）
+        {
+            let mut doc = (*state.doc()).clone();
+            doc.models.push(Model::new("m-a"));
+            doc.channels.push(ChannelConfig::new("ch-a2", "m-a", "p-a", "c-a", "up-a2"));
+            state.config.save(&doc).await.expect("种 m-a");
+            state.set_doc(doc);
+        }
+
+        // p-a 被策略/凭据/通道引用着 → 需要 force（这正是"删服务商"的常规路径）
+        delete_provider(&state, "p-a", true).await.expect("force 删 p-a");
+
+        let after = state.doc();
+        let model_ids: Vec<&str> = after.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            model_ids,
+            vec!["m-g"],
+            "m-a 的唯一线路在 p-a 上，线路没了 → 模型也删；m-g 还有 p-b 的 ch-b → 必须保留"
+        );
+        let channel_ids: Vec<&str> = after.channels.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(channel_ids, vec!["ch-b"], "只剩下 p-b 那条线路");
+        assert_eq!(
+            after.channel_groups.len(),
+            1,
+            "组 g-g 还有 ch-b 这一个成员，不该被删（空了才删）"
+        );
+        assert_eq!(after.channel_groups[0].members.len(), 1);
+        assert_eq!(after.providers.len(), 1);
+    }
+
+    /// routing 场景（模拟器用）：两条通道 + 一个组 + 两条策略。    ///
     /// 形状照抄 `ta-core/src/routing/simulate.rs` 单测里那份 YAML 的语义：
     /// `pol-skip`（priority 5，带图请求排除 `no-vision`）先于 `pol-default`（priority 1000）。
     async fn seeded_routing(tag: &str) -> AppState {
@@ -2605,11 +2774,32 @@ mod tests {
     #[tokio::test]
     async fn provider_delete_counts_refs_and_cascades_with_force() {
         let state = seeded("prov-del").await;
+        // [docs/25] 目录里也留一行：服务商没了，"它扫描到过哪些模型"这条观察记录就不再有意义
+        // （留着会在库里积一份没有归属的数据，重建同名 id 时会显示成"以前扫到过的旧模型"）。
+        state
+            .model_catalog
+            .upsert(&ta_store::ModelCatalogRow {
+                provider_id: "p-a".to_string(),
+                upstream_model: "m-old".to_string(),
+                suggested_id: "m-old".to_string(),
+                // 这条用例测的是"删服务商级联清目录"，与上游原文无关：
+                // 没有原文就是 `{}`（不编一个上游没给过的对象）。
+                raw_json: serde_json::json!({}),
+                seen_in_last_scan: true,
+                first_seen_ms: 1,
+                last_seen_ms: 1,
+            })
+            .await
+            .expect("种一行目录");
+        assert_eq!(state.model_catalog.list("p-a").await.expect("读目录").len(), 1);
+
         let err = delete_provider(&state, "p-a", false).await.expect_err("有引用必须拒绝");
         assert_eq!(err.code, "TA-5002");
         assert!(err.message.contains("凭据"), "报错要说清被什么引用：{}", err.message);
         assert!(err.message.contains("通道"));
         assert!(err.message.contains("force=true"), "服务商删除有 force：{}", err.message);
+        // 被拒绝时**一个字节都不写**：目录行还在
+        assert_eq!(state.model_catalog.list("p-a").await.expect("读目录").len(), 1);
 
         delete_provider(&state, "p-a", true).await.expect("force 级联");
         let after = state.config.load().await.expect("load");
@@ -2617,6 +2807,10 @@ mod tests {
         assert!(after.credentials.is_empty(), "该服务商名下的凭据一起走");
         assert!(after.channels.is_empty());
         assert!(after.channel_groups.is_empty());
+        assert!(
+            state.model_catalog.list("p-a").await.expect("读目录").is_empty(),
+            "目录行要一起清"
+        );
 
         let err = delete_provider(&state, "p-nope", false).await.expect_err("未知 id 必须报错");
         assert_eq!(err.code, "TA-1004");
@@ -2657,38 +2851,6 @@ mod tests {
             .expect_err("env 引用不能写");
         assert!(err.message.contains("环境变量"), "{}", err.message);
         assert!(set_credential_secret_with(&state, &store, "c-a", "   ").await.is_err());
-    }
-
-    #[tokio::test]
-    async fn credential_clear_quota_resets_counters_and_persists() {
-        let state = seeded("cred-clear").await;
-        // 先造一份"已用掉一些"的账本记录（走既有后端，模拟真实运行态）
-        let cred = ta_core::types::CredentialId::new("c-a");
-        let mut rec = ta_core::quota::QuotaRecord::new(&cred);
-        rec.state.used_tokens = 12_345;
-        rec.state.used_requests = 7;
-        rec.state.used_cost = 1.5;
-        rec.state.kind = ta_core::quota::QuotaStateKind::Exhausted;
-        rec.hard_exhausted = true;
-        state.quota.put(&rec);
-        state.quota.flush().await.expect("落库");
-
-        let view = clear_credential_quota(&state, "c-a").await.expect("清零");
-        assert_eq!(view.credential_id, "c-a");
-        assert_eq!(view.used_tokens, 0);
-        assert_eq!(view.used_requests, 0);
-        assert_eq!(view.used_cost, 0.0);
-        assert_eq!(view.state, "ok", "手动清零 = 一次观测，状态从 unknown/exhausted 进 ok");
-
-        // 真落库（等后台任务把这次写入刷完再读库）
-        state.quota.flush().await.expect("flush");
-        let row = state.usage.quota_state("c-a").await.expect("query").expect("有行");
-        assert_eq!(row.used_tokens, 0);
-        assert!(!row.hard_exhausted, "手动清零要解除硬性耗尽");
-        assert_eq!(row.state, "ok");
-
-        let err = clear_credential_quota(&state, "c-nope").await.expect_err("未知 id");
-        assert_eq!(err.code, "TA-1004");
     }
 
     // ================================================================ 能力一致才可路由（[17 §2]）
@@ -2783,17 +2945,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn channel_upsert_rejects_a_channel_that_an_existing_policy_would_group_with_a_different_one(
-    ) {
-        // 先造"两条一致 + 已有策略同时点名它们"的合法现状
+    async fn channel_upsert_rejects_a_channel_that_would_break_a_policys_capability_contract() {
+        // [docs/28 §2] 翻转之后"同模型"的判据是 `Model.lines`：把 ch-a / ch-b 都分配给 m-a，
+        // 于是"这两条线路要能力等价"这件事由**模型**表达（不再是线路自己写 model 字段）。
         let state = seeded_two_channels("cap-channel-red", caps(false), caps(false)).await;
         rewrite_doc(&state, |doc| {
             doc.policies[0].action.use_channels =
                 vec![ChannelId::new("ch-a"), ChannelId::new("ch-b")];
+            if let Some(m) = doc.models.iter_mut().find(|m| m.id == "m-a") {
+                m.lines = vec![ChannelId::new("ch-a"), ChannelId::new("ch-b")];
+            }
         })
         .await;
 
-        // 再把 ch-b 的能力改坏（vison true，与 ch-a 不同）→ channel_upsert 必须拒
+        // 再把 ch-b 的能力改坏（vision true，与 ch-a 不同）→ channel_upsert 必须拒
         let mut ch_b =
             state.doc().channels.iter().find(|c| c.id.as_str() == "ch-b").expect("有 ch-b").clone();
         ch_b.capabilities = caps(true);

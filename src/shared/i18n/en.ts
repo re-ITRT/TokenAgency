@@ -1,5 +1,5 @@
 /**
- * English。类型是 `Record<I18nKey, string>` —— **少一个键 `tsc --noEmit` 直接报错**，
+ * English。类型是 `Record<I18nKey, string>` —— 少一个键 `tsc --noEmit` 直接报错，
  * 这就是"加文案必须两种语言同步"的机械保证（比文档约定可靠）。
  */
 
@@ -16,23 +16,23 @@ export const en: Record<I18nKey, string> = {
   "app.badge.experimental": "Experimental",
   "app.badge.experimental.hint":
     "TUN / system proxy is on: this changes OS network state (experimental). Shown for information only — nothing here writes system settings.",
-  "app.version": "Version {{version}}",
   "app.uptime": "Up {{duration}}",
 
   // ---------------------------------------------------------------- nav
   "nav.dashboard": "Overview",
+  // [docs/56] sidebar section headings
+  "navGroup.setup": "Setup",
+  "navGroup.records": "Records",
+  "navGroup.system": "System",
   "nav.providers": "Providers",
   "nav.providerDetail": "Provider detail",
   "nav.models": "Models",
-  "nav.plansAndRoutes": "Plans & Routes",
-  "nav.policies": "Routing rules",
   "nav.network": "Network",
   "nav.networkNodes": "Nodes",
-  "nav.networkAssignments": "Assignments",
+  "nav.networkSubscription": "Subscription detail",
   "nav.cost": "Cost center",
   "nav.logs": "Request log",
   "nav.settings": "Settings",
-  "nav.onboarding": "Setup wizard",
 
   // ---------------------------------------------------------------- status bar
   "status.gateway.running": "Running",
@@ -53,7 +53,6 @@ export const en: Record<I18nKey, string> = {
   "status.kernel.failed": "failed",
   "status.clipboard": "Copy endpoint info",
   "status.clipboard.done": "Endpoint info copied",
-  "status.test": "Test speed",
 
   // ---------------------------------------------------------------- common
   "common.loading": "Loading…",
@@ -63,57 +62,64 @@ export const en: Record<I18nKey, string> = {
   "common.cancel": "Cancel",
   "common.save": "Save",
   "common.confirm": "Confirm",
-  "common.copy": "Copy",
-  "common.copied": "Copied",
   "common.empty": "No data",
   "common.unknown": "Unknown",
   "common.delete": "Delete",
   "common.deleteSelected": "Delete selected",
   "delete.body": "This cannot be undone. Delete the following?",
   "delete.consequences": "Will also delete / affect:",
+  "delete.blockers": "These references block the deletion (remove them first):",
   "delete.consequence.credentials": "{{value}} credential(s) under this provider",
-  "delete.consequence.channels": "{{value}} channel(s) under this provider",
-  "delete.consequence.modelChannels": "{{value}} channel(s) attached to this model",
+  "delete.consequence.channels":
+    "{{value}} lines are removed from your models; models left with no lines are deleted too.",
+  "delete.consequence.modelLinesUntouched":
+    "{{value}} lane(s) use it and will not be deleted; remove lanes on the provider page.",
   "common.selectAll": "Select all",
   "delete.cascadeHint": "It is still referenced. A cascading delete removes everything listed above and cannot be undone.",
   "delete.cascade": "Delete anyway (cascade)",
   "delete.result.ok": "Deleted {{name}}",
   "delete.result.failed": "Delete failed: {{message}}",
   "delete.result.summary": "{{ok}} succeeded, {{failed}} failed",
-  "delete.result.staleIndex": "The list changed, so nothing was deleted: that index no longer holds the same entry. Review the list and try again.",
   "delete.selectedCount": "{{count}} selected",
   "delete.title.provider": "Delete provider",
-  "delete.title.credential": "Delete credential",
   "delete.title.model": "Delete model",
-  "delete.title.channel": "Delete channel",
-  "delete.title.group": "Delete channel group",
-  "delete.title.policy": "Delete policy",
-  "delete.title.pricing": "Delete price entry",
-  "channels.lane.select": "Lane",
-  "channels.lane.inherit": "Direct (inherited)",
-  "channels.lane.changed": "This channel now uses {{name}}",
-  "channels.channelGroups.title": "Channel groups",
-  "channels.channelGroups.empty": "No channel groups in the config yet.",
-  "channels.channelGroups.col.model": "Model",
-  "channels.channelGroups.col.strategy": "Strategy",
-  "channels.channelGroups.col.channels": "Channels",
-  "channels.channelGroups.col.actions": "Actions",
+  // These 4 keys keep the `channels.` prefix but are NOT used by the deleted page ([docs/49]):
+  // the models page (group toggle / inherited-lane note), the provider detail column header,
+  // and the provider wizard's provider field all use them.
+  "channels.add.provider": "Provider",
+  "channels.col.priorityWeight": "Priority / weight",
+  "channels.group.toggle": "Expand or collapse this provider's lines",
+  "channels.lane.inherited": "Inherited (credential / provider / default lane)",
+  "delete.title.subscription": "Delete subscription",
+  "delete.title.lane": "Delete lane",
+  "delete.title.apiKey": "Delete access key",
+  "delete.consequence.subscriptionLanes": "{{value}} lane(s) referencing this subscription",
+  "delete.consequence.laneChannels": "{{value}} channel(s) currently using this lane",
   "cost.pricing.title": "Price entries",
   "cost.pricing.empty": "No price entries yet.",
   "cost.pricing.col.match": "Match",
   "cost.pricing.col.input": "Input",
   "cost.pricing.col.output": "Output",
+  "cost.pricing.col.cached": "Cached read",
   "cost.pricing.col.source": "Source",
+  "cost.pricing.readonly": "This page only displays. To add or change a price, set it on the model itself on the Models page.",
+  "cost.pricing.help":
+    "Entries match on the exposed model (the name you put in your client). Sources rank manual > imported > built-in, and exact matches beat wildcards. Cost = tokens × the rate here.",
+  "cost.pricing.clear.action": "Clear price",
+  "cost.pricing.clear.confirm": "Clear this model's price? It goes back to 'unpriced' and its spend stops being counted.",
+  "cost.pricing.clear.staleMissing": "That price is no longer in the list: nothing was deleted — please look again.",
+  "cost.pricing.clear.staleChanged":
+    "The list changed: that slot now holds another model's price; nothing was deleted — please look again.",
+  "cost.pricing.add.input": "Input price",
+  "cost.pricing.add.output": "Output price",
+  "cost.pricing.add.cached": "Cached-read price",
+  "cost.pricing.add.unit": "Unit: USD per million tokens. Leave blank to not price that kind (it is not 0).",
+  "cost.pricing.add.needOne": "Fill in at least one price: leaving all of them blank is not 'free'.",
   "common.none": "None",
   "common.enabled": "Enabled",
   "common.disabled": "Disabled",
   "common.yes": "Yes",
   "common.no": "No",
-  "common.more": "More",
-  "common.detail": "Details",
-  "common.exactValue": "Exact: {{value}}",
-  "common.owner": "Owner",
-  "common.notImplemented": "Not implemented",
 
   // ---------------------------------------------------------------- dashboard (07 §1)
   "dashboard.readiness": "Health",
@@ -129,12 +135,11 @@ export const en: Record<I18nKey, string> = {
   "dashboard.card.cost": "Spend today",
   "dashboard.card.successRate": "Success rate",
   "dashboard.unpriced": "{{count}} models unpriced: cost is incomplete",
-  "dashboard.quota": "Plan quotas",
   "dashboard.cache": "Cache hit {{rate}} · saved {{saved}}",
 
   // ---------------------------------------------------------------- request log (07 §2 / 14 §12)
   "logs.description":
-    "See what a request went through: condition filters plus the attempt chain for one request_id.",
+    "What one request went through: filters + attempts.",
   "logs.refresh": "Refresh",
   "logs.filter.title": "Query conditions",
   "logs.filter.range": "Time range",
@@ -151,9 +156,9 @@ export const en: Record<I18nKey, string> = {
   "logs.filter.level.retried": "Retried",
   "logs.filter.level.failed": "Failed",
   "logs.filter.searchExclusive":
-    "The backend accepts a single search string: request ID and error code cannot both be filled.",
+    "Fill either a request ID or an error code, not both.",
   "logs.filter.searchScanLimit":
-    "Search only scans the most recent {{limit}} candidate rows (backend limit); older matches are not returned.",
+    "Search scans only the newest {{limit}} candidates; older matches are not found.",
   "logs.filter.errorCodeHint":
     "The error code goes through text search: it matches the error text or body content. Codes the gateway itself decided live in the attempt chain (expand a row) — the list row has no such column, so a code is not guaranteed to be filterable.",
   "logs.filter.offHint":
@@ -161,6 +166,16 @@ export const en: Record<I18nKey, string> = {
   "logs.filter.levelHint": "“Retried” is decided by the attempt chain (more than one attempt).",
   "logs.filter.submit": "Query",
   "logs.filter.reset": "Reset",
+  "logs.detail.copyId": "Copy request ID",
+  "logs.detail.pick": "Pick a row above to see its full story",
+  "logs.chips.all": "All",
+  "logs.chips.ok": "OK",
+  "logs.chips.failed": "Failed",
+  "logs.stats.total": "Requests",
+  "logs.stats.okRate": "Success",
+  "logs.stats.failed": "Failed",
+  "logs.stats.avgMs": "Avg latency",
+  "logs.stats.unknown": "n/a",
   "logs.result.title": "Results",
   "logs.result.total": "{{value}} total",
   "logs.result.loaded": "{{value}} loaded",
@@ -168,12 +183,8 @@ export const en: Record<I18nKey, string> = {
   "logs.result.appliedNone": "no outcome filter · no search",
   "logs.result.loadMore": "Load more",
   "logs.result.loading": "Querying…",
-  "logs.result.searchNoPaging": "Search mode returns all matches at once (the backend does not paginate searches).",
-  "logs.empty.title": "No log rows to show",
-  "logs.empty.off":
-    "The log mode may be off: off records no request logs (aggregated usage is still recorded, so the dashboard and cost center are unaffected).",
-  "logs.empty.noTraffic": "It may also be that no request went through the gateway in this window.",
-  "logs.empty.narrow": "Or the conditions are too narrow: widen the time range or clear the search term.",
+  "logs.result.searchNoPaging": "Search mode: all matches are returned at once.",
+  "logs.empty.title": "No logs in this period.",
   "logs.col.time": "Time",
   "logs.col.requestId": "Request ID",
   "logs.col.model": "Model",
@@ -182,6 +193,13 @@ export const en: Record<I18nKey, string> = {
   "logs.col.latency": "Latency",
   "logs.col.tokens": "Tokens",
   "logs.col.error": "Error",
+  "logs.col.cost": "Cost",
+  "logs.tokens.title": "Token breakdown",
+  "logs.tokens.missing": "The usage ledger has no record of this request (log retention may be longer)",
+  "logs.tokens.input": "Input",
+  "logs.tokens.cached": "Cached input",
+  "logs.tokens.output": "Output",
+  "logs.tokens.reasoning": "Reasoning",
   "logs.col.expand": "Expand",
   "logs.col.collapse": "Collapse",
   "logs.field.client": "Client",
@@ -192,15 +210,12 @@ export const en: Record<I18nKey, string> = {
   "logs.field.protocol": "Protocol",
   "logs.field.stream": "Streaming",
   "logs.trace.title": "Request trace",
-  "logs.trace.subtitle": "Cross-component trace for one request_id (stored in attempt order)",
+  "logs.trace.subtitle": "Cross-component trace for one request_id (in attempt order)",
   "logs.trace.loading": "Loading trace…",
   "logs.trace.missing": "No trace for this request (past retention, cleared, or never stored).",
   "logs.trace.attempt": "Attempt {{n}}",
   "logs.trace.attempts": "Attempt chain ({{value}} attempts)",
-  "logs.trace.cumulative": "cumulative {{ms}}",
   "logs.trace.attemptsNone": "No attempts recorded.",
-  "logs.trace.total": "{{ms}} total (recorded attempt time only)",
-  "logs.trace.totalPartial": "Some attempts have no recorded duration: the total counts recorded ones only.",
   "logs.trace.channel": "Channel",
   "logs.trace.lane": "Lane",
   "logs.trace.node": "Node",
@@ -211,14 +226,13 @@ export const en: Record<I18nKey, string> = {
   "logs.trace.headerDiff.unknown": "Unknown (this record has no such field)",
   "logs.trace.headerDiff.found": "{{value}} differences — a non-empty diff means a gateway bug",
   "logs.trace.bodyShape": "Body shape",
-  "logs.trace.bodyShape.none": "No body shape (mode meta does not record structure)",
   "logs.trace.requestHeaders": "Request headers",
   "logs.trace.responseHeaders": "Response headers",
   "logs.trace.requestBody": "Request body (sanitized)",
   "logs.trace.responseBody": "Response body (sanitized)",
-  "logs.trace.raw": "Raw fields",
-  "logs.trace.rawHint": "The whole record as returned by the backend, shown verbatim (nothing cleaned up).",
-  "logs.trace.extra": "The backend also returned fields outside the contract: {{keys}} (values in the raw fields below).",
+  "logs.trace.raw": "Raw record",
+  "logs.trace.rawHint": "The record verbatim, with no cleaning.",
+  "logs.trace.extra": "Extra keys were returned: {{keys}} (values in the raw record below).",
   "logs.storage.title": "Recording & retention",
   "logs.storage.rows": "Rows",
   "logs.storage.bytes": "Database size",
@@ -229,14 +243,14 @@ export const en: Record<I18nKey, string> = {
   "logs.storage.openDir.done": "Asked the system to open the log folder.",
   "logs.storage.openDir.failed": "Could not open the folder: {{message}}",
   "logs.storage.sanitized":
-    "Sanitized before writing: authorization / x-api-key / cookie values are always ***, images keep only length and a hash prefix.",
+    "Sanitized before writing: keys and cookies are '*'; images keep length and hash only.",
   "logs.storage.scope":
     "The numbers above cover the request-log table. Application logs live in files with their own rotation and retention.",
   "logs.storage.failed": "Cannot read storage usage: {{message}}",
   "logs.mode.title": "Recording mode",
   "logs.mode.currentUnknown":
-    "Current mode: not read (the backend exposes a setter only, no getter; nothing is guessed here)",
-  "logs.mode.currentSet": "Current mode: {{mode}} (written to the backend in this session)",
+    "Current mode: not read (there is no read call, so we do not guess)",
+  "logs.mode.currentSet": "Current mode: {{mode}} (written in this session)",
   "logs.mode.observed": "Mode recorded on the newest row: {{mode}} ({{time}})",
   "logs.mode.observedNone": "Mode recorded on the newest row: unknown (no readable rows)",
   "logs.mode.writeTime":
@@ -244,14 +258,14 @@ export const en: Record<I18nKey, string> = {
   "logs.mode.save": "Save mode",
   "logs.mode.applied": "Recording mode set to {{mode}}, effective immediately (later requests only).",
   "logs.mode.off.desc": "off: record nothing (aggregated usage is still recorded; dashboard and cost center unaffected)",
-  "logs.mode.meta.desc": "meta: time, client, model, channel, lane, status, latency, TTFB, tokens, cost, error",
-  "logs.mode.shape.desc": "shape: meta plus the body's field structure and types (no content)",
+  "logs.mode.meta.desc": "meta: time, client, model, channel, status, latency, tokens, cost, error",
+  "logs.mode.shape.desc": "shape: meta + body structure and types only (no content)",
   "logs.mode.full.desc": "full: meta plus request/response headers and bodies (sanitized, compressed)",
   "logs.retention.title": "Retention",
   "logs.retention.currentUnknown":
-    "Current retention: not read (the backend exposes a setter only, no getter; nothing is guessed here)",
+    "Current retention: not read (there is no read call, so we do not guess)",
   "logs.retention.currentSet":
-    "Current retention: {{value}} (written to the backend in this session; cleanup runs hourly in the backend)",
+    "Current retention: {{value}} (written in this session; purged hourly)",
   "logs.retention.7d": "7 days",
   "logs.retention.30d": "30 days",
   "logs.retention.90d": "90 days",
@@ -267,45 +281,33 @@ export const en: Record<I18nKey, string> = {
   "logs.clear.confirm": "Clear now",
   "logs.clear.cancel": "Cancel",
   "logs.clear.done": "Deleted {{value}} rows.",
-  "logs.clear.doneUnknown": "Cleared (the backend returned no count).",
+  "logs.clear.doneUnknown": "Cleared (row count not reported).",
   "logs.export.title": "Export a diagnostic package",
   "logs.export.query":
     "The export uses the currently applied filters (the same ones as the results above): {{summary}}",
   "logs.export.path": "Export path",
-  "logs.export.path.placeholder": "D:\\\\exports or D:\\\\exports\\\\tokenagency-diagnostic.zip",
+  "logs.export.path.placeholder": "D:\\\\exports",
   "logs.export.path.hint":
-    "There is no default path: no backend command reports the log or data directory, so the UI does not guess one (it never hard-codes AppData). Enter a directory (the backend then writes tokenagency-diagnostic-<timestamp>.zip) or a full .zip path; the receipt below is what tells you where it actually landed.",
+    "No default path: type a directory or a full .zip path; the written location is whatever the receipt says.",
   "logs.export.run": "Export",
   "logs.export.running": "Exporting…",
-  "logs.export.written": "Backend receipt: wrote {{path}} ({{bytes}} bytes).",
-  "logs.export.writtenNoBytes": "Backend receipt: wrote {{path}}.",
+  "logs.export.written": "Wrote {{path}} ({{bytes}} bytes).",
+  "logs.export.writtenNoBytes": "Wrote {{path}}.",
   "logs.export.requested":
-    "Export requested to {{path}}; the backend returned no receipt, so this page cannot confirm it was written — please check that path in your file manager.",
+    "Export requested to {{path}}; without a receipt this page cannot confirm it landed — check the path yourself.",
   "logs.export.error": "Export failed: {{message}}",
 
   // ---------------------------------------------------------------- shared components
   "component.numberCard.hintExact": "Exact {{value}}",
   "component.sparkline.label": "Last 24 hours",
-  "component.quotaBar.usedOf": "{{used}} / {{limit}}",
-  "component.quotaBar.unlimited": "No cap set",
-  "component.quotaBar.unlimitedHint":
-    "Without a cap there is no auto-switch (see docs 03 §0). Consider adding one.",
-  "component.quotaBar.state.ok": "OK",
-  "component.quotaBar.state.soft": "Near limit",
-  "component.quotaBar.state.exhausted": "Exhausted",
-  "component.quotaBar.state.unknown": "Unknown",
+
   "component.statusDot.ok": "OK",
   "component.statusDot.warn": "Warning",
   "component.statusDot.error": "Error",
   "component.statusDot.info": "In progress",
   "component.statusDot.off": "Off",
-  "component.pageHeader.docRef": "Spec: {{doc}}",
 
   // ---------------------------------------------------------------- placeholder
-  "placeholder.title": "{{title}} (not implemented yet)",
-  "placeholder.body": "Owned by {{owner}}. Routing and shell are ready.",
-  "placeholder.pagePath": "Drop a page at src/pages/{{path}} and it wires itself — no layout changes.",
-  "placeholder.docRef": "Fields and interactions: {{doc}}",
 
   // ---------------------------------------------------------------- errors
   "error.title": "Something broke",
@@ -315,18 +317,14 @@ export const en: Record<I18nKey, string> = {
   "error.fixable": "This is a configuration problem — fix it and retry.",
   "error.copyDetails": "Copy details",
   "error.reload": "Reload page",
-  "error.backHome": "Back to overview",
   "error.notFound": "Page not found",
+  "error.notFound.body": "There is no page at this address.",
+  "error.backHome": "Back to overview",
 
-  // ---------------------------------------------------------------- toasts
-  "toast.autoswitched": "{{from}} quota exhausted, switched to {{to}}",
-  "toast.allChannelsFailed": "All channels failed — check network/subscription",
-  "toast.subscriptionFailed": "Subscription “{{name}}” failed to update; still using the previous nodes",
-  "toast.lanesUnreachable": "Network unavailable — check subscription or nodes",
 
-  // ---------------------------------------------------------------- settings (docs 07 §7 / 09 §1.2)
+  // ---------------------------------------------------------------- settings (docs/07 §7 / 09 §1.2)
   "settings.description":
-    "Read-only facts and writable configuration in one place: service, startup, tray, recording, config, system network info, about.",
+    "Gateway, startup, tray, log storage and configuration.",
   "settings.openConfigDir": "Open config folder",
   "settings.openDataDir": "Open data folder",
   "settings.openDir.done": "Asked the system to open the folder.",
@@ -341,7 +339,6 @@ export const en: Record<I18nKey, string> = {
   "settings.section.tray": "Tray behaviour",
   "settings.section.storage": "Recording & storage",
   "settings.section.config": "Configuration",
-  "settings.section.advanced": "System network info (read-only)",
   "settings.section.about": "About",
 
   "settings.service.gateway": "Gateway state",
@@ -349,14 +346,18 @@ export const en: Record<I18nKey, string> = {
   "settings.service.adminListen": "Admin listen address",
   "settings.service.maxBodyMb": "Max request body (MB)",
   "settings.service.debugHeaders": "Echo debug response headers",
-  "settings.service.exposeModels": "Expose model capability tags",
+  "settings.service.downstream.openaiChat": "Serve OpenAI Chat Completions",
+  "settings.service.downstream.openaiResponses": "Serve OpenAI Responses",
+  "settings.service.downstream.anthropicMessages": "Serve Anthropic Messages",
+  "settings.service.downstream.hint":
+    "Only the checked endpoints are accepted; unchecked ones fail immediately.",
   "settings.service.localKey": "Local access key",
   "settings.service.localKey.hint":
     "This is the gateway's own local key, not an upstream key. Its value is hidden by default — use “Show access info” or “Copy access info” when you need to paste it into a client.",
   "settings.service.accessInfo.show": "Show access info",
   "settings.service.accessInfo.hide": "Hide access info",
   "settings.service.accessInfo.hint":
-    "Below is the verbatim text returned by the backend command; nothing here is rewritten.",
+    "Below is the access info verbatim; this page changed nothing.",
   "settings.service.copyAccessInfo": "Copy access info",
   "settings.service.copy.done": "Copied to the system clipboard.",
   "settings.service.copy.unavailable":
@@ -366,20 +367,18 @@ export const en: Record<I18nKey, string> = {
   "settings.service.pause": "Pause gateway",
   "settings.service.resume": "Resume gateway",
   "settings.service.pause.done":
-    "Gateway paused: no new requests are accepted (in-flight requests are not cancelled, health checks unaffected).",
+    "Gateway paused: it no longer accepts new requests.",
   "settings.service.resume.done": "Gateway is accepting requests again.",
 
   "settings.startup.autostart": "Start on login",
   "settings.startup.actual": "Actual system state: {{value}}",
-  "settings.startup.desired": "Value in the config: {{value}}",
   "settings.startup.desired.hint":
-    "The config expectation is not a system fact. The switch shows the “actual system state” line above (the actual field of app_get_autostart).",
+    "The configured wish is not a system fact: the switch shows the actual system state.",
   "settings.startup.drifted":
-    "Config expectation and system state disagree (drift): config {{desired}} / system {{actual}}. Press “Repair autostart” to register or remove it according to the config.",
+    "The system startup entry does not match the configured wish.",
   "settings.startup.repair": "Repair autostart",
   "settings.startup.switch.hint":
-    "The switch writes the system fact: toggling really calls app_set_autostart (registers or removes the OS startup entry) — it does not merely edit the config.",
-  "settings.startup.mechanism": "Mechanism: {{value}}",
+    "The switch changes the real system startup entry, not just the config.",
   "settings.startup.unsupported": "This platform does not support start-on-login: {{reason}}",
   "settings.startup.loading": "Reading the system autostart state…",
   "settings.startup.error": "Failed to read the autostart state: {{message}}",
@@ -390,49 +389,48 @@ export const en: Record<I18nKey, string> = {
   "settings.startup.mode.window": "Show window",
   "settings.startup.delay": "Startup delay (seconds)",
   "settings.startup.delay.hint":
-    "Range 0–300. Disks and networks are busy at login; 20–60 seconds reduces the chance of the kernel failing its first start.",
+    "0–300 seconds. Boot is busy; 20–60 seconds is safer.",
   "settings.startup.writeHint":
-    "Editing these two only writes the config; the OS startup entry is handled by the switch above (it really registers or removes it).",
+    "These two only write config; the startup entry is the switch above.",
 
   "settings.tray.showLatency": "Show latency in the tray",
   "settings.tray.fileWatch": "Config file watch mode",
-  "settings.tray.fileWatch.configValue": "Value in the config: {{value}}",
   "settings.tray.fileWatch.hint":
-    "The switch writes the config: clicking it really calls config_set_file_watch_mode. But the watcher itself is not implemented yet (the backend logs a warning when writing), so this switch is only read on the next start — the result can only be \"restart required\", never \"watching now\". While it is on, writing the config back from the UI would overwrite edits made in the file.",
+    "While it is on, writing config from the UI overwrites edits made in the file.",
   "settings.tray.fileWatch.restart":
-    "Written to the config; it will only be read after a restart (the watcher is not implemented yet).",
-  "settings.tray.fileWatch.appliedNoRestart": "Written to the config; the backend did not ask for a restart.",
+    "Config written; it is read only after a restart.",
+  "settings.tray.fileWatch.appliedNoRestart": "Config written; no restart needed.",
   "settings.tray.fileWatch.notApplied":
-    "The backend did not write this config (applied=false); the value read back from the store is what counts.",
+    "This config was not written.",
   "settings.tray.fileWatch.error": "Writing the file watch switch failed: {{message}}",
-  "settings.tray.on": "On",
-  "settings.tray.off": "Off",
 
   "settings.storage.stats": "Storage usage",
   "settings.storage.toLogs": "Query on the request log page",
   "settings.storage.noExport":
-    "Log export lives on the request log page (/logs): that page calls log_export to build the diagnostic package, and the on-disk path comes from the backend receipt. No export button is drawn here.",
-  "settings.storage.modeWritten": "Recording mode written as {{mode}} in this session (backend confirmed).",
-  "settings.storage.retentionWritten": "Retention written as {{value}} in this session (backend confirmed).",
+    "Log export lives on the Logs page.",
+  // Conclusion only: the reason ("setter only, no getter — so we do not guess") is already stated on the retention line.
+  "settings.storage.modeUnknown": "Current mode: not read",
+  "settings.storage.modeWritten": "This session wrote the log mode as {{mode}}.",
+  "settings.storage.retentionWritten": "This session wrote retention as {{value}}.",
   "settings.storage.modeEvidence": "Mode recorded on the newest log row: {{mode}} ({{time}})",
   "settings.storage.modeEvidenceNone": "Mode recorded on the newest log row: not readable (no log rows)",
   "settings.storage.maxRows": "Max log rows",
   "settings.storage.maxSizeMb": "Max log size (MB)",
   "settings.storage.sampleRate": "Sample rate (0–1)",
   "settings.storage.sampleRateHint":
-    "1 records everything; below 1 only a share of requests produce a log row (aggregated usage is unaffected).",
+    "Below 1 only some requests are logged; aggregate usage is unaffected.",
   "settings.image.title": "Image handling",
   "settings.image.hash": "Store only hash and length (recommended)",
   "settings.image.full": "Store the full image",
 
-  "settings.config.editableTitle": "Editable fields",
+  "settings.config.editableTitle": "Editable settings",
   "settings.config.localFirst":
-    "Edits go to a local draft first; nothing is validated or written until you press “Validate & apply”.",
+    "Edits stay local until you press “Validate and apply”.",
   "settings.config.loadFailedHint":
-    "While the config cannot be read, this page shows no config value at all (no stale values, no invented defaults); fix the read error and retry.",
+    "While the config is unreadable this page shows no values; fix the read error and retry.",
   "settings.config.exportTitle": "Export",
   "settings.config.importTitle": "Import",
-  "settings.config.localIssues": "Local pre-check failed (fix these first, then let the backend validate):",
+  "settings.config.localIssues": "Local pre-check failed — fix these first:",
   "settings.config.validateAndApply": "Validate & apply",
   "settings.config.validateOnly": "Validate only",
   "settings.config.revert": "Discard changes",
@@ -440,20 +438,20 @@ export const en: Record<I18nKey, string> = {
   "settings.config.clean": "No unsaved changes.",
   "settings.config.validating": "Validating…",
   "settings.config.applying": "Applying…",
-  "settings.config.reportOk": "Backend validation passed.",
-  "settings.config.reportFail": "Backend validation failed; applying was blocked.",
+  "settings.config.reportOk": "Validation passed.",
+  "settings.config.reportFail": "Validation failed; applying was blocked.",
   "settings.config.reportUnknown":
-    "The backend returned no recognisable validation result — treated as not passed, not as success.",
+    "No readable validation result — treated as failed.",
   "settings.config.errors": "Errors",
   "settings.config.warnings": "Warnings",
-  "settings.config.applied": "Written to the config (backend confirmed).",
+  "settings.config.applied": "Configuration written.",
   "settings.config.appliedDetail": "Restart required: {{restart}} · Kernel reload: {{kernel}}",
   "settings.config.export": "Export YAML",
   "settings.config.exportSecrets": "Include secret plaintext (including the local access key)",
   "settings.config.exportSecrets.warn":
-    "With this checked the exported YAML contains the local access key in plain text — do not share that file casually.",
+    "The export will contain the local key in plain text — do not share this file.",
   "settings.config.exportHint":
-    "The text comes verbatim from the backend and is shown here; this page writes no file and does not pretend to have saved one to some path.",
+    "The content is shown here; this page writes no file.",
   "settings.config.import": "Import YAML",
   "settings.config.importPlaceholder": "Paste YAML here…",
   "settings.config.importMode": "Import mode",
@@ -466,9 +464,9 @@ export const en: Record<I18nKey, string> = {
   "settings.config.importConfirmBody":
     "After replacing, the current config exists only in a snapshot. Import anyway?",
   "settings.config.importConfirm": "Import now",
-  "settings.config.importDone": "Import applied (backend confirmed).",
+  "settings.config.importDone": "Import applied.",
   "settings.config.snapshots": "Config snapshots",
-  "settings.config.snapshotsEmpty": "No snapshots (the backend returned an empty list).",
+  "settings.config.snapshotsEmpty": "No snapshots yet.",
   "settings.config.snapshot.label": "Label",
   "settings.config.snapshot.created": "Time",
   "settings.config.snapshot.size": "Size",
@@ -477,27 +475,8 @@ export const en: Record<I18nKey, string> = {
   "settings.config.rollbackConfirmBody":
     "Rollback replaces the current config with this snapshot. Roll back to {{id}}?",
   "settings.config.rollbackConfirm": "Roll back now",
-  "settings.config.rollbackDone": "Rolled back (backend confirmed).",
+  "settings.config.rollbackDone": "Rolled back.",
 
-  "settings.advanced.i2":
-    "This section only displays system network information and offers no way to change system settings (I2): TUN and system proxy are read-only here — change them on the network page. This page writes no operating-system state.",
-  "settings.advanced.expand": "Expand",
-  "settings.advanced.collapse": "Collapse",
-  "settings.advanced.tun": "TUN mode (config value, read-only)",
-  "settings.advanced.systemProxy": "System proxy (config value, read-only)",
-  "settings.advanced.on": "Configured on",
-  "settings.advanced.off": "Configured off",
-  "settings.advanced.kernelProvider": "Kernel source",
-  "settings.advanced.kernelPath": "Kernel path",
-  "settings.advanced.kernelController": "Kernel controller",
-  "settings.advanced.lanePortRange": "Lane port range",
-  "settings.advanced.dialer": "Dialer",
-  "settings.advanced.dns": "DNS servers",
-  "settings.advanced.dnsProxyServer": "Proxy-server nameservers",
-  "settings.advanced.dnsDefault": "Default nameservers",
-  "settings.advanced.defaultLane": "Default lane",
-  "settings.advanced.healthInterval": "Health check interval (s)",
-  "settings.advanced.readonlyHint": "Everything above is read from the config and shown read-only.",
 
   "settings.about.appVersion": "App version",
   "settings.about.gateway": "Gateway",
@@ -506,20 +485,19 @@ export const en: Record<I18nKey, string> = {
   "settings.about.kernelRestarts": "Kernel restarts",
   "settings.about.uptime": "Uptime",
   "settings.about.lastError": "Last kernel error",
-  "settings.about.checkUpdate": "Check for updates",
   "settings.about.checkUpdate.run": "Check for updates",
   "settings.about.checkUpdate.hint":
-    "Pressing it really calls app_check_update; if there is no result, the failure reason is shown — never “you are up to date”.",
+    "It only checks when you press it; if no result arrives it reports the failure, never “up to date”.",
   "settings.about.checkUpdate.none":
-    "The backend returned no usable update information (this build has no update channel).",
-  "settings.about.checkUpdate.found": "New version reported by the backend: {{version}}",
+    "No update information available.",
+  "settings.about.checkUpdate.found": "New version: {{version}}",
   "settings.about.checkUpdate.notes": "Release notes: {{notes}}",
   "settings.about.checkUpdate.url": "Download URL: {{url}}",
   "settings.about.checkUpdate.running": "Checking…",
   "settings.about.checkUpdate.error": "Update check failed: {{message}}",
   "settings.about.license": "Licence",
   "settings.about.license.unknown":
-    "No readable source (the command surface has no command that reads the licence), so nothing is invented.",
+    "No readable source; nothing is invented.",
 
   "settings.issue.listen": "Must be “host:port” with a port between 1 and 65535.",
   "settings.issue.maxBody": "Max request body must be an integer between 1 and 4096 (MB).",
@@ -528,167 +506,62 @@ export const en: Record<I18nKey, string> = {
   "settings.issue.sampleRate": "Sample rate must be between 0 and 1.",
   "settings.issue.delay": "Startup delay must be between 0 and 300 seconds.",
 
-  // ---------------------------------------------------------------- first-run wizard (docs 12 §6 F4 / 05 §2.4)
-  "onboarding.description":
-    "Four steps on first start: pick providers, network, verify, access info. All validation is local, and the exact payload is shown before anything would be sent.",
-  "onboarding.step": "Step {{n}} / {{total}}",
-  "onboarding.step1": "Pick providers",
-  "onboarding.step2": "Network",
-  "onboarding.step3": "Verify",
-  "onboarding.step4": "Access info",
-  "onboarding.prev": "Back",
-  "onboarding.next": "Next",
-  "onboarding.skip": "Skip the wizard",
-  "onboarding.skip.resume": "Continue configuration",
-  "onboarding.skip.done":
-    "Skipped: nothing was written to the config and no test was submitted. Press “Continue configuration” anytime, or come back from the settings page later.",
-  "onboarding.skip.skippedTest": "Skipped: no test was run.",
-  "onboarding.skip.skippedApply": "Skipped: nothing was submitted.",
-  "onboarding.detect.hint":
-    "The three lines below are the backend's onboarding_detect response: whether the kernel was found, whether a config already exists, and which providers the backend suggests. If it fails, the failure reason is shown instead — no defaults are filled in.",
-  "onboarding.detect.retry": "Detect again",
-  "onboarding.detect.kernelFound": "Kernel executable: found by the backend",
-  "onboarding.detect.kernelMissing": "Kernel executable: not found by the backend",
-  "onboarding.detect.configExisting": "Existing config: yes (the backend read one)",
-  "onboarding.detect.configMissing": "Existing config: no (the backend read none)",
-  "onboarding.detect.suggested": "Providers the backend suggests: {{list}}",
-  "onboarding.detect.suggestedNone": "The backend suggested no providers.",
-  "onboarding.detect.error": "Detection failed: {{message}}",
-  "onboarding.kernelPath": "Kernel executable path (optional)",
-  "onboarding.kernelPath.hint":
-    "Empty lets the backend decide. The detection result only says whether the backend found a kernel; this field is the path you specify yourself and it is written into the config on submit.",
+  // ---------------------------------------------------------------- first-run wizard (docs/12 §6 F4 / 05 §2.4)
 
-  "onboarding.provider.title": "Providers & keys",
-  "onboarding.provider.add": "Add provider",
-  "onboarding.provider.remove": "Remove this row",
-  "onboarding.provider.name": "Name",
-  "onboarding.provider.protocol": "Protocol",
-  "onboarding.provider.baseUrl": "Base URL",
   "onboarding.provider.secret": "Key",
-  "onboarding.provider.secret.hint":
-    "Paste several at once: one per line. This row expands into as many credential entries as there are lines (the submit contract carries exactly one key per entry).",
-  "onboarding.provider.expand": "This row has {{count}} key line(s) and expands into {{count}} credential entry/entries.",
-  "onboarding.provider.expandNone": "No key in this row yet: it will not appear in the payload.",
-  "onboarding.provider.empty":
-    "No providers yet. Press “Add provider” for a row; or go straight on and configure them later on the providers page.",
 
-  "onboarding.sub.title": "Network (airport subscriptions)",
-  "onboarding.sub.add": "Add subscription",
-  "onboarding.sub.remove": "Remove this row",
-  "onboarding.sub.name": "Name",
-  "onboarding.sub.url": "Subscription URL",
-  "onboarding.sub.empty": "No subscription URL yet.",
-  "onboarding.noVpn": "I don't use a VPN (submit without subscriptions)",
-  "onboarding.noVpn.hint":
-    "This is an explicit choice, not “not filled in yet”: with it checked the subscription list in the payload is empty.",
 
-  "onboarding.step1.issues": "{{count}} thing(s) to fix in this step",
-  "onboarding.step2.issues": "{{count}} thing(s) to fix in this step",
-  "onboarding.issue.id": "The id must not be empty and must not repeat another row's.",
-  "onboarding.issue.name": "The name must not be empty.",
-  "onboarding.issue.baseUrl": "The base URL must start with http:// or https://.",
-  "onboarding.issue.secret": "The key must not be empty.",
-  "onboarding.issue.url": "The subscription URL must start with http:// or https://.",
 
   "onboarding.test.title": "Connectivity test",
-  "onboarding.test.blocked":
-    "“Start test” really calls the backend command onboarding_test_all; the combination table above is a preview derived from your input, not a result.",
-  "onboarding.test.run": "Start test",
-  "onboarding.test.ok": "passed",
-  "onboarding.test.fail": "failed",
-  "onboarding.test.note": "Backend note: {{note}}",
-  "onboarding.test.error": "Test command failed: {{message}}",
-  "onboarding.test.resultEmpty": "The backend returned an empty result: there is no credential × lane combination to test right now.",
-  "onboarding.test.matrix": "Combinations that would be tested (derived from the input above, not results):",
-  "onboarding.test.matrixRow": "{{credential}} × {{lane}}",
-  "onboarding.test.matrixEmpty": "Nothing to test: at least one provider with a key is required.",
-  "onboarding.test.lanes": "Lane candidates come from the current config (read-only): {{lanes}}",
-  "onboarding.test.lanesNone":
-    "The current config has no lanes: lanes come from subscriptions after submit, so the candidates are empty.",
-  "onboarding.test.resultTitle": "Result",
-  "onboarding.test.resultNone":
-    "No test result yet: press “Start test” above. (No result is not “everything failed”.)",
 
-  "onboarding.apply.title": "Payload",
-  "onboarding.apply.blocked":
-    "“Apply this config” really calls onboarding_apply (what you see below is exactly what will be sent).",
-  "onboarding.apply.submit": "Apply this config",
-  "onboarding.apply.applied": "The config was written.",
-  "onboarding.apply.notApplied": "The backend did not write the config (returned applied = false).",
-  "onboarding.apply.restart": "A restart is required for it to take effect (returned restart_required = true).",
-  "onboarding.apply.kernelReload": "The kernel config must be reloaded (returned kernel_reload = true).",
-  "onboarding.apply.effective": "No restart and no kernel reload are required.",
-  "onboarding.apply.error": "Apply failed: {{message}}",
-  "onboarding.apply.raw": "Verbatim backend response:",
-  "onboarding.apply.payload": "What would be sent to the backend (preview, not submitted):",
-  "onboarding.apply.summary": "{{providers}} credential entry/entries · {{subscriptions}} subscription(s)",
-  "onboarding.apply.resultTitle": "Submit result",
-  "onboarding.apply.resultNone":
-    "No submit result yet: press “Apply this config” above. (No result is not “generated”.)",
 
-  "onboarding.access.title": "Access info",
-  "onboarding.access.hint":
-    "Below is the verbatim text fetched from the backend (base URL + local access key). It comes from the current config and does not depend on whether the wizard was submitted.",
-  "onboarding.access.show": "Show access info",
-  "onboarding.access.hide": "Hide access info",
-  "onboarding.access.copy": "Copy access info",
-  "onboarding.access.copy.done": "Copied to the system clipboard.",
-  "onboarding.access.copy.unavailable":
-    "Clipboard unavailable: the text is shown, select it manually to copy.",
-  "onboarding.access.clients": "Paste it into the OpenAI-compatible endpoint settings of Cursor / Claude Code.",
-  "onboarding.access.failed": "Reading the access info failed: {{message}}",
 
-  // ---------------------------------------------------------------- providers (docs 07 §3)
+  // ---------------------------------------------------------------- providers (docs/07 §3)
   "providers.description":
-    "Providers live in the config: protocol, base URL, auth and passthrough, plus the credentials mounted under each one.",
+    "Which providers are configured, and whether they still work.",
   "providers.refresh": "Refresh",
   "providers.tableTitle": "Provider catalogue",
   "providers.count": "{{value}} providers",
   "providers.error": "Could not read providers: {{message}}",
   "providers.credentialsError":
-    "Could not read credentials: {{message}} (the credential count under Mounted shows as unknown, not 0)",
+    "Could not read credentials: {{message}}",
   "providers.empty.title": "No providers in the config yet",
-  "providers.empty.body":
-    "Providers come from the providers section of the config file, and there are none. Adding one needs a write command that is not wired up yet — so this is an honest empty state instead of a 0-row table.",
   "providers.col.name": "Name",
   "providers.col.protocol": "Protocol",
   "providers.col.status": "Status",
   "providers.col.successRate": "Success rate (24h)",
   "providers.col.latency": "Avg latency",
   "providers.col.mount": "Mounted",
-  "providers.col.enabled": "Enabled",
   "providers.protocol.openai": "OpenAI compatible",
   "providers.protocol.openai_responses": "OpenAI Responses",
   "providers.protocol.anthropic": "Anthropic",
   "providers.protocol.gemini": "Gemini",
   "providers.protocol.custom": "Custom",
-  "providers.mount.both": "{{credentials}} credentials · {{channels}} channels",
+  "providers.mount.both": "credentials {{credentials}} · channels {{channels}}",
   "providers.mount.credentialsOnly": "{{credentials}} credentials · channel count unknown",
   "providers.mount.channelsOnly": "credential count unknown · {{channels}} channels",
   "providers.mount.unknown": "credential and channel counts both unknown",
   "providers.honesty.status":
-    "The status dot only uses the status column the backend returned (green = ok, yellow = attention, red = failed, grey = unknown). When the backend does not return that column it shows Unknown — a running kernel does not mean the provider works.",
+    "Green = ok, yellow = attention, red = failed, grey = unknown; when it cannot be read it shows Unknown, never a false green.",
   "providers.honesty.fields":
-    "Success rate, average latency and channel count come from the provider's read-only view; when the backend does not return them they show —, never 0.",
+    "When success rate, average latency or channel count cannot be read they show —, never 0.",
   "providers.honesty.mounted":
-    "The credential count under Mounted is grouped by each credential's own provider field; when the credential list cannot be read it shows unknown rather than 0.",
+    "The credential count under Mounted is counted by each credential's owner; when the credential list cannot be read it shows unknown, never 0.",
   "providers.honesty.click":
     "Select a name to open the detail page: connection config, extra headers and passthrough, mounted credentials.",
 
   "providers.detail.description":
-    "One provider's full configuration, plus the credentials mounted under it.",
+    "Base URL, key and lines, editable in place.",
   "providers.detail.error": "Could not read the provider: {{message}}",
   "providers.detail.notFound.title": "No such provider in the catalogue",
   "providers.detail.notFound.body":
-    "No provider with id {{id}} is in the current catalogue. The catalogue is complete, so this is not a read failure — the config may have just changed; refresh and look again.",
+    "{{id}} is not in the catalogue; the config may have just changed — refresh and look again.",
   "providers.detail.back": "Back to list",
-  "providers.section.overview": "Overview",
   "providers.section.connection": "Connection",
   "providers.section.headers": "Extra headers & passthrough",
-  "providers.section.credentials": "Credentials",
-  "providers.section.raw": "Raw fields",
+  "providers.section.raw": "Raw record",
   "providers.section.rawHint":
-    "The provider record exactly as the backend returned it, shown verbatim (nothing cleaned up or trimmed).",
+    "The provider record as read, shown verbatim (nothing cleaned up or trimmed).",
   "providers.field.id": "ID",
   "providers.field.name": "Name",
   "providers.field.protocol": "Protocol",
@@ -724,66 +597,93 @@ export const en: Record<I18nKey, string> = {
   "providers.passthrough.header.allowlist": "allowlist (listed headers only)",
   "providers.passthrough.body.preserve": "preserve (keep the body)",
   "providers.passthrough.body.strip": "strip (drop the body)",
-  "providers.metric.tokens": "tokens",
-  "providers.metric.requests": "requests",
-  "providers.metric.cost": "cost",
-  "providers.metric.unknown": "metric not set",
-  "providers.quota.window.hour": "hourly",
-  "providers.quota.window.day": "daily",
-  "providers.quota.window.month": "monthly",
-  "providers.quota.window.none": "no reset",
-  "providers.quota.limit": "cap {{limit}}",
-  "providers.quota.usedOf": "used {{used}} / cap {{limit}}",
-  "providers.tls.extraCaConfigured": "Configured",
-  "providers.tls.extraCaNone": "Not configured",
   "providers.tls.extraCaHint":
-    "The extra CA shows only whether it is configured here; the full content is in Raw fields below (nothing is deleted for you, and nothing is hidden).",
+    "The extra CA only shows whether it is configured here; the full content is in Raw record below.",
   "providers.connection.unavailable":
-    "The backend returned a provider view (name, protocol, base URL and health only) with no connection-config fields. So no timeouts, TLS or auth are listed here — rather than a row of empty placeholders.",
+    "Connection config could not be read.",
   "providers.connection.partial":
-    "— means the backend did not return that column (it is neither an empty value nor a default).",
+    "— means that column could not be read; leave room in the read timeout for streaming.",
   "providers.connection.hint":
-    "The read timeout needs room for streaming: a streamed response can go a long time with no new bytes.",
+    "Values that could not be read are never overwritten with defaults.",
   "providers.headers.none": "No extra headers.",
   "providers.headers.hint":
-    "Extra headers fill gaps only and never override a same-name header from the client; see Same-name header conflict above for the policy.",
+    "Extra headers fill gaps only and never override a same-name header; see Same-name header conflict above.",
   "providers.headers.col.name": "Header",
   "providers.headers.col.value": "Value",
   "providers.honesty.detailFields":
-    "Health, success rate, average latency and channel count exist only in the backend's view; when the backend does not return them they show — or Unknown, never a guess.",
+    "When health, success rate, average latency or channel count cannot be read they show — or Unknown, never a guess.",
   "providers.lane.error": "Lane name not readable: {{message}} (the lane id is shown instead)",
   "providers.credentials.error": "Could not read credentials: {{message}}",
   "providers.credentials.empty": "This provider has no credentials mounted.",
-  "providers.credentials.emptyHint":
-    "The relationship lives in each credential's provider field; with no credential, none of this provider's channels can have a candidate.",
   "providers.credentials.col.label": "Name",
   "providers.credentials.col.enabled": "Enabled",
   "providers.credentials.col.lane": "Lane",
-  "providers.credentials.col.quota": "Quota",
-  "providers.credentials.col.tags": "Tags",
   "providers.credentials.plaintext":
     "This credential stores a plaintext secret — it should use a ${secret:name} reference",
   "providers.credentials.secretHint":
-    "Secrets are shown as references (such as ${secret:name}); plaintext secrets never appear in the UI. The usage percentage uses only the backend's used_pct — the frontend never computes it.",
+    "Secrets are shown as references (such as ${secret:name}); plaintext never appears.",
 
-  // ---------------------------------------------------------------- network (docs 04 §5–§8 / 12 §6 F4)
-  "network.description":
-    "A read-only view of subscriptions and lanes: sources, lane kinds, node sources, health samples. This page does not change system network state.",
+  // ---------------------------------------------------------------- provider detail: view + edit in one page (docs/23)
+  "providers.section.basic": "Basics",
+  "providers.edit.reset": "Discard changes",
+  "providers.edit.clean": "No changes",
+  "providers.edit.dirty": "Unsaved changes",
+  "providers.edit.saved": "Saved to config",
+  "providers.edit.issues": "Fix these first:",
+  "providers.edit.lane": "Network route",
+  "providers.edit.laneAuto": "Automatic",
+  "providers.edit.laneInherit": "Not set (inherits the default lane, then direct)",
+  "providers.edit.passthroughUnset": "Not set (kernel default passthrough)",
+  "providers.edit.headerAdd": "Add a row",
+  "providers.edit.headerRemove": "Remove this row",
+  "providers.edit.headerNameRequired": "Header name is required",
+  "providers.edit.headerNameDuplicate": "Duplicate header name: same-name headers overwrite each other",
+  "providers.edit.health": "Health (read-only)",
+  "providers.edit.keyHint": "Leave empty to keep the saved secret; only a new value is written to the secret store.",
+  "providers.edit.keyNewCredential": "This provider has no credential yet: saving will create {{id}} and store the secret.",
+  "providers.edit.viewOnly":
+    "Connection config could not be read: this page is read-only and will not overwrite the live values.",
+
+
+  // ------------------------------------------------ provider model catalog (docs/25)
+  "providers.catalog.rawTitle": "Upstream object as recorded (we never rewrite it)",
+  "providers.catalog.rawEmpty": "That upstream entry is not a JSON object (or nothing was recorded) — we will not invent one.",
+  "providers.catalog.stale": "Not in the last scan",
+  "providers.catalog.rescan": "Scan again",
+  "providers.catalog.empty":
+    "Nothing recorded yet — scan once.",
+  "providers.catalog.goDetail": "Open the provider page",
+  "providers.catalog.notRead": "Could not read the model catalog.",
+  "providers.catalog.rescanning": "Scanning the upstream…",
+
+  // ---------------------------------------------------------------- network (docs/04 §5–§8 / 12 §6 F4)
+  // The trailing "does not change system network state" is gone from the page description:
+  // the `network-zero-side-effect` block right below says exactly that, and it is the red line
+  // that must stay visible. "read-only" was stale too — the page has upsert forms.
+  "network.description": "Subscriptions and lanes: sources, lane kinds, node sources, health samples.",
   "network.zeroSideEffect.title": "Display only — no system network changes",
+  // Red line: stays inline, but only the concrete promise a user can check. The old 89-char
+  // version also carried "only reads the config" (contradicted by the write forms on the page).
   "network.zeroSideEffect.body":
-    "This page (including the node list and lane assignments) only reads the config and health samples from the backend: it does not set a system proxy, write DNS, touch the routing table or a network adapter, and does not change start-on-login. Invariant I2 requires the system network state to be field-for-field identical before and after.",
+    "It does not set a system proxy, write DNS, touch the routing table or a network adapter, and does not change start-on-login.",
   "network.unreadable": "Not read",
-  "network.missingCommands.lanes":
-    "Subscription parsing (node count / group count / groups) needs the backend commands subscription_nodes and subscription_groups; neither is registered yet.",
-  "network.missingCommands.nodes":
-    "A node list needs the subscription-parsing command subscription_nodes (optionally filtered by group), which is available in the backend but not wired into this page yet; so this page does not parse the subscription itself and does not invent nodes.",
   "network.gotoNodes": "Node list",
-  "network.gotoAssignments": "Lane assignments",
   "network.backToOverview": "Back to network",
+
+  "network.subscription.description":
+    "Every node in this subscription, each with its own on/off switch. A disabled node stops taking part in “Auto select” and cannot be picked by a fixed-node lane.",
+  "network.subscription.notFound": "No such subscription in the config ({{id}}): it may have just been deleted.",
+  "network.subscription.toggleHint": "Changes apply immediately. Disabled nodes stay listed so you can turn them back on.",
+  "network.subscription.auto": "Auto select",
+  "network.subscription.autoWhy":
+    "Every enabled node in this subscription pings the provider URL; the lowest-latency one wins, and it stays pinned by address instead of jumping around. It belongs to the whole subscription rather than to one node, so it cannot be turned off here.",
+  "network.subscription.direct": "Direct",
+  "network.subscription.directWhy":
+    "Goes straight out over the local network with no proxy. It is a built-in kernel exit that this subscription does not provide, so it cannot be turned off here.",
 
   "network.currentExit.title": "Current exit",
   "network.currentExit.hint":
-    "These are runtime facts reported by app_status: a missing value means “not read” — nothing is inferred, and a configured expectation is never passed off as the current state.",
+    "These are the current exit facts: a missing value means “Not read” — nothing is inferred, and a configured expectation never stands in for it.",
   "network.currentExit.gateway": "Gateway",
   "network.currentExit.kernel": "Kernel",
   "network.currentExit.defaultLane": "Global default lane",
@@ -792,11 +692,9 @@ export const en: Record<I18nKey, string> = {
   "network.subscriptions.title": "Subscriptions",
   "network.subscriptions.description":
     "Subscription sources and the filter / health-check parameters they declare (config facts).",
-  "network.subscriptions.empty": "No subscriptions in the config yet (proxy_subscriptions is empty).",
-  "network.subscriptions.countHint":
-    "Node and group counts come from subscription parsing (subscription_nodes / subscription_groups, available in the backend but not wired into this page yet) → when the backend does not provide them they show “Not read”, never 0.",
+  "network.subscriptions.empty": "No subscriptions yet — use “Add a subscription” to start.",
   "network.subscriptions.urlHint":
-    "Secret query parameters in the URL are masked: this page neither copies nor sends the subscription token anywhere.",
+    "Secret parameters in the URL are masked and never sent out.",
   "network.subscriptions.healthHint":
     "The health-check parameters are the expectation declared in the config, not the result of the latest probe.",
   "network.subscriptions.col.name": "Name",
@@ -816,18 +714,28 @@ export const en: Record<I18nKey, string> = {
   "network.subscriptions.col.actions": "Actions",
   "network.subscriptions.row.refresh": "Refresh",
   "network.subscriptions.row.delete": "Delete",
+  "network.subscriptions.row.edit": "Edit",
+  "network.subscriptions.write.open": "Add a subscription",
+  "network.subscriptions.write.editTitle": "Edit subscription",
   "network.subscriptions.row.refreshHint":
-    "Refresh on a row forces a re-download (force: true) instead of being skipped by interval_s, which would make the button look broken.",
+    "Refresh on a row forces a re-download instead of waiting for the update interval.",
   "network.subscriptions.write.title": "Create / overwrite a subscription",
   "network.subscriptions.write.hint":
-    "After saving, the panel shows the object the backend returned, not a hand-written “saved” line. Same id = overwrite: fields not in the form (user_agent, health_check) fall back to the backend defaults — the frontend does not keep a second copy of those defaults, because a drifting copy silently corrupts the config.",
+    "After saving you see the object that came back, not a hand-written “saved” line. Same id = overwrite; anything left blank uses the default.",
   "network.subscriptions.write.id": "Subscription id",
   "network.subscriptions.write.idHint":
-    "The id is the key: same id overwrites an existing subscription (the kernel provider key is derived from it).",
+    "The id is the key: the same id overwrites an existing subscription.",
   "network.subscriptions.write.name": "Name",
   "network.subscriptions.write.url": "Subscription URL",
   "network.subscriptions.write.urlHint":
-    "The URL is sent to the backend only on save / preview; the list and the result panel show the masked form.",
+    "The URL is submitted only on save or preview; the list shows the masked form.",
+  "network.subscriptions.write.urlKeepHint":
+    "The URL carries a key and is not shown here: leave it empty to keep it, or type a new one to replace it.",
+  // [docs/46 §E] Health-check URL: optional; empty = backend default (a public URL).
+  // Pointing it at a locally reachable target lets real latencies be measured offline.
+  "network.subscriptions.write.healthUrl": "Health-check URL (optional)",
+  "network.subscriptions.write.healthUrlHint":
+    "Empty uses the default target; a locally reachable address works without internet.",
   "network.subscriptions.write.format": "Format",
   "network.subscriptions.write.interval": "Update interval (seconds)",
   "network.subscriptions.write.keepVersions": "Versions kept",
@@ -837,18 +745,17 @@ export const en: Record<I18nKey, string> = {
   "network.subscriptions.write.submit": "Save subscription",
   "network.subscriptions.write.preview": "Preview (no save)",
   "network.subscriptions.write.required":
-    "Subscription id / name / URL are required — empty values are not sent to the backend.",
+    "Subscription id, name and URL are required.",
   "network.subscriptions.write.badNumber":
     "Update interval and versions kept must be numbers.",
-  "network.subscriptions.write.saved": "Subscription returned by the backend",
+  "network.subscriptions.write.saved": "Save result",
   "network.subscriptions.write.previewTitle":
-    "Preview (parsed by the backend, nothing written to the config)",
+    "Preview (nothing written)",
   "network.subscriptions.write.previewCounts": "{{groups}} groups · {{nodes}} nodes",
   "network.subscriptions.write.previewSample": "Sample nodes: {{sample}}",
-  "network.subscriptions.write.refreshTitle": "Refresh result returned by the backend",
+  "network.subscriptions.write.refreshTitle": "Refresh result",
   "network.subscriptions.write.refreshOk": "Succeeded",
   "network.subscriptions.write.refreshFailed": "Failed",
-  "network.subscriptions.write.deleteDone": "Deleted by the backend: {{id}}",
 
   "network.format.auto": "Auto-detect",
   "network.format.clash": "Clash YAML",
@@ -858,80 +765,33 @@ export const en: Record<I18nKey, string> = {
 
   "network.lanes.title": "Lanes",
   "network.lanes.description":
-    "What each lane points at (direct / a group inside the subscription / a fixed node / a regex filter), plus the latest health sample.",
-  "network.lanes.empty": "No lanes in the config yet (lanes is empty).",
+    "What each lane points at (direct / auto-select / a fixed node / a regex filter), plus the latest health sample.",
+  "network.lanes.empty":
+    "No lanes yet: pick a network proxy on the providers page and the lane is created for you.",
   "network.lanes.kindHint":
-    "The kind values map one-to-one onto the five lane kinds in docs 04 §7.1; group and node names come from the subscription and are shown verbatim.",
+    "The kind says how this lane picks nodes; declared group names and narrowing regexes are listed per lane on the node list page.",
   "network.lanes.channelCountHint":
-    "“Channels” is how many channels explicitly point their lane at this one (the backend's channel_count in lane_list) — a different question from the node count.",
+    "“Channels” is how many channels explicitly point at this lane — a different question from the node count.",
   "network.lanes.sampleHint":
-    "Latency and sampling time come from the backend's latest health sample (latest in lane_list); without a sample it is unknown.",
+    "Latency and sampling time come from the latest health sample; without a sample it is unknown.",
   "network.lanes.col.name": "Name",
   "network.lanes.col.kind": "Kind",
-  "network.lanes.col.group": "Declared group name",
   "network.lanes.col.node": "Declared node",
-  "network.lanes.col.filter": "Narrowing regex",
   "network.lanes.col.enabled": "Enabled",
   "network.lanes.col.health": "Health",
-  "network.lanes.col.latency": "Latency",
-  "network.lanes.col.nodes": "Nodes",
-  "network.lanes.col.channels": "Channels",
   "network.lanes.col.actions": "Actions",
   "network.lanes.row.delete": "Delete",
   "network.lanes.row.setNode": "Node",
   "network.lanes.row.setNodeSubmit": "Pin",
   "network.lanes.row.setNodeHint":
-    "Pinning touches only the kernel's runtime state (lane_set_node, not the config): the node name must really exist in the kernel, otherwise the backend refuses.",
+    "Pinning changes runtime state only, not the config: the node name must really exist or it is rejected.",
   "network.lanes.row.setNodeEmpty":
-    "The node name to pin cannot be empty — empty values are not sent to the backend.",
-  "network.lanes.row.setNodeResult": "Backend accepted the pin: {{lane}} → {{node}}",
+    "The node name to pin cannot be empty.",
+  "network.lanes.row.setNodeResult": "Pinned: {{lane}} → {{node}}",
   "network.lanes.row.directNoGroup": "A direct lane points straight at DIRECT and has no group to switch.",
-  "network.lanes.row.deleteDone": "Deleted by the backend: {{id}}",
-  "network.lanes.write.title": "Create / overwrite a lane",
-  "network.lanes.write.hint":
-    "After saving, the panel shows the lane object the backend returned. Same id = overwrite; fields not in the form fall back to the backend defaults (nothing is guessed, such as group_type).",
   "network.lanes.write.id": "Lane id",
-  "network.lanes.write.idHint": "The id is the key: same id overwrites an existing lane.",
-  "network.lanes.write.name": "Name",
-  "network.lanes.write.kind": "Kind",
-  "network.lanes.write.kindHint":
-    "The kind decides which fields are required: anything but direct needs a subscription; a group lane needs a group name, a fixed-node lane needs a node name, and a filter lane needs a regex.",
-  "network.lanes.write.subscription": "Subscription",
-  "network.lanes.write.subscriptionHint":
-    "Only subscriptions already in the config can be picked (subscription_list); picking none means the field is absent.",
-  "network.lanes.write.subscriptionNone": "(none selected)",
-  "network.lanes.write.group": "Group name inside the subscription",
-  "network.lanes.write.groupHint":
-    "Must match the subscription's group name character for character (keep emoji unchanged too).",
-  "network.lanes.write.groupType": "Group type (optional)",
-  "network.lanes.write.groupTypeNone": "Use the type the subscription declares for that group",
-  "network.lanes.write.node": "Fixed node name",
-  "network.lanes.write.nodeHint": "Spell it exactly as the kernel does.",
-  "network.lanes.write.filter": "Narrowing regex (optional)",
-  "network.lanes.write.excludeFilter": "Exclude regex (optional)",
-  "network.lanes.write.enabled": "Enable this lane",
-  "network.lanes.write.submit": "Save lane",
-  "network.lanes.write.missing":
-    "Still missing a required field: {{field}} (the same rule as the backend's missing_kind_field).",
-  "network.lanes.write.saved": "Lane returned by the backend",
-  "network.lanes.write.groupValue": "group {{name}}",
-  "network.lanes.write.nodeValue": "node {{name}}",
-  "network.lanes.write.knownGroups":
-    "Groups parsed from this subscription (copy them verbatim): {{list}}",
-  "network.lanes.write.knownGroupsEmpty": "This subscription currently yields no groups.",
-  "network.lanes.write.knownNodes": "Sample nodes of this subscription: {{list}}",
-  "network.lanes.write.knownNodesEmpty": "This subscription currently yields no nodes.",
-  "network.lanes.write.knownUnreadable":
-    "The subscription parse results (subscription_groups / subscription_nodes) are unreadable, so no group or node names are guessed here.",
-
-  "network.groupType.select": "Manual select (select)",
-  "network.groupType.url-test": "URL test (url-test)",
-  "network.groupType.fallback": "Fallback (fallback)",
-  "network.groupType.load-balance": "Load balance (load-balance)",
-
   "network.laneKind.direct": "Direct",
   "network.laneKind.subscription_auto": "Best of the whole subscription",
-  "network.laneKind.subscription_group": "Group in subscription",
   "network.laneKind.subscription_node": "Fixed node",
   "network.laneKind.filter": "Best of a regex filter",
 
@@ -940,15 +800,19 @@ export const en: Record<I18nKey, string> = {
   "network.health.down": "Failed",
   "network.health.unknown": "Unknown",
 
+  // "Read-only — no speed test, no system network changes" is gone: the zero-side-effect block
+  // at the top of the page states it. "Nodes parsed from the subscription" is added because the
+  // first block's own description (the same sentence) was removed.
   "network.nodes.description":
-    "Node-level evidence: the node source each lane declares, plus the backend's latest health sample. Read-only — no speed test, no system network changes.",
+    "Nodes parsed from subscriptions, the node source each lane declares, and the latest health sample.",
+  // First block's own title: it used to reuse the page heading (`nav.networkNodes`),
+  // so one screen showed "节点列表" twice (H1 + section heading).
+  "network.nodes.list.title": "Nodes parsed from the subscription",
   "network.nodes.samples.title": "Latest health sample per lane",
   "network.nodes.samples.description":
-    "From latest in lane_list (ta_store::HealthSample): node, latency, result, upstream status code, sampling time.",
+    "The latest health sample: node, latency, result, upstream status code, sampling time.",
   "network.nodes.samples.empty":
-    "No lane carries a health sample: sampling and speed tests belong to the kernel/backend — this page neither probes on its own nor makes up a latency number.",
-  "network.nodes.samples.noProbe":
-    "Speed testing belongs to the kernel (lane_test is available in the backend but not wired into this page): this page starts no probe and does not touch the system network along the way.",
+    "No health samples yet.",
   "network.nodes.samples.col.lane": "Lane",
   "network.nodes.samples.col.kind": "Kind",
   "network.nodes.samples.col.node": "Node",
@@ -969,208 +833,29 @@ export const en: Record<I18nKey, string> = {
   "network.nodes.declared.col.node": "Declared node",
   "network.nodes.declared.col.filter": "Narrowing regex",
   "network.nodes.declared.col.subscription": "Subscription",
-  "network.nodes.missing.title": "Why the full node list is missing here",
-  "network.nodes.missing.body":
-    "A node list needs the subscription-parsing command subscription_nodes (optionally filtered by group), which is available in the backend but not wired into this page in the backend yet; this page does not parse the subscription itself and does not invent nodes. What can already be read is the health samples and declared sources above.",
-  "network.nodes.missing.testHint":
-    "lane_test (kernel speed test) is missing too: no rushing to probe by ourselves, and no button that does nothing when clicked.",
 
-  "network.assignments.description":
-    "The values explicitly written into the five levels of lane inheritance, plus the inverse index of who explicitly references each lane. Read-only — no assignment is changed.",
-  "network.assignments.title": "Explicit values per level",
-  "network.assignments.precedence":
-    "Precedence: policy use_lane → channel lane → credential lane → provider lane → global default → direct.",
-  "network.assignments.noResolve.title": "This page does not compute an “effective lane”",
-  "network.assignments.noResolve.body":
-    "Resolving that inheritance chain is the backend's job: the section “Effective lanes computed by the backend” below is exactly what lane_assignments returns. Computing it again in the frontend would create two sources of truth, and drift would not raise any error — so this section only lists what each level explicitly says, and the backend's answer is the verdict.",
-  "network.assignments.notSet": "Not set (inherits from the level above)",
-  "network.assignments.chain.title": "Effective lanes computed by the backend",
-  "network.assignments.chain.hint":
-    "This section is what lane_assignments returns: which lane each channel ends up on, and which level of the five-level inheritance produced that verdict. The frontend does not compute it.",
-  "network.assignments.chain.empty": "The backend returned no per-channel resolution.",
-  "network.assignments.chain.col.model": "Model",
-  "network.assignments.chain.col.channel": "Channel",
-  "network.assignments.chain.col.lane": "Effective lane",
-  "network.assignments.chain.col.source": "Resolved by",
-  "network.assignments.source.policy": "policy level",
-  "network.assignments.source.channel": "channel level",
-  "network.assignments.source.credential": "credential level",
-  "network.assignments.source.provider": "provider level",
-  "network.assignments.source.default": "global default",
-  "network.assignments.pick.title": "Candidate lanes (the backend's list)",
-  "network.assignments.pick.hint":
-    "lane_pick_options is the candidate list grouped by subscription: pick lanes from it instead of assembling a list in the frontend.",
-  "network.assignments.pick.empty": "The backend returned no candidate lanes.",
-  "network.assignments.pick.nodeCount": "nodes {{n}}",
-  "network.assignments.reverseLookup.title": "Who references this lane (backend reverse lookup)",
-  "network.assignments.reverseLookup.hint":
-    "lane_reverse_lookup takes a lane id and returns channels and models. Look at this before deleting a lane: the backend refuses to delete a lane that is referenced.",
-  "network.assignments.reverseLookup.button": "Look up references",
-  "network.assignments.reverseLookup.col.lane": "Lane",
-  "network.assignments.reverseLookup.noLanes":
-    "The lane list (lane_list) is unreadable, so there is nothing to look up.",
-  "network.assignments.reverseLookup.resultFor": "Backend references ({{lane}})",
-  "network.assignments.reverseLookup.channels": "channels",
-  "network.assignments.reverseLookup.models": "models",
-  "network.assignments.reverseLookup.none": "No channel or model explicitly references it",
-  "network.assignments.unread.title": "config_get did not return this data ({{field}})",
-  "network.assignments.unread.body":
-    "So it shows “Not read” here rather than being treated as “empty in the config”.",
+  // [docs/55] The whole `network.assignments.*` block (~90 keys) was deleted with the page
+  // (`/network/assignments`, "Lane assignments"): the five-level inheritance chain it showed
+  // has only two meaningful levels left, so keeping it would suggest levels are still tunable.
 
-  "network.assignments.policies.title": "Policy level (highest precedence)",
-  "network.assignments.policies.hint":
-    "Only policies with a non-empty action.use_lane are listed. Whether a policy matches a given request is evaluated by the backend; this page does not simulate it.",
-  "network.assignments.policies.empty": "No policy explicitly sets use_lane.",
-  "network.assignments.policies.col.name": "Policy",
-  "network.assignments.policies.col.priority": "Priority",
-  "network.assignments.policies.col.enabled": "Enabled",
-  "network.assignments.policies.col.lane": "use_lane",
-
-  "network.assignments.channels.title": "Channel level (the usual manual override)",
-  "network.assignments.channels.hint":
-    "An empty channel lane means it inherits from the level above; it is not treated as “direct” and not counted anywhere else.",
-  "network.assignments.channels.empty": "No channels in the config, so no channel-level assignment to show.",
-  "network.assignments.channels.col.model": "Model",
-  "network.assignments.channels.col.provider": "Provider",
-  "network.assignments.channels.col.credential": "Plan",
-  "network.assignments.channels.col.lane": "Channel lane",
-  "network.assignments.channels.col.enabled": "Enabled",
-
-  "network.assignments.credentials.title": "Plan level",
-  "network.assignments.credentials.empty": "No plans in the config yet.",
-  "network.assignments.credentials.col.label": "Plan",
-  "network.assignments.credentials.col.provider": "Provider",
-  "network.assignments.credentials.col.lane": "Plan lane",
-
-  "network.assignments.providers.title": "Provider level",
-  "network.assignments.providers.hint":
-    "The provider view the backend returns may lack the lane column (the contract's ProviderView does): a missing key shows “Not read”, while a key present but null shows “Not set”.",
-  "network.assignments.providers.empty": "No providers in the config yet.",
-  "network.assignments.providers.col.name": "Provider",
-  "network.assignments.providers.col.lane": "Provider lane",
-
-  "network.assignments.default.title": "Global default (last stop of the chain)",
-  "network.assignments.default.field": "net.default_lane",
-  "network.assignments.default.none": "Not set",
-
-  "network.assignments.reverse.title": "Who explicitly references this lane (inverse index)",
-  "network.assignments.reverse.hint":
-    "Only references explicitly written in the config are counted (channels / plans / providers / policies) — this table is what lane_reverse_lookup returns. It is not the same as “what actually goes through this lane”: inherited users do not show up here.",
-  "network.assignments.reverse.noneHint":
-    "A lane with no explicit reference still appears in the table (marked “No explicit reference”) — hiding it would make users think it is in use.",
-  "network.assignments.reverse.empty": "No lanes in the config, so nothing to index.",
-  "network.assignments.reverse.none": "No explicit reference",
-  "network.assignments.reverse.col.lane": "Lane",
-  "network.assignments.reverse.col.channels": "Channels",
-  "network.assignments.reverse.col.credentials": "Plans",
-  "network.assignments.reverse.col.providers": "Providers",
-  "network.assignments.reverse.col.policies": "Policies",
-
-  // ---------------------------------------------------------------- routing policies (docs 07 §5)
-  "policies.description":
-    "Routing policies in evaluation order: the lowest number is evaluated first, and the first match wins.",
-  "policies.refresh": "Refresh",
-  "policies.section.list": "Policy list",
-  "policies.orderNote":
-    "Order = the order policy_list returns (the backend itself sorts ascending by priority, see src-tauri/src/commands/catalog.rs). The “Priority” column is the raw configured number — order and priority are two different things.",
-  "policies.readonly":
-    "This page is read-only: reordering (policy_reorder), the enabled toggle (policy_set_enabled) and the simulator (policy_simulate) are available in the backend but not wired into this page in the backend yet, so there are no buttons here and no disabled placeholders that do nothing when clicked.",
-  "policies.count": "{{total}} policies, {{enabled}} enabled",
-  "policies.col.order": "Order",
-  "policies.col.name": "Name",
-  "policies.col.enabled": "Enabled",
-  "policies.col.priority": "Priority",
-  "policies.col.match": "Match conditions",
-  "policies.col.action": "Action",
-  "policies.col.selector": "Selector",
-  "policies.col.lane": "Lane",
-  "policies.priority.hint": "Lower number is evaluated first",
-  "policies.empty.title": "The backend returned no policies",
-  "policies.empty.body":
-    "With no policies nothing matches, so every request takes the “no match” fallback path.",
-  "policies.empty.hint":
-    "Creating or editing a policy needs a write command (policy_upsert), which this page does not do (read-only).",
-  "policies.match.title": "Match conditions (all must hold)",
-  "policies.match.always": "Always-true condition (all: true): always true, plays no part in matching",
-  "policies.match.unconstrained": "No conditions listed: unconstrained, matches every request",
-  "policies.match.andHint":
-    "The listed conditions must all hold (AND); within one condition any single value matching is enough (OR).",
-  "policies.match.models": "Model matches {{values}} (glob)",
-  "policies.match.hasImage.yes": "Request contains an image",
-  "policies.match.hasImage.no": "Request contains no image",
-  "policies.match.header": "Request header {{name}} = {{value}}",
-  "policies.match.ua": "User-Agent matches {{value}}",
-  "policies.match.tagsAny": "Channel tags include any of: {{values}}",
-  "policies.match.tagsAll": "Channel tags include all of: {{values}}",
-  "policies.match.inputTokensLt": "Input tokens < {{value}} (estimated per request)",
-  "policies.match.inputTokensGt": "Input tokens > {{value}} (estimated per request)",
-  "policies.match.stream.yes": "Streaming requests only",
-  "policies.match.stream.no": "Non-streaming requests only",
-  "policies.match.quotaRemainingLt": "Remaining quota of candidates < {{value}}",
-  "policies.match.timeWindow": "Time window {{value}} (raw backend value)",
-  "policies.match.providersIn": "Provider is one of: {{values}}",
-  "policies.action.title": "Action",
-  "policies.action.group": "Channel group: {{value}}",
-  "policies.action.lane": "Lane: {{value}}",
-  "policies.action.laneNone": "Lane: not set",
-  "policies.action.channels": "Names {{count}} channels",
-  "policies.action.excludeChannels": "Excludes {{count}} channels",
-  "policies.action.requireTag": "Requires tag {{value}}",
-  "policies.action.excludeTag": "Excludes tag {{value}}",
-  "policies.action.selectorInherit": "Not overridden on this policy (inherits from the channel group or the default)",
-  "policies.action.pinSticky": "Pins channel {{value}}",
-  "policies.action.onNoCandidate": "When no candidate: {{value}}",
-  "policies.action.errorCode": "Custom error code {{value}}",
-  "policies.action.failover":
-    "Failover: {{on}} · at most {{attempts}} attempts · cooldown {{cooldown}}s · backoff {{backoff}}",
-  "policies.action.failoverNone": "Failover: not configured (global defaults apply)",
-  "policies.action.none": "No action (the request takes the fallback path)",
-  "policies.rawIds":
-    "Channel group / lane / channel are shown as the raw ids from the config: the commands that read them (group_list / lane_list) are not among the commands this page may call, so they are not resolved into names.",
-  "policies.onNoCandidate.error": "Error (default — no silent downgrade)",
-  "policies.onNoCandidate.use_any": "Use any available channel",
-  "policies.selector.priority": "By priority",
-  "policies.selector.sticky_then_priority": "Sticky, then priority",
-  "policies.selector.quota_first": "Quota first",
-  "policies.selector.cheapest": "Cheapest",
-  "policies.selector.lowest_latency": "Lowest latency",
-  "policies.selector.weighted_random": "Weighted random",
-  "policies.selector.round_robin": "Round robin",
-  "policies.backoff.none": "No backoff",
-  "policies.backoff.exponential": "Exponential backoff",
-  "policies.trigger.http429": "429",
-  "policies.trigger.http402": "402",
-  "policies.trigger.http5xx": "5xx",
-  "policies.trigger.timeout": "Timeout",
-  "policies.trigger.connect_error": "Connect error",
-  "policies.trigger.quota_exhausted": "Quota exhausted",
-  "policies.trigger.channel_tagged_out": "Channel tagged out",
-  "policies.trigger.capability_mismatch": "Capability mismatch",
-
-  // ---------------------------------------------------------------- cost center (docs 07 §6)
+  // ---------------------------------------------------------------- cost center (docs/07 §6)
   "cost.description":
-    "Usage and spend, trend and detail: you pick the dimension and the metrics, and the result can be exported as CSV.",
+    "Usage and cost trends and detail, exportable as CSV.",
   "cost.refresh": "Refresh",
   "cost.openDataDir": "Open data directory",
-  "cost.provenance.title": "Data provenance (which numbers are estimates)",
+  "cost.provenance.title": "What the numbers mean",
   "cost.provenance.cost":
-    "Spend is computed locally: cost = tokens per kind × rates from the local pricing table × multiplier (docs 07 §6.2). Upstreams do not return an amount, so this is a local figure (an estimate), not an upstream invoice.",
-  "cost.provenance.tokens":
-    "The provenance marker for token counts is not available here: the backend records usage_source (upstream / upstream_partial / estimated) per request at write time, but the current query and dashboard payloads do not carry that field (UsageRow.usage_source / DashboardData.estimated_requests were deferred — docs 16 §8). So this page marks no token count as “upstream-reported”, and upstream data cannot be told apart from local estimates.",
+    "Cost is a local estimate, not an upstream bill.",
   "cost.provenance.tokensNote":
-    "The token breakdown below comes from backend aggregation: missing kinds are not filled with 0 and are not guessed.",
+    "Missing token kinds are neither filled with 0 nor guessed.",
   "cost.provenance.unpriced":
-    "{{count}} models have no price: their tokens count towards the totals, but their spend is missing.",
+    "{{count}} models are unpriced: their tokens count toward totals, their cost is missing.",
   "cost.summary.title": "Overview (today)",
-  "cost.deltaUnavailable":
-    "Versus previous period: not available (the backend payload has no previous-period field, so no delta is shown)",
   "cost.trend.title": "Today's trend (hourly, local time zone)",
-  "cost.trend.empty": "No usage to bucket for today yet: without data there is no trend to draw.",
-  "cost.chart.tokensAxis": "tokens",
-  "cost.chart.costAxis": "spend",
+  "cost.trend.empty": "No usage today yet.",
   "cost.chart.empty": "No data to draw for the current filter.",
   "cost.chart.excluded":
-    "These metrics have no value in some rows and were dropped from the chart (not filled with 0): {{metrics}}",
+    "Some rows lack these metrics, so they were dropped from the chart (no zeros): {{metrics}}",
   "cost.query.title": "Detail query",
   "cost.query.range": "Time range",
   "cost.query.range.today": "Today",
@@ -1192,23 +877,16 @@ export const en: Record<I18nKey, string> = {
   "cost.query.format.area": "Area",
   "cost.query.metrics": "Metrics",
   "cost.query.metrics.hint":
-    "A metric key is exactly the column name the backend returns (built-in metrics plus token kinds, the set of kinds coming from usage_token_kinds). Unrecognised kinds are shown verbatim — not translated, not dropped.",
-  "cost.query.metrics.empty":
-    "The backend reported no token kinds: only requests and spend are selectable.",
+    "Unknown metric kinds are shown as-is; nothing is translated away or dropped.",
   "cost.query.metrics.error":
-    "Failed to read the token kind list: {{message}} (requests and spend still work)",
+    "Token kind list unavailable: {{message}}",
   "cost.query.submit": "Query",
   "cost.query.reset": "Reset",
-  "cost.query.applied": "Applied filter: {{summary}}",
   "cost.result.loading": "Querying…",
-  "cost.result.empty.title": "No usage records for this filter",
-  "cost.result.empty.body":
-    "Either no request went through the gateway in this period, or the range is too narrow. Try another range.",
-  "cost.result.empty.narrow": "Narrow the dimension or widen the time range and try again.",
+  "cost.result.empty.title": "No usage in this period.",
   "cost.result.total": "{{total}} groups",
   "cost.result.truncated":
-    "The backend returned only the first {{shown}} of {{total}} groups — the result is truncated; narrow the time range or change the dimension to see everything.",
-  "cost.result.filterNone": "Any",
+    "Returned the first {{shown}}/{{total}} groups: narrow the time range to see all.",
   "cost.metric.requests": "Requests",
   "cost.metric.cost": "Spend",
   "cost.metric.cache_hit_rate": "Cache hit rate",
@@ -1227,36 +905,64 @@ export const en: Record<I18nKey, string> = {
   "cost.export.title": "Export CSV",
   "cost.export.path": "Export path",
   "cost.export.pathHint":
-    "Give a file path including the file name (for example C:/Users/me/usage.csv). The backend creates the directory if needed; while the path is empty the export button is unavailable.",
+    "Type a full file name (for example usage.csv); the button is disabled while the path is empty.",
   "cost.export.pick": "Choose location…",
   "cost.export.button": "Export CSV",
   "cost.export.done": "Exported to {{path}}",
   "cost.export.failed": "Export failed: {{message}}",
   "cost.unpriced.title": "Models without a price",
   "cost.unpriced.hint":
-    "Their spend cannot be computed: adding a price needs a write command (pricing_upsert), which is not implemented, so they are only listed here — no button.",
+    "Their cost cannot be computed; set a price on the Models page for that model.",
   "cost.unpriced.empty": "No model is missing a price.",
   "cost.recent.title": "Recent requests (live stream snapshot)",
   "cost.recent.hint":
-    "The most recent request summaries the backend returns; each one's spend is likewise computed locally.",
+    "Each cost here is a local estimate too.",
   "cost.recent.empty": "No request has gone through the gateway yet.",
-  "cost.col.dimension": "Dimension",
   "cost.col.time": "Time",
   "cost.col.model": "Model",
   "cost.col.tokens": "Tokens",
   "cost.col.cost": "Spend",
 
-  // ---------------------------------------------------------------- model catalogue (docs 07 §4)
+  // ---------------------------------------------------------------- model catalogue (docs/07 §4)
   "models.description":
-    "The logical model catalogue: aliases, upstream mapping, whether pricing resolves, and which channels reference each model.",
+    "Logical model catalog: aliases, upstream mapping, pricing, channel references.",
   "models.summary.title": "Overview",
   // Add wizard ([docs/17 §3.2]). Fixed testids: models-add-* — real-machine E2E drives them.
   "models.add.open": "Add model",
+  "models.lines.title": "Lines in use",
+  "models.lineToggle.onTitle": "Enable this line?",
+  "models.lineToggle.offTitle": "Disable this line?",
+  "models.lineToggle.shared": "These models also use this lane: {{value}}; turning it off removes one lane for them too.",
+  "models.lineToggle.sharedNone": "No other model uses this line.",
+  "models.lineToggle.sharedUnknown": "The model list is unreadable, so we cannot tell which models use this line.",
+  "models.lineToggle.confirm": "Confirm",
+  "models.lineToggle.cancel": "Cancel",
+  "models.lines.pick": "Pick lines (at least one)",
+  "models.lines.required": "At least one line is required: a model with no line can never be routed",
+  "models.lines.none": "This model has no line yet",
+  "models.lines.channelCount": "{{count}} line(s)",
+  "models.lines.missing": "These line ids are not in the channel list (dangling references):",
+  "models.lines.noCandidates": "No lines available yet: create lines on the provider page first",
+  "models.info.open": "View model info",
+  "models.edit.open": "Edit",
+  "models.edit.title": "Edit model (including its lines)",
+  "models.edit.idFixed": "The id cannot change: it is the public model name.",
+  "models.edit.submit": "Save",
+  "models.info.readonly": "Read-only",
+  // [docs/46 §304] What `/v1/models` exposes to clients (one aggregation on the backend)
+  "models.info.public": "Exposed to clients",
+  "models.info.public.context": "Context window",
+  "models.info.public.maxOutput": "Max output tokens",
+  "models.info.public.caps": "Capabilities",
+  "models.info.public.modalities": "Input modalities",
+  "models.info.public.ownedBy": "Owned by",
+  "models.info.public.undeclared": "Not declared",
+  "models.info.public.none": "None",
   "models.add.title": "Add model",
   "models.add.id": "Model id",
   "models.add.id.hint": "The outward-facing logical model name. Starts with a letter or digit; may contain . _ -",
-  "models.add.aliases": "Aliases (comma separated)",
-  "models.add.aliases.hint": "Clients may request the same model under other names; blanks are dropped and duplicates kept once.",
+  "models.add.advanced.show": "Advanced (optional)",
+  "models.add.advanced.hide": "Hide advanced",
   "models.add.group": "Group (optional)",
   "models.add.group.hint": "Only affects how the UI groups it; it does not affect routing.",
   "models.add.order": "Order",
@@ -1265,7 +971,7 @@ export const en: Record<I18nKey, string> = {
   "models.add.expose.hint": "When not exposed it is absent from the outward model list; channels may still reference it.",
   "models.add.submit": "Save model",
   "models.add.close": "Close",
-  "models.add.result": "Saved by the backend: {{id}} ({{expose}})",
+  "models.add.result": "Saved: {{id}} ({{expose}})",
   "models.add.result.expose": "exposed",
   "models.add.result.hidden": "not exposed",
   "models.add.issue.id.required": "Model id is required.",
@@ -1278,108 +984,53 @@ export const en: Record<I18nKey, string> = {
   "models.summary.unpriced": "Unpriced",
   "models.summary.hidden": "Not exposed",
   "models.summary.hint":
-    "“Referencing channels” is the de-duplicated count of real channels (from the channel list); “Unpriced” comes from the pricing endpoint's unpriced list. A dimension that cannot be read shows —, never 0.",
+    "“Referenced channels” is the de-duplicated real channel count; “unpriced” comes from the pricing unpriced list. A dimension that cannot be read shows “—” rather than 0.",
   "models.channels.error":
-    "The channel list could not be read: {{message}}. The “Referencing channels” column is therefore unavailable — that is missing data, not “no channel references it”.",
+    "Channel list unavailable: {{message}} (missing data, not 'no references').",
   "models.unpriced.title": "Pricing",
   "models.unpriced.none": "Everything is priced.",
   "models.unpriced.hint":
-    "The unpriced list comes from the backend's pricing_unpriced_models; while a model has no price, the spend figures it feeds are incomplete.",
+    "While a model is unpriced, the cost figures it takes part in stay incomplete.",
   "models.unpriced.error":
-    "The unpriced list could not be read: {{message}} (so nothing here claims “everything is priced”)",
+    "Unpriced list unavailable: {{message}}",
   "models.unpriced.unknownIds": "Ids in the pricing list but not in the model catalogue: {{ids}}",
   "models.mismatch.title": "The two pricing sources disagree",
   "models.mismatch.pricedButListed":
     "The model list says these are priced, yet the pricing endpoint's unpriced list contains them: {{ids}}",
   "models.mismatch.unpricedButNotListed":
-    "The model list says these are unpriced, yet the pricing endpoint's unpriced list does not contain them: {{ids}}",
+    "These models report themselves unpriced, but the pricing list does not have them: {{ids}}",
   "models.mismatch.hint":
-    "Both come from the backend; this page does not arbitrate between them — the backend fix is the source of truth.",
+    "Where the two sources disagree, this page does not adjudicate.",
   "models.list.title": "Model list",
   "models.search": "Filter the current list",
   "models.search.scope":
-    "Filters only the {{value}} loaded models (local filter, not a backend search).",
+    "Filters only the {{value}} loaded models.",
   "models.search.empty":
     "No model matches the current filter; clear the box to see all {{value}}.",
   "models.loading": "Reading the model catalogue…",
   "models.col.expose": "Exposed",
+  "models.col.enabled": "Enabled",
+  "models.price.open": "Price",
+  "models.price.openEdit": "Edit price",
+  "models.price.title": "Set the price for this model",
+  "models.price.modelLabel": "Exposed model",
   "models.col.model": "Logical model",
   "models.col.aliases": "Aliases",
   "models.col.group": "Group · order",
   "models.col.upstream": "Upstream mapping",
-  "models.col.channels": "Referencing channels",
   "models.col.priced": "Pricing",
   "models.expose.on": "Exposed",
   "models.expose.off": "Not exposed",
+  "models.enabled.on": "Enabled",
+  "models.enabled.off": "Disabled (not listed, and calls get model-not-found)",
   "models.priced.yes": "Priced",
   "models.priced.no": "Unpriced",
   "models.priced.costHint": "Cost hint: {{hint}}",
-  "models.channels.none": "No channel references it: this model cannot be sent anywhere.",
   "models.channels.mismatch":
-    "The model list reports {{value}} channel(s), but none of the channel list matches (the two sources disagree).",
+    "This model reports {{value}} channels, but none matched the channel list.",
   "models.channels.disabled": "disabled",
   "models.empty.title": "No logical model in the config yet",
-  "models.empty.source": "The model catalogue comes from models[] in the config.",
-  "models.empty.import":
-    "Importing models from a provider is not wired up in this version, so there is no “Import” button here (it will come once the backend commands land).",
-  "models.empty.howto": "Write the model into the config and refresh this page to see it.",
 
-  // ---------------------------------------------------------------- plans & routes (docs 07 §5 / 05 §2.1)
-  "channels.description":
-    "Which plans (channels) supply each logical model: provider, credential, lane, quota, priority, plus the reminders for credentials without a cap.",
-  "channels.summary.title": "Overview",
-  "channels.summary.channels": "Channels",
-  "channels.summary.enabled": "Enabled",
-  "channels.summary.disabled": "Disabled",
-  "channels.summary.providers": "Providers",
-  "channels.summary.limitGaps": "Without a cap",
-  "channels.summary.hint":
-    "The numbers come from the channel and credential lists; a dimension that cannot be read shows —, never 0.",
-  "channels.matrix.title": "Matrix view (bulk editing)",
-  "channels.matrix.absent":
-    "The matrix needs the backend command channel_matrix, which is available in the backend but not wired into this page yet, so this page only offers the list view grouped by provider: there is no bulk lane change and no bulk enable/disable, and no button that does nothing when clicked.",
-  "channels.limitGaps.title": "Credentials without a usable cap",
-  "channels.limitGaps.hint":
-    "“Switch when exhausted” presupposes a configured cap; both the decision and the wording come from the backend and are not rewritten here.",
-  "channels.limitGaps.error":
-    "The cap reminders could not be read: {{message}} (this is not the same as “there are none”)",
-  "channels.groups.title": "Grouped by provider",
-  "channels.group.count": "{{value}} channel(s)",
-  "channels.group.none": "Not in any channel group",
-  "channels.lane.inherited": "Inherited (credential / provider / default lane)",
-  "channels.lane.fromCredential": "{{name}} (inherited from the credential)",
-  "channels.lane.hint":
-    "When a channel names no lane, it inherits down the chain credential → provider → default lane → direct; this page can only read the credential level, so higher levels show “Inherited” instead of a guessed lane.",
-  "channels.loading": "Reading channels…",
-  "channels.empty.title": "No channel in the config yet",
-  "channels.empty.what":
-    "A channel is one logical model x one provider x one credential (with an optional lane).",
-  "channels.col.status": "Status",
-  "channels.col.channel": "Channel",
-  "channels.col.model": "Logical model",
-  "channels.col.upstream": "Upstream model",
-  "channels.col.credential": "Credential",
-  "channels.col.lane": "Lane",
-  "channels.col.quota": "Quota",
-  "channels.col.priorityWeight": "Priority / weight",
-  "channels.col.tags": "Tags",
-  "channels.col.group": "Channel group",
-  "channels.status.enabled": "Enabled",
-  "channels.status.disabled": "Disabled",
-  "channels.credential.provider": "Provider: {{name}}",
-  "channels.credential.missing": "Not in the credential list: {{id}}",
-  "channels.metric.tokens": "tokens",
-  "channels.metric.requests": "requests",
-  "channels.metric.cost": "spend",
-  "channels.metric.unknown": "metric not declared",
-  "channels.window.hour": "hour",
-  "channels.window.day": "day",
-  "channels.window.month": "month",
-  "channels.window.none": "no window",
-  "channels.quota.noLimit": "Without a cap there is no usage ratio (usage is still accumulated).",
-  "channels.quota.metricUnknown":
-    "The quota metric and the usage fields do not line up, so no usage ratio is computed here.",
-  "channels.tags.none": "No tags",
 
   // ---------------------------------------------------------------- /models additions (task-18)
   // When the single upstream name equals the logical model name, do not repeat the same string
@@ -1391,108 +1042,36 @@ export const en: Record<I18nKey, string> = {
   // so "unpriced" can only come from pricing_unpriced_models or an explicit `priced`; neither → unknown.
   "models.priced.unknown": "Unknown",
   "models.priced.unknownHint":
-    "Pricing unknown: the backend returned no pricing column and the unpriced list could not be read — nothing is assumed to be priced or unpriced.",
+    "Pricing unknown: pricing was not reported and the unpriced list is unavailable.",
   "models.summary.unpricedUnknown": "{{value}} (plus {{unknown}} with unknown pricing)",
 
   // Source: `catalog.rs` — `provider_list` returns the `Provider` config entity (no `status` column)
   // and `lane_list` carries its health evidence in `latest`; with no column we draw no status dot
   // and invent no health verdict.
-  "channels.provider.enabled": "Configured as enabled",
-  "channels.provider.disabled": "Configured as disabled",
-  "channels.provider.statusAbsent":
-    "The enabled state in the group heading is a config fact: when the backend returns no provider health column, no status dot is drawn here (a running kernel does not mean the provider works).",
-  "channels.lane.sample": "Latest sample: {{node}} · {{latency}}",
-  "channels.quota.derived":
-    "The usage ratio is computed here as usage / cap (the backend did not return used_pct this time); the quota state still comes from the backend.",
-  "channels.quota.usageMissing":
-    "This credential has no usage record yet (the backend's quota state is empty): the cap is read from the config and no ratio can be computed — this is not the same as “no cap set”.",
   "wizard.required": "Required",
   "wizard.invalidId": "id may contain lowercase letters, digits and dashes only",
   "wizard.invalidUrl": "Must be a full address starting with http:// or https://",
   "wizard.duplicateId": "An entry with this id already exists",
   "providers.add.title": "Add provider",
-  "credentials.add.title": "Add key",
   "credentials.add.secret": "Key (written to the secret store only, never echoed back)",
-  "channels.add.title": "Add route line",
-  "channels.add.provider": "Provider",
-  "channels.add.credential": "Credential",
-  "channels.add.model": "Model",
-  "channels.add.upstreamModel": "Upstream model",
-  "channels.add.lane": "Network",
-  "channels.add.price": "Billing (USD per 1M tokens, optional)",
-  "channels.add.priceInput": "Input",
-  "channels.add.priceOutput": "Output",
-  "channels.add.priceCached": "Cached",
-  "channels.add.priority": "Priority",
-  "channels.add.weight": "Weight",
-  "capabilities.title": "Upstream capabilities",
-  "capabilities.hint": "Route lines serving one exposed model must declare identical capabilities",
   "capabilities.vision": "Image input",
   "capabilities.tools": "Tool calling",
   "capabilities.reasoning": "Reasoning",
-  "capabilities.contextTokens": "Context window (tokens)",
-  "capabilities.maxOutputTokens": "Max output (tokens, optional)",
-  "capabilities.modalities": "Modalities (comma separated, e.g. text,image)",
-  "capabilities.mismatch": "Capabilities differ; these lines cannot be routed together: {{detail}}",
-  "capabilities.mismatch.field": "{{field}}: {{a}} ≠ {{b}}",
-  "policies.add.title": "Add route",
-  "policies.add.exposeModel": "Exposed model",
-  "policies.add.channels": "Route lines",
-  "policies.add.sticky": "Stickiness (preferred line)",
-  "policies.add.failover": "Failover",
   "wizard.saved": "Saved: {{id}}",
-  "providers.add.open": "Add",
-  "credentials.add.open": "Add",
-  "channels.add.open": "Add",
-  "policies.add.open": "Add",
-  "policies.add.cancel": "Cancel",
-  "policies.add.capabilities.consistent": "Selected lines declare identical capabilities",
-  "policies.add.capabilities.mismatch": "Capabilities differ; these lines cannot be routed together",
-  "policies.add.capabilities.unknown": "Some selected lines declare no capabilities (compared at their defaults)",
-  "policies.add.channelsEmpty": "No route lines for this model yet — add one on the Route lines page first",
-  "policies.add.channelsNeedModel": "Choose the exposed model first",
-  "policies.add.failoverBackoff": "Backoff",
-  "policies.add.failoverCooldown": "Cooldown (seconds)",
-  "policies.add.failoverMax": "Max attempts",
-  "policies.add.failoverNone": "No failover",
-  "policies.add.id": "ID",
-  "policies.add.model": "Exposed model",
-  "policies.add.modelPlaceholder": "e.g. deepseek-v4.1flash",
-  "policies.add.name": "Name",
-  "policies.add.priority": "Priority",
-  "policies.add.saved": "Route saved: {{id}}",
-  "policies.add.selector": "Selector",
-  "policies.add.selectorInherit": "Inherit default",
-  "policies.add.stickyNone": "None",
-  "policies.add.stickyNote": "Stickiness pins a session to one line so it does not switch upstream mid-session",
-  "policies.add.submit": "Save route",
-  "network.optional.title": "Network proxy (optional, not enabled)",
-  "network.optional.hint": "This part is optional: it routes requests through a proxy or an airport subscription. Nothing network-related is shown until you configure it.",
-  "network.optional.enable": "Configure (kernel path / first subscription)",
   "network.sub.traffic.updated": "Updated: {{at}}",
   "network.sub.traffic.used": "Used {{used}} / {{total}}",
   "network.sub.traffic.usedOnly": "Used {{used}}",
   "network.sub.traffic.percent": "{{pct}}%",
-  "network.sub.traffic.none": "No traffic info yet (the provider did not return subscription-userinfo)",
+  "network.sub.traffic.none": "Not fetched yet",
   "network.sub.traffic.expire": "Expires: {{date}}",
   "wizard.invalidNumber": "Must be a number (may be left empty)",
-  "channels.add.noCredentials": "This provider has no credential yet — add one under Providers / Keys",
-  "credentials.add.id": "ID",
-  "credentials.add.label": "Label",
-  "credentials.add.provider": "Provider",
-  "credentials.add.quota": "Quota (optional)",
-  "credentials.add.quotaLimit": "Quota limit",
-  "credentials.add.currency": "Currency",
-  "credentials.add.window": "Quota window",  "providers.wizard.step1Title": "Provider details",
-  "providers.wizard.editTitle": "Edit provider",
-  "providers.wizard.keyUnchanged": "Leave empty to keep the saved key",
-  "providers.wizard.modelLaneDefaultHint": "Unset means direct (the inheritance chain ends at direct)",
-  "providers.wizard.laneReadonlyHint": "Lanes are changed on the channels page; this shows the effective lane",
-  "providers.edit": "Edit",
-  "providers.wizard.step2Title": "Add models",
+  "providers.wizard.step2.title": "Step 2: Create lines",
+  "providers.wizard.step2.why":
+    "Lines are created here; assign models on the models page.",
+  "providers.wizard.gotoModels": "Assign lines on the models page",
+  "providers.wizard.step1Title": "Provider details",
   "providers.wizard.stepOf": "Step {{current}} of {{total}}",
   "providers.wizard.next": "Next",
-  "providers.wizard.back": "Back",
   "providers.wizard.finish": "Done",
   "providers.wizard.nameTaken": "That name is already taken, pick another",
   "providers.wizard.testOptional": "Testing the connection is optional, you can skip it",
@@ -1500,36 +1079,38 @@ export const en: Record<I18nKey, string> = {
   "providers.wizard.testNoEndpoint": "Upstream has no /models endpoint (this is not a connectivity failure)",
   "providers.wizard.savedNotice": "The provider and credential are already written to the config; closing the wizard does not undo them",
   "providers.wizard.toProxy": "Set up the network proxy first",
-  "providers.wizard.addedModels": "Models already added",
-  "providers.wizard.addedModelsEmpty": "No models under this provider yet",
-  "providers.wizard.viewInfo": "View model information",
-  "providers.wizard.infoReadonly": "These values come from the config and are read-only",
-  "providers.wizard.modelLane": "Network route",
   "providers.wizard.scan": "Scan upstream",
-  "providers.wizard.scanning": "Scanning upstream models",
   "providers.wizard.scanEmpty": "Upstream returned no models",
   "providers.wizard.scanNeedsProvider": "Finish step 1 first (the provider must be saved before scanning)",
-  "providers.wizard.selectAll": "Select all",
-  "providers.wizard.addSelected": "Add selected",
-  "providers.wizard.alreadyExists": "Already exists",
   "providers.wizard.scanSkipped": "{{count}} skipped",
-  "providers.wizard.addedCount": "{{count}} models added",
-  "providers.wizard.channelsCreated": "{{count}} channel(s) created",
   "network.returnBanner": "Configuring the network route for a provider",
   "network.returnBtn": "Back to wizard",
   "network.directLabel": "Direct",
-  "network.kernel.notConfigured": "No kernel path yet (direct connection)",
+  // "(direct connection)" is gone: the exit block already shows "Exit · Direct" and the default-lane
+  // row shows "Direct" — this row only has to give the reason (no kernel path yet).
+  "network.kernel.notConfigured": "No kernel path yet",
   "network.nodes.subscription": "Subscription",
   "network.nodes.group": "Group",
-  "network.nodes.allGroups": "All groups",
   "network.nodes.emptyUnparsed": "This subscription has not been parsed yet; press Refresh to fetch it",
-  "network.nodes.emptyGroup": "No nodes in this group",
-  "network.nodes.filterByGroup": "Filter by group",
+  "network.nodes.emptyGroup": "This subscription has no nodes yet.",
+  // Node-level enable / disable (user round 202): header select-all + two bulk actions
+  "network.nodes.selectAll": "Select all",
+  // The count is just a number ([docs/30 §1] minimal UI: no "N selected" wording)
+  "network.nodes.selectedCount": "{{count}}",
+  "network.nodes.enableSelected": "Enable selected",
+  "network.nodes.disableSelected": "Disable selected",
+  "network.nodes.bulk.enabled": "Enabled {{count}}",
+  "network.nodes.bulk.disabled": "Disabled {{count}}",
   "network.lanes.test": "Test",
   "network.lanes.testHint": "Per-node latency test (it reports an error honestly when no kernel is assembled)",
+  "network.subscriptions.parseFailed": "Parse failed",
+  "network.gotoProviders": "Go to providers",
+  "network.nodes.samples.emptyHint": "Probing and sampling are up to the kernel; this page never probes on its own or invents a latency number.",
+  "network.subscription.builtinLocked": "Always on",
+  "network.subscription.detail.title": "Subscription parameters",
   "nav.apiKeys": "API keys",
   "apiKeys.title": "API keys",
-  "apiKeys.description": "Clients use these keys against the local gateway. The plaintext is shown only once, at creation",
+  "apiKeys.description": "Clients use these keys against the local gateway",
   "apiKeys.create": "New key",
   "apiKeys.name": "Name",
   "apiKeys.note": "Note",
@@ -1541,12 +1122,35 @@ export const en: Record<I18nKey, string> = {
   "apiKeys.lastUsed": "Last used",
   "apiKeys.neverUsed": "Never used",
   "apiKeys.delete": "Delete",
-  "apiKeys.deleteConfirm": "Confirm delete",
   "apiKeys.deleteHint": "After deletion, requests using it start returning 401 immediately",
   "apiKeys.empty": "No API keys yet",
   "apiKeys.hashOnlyNotice": "Only a hash is stored, so the plaintext cannot be recovered from this list",
   "apiKeys.usage": "Usage",
   "apiKeys.usageEmpty": "No usage recorded yet",
   "providers.add.advanced": "Advanced",
+
+  // ---- provider detail: basics + lines (docs/28 §1)
+  "providers.lines.title": "Lines",
+  "providers.lines.hint":
+    "Scanning creates a line for every upstream model (off by default); assign models on the models page.",
+  "providers.lines.colName": "Name",
+  "providers.lines.remove": "Remove line",
+  "providers.lines.empty":
+    "No lines yet — scan once above.",
+  "providers.lines.notRead": "Could not read the line list.",
+  "providers.lines.createdAll":
+    "Scanned {{n}} models: {{k}} new lines ({{m}} in the catalog)",
+  "providers.lines.all": "All",
+  "providers.lines.allCount": "{{enabled}}/{{total}}",
+  "providers.lines.allEnabled": "Enabled {{count}} line(s)",
+  "providers.lines.allDisabled": "Disabled {{count}} line(s)",
+  "providers.lines.info": "Line details",
+  "providers.lines.rawNone": "Not in the scan record (this line did not come from a scan)",
+  "providers.lines.missing": "{{count}} catalog entries still have no line.",
+  "providers.key.title": "API key",
+  "providers.key.multiple":
+    "This provider has more than one credential; only the first is edited here.",
+  "providers.key.multipleHint":
+    "Two accounts? Add a second provider with a different name — one provider is one key.",
 
 };

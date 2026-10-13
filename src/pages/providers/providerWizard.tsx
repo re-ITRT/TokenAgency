@@ -3,68 +3,76 @@
  *
  * 为什么要有它：原来的「添加服务商」是单步表单（服务商 + 凭据 + 密钥一次填完），
  * 而用户要的流程是"下一步 → 下一步"：先把**这家服务商**配好（顺带测一下通不通），
- * 再挑**要暴露哪些模型**。后者需要先落库才能扫描（扫描要拿 provider 的地址与凭据），
+ * 再处理**这家下面的线路**。后者需要先落库才能扫描（扫描要拿 provider 的地址与凭据），
  * 所以第 1 步结束时**真的写配置**，并且这件事必须在界面上说出来（`pw-saved-notice`）。
  *
- * 三条纪律（写在这里，免得下一个人再犯）：
+ * 四条纪律（写在这里，免得下一个人再犯）：
  *
- * 1. **无假按钮 / 无假进度**：`pw-scan` 只有真的在等后端时才显示"正在扫描"，
- *    `pw-scan-add` / `pw-scan-select-all` 只在一份**真实的**扫描结果在手时才出现。
+ * 1. **无假按钮 / 无假进度**：`pw-scan` 只有真的在等后端时才显示"正在扫描"；
+ *    界面上出现的每个控件都对应一条已注册的命令。
  * 2. **明文只进密钥仓库**：`pw-key` 的值只作为 `credential_set_secret` 的入参发出，
  *    落库成功后立刻从草稿里抹掉；它不进 `provider_upsert` / `credential_upsert` 的载荷、
  *    不进错误消息、不上屏。
- * 3. **`data-testid` 挂在容器上**（MUI 的 TextField / Select / Checkbox 不吃它，直接写会 TS2353），
+ * 3. **`data-testid` 挂在容器上**（MUI 的 TextField / Select 不吃它，直接写会 TS2353），
  *    真机 E2E 与单测都按 `[data-testid="X"] input` 命中同一形状。
+ * 4. **一个服务商一把密钥**（[docs/28 §1] 硬规则 3）：第 1 步只有一个 `pw-key` 输入框，
+ *    一次运行只发出**一条** `credential_upsert`（id 恒为 `<provider>-default`）与至多一条
+ *    `credential_set_secret`；要两个账号 → 再加一条服务商、取不同名字（提示在
+ *    `pw-key-multiple-help`）。
  *
- * 命令接法（[docs/19 §1.3]）：`provider_upsert` → `credential_upsert`（id = `<provider>-default`）
- * → 填了密钥才 `credential_set_secret`；扫描 `model_import_from_provider`；添加
- * `model_apply_import`；改网络代理 `model_bulk_update({ ids, patch: { lane } })`。
- * 三条"还在 Rust 那边注册中"的命令走 `@/shared/api` 的**类型化门面**（`api.provider.test` 等），
- * 不在页面里写裸命令字符串 —— 这样 `commandSurface.guard.test.ts`（"调用方只许引用已注册命令"）
- * 保持绿，同时页面调的是真命令（真机上注册完即生效，浏览器里靠 `registerMock`）。
+ * ## 第 2 步 = **一个列表**（用户第 82 轮的重构）
+ *
+ * 用户原话：「添加服务商默认添加所有线路，然后通过滑块来'启用'和'关闭'……因此，可以直接写在
+ * 在一个列表里面，没有添加的线路也可以设置'网络代理'，只是有个滑块控制是否可见」。
+ * 所以第 2 步就是**详情页那一节**：
+ *
+ * * 扫描（`model_import_from_provider`）→ 紧接着 `provider_lines_create_all`
+ *   把上游清单里的**每条**线路都建出来（**默认关闭**）；
+ * * 列表里每行 = 上游原文 + 网络代理 + 启用/关闭的滑块；
+ * * 头部有**全选**（`channel_bulk_set_enabled`：一条命令、一次写库、一次内核重载）；
+ * * 界面上**不再有**"勾一下才创建"。
+ *
+ * 复用 [`LinesSection`] 而不是在这里再画一遍：两处一旦各画一套，行为迟早分叉
+ * （这一轮要修的正是"向导和详情页操作逻辑不一样"）。
+ *
+ * **这里不创建模型**（[docs/28 §1] 硬规则 1，owner 原话"模型是不自动创建的，是等待用户去分配的"）：
+ * 建的是**线路**，模型由用户在模型页把线路分配给它时才出现。
  */
 
-import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import {
   Box,
   Button,
-  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  IconButton,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { api, errorMessage, qk, useCommandMutation, useCommandQuery } from "@/shared/api";
-import type { ImportPreview, LaneId, ProbeResult } from "@/shared/bindings";
-import { HelpTip } from "@/shared/components";
+import type { ImportPreview, ProbeResult } from "@/shared/bindings";
+import { Caption, HelpTip } from "@/shared/components";
 import { formatInt } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
-import { typography } from "@/theme";
 
+import { LinesSection, linesOfProvider, type LineRow } from "./detail";
+import { providerLaneChoices } from "./editor";
 import { PROTOCOLS } from "./protocols";
 import {
-  addedModelsOf,
   defaultCredentialId,
   defaultCredentialPayload,
-  defaultLaneOf,
   deriveProviderId,
-  directLaneIdOf,
-  laneChoices,
-  laneValue,
+  linesCreatedNoticeVars,
   nameTakenIssue,
   probeFailureText,
   probeOutcome,
   readWizardSession,
   resetWizardSession,
-  selectAllIds,
   step1ProviderPayload,
   validateStep1,
   writeWizardSession,
@@ -87,21 +95,38 @@ const PROTOCOL_LABEL: Record<string, I18nKey> = {
   custom: "providers.protocol.custom",
 };
 
-/** 数值缺失一律画「—」（**不画 0**：0 是"确实是 0"，缺失是"不知道"）。 */
-const DASH = "—";
+/**
+ * 第 2 步用的文案键。
+ *
+ * `I18nKey`（= `keyof typeof zhCN`）是编译期检查的：键没落地这里就编译不过 —— 所以这些键
+ * 必须先存在于 `src/shared/i18n/{zh-CN,en}.ts`。它们都归 i18n 文件所有，页面只引用。
+ */
+import { i18nKey } from "@/shared/i18n";
+
+const K = {
+  step2Title: i18nKey("providers.wizard.step2.title"),
+  step2Why: i18nKey("providers.wizard.step2.why"),
+  gotoModels: i18nKey("providers.wizard.gotoModels"),
+  linesCreatedAll: i18nKey("providers.lines.createdAll"),
+  scanSkipped: i18nKey("providers.wizard.scanSkipped"),
+  scanEmpty: i18nKey("providers.wizard.scanEmpty"),
+  scanNeedsProvider: i18nKey("providers.wizard.scanNeedsProvider"),
+  allEnabled: i18nKey("providers.lines.allEnabled"),
+  allDisabled: i18nKey("providers.lines.allDisabled"),
+} as const;
+
+/*
+ * 本轮删掉的三个**死声明**（键与声明一起下线，见映射文件的 delete 列表）：
+ * · `providers.wizard.defaultLane` / `.defaultLaneHint` —— 第 1 步已经没有"新建线路默认代理"
+ *   这个控件（[docs/29 §2.1]：代理只属于服务商），这两条 88 字的说明从来没画到版面上，
+ *   留着只会让下一个读代码的人以为界面上还有那一项；
+ * · `providers.lines.laneChanged` —— 键在 zh-CN 里本来就不存在（线路级代理撤掉时漏删的声明）。
+ */
 
 const SCROLL_SX = { overflowY: "auto", maxHeight: "64vh" } as const;
-const PANEL_SX = { p: 2, bgcolor: "action.hover" } as const;
 
 // ================================================================ 小组件
 
-function Caption({ children }: { children: ReactNode }) {
-  return (
-    <Typography variant="caption" sx={{ color: "text.secondary" }}>
-      {children}
-    </Typography>
-  );
-}
 
 /** 本地预检 / 后端的错：逐条显示（本地预检点名字段，后端原文带 TA 码）。 */
 function Issues({ issues, backendError }: { issues: readonly WizardIssue[]; backendError?: unknown }) {
@@ -132,12 +157,12 @@ export type ProviderTwoStepWizardProps = {
 };
 
 /**
- * 两步向导（[docs/19 §1] 新增 / [docs/20 §4] 编辑）。
+ * 两步向导（[docs/19 §1]）—— **只管"新增服务商"**。
  *
- * **模式来自会话**（`WizardSession.mode`）而不是 prop：编辑模式要预填草稿、并把
- * "这是我自己那一份"登记进 `saved`（[`startEditSession`]），这两件事在**打开之前**就完成了 ——
- * 调用方（`index.tsx` / `detail.tsx`）先写 store 再 `open`，与 `pw-proxy` 去 `/network`
- * 再回来是同一条数据路径。于是组件里只有一套状态，不需要"再从 prop 种一次草稿"的第二条真相源。
+ * 第 72 轮曾让详情页的「编辑」以编辑模式打开同一个向导；用户第 75 轮明确要求
+ * 「编辑页面不走下一步下一步，点开服务商之后直接给可视化编辑界面」→ 编辑已经搬到详情页
+ * 本身（[docs/23]），这里那套编辑分支连同"只发 4 个字段的覆盖写"一起删掉了
+ * （它正是"改个名字会抹掉鉴权 / 超时 / TLS / 附加头"那个数据丢失缺陷的载体）。
  */
 export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoStepWizardProps) {
   const { t } = useTranslation();
@@ -166,8 +191,6 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   const draft = session.draft;
   const step = session.step;
   const saved = session.saved;
-  /** 编辑模式（`providers-detail-edit` 进来的那一档）：第 1 步预填、留空密钥 = 不改。 */
-  const editing = session.mode === "edit";
 
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -177,43 +200,37 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   const [probeResult, setProbeResult] = useState<ProbeResult | undefined>(undefined);
   const [probeError, setProbeError] = useState<unknown>(undefined);
 
+  /** 扫描（含"把清单里的线路都建出来"）的状态：在飞 / 结果 / 错误。 */
   const [scanPending, setScanPending] = useState(false);
   const [preview, setPreview] = useState<ImportPreview | undefined>(undefined);
   const [scanError, setScanError] = useState<unknown>(undefined);
-  const [applyError, setApplyError] = useState<unknown>(undefined);
-  const [appliedCount, setAppliedCount] = useState<number | undefined>(undefined);
-  /** 后端返回的 `channels_created`：本次**真新建**了几条线路。如实显示，不编数字。 */
-  const [channelsCreated, setChannelsCreated] = useState<number | undefined>(undefined);
-  /** 改线路失败时后端说的话（[docs/20 §3]：不许吞）。 */
   const [needsProvider, setNeedsProvider] = useState(false);
-  const [selection, setSelection] = useState<readonly string[]>([]);
-  const [infoOpen, setInfoOpen] = useState<string | undefined>(undefined);
+  /** 后端返回的"本次真新建了几条线路 / 目录里共几条"，如实显示。 */
+  const [linesCreated, setLinesCreated] = useState<{ created: number; total: number } | undefined>(
+    undefined,
+  );
+  /** 线路行上的写命令（改代理 / 启停 / 全选）的错误与刚发生的事实。 */
+  const [lineError, setLineError] = useState<unknown>(undefined);
+  const [lineNotice, setLineNotice] = useState<string | undefined>(undefined);
 
-  // ---- 只读数据（第 2 步才需要，所以按步开启；编辑模式第 1 步还要读凭据，见下）
+  /**
+   * [docs/28 §1.2] 第 1 步选的新建线路**默认网络代理**（`""` = 没选过 → 用 `net.default_lane`
+   * → 直连那条 lane）。它只影响**新建**的线路；建完之后每行还能各自改。
+   */
 
-  const matrix = useCommandQuery("channel_matrix", undefined, qk.channelMatrix, {
+  // ---- 只读数据（第 2 步才需要，所以按步开启）
+
+  /** 这家服务商的**全部线路**（`channel_list` 过滤到这一家）—— 第 2 步唯一的列表来源。 */
+  const channels = useCommandQuery("channel_list", undefined, qk.channels, {
     enabled: open && step === 2,
   });
-  /**
-   * `credential_list`：
-   * - 第 2 步用来把 `channel_matrix` 的 cell 归到"这家服务商的凭据"上；
-   * - **编辑模式第 1 步也要**：用户填了新密钥时要写的是**这家已有的那把**凭据，
-   *   而不是凭空新造一个 `<provider>-default` 挂上去。
-   */
-  const credentials = useCommandQuery("credential_list", undefined, qk.credentials, {
-    enabled: open && (step === 2 || editing),
-  });
-  const laneOptions = useCommandQuery("lane_pick_options", undefined, qk.lanePickOptions, {
-    enabled: open && step === 2,
-  });
-  /**
-   * `model_list` 只为了读 `Model.default_lane`（[docs/19 §1.5] 的"下一次建 channel 用的 lane"）：
-   * 一个还没有 channel 的模型改完 lane 之后，矩阵里看不到任何变化，
-   * 只有这个字段能证明"改的东西真的存下来了"。
-   */
-  const models = useCommandQuery("model_list", undefined, qk.models, { enabled: open && step === 2 });
-  const configDoc = useCommandQuery("config_get", undefined, qk.config, { enabled: open });
-
+  /** 目录（`provider_model_catalog`）：每一行的**上游原文**从这里来。 */
+  const catalog = useCommandQuery(
+    "provider_model_catalog",
+    { provider_id: session.saved?.providerId ?? "" },
+    qk.providerModelCatalog(session.saved?.providerId ?? ""),
+    { enabled: open && step === 2 && saved !== undefined },
+  );
   // ---- 写命令（都已注册：见 `src-tauri/src/commands/mod.rs` 的 collect_commands!）
 
   const upsertProvider = useCommandMutation("provider_upsert");
@@ -233,29 +250,10 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   const shownIssues = submitted ? allIssues : nameTakenIssue(draft, existing, saved);
 
   /**
-   * 这一份服务商的 id。
-   *
-   * - 会话里已经有（`pw-test` 落过库 / 编辑模式种下的现有 id）→ **就用它**，
-   *   绝不重新派生（否则改名就等于新建一个服务商，[docs/20 §4] 明确禁止）；
-   * - 编辑模式一定来自 `startEditSession`，所以 `saved` 必然在；万一不在就退回派生，
-   *   让界面显示出一个 id 而不是空白（用户看得见就不会猜）。
+   * 这一份服务商的 id。会话里已经有（`pw-test` 落过库）→ **就用它**，绝不重新派生
+   * （否则"测试连接"之后再点下一步就会变成另一个服务商）；还没有就按名称派生。
    */
   const providerId = saved?.providerId ?? deriveProviderId(draft.name, existing.ids);
-
-  /**
-   * 编辑模式下写密钥要落到的凭据 id：**优先这家已有的那把**。
-   *
-   * 为什么不能直接用 `<provider>-default`：`c-bytedance` 这类 id 是用户/历史建出来的，
-   * 编辑时再 upsert 一个 `<provider>-default` 等于往这家服务商下面多挂一份重复凭据。
-   * 顺序：`<provider>-default`（第 1 步建的那种）→ 该 provider 的第一条凭据 → 兜底新建 `<provider>-default`。
-   */
-  const editCredentialId = useMemo(() => {
-    const own = (credentials.data ?? [])
-      .filter((view) => view.credential.provider === providerId)
-      .map((view) => view.credential.id);
-    const preferred = defaultCredentialId(providerId);
-    return own.includes(preferred) ? preferred : (own[0] ?? preferred);
-  }, [credentials.data, providerId]);
 
   // ---- 第 1 步：落库（`pw-next` 与"还没落库时的 pw-test"共用）
 
@@ -273,26 +271,11 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
       const landedId =
         typeof provider?.id === "string" && provider.id !== "" ? provider.id : candidateId;
       const keyWritten = draft.key !== "";
-      if (editing) {
-        /**
-         * 编辑模式（[docs/20 §4]）：**留空密钥 = 不改**。
-         *
-         * 所以一个字节都不碰凭据与密钥仓库 —— 只覆盖写服务商自己。
-         * 填了新值才写：写的是这家**已有**的那把凭据（[`editCredentialId`]）。
-         */
-        if (keyWritten) {
-          await upsertCredential.mutateAsync({
-            credential: defaultCredentialPayload(landedId, draft.name, editCredentialId),
-          });
-          await setSecret.mutateAsync({ id: editCredentialId, plaintext: draft.key });
-        }
-      } else {
-        await upsertCredential.mutateAsync({
-          credential: defaultCredentialPayload(landedId, draft.name),
-        });
-        if (keyWritten) {
-          await setSecret.mutateAsync({ id: defaultCredentialId(landedId), plaintext: draft.key });
-        }
+      await upsertCredential.mutateAsync({
+        credential: defaultCredentialPayload(landedId, draft.name),
+      });
+      if (keyWritten) {
+        await setSecret.mutateAsync({ id: defaultCredentialId(landedId), plaintext: draft.key });
       }
       // 明文用完就从草稿里抹掉（它已经在密钥仓库里了，没有理由继续留在内存里）。
       // 同时把"这一份本会话已经落库了 / 密钥已经存过了"记进会话 —— 校验要看它，
@@ -353,11 +336,65 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
     })();
   };
 
-  // ---- 第 2 步：扫描 / 添加 / 网络代理
+  /**
+   * [docs/29 §2.2] 第 1 步那个代理下拉的选项来源：`lane_list`（所有已配置线路）
+   * + 启用的订阅（「自动」，一份订阅一个）。与详情页用**同一个** `providerLaneChoices` ——
+   * 两处顺序不许不一样，否则用户会觉得"换个入口就变了"。
+   */
+  const lanesQuery = useCommandQuery("lane_options", undefined, [...qk.lanes, "options"]);
+  const subsQuery = useCommandQuery("subscription_list", undefined, qk.subscriptions);
+  const laneChoices = useMemo(
+    () =>
+      providerLaneChoices(
+        lanesQuery.data ?? [],
+        t("providers.edit.laneInherit"),
+        (subsQuery.data ?? [])
+          .map((item) => {
+            const outer = item as {
+              subscription?: unknown;
+              id?: unknown;
+              name?: unknown;
+              enabled?: unknown;
+            };
+            const row = (outer?.subscription ?? outer) as {
+              id?: unknown;
+              name?: unknown;
+              enabled?: unknown;
+            };
+            return {
+              id: String(row?.id ?? ""),
+              name: String(row?.name ?? ""),
+              enabled: row?.enabled,
+            };
+          })
+          // 关掉的订阅不列：用户关掉它就是让我们别碰它
+          .filter((s) => s.id !== "" && s.enabled !== false)
+          .map((s) => ({ id: s.id, name: s.name })),
+        t("providers.edit.laneAuto"),
+      ),
+    [lanesQuery.data, subsQuery.data, t],
+  );
 
+  // ---- 第 2 步：扫描 / 线路（一个列表）
+
+
+  const providerLines = useMemo(
+    () => linesOfProvider(channels.data, providerId),
+    [channels.data, providerId],
+  );
+
+  /**
+   * 扫描（`model_import_from_provider`）→ **紧接着把清单里的每条线路都建出来**
+   * （`provider_lines_create_all`，**默认关闭**）。
+   *
+   * 两步分开调是有意的：目录是"上游给了什么"（事实），建线路是"我们拿它做什么"（决定）——
+   * 糊成一条命令，就没法解释"扫到了但一条都没建出来"这种状态。
+   */
   const runScan = (): void => {
-    setApplyError(undefined);
-    setAppliedCount(undefined);
+    setScanError(undefined);
+    setLineError(undefined);
+    setLineNotice(undefined);
+    setLinesCreated(undefined);
     const id = saved?.providerId;
     if (id === undefined) {
       setNeedsProvider(true);
@@ -365,14 +402,18 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
     }
     setNeedsProvider(false);
     setPreview(undefined);
-    setScanError(undefined);
-    setSelection([]);
     setScanPending(true);
     void (async () => {
       try {
         const result = await api.model.importFromProvider(id);
         setPreview(result);
-        setSelection([]);
+        // [docs/29 §2.1] **不带 lane**：代理只属于服务商，向导不写线路级代理
+        const created = await api.model.createAllLines(id, null);
+        setLinesCreated({ created: created.created, total: created.total });
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: qk.channels }),
+          queryClient.invalidateQueries({ queryKey: qk.providerModelCatalog(id) }),
+        ]);
       } catch (err) {
         setScanError(err);
       } finally {
@@ -381,48 +422,64 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
     })();
   };
 
-  const applySelected = (): void => {
-    if (preview === undefined) return;
-    setApplyError(undefined);
-    setAppliedCount(undefined);
-    setChannelsCreated(undefined);
+  /**
+   * [docs/27 §1.5] 进第 2 步**自动扫一次**（用户："向导添加线路的时候也不用手动点击扫描线路了，
+   * 直接默认扫描，过程中显示正在扫描"）。
+   *
+   * 只在这一步的**首次**进入时自动跑（`autoScanned` 记住跑过没有）：用户点了「重新扫描」之后
+   * 又点别的东西，不该被反复扫描——上游请求是真花钱/花时间的。
+   * 没落库（`saved === undefined`，用户从 `/network` 回来那种）时不扫：没有 provider_id 可扫，
+   * `runScan` 会如实报"先保存服务商"。
+   */
+  const [autoScanned, setAutoScanned] = useState(false);
+  useEffect(() => {
+    if (!open || step !== 2) {
+      if (!open) setAutoScanned(false);
+      return;
+    }
+    if (autoScanned || saved === undefined) return;
+    setAutoScanned(true);
+    runScan();
+    // `runScan` 每次渲染都是新的函数引用（它读 saved/lane），依赖它会让 effect 反复触发；
+    // 这里真正要盯的只有"打开 + 到了第 2 步 + 有没有扫过"。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, step, saved?.providerId, autoScanned]);
+
+  /** 滑块：启用 / 关闭一条线路（可逆，`channel_set_enabled`）。 */
+  const toggleEnabled = (line: LineRow, enabled: boolean): void => {
+    setLineError(undefined);
+    setLineNotice(undefined);
     void (async () => {
       try {
-        /**
-         * 走 `@/shared/api` 的**类型化门面**（页面不写裸命令字符串）；第三个参数是本轮契约
-         * 新增的 `lane?`（[docs/20 §2.3]）—— 把**当前默认 lane** 一起发下去，
-         * 新通道的 lane 由它决定。不发的话后端只能自己猜，界面上的"默认直连"就与线上不是一回事。
-         */
-        const result = await api.model.applyImport(
-          preview.preview_token,
-          [...selection],
-          newModelLane,
-        );
-        // 只有后端说 applied 才算加了；条数是"我们提交了几条"，不是编出来的数字
-        setAppliedCount(result.applied ? selection.length : undefined);
-        // `channels_created` = 后端说这次**真新建**了几条线（0 也如实显示）
-        setChannelsCreated(
-          typeof result.channels_created === "number" ? result.channels_created : undefined,
-        );
-        /**
-         * **必须等这一次取数回来**（[docs/20 §3]）：上面那块「已添加的模型」是
-         * **从 `channel_matrix` 派生的**，fire-and-forget 的话"添加成功"这句话说出来时
-         * 上面还是空的 —— 用户第 1 条反馈看到的正是这个。
-         * 凭据也一起失效：新模型可能刚落上一份凭据归属，第 2 步的过滤按它算。
-         */
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: qk.channelMatrix }),
-          queryClient.invalidateQueries({ queryKey: qk.models }),
-          queryClient.invalidateQueries({ queryKey: qk.credentials }),
-        ]);
+        await api.channel.setEnabled(line.id, enabled);
+        await queryClient.invalidateQueries({ queryKey: qk.channels });
       } catch (err) {
-        setApplyError(err);
+        setLineError(err);
+      }
+    })();
+  };
+
+  /** **全选**：一次动作把列表里的线路一起启用 / 一起关闭（批量命令，不是前端循环）。 */
+  const bulkEnabled = (enabled: boolean): void => {
+    setLineError(undefined);
+    setLineNotice(undefined);
+    const ids = (providerLines ?? []).map((line) => line.id).filter((id) => id !== "");
+    if (ids.length === 0) return;
+    void (async () => {
+      try {
+        await api.channel.bulkSetEnabled(ids, enabled);
+        setLineNotice(
+          enabled ? t(K.allEnabled, { count: ids.length }) : t(K.allDisabled, { count: ids.length }),
+        );
+        await queryClient.invalidateQueries({ queryKey: qk.channels });
+      } catch (err) {
+        setLineError(err);
       }
     })();
   };
 
   const close = (): void => {
-    // 取消 = 停止继续，**不回滚**已经落库的服务商与凭据（[docs/19 §1.3]）；
+    // 取消 = 停止继续，**不回滚**已经落库的服务商 / 凭据 / 线路（[docs/19 §1.3]）；
     // 只把界面草稿清干净，免得下次打开带着上一次的残值与旧回显。
     resetWizardSession();
     setSubmitted(false);
@@ -431,60 +488,13 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
     setProbeError(undefined);
     setPreview(undefined);
     setScanError(undefined);
-    setApplyError(undefined);
-    setAppliedCount(undefined);
-    setChannelsCreated(undefined);
-    setSelection([]);
-    setInfoOpen(undefined);
+    setLinesCreated(undefined);
+    setLineError(undefined);
+    setLineNotice(undefined);
     onClose();
   };
 
-  // ---- 第 2 步的派生数据
-
-  /** 属于这家服务商的凭据 id（`channel_matrix` 的 cell 只挂到凭据上，凭据再挂到服务商上）。 */
-  const credentialIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const view of credentials.data ?? []) {
-      if (view.credential.provider === providerId) ids.add(view.credential.id);
-    }
-    return ids;
-  }, [credentials.data, providerId]);
-
-  const addedModels = useMemo(
-    () => addedModelsOf(matrix.data, credentialIds),
-    [matrix.data, credentialIds],
-  );
-
-  const defaultLane = defaultLaneOf(configDoc.data);
-  /** 模型级默认 lane（`Model.default_lane`）：改过 lane 的模型靠它把改动显示回来。 */
-  const modelDefaultLanes = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const view of models.data ?? []) {
-      const lane = view.model.default_lane;
-      if (typeof lane === "string" && lane !== "") map.set(view.model.id, lane);
-    }
-    return map;
-  }, [models.data]);
-  /**
-   * 直连那条 lane 的 id（[docs/20 §1.2 第 3 步]）与下拉选项。
-   * 前者让"没配过"显示成一个**真实的值**（而不是空白/「未配置」）。
-   */
-  const directLaneId = useMemo(() => directLaneIdOf(laneOptions.data ?? []), [laneOptions.data]);
-  const laneOptionList = useMemo(
-    () => laneChoices(laneOptions.data ?? [], t("network.directLabel")),
-    [laneOptions.data, t],
-  );
-  /**
-   * 新增模型时的默认 lane = `net.default_lane`（用户在 `/network` 选的"新建服务商默认代理"）
-   * → 直连那条 lane。取不到直连 id 时回落到 `null`（继承，链路末端仍是直连）。
-   */
-  const newModelLane: LaneId | null = defaultLane ?? (directLaneId === "" ? null : directLaneId);
-
-  /** 一个 lane 值在下拉里显示的名字（直连 / `组名 · 线路名`）；找不到就退回原值。 */
-  const laneLabelOf = (value: string): string =>
-    laneOptionList.find((choice) => choice.value === value)?.label ?? value;
-
-  /** 协议下拉：正常情况下就是 `PROTOCOLS`；编辑模式遇到契约外的值**原样补一行**，不改写它。 */
+  /** 协议下拉：正常情况下就是 `PROTOCOLS`；遇到契约外的值**原样补一行**，不改写它。 */
   const protocolOptions = useMemo(() => {
     const known = PROTOCOLS.map((protocol) => ({
       value: protocol as string,
@@ -510,6 +520,26 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
   };
   const testText = probeText();
 
+  /** 扫描结果那句话：扫到几个、本次新建几条、目录里共几条（数字全部来自后端）。 */
+  const scanNotice =
+    linesCreated === undefined
+      ? undefined
+      : t(
+          K.linesCreatedAll,
+          linesCreatedNoticeVars(
+            preview === undefined ? 0 : preview.models.length + preview.skipped.length,
+            linesCreated.created,
+            linesCreated.total,
+          ),
+        );
+
+  const busy =
+    scanPending ||
+    channels.isFetching ||
+    upsertProvider.isPending ||
+    upsertCredential.isPending ||
+    setSecret.isPending;
+
   return (
     <Dialog
       open={open}
@@ -519,12 +549,7 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
       slotProps={{ paper: { sx: { maxHeight: "90vh" } } }}
     >
       <DialogTitle>
-        {/* 编辑模式（[docs/20 §4]）：标题说清"这是在改已有的那一份"，不是新建 */}
-        {step === 2
-          ? t("providers.wizard.step2Title")
-          : editing
-            ? t("providers.wizard.editTitle")
-            : t("providers.wizard.step1Title")}
+        {step === 2 ? t(K.step2Title) : t("providers.wizard.step1Title")}
         <Typography variant="caption" sx={{ ml: 2, color: "text.secondary" }}>
           {t("providers.wizard.stepOf", { current: step, total: 2 })}
         </Typography>
@@ -577,22 +602,45 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
               />
             </Stack>
 
-            {/* 明文密钥：type=password，只进密钥仓库（成功后立刻从草稿里抹掉） */}
+            {/**
+             * [docs/29 §2.2] **为服务商选代理**（用户第 112 轮：这一项必须存在于"添加"向导，
+             * 且能看到**所有网络代理**以及「自动」「直连」）。
+             *
+             * 选项与详情页用的是**同一个** `providerLaneChoices`（顺序也一致）：
+             * `直连 → 不指定（继承）→ 自动（按订阅）→ 所有已配置线路`。
+             * 值是标记（`direct:` / `auto:<订阅>`）时由后端 `provider_upsert` 解析成真实线路。
+             */}
+            <SelectField
+              testId="pw-lane"
+              label={t("providers.edit.lane")}
+              value={draft.lane}
+              onChange={(lane) => patchSession(() => ({ draft: { ...draft, lane } }))}
+              options={laneChoices}
+              emptyLabel={t("providers.edit.laneInherit")}
+            />
+
+            {/* 明文密钥：type=password，只进密钥仓库（成功后立刻从草稿里抹掉）。
+                **一个服务商就一把密钥**（[docs/28 §1] 硬规则 3）：所以这里没有"粘贴多行 →
+                展开成 N 份凭据"那套东西，一次运行只会发出**一条** `credential_upsert`。
+                旁边的问号说明"想要两个账号怎么办"（`providers.key.multipleHint`：再加一条服务商、
+                取不同名字）。 */}
             <Stack spacing={1} data-testid="pw-key">
-              <TextField
-                type="password"
-                label={t("onboarding.provider.secret")}
-                value={draft.key}
-                onChange={(event) => patchSession(() => ({ draft: { ...draft, key: event.target.value } }))}
-                size="small"
-                fullWidth
-                autoComplete="new-password"
-              />
-              {/* 编辑模式必须说清"留空 = 不改"（[docs/20 §4]）：否则用户会以为密钥被清掉了 */}
-              <Caption>
-                {editing ? t("providers.wizard.keyUnchanged") : t("credentials.add.secret")}
-              </Caption>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <TextField
+                  type="password"
+                  label={t("onboarding.provider.secret")}
+                  value={draft.key}
+                  onChange={(event) => patchSession(() => ({ draft: { ...draft, key: event.target.value } }))}
+                  size="small"
+                  fullWidth
+                  autoComplete="new-password"
+                />
+                <HelpTip text={t("providers.key.multipleHint")} testId="pw-key-multiple-help" />
+              </Stack>
+              {/* 明文密钥只进密钥仓库：写成功之后立刻从草稿里抹掉（成功后输入框会空） */}
+              <Caption>{t("credentials.add.secret")}</Caption>
             </Stack>
+
 
             <Issues issues={shownIssues} backendError={saveError} />
 
@@ -634,244 +682,87 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
                 {t("providers.wizard.savedNotice")}
               </Typography>
 
-              <Stack spacing={2}>
-                {/* 「没选过就是直连（继承链末端是直连）」是这一块的**说明**（[docs/22 §2]：
-                    区块说明超过 12 个字符就收）→ 收进标题右边的问号。
-                    **下面每一行那句「线路只在通道页改」不走这里**：它是只读约束 + 指路文案
-                    （[docs/21 §4.3]），用户必须一眼看到，属于红线。 */}
-                <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
-                  <Typography variant="h4">{t("providers.wizard.addedModels")}</Typography>
-                  <HelpTip
-                    text={t("providers.wizard.modelLaneDefaultHint")}
-                    testId="pw-added-models-help"
-                  />
-                </Box>
-                <Stack spacing={2} data-testid="pw-added-models">
-                  {addedModels.length === 0 ? (
-                    <Typography variant="body1" data-testid="pw-added-models-empty">
-                      {t("providers.wizard.addedModelsEmpty")}
-                    </Typography>
-                  ) : (
-                    addedModels.map((row) => {
-                      /**
-                       * 该行现在走哪条线（[docs/20 §1.2]）：
-                       * ① channel 自己的 lane（后端在用的真值）→ ② 模型级默认 lane（改过的值存这里）
-                       * → ③ `net.default_lane`（第 1 步/`/network` 选的）→ ④ **直连**。
-                       *
-                       * 最后一步是这轮补上的：以前落到 `null`，下拉渲染成空白，用户看到的就是
-                       * 「未配置」—— 而继承链的末端明明是直连。
-                       */
-                      const lane = row.laneId ?? modelDefaultLanes.get(row.modelId) ?? defaultLane;
-                      const value = laneValue(lane, directLaneId === "" ? null : directLaneId);
-                      return (
-                        <Stack key={row.modelId} spacing={1} data-testid="pw-model-row">
-                          <Stack
-                            direction="row"
-                            spacing={2}
-                            alignItems="center"
-                            sx={{ flexWrap: "wrap" }}
-                          >
-                            <Typography variant="body1" sx={{ fontFamily: typography.fontMono }}>
-                              {row.modelId}
-                            </Typography>
-                            <Typography variant="body1" sx={{ color: "text.secondary" }}>
-                              {row.upstreamModel === "" ? DASH : row.upstreamModel}
-                            </Typography>
+              {/* [docs/28 §1 第 1 条]：**这里建的是线路，模型不会自动创建**。 */}
+              <Typography variant="body1" data-testid="pw-step2-why">
+                {t(K.step2Why)}
+              </Typography>
 
-                            {/* 「设置图标」按钮：hover 提示"查看模型信息"，点开只读面板 */}
-                            <Box
-                              data-testid="pw-model-info"
-                              title={t("providers.wizard.viewInfo")}
-                            >
-                              <IconButton
-                                size="small"
-                                aria-label={t("providers.wizard.viewInfo")}
-                                onClick={() =>
-                                  setInfoOpen((prev) => (prev === row.modelId ? undefined : row.modelId))
-                                }
-                              >
-                                <SettingsOutlinedIcon fontSize="small" />
-                              </IconButton>
-                            </Box>
+              {needsProvider ? (
+                <Typography variant="body1" data-testid="pw-scan-error" sx={{ color: "error.main" }}>
+                  {t(K.scanNeedsProvider)}
+                </Typography>
+              ) : scanError !== undefined && scanError !== null ? (
+                <Typography variant="body1" data-testid="pw-scan-error" sx={{ color: "error.main" }}>
+                  {errorMessage(scanError)}
+                </Typography>
+              ) : null}
 
-                            {/* 线路：**这里只看不改**（[docs/21 §4.3]）。
-                                用户原话是"线路设置不能点进服务商里面去修改" —— 所以设置入口搬到了
-                                通道页（每条通道一个线路下拉），这里只显示当前生效的线路 + 一句指路。 */}
-                            <Stack
-                              spacing={0.5}
-                              sx={{ minWidth: 240 }}
-                              data-testid="pw-model-lane"
-                            >
-                              <Caption>{t("providers.wizard.modelLane")}</Caption>
-                              <Typography variant="body1" data-testid="pw-model-lane-name">
-                                {laneLabelOf(value)}
-                              </Typography>
-                              <Typography
-                                variant="caption"
-                                data-testid="pw-model-lane-readonly"
-                                sx={{ color: "text.secondary" }}
-                              >
-                                {t("providers.wizard.laneReadonlyHint")}
-                              </Typography>
-                            </Stack>
-                          </Stack>
+              {/* 上游确实一个都没返回：如实说，不编数据、不给假进度 */}
+              {preview !== undefined && preview.models.length === 0 ? (
+                <Typography variant="body1" data-testid="pw-scan-empty">
+                  {t(K.scanEmpty)}
+                </Typography>
+              ) : null}
+              {preview !== undefined && preview.skipped.length > 0 ? (
+                <Caption>{t(K.scanSkipped, { count: preview.skipped.length })}</Caption>
+              ) : null}
 
-                          {/* 只读信息面板：里面不许有任何可写控件（面板内 0 个 input/select/button） */}
-                          {infoOpen === row.modelId ? (
-                            <Stack spacing={1} data-testid="pw-model-info-panel" sx={PANEL_SX}>
-                              <Caption>{t("providers.wizard.infoReadonly")}</Caption>
-                              <Stack direction="row" spacing={2}>
-                                <Caption>{t("models.col.model")}</Caption>
-                                <Typography variant="body1" sx={{ fontFamily: typography.fontMono }}>
-                                  {row.modelId}
-                                </Typography>
-                              </Stack>
-                              <Stack direction="row" spacing={2}>
-                                <Caption>{t("models.col.upstream")}</Caption>
-                                <Typography variant="body1">
-                                  {row.upstreamModel === "" ? DASH : row.upstreamModel}
-                                </Typography>
-                              </Stack>
-                              <Stack direction="row" spacing={2}>
-                                <Caption>{t("models.col.channels")}</Caption>
-                                <Typography variant="body1">
-                                  {formatInt(row.channelCount)}
-                                </Typography>
-                              </Stack>
-                            </Stack>
-                          ) : null}
-                        </Stack>
-                      );
-                    })
-                  )}
-                </Stack>
-              </Stack>
+              {/*
+                第 2 步的正文 = 详情页那一节（[docs/28 §1.4] 用户第 82 轮："一个列表"）。
+                扫描按钮的 testid 在这里是历史上的 `pw-scan`（E2E 与单测都按它命中）；
+                向导里**没有**删除入口（新增流程不删东西）→ 不传 `onRemove`，也不画那个按钮。
+              */}
+              <LinesSection
+                lines={providerLines}
+                linesError={channels.error ?? undefined}
+                catalog={saved === undefined ? undefined : catalog.data}
+                catalogError={catalog.error ?? undefined}
+                scanPending={scanPending}
+                onScan={runScan}
+                busy={busy}
+                error={lineError}
+                notice={scanNotice}
+                lineNotice={lineNotice}
+                onToggleEnabled={toggleEnabled}
+                onBulkEnabled={bulkEnabled}
+                scanTestId="pw-scan"
+                scanLabel={t("providers.wizard.scan")}
+              />
 
-              {/* ---------------- 扫描结果 ---------------- */}
-              <Stack spacing={2}>
-                <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
-                  <Button
-                    variant="outlined"
-                    data-testid="pw-scan"
-                    disabled={scanPending}
-                    onClick={runScan}
-                  >
-                    {t("providers.wizard.scan")}
-                  </Button>
-                  {/* 只有真的在等后端时才说"正在扫描"（无假进度） */}
-                  {scanPending ? <Caption>{t("providers.wizard.scanning")}</Caption> : null}
-                  {/* 有真实结果才有"全选 / 添加选中"可点（没有结果时它们没有意义，所以不出现） */}
-                  {!scanPending && preview !== undefined && preview.models.length > 0 ? (
-                    <>
-                      <Button
-                        variant="outlined"
-                        data-testid="pw-scan-select-all"
-                        onClick={() => setSelection(selectAllIds(preview))}
-                      >
-                        {t("providers.wizard.selectAll")}
-                      </Button>
-                      <Button
-                        variant="contained"
-                        data-testid="pw-scan-add"
-                        onClick={applySelected}
-                      >
-                        {t("providers.wizard.addSelected")}
-                      </Button>
-                    </>
-                  ) : null}
-                  <Button variant="outlined" data-testid="pw-finish" onClick={close}>
-                    {t("providers.wizard.finish")}
-                  </Button>
-                </Stack>
-
-                {needsProvider ? (
-                  <Typography variant="body1" data-testid="pw-scan-error" sx={{ color: "error.main" }}>
-                    {t("providers.wizard.scanNeedsProvider")}
-                  </Typography>
-                ) : scanError !== undefined && scanError !== null ? (
-                  <Typography variant="body1" data-testid="pw-scan-error" sx={{ color: "error.main" }}>
-                    {errorMessage(scanError)}
-                  </Typography>
-                ) : preview === undefined ? null : preview.models.length === 0 ? (
-                  /* 上游确实一个都没返回：如实说，不编数据、不给假进度 */
-                  <Typography variant="body1" data-testid="pw-scan-empty">
-                    {t("providers.wizard.scanEmpty")}
-                  </Typography>
-                ) : (
-                  <Stack spacing={2} data-testid="pw-scan-result">
-                    {preview.skipped.length > 0 ? (
-                      <Caption>
-                        {t("providers.wizard.scanSkipped", { count: preview.skipped.length })}
-                      </Caption>
-                    ) : null}
-                    {appliedCount !== undefined ? (
-                      <Typography variant="body1">
-                        {t("providers.wizard.addedCount", { count: appliedCount })}
-                      </Typography>
-                    ) : null}
-                    {/*
-                      后端说这次真新建了几条线就显示几条（0 也如实显示：那就是"一条都没接上"）。
-                      `channels_created` 是"这次真的接上了几条线"的**唯一**真话 —— "加了模型"与
-                      "接上了线路"是两件事（[docs/20 §0] 的教训正是点了添加、上面什么都没有）。
-                    */}
-                    {channelsCreated !== undefined ? (
-                      <Typography variant="body1" data-testid="pw-channels-created">
-                        {t("providers.wizard.channelsCreated", { count: channelsCreated })}
-                      </Typography>
-                    ) : null}
-                    {applyError !== undefined && applyError !== null ? (
-                      <Typography
-                        variant="body1"
-                        data-testid="pw-scan-error"
-                        sx={{ color: "error.main" }}
-                      >
-                        {errorMessage(applyError)}
-                      </Typography>
-                    ) : null}
-
-                    {preview.models.map((model) => (
-                      <Stack
-                        key={model.suggested_id}
-                        direction="row"
-                        spacing={2}
-                        alignItems="center"
-                        sx={{ flexWrap: "wrap" }}
-                        data-testid="pw-scan-row"
-                      >
-                        <Stack data-testid="pw-scan-check">
-                          <Checkbox
-                            size="small"
-                            checked={selection.includes(model.suggested_id)}
-                            /* 已存在的不能重复添加：行上写着"已存在"，这就是它不可勾的原因 */
-                            disabled={model.exists}
-                            onChange={(event) =>
-                              setSelection((prev) =>
-                                event.target.checked
-                                  ? [...prev, model.suggested_id]
-                                  : prev.filter((id) => id !== model.suggested_id),
-                              )
-                            }
-                          />
-                        </Stack>
-                        <Typography variant="body1" sx={{ fontFamily: typography.fontMono }}>
-                          {model.upstream_model}
-                        </Typography>
-                        <Typography variant="body1" sx={{ color: "text.secondary" }}>
-                          {model.suggested_id}
-                        </Typography>
-                        {model.exists ? (
-                          <Caption>{t("providers.wizard.alreadyExists")}</Caption>
-                        ) : null}
-                      </Stack>
-                    ))}
-                  </Stack>
-                )}
+              {/* 指路：线路建好了，**模型要用户自己去模型页分配线路**（[docs/28 §1 第 1 条]）。 */}
+              <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
+                <Button
+                  variant="outlined"
+                  data-testid="pw-goto-models"
+                  onClick={() => {
+                    close();
+                    navigate("/models");
+                  }}
+                >
+                  {t(K.gotoModels)}
+                </Button>
+                <Button
+                  variant="outlined"
+                  data-testid="pw-scan-goto-detail"
+                  onClick={() => {
+                    const target = providerId;
+                    close();
+                    navigate(`/providers/${encodeURIComponent(target)}`);
+                  }}
+                >
+                  {t("providers.catalog.goDetail")}
+                </Button>
               </Stack>
             </Stack>
           </Box>
         )}
       </DialogContent>
 
+      {/**
+       * [docs/28 §1.7] **主操作放在对话框的固定按钮区**（`DialogActions` 不参与内容滚动）：
+       * 第 2 步的线路列表可以很长，把「完成」摆在列表末尾等于让用户先滚到底才能收尾。
+       * 取消 / 下一步 / 完成 —— 三个按钮永远看得见。
+       */}
       <DialogActions>
         <Button data-testid="pw-cancel" onClick={close}>
           {t("common.cancel")}
@@ -885,7 +776,11 @@ export function ProviderTwoStepWizard({ open, existing, onClose }: ProviderTwoSt
           >
             {t("providers.wizard.next")}
           </Button>
-        ) : null}
+        ) : (
+          <Button variant="contained" data-testid="pw-finish" onClick={close}>
+            {t("providers.wizard.finish")}
+          </Button>
+        )}
       </DialogActions>
     </Dialog>
   );

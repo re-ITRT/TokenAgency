@@ -116,6 +116,21 @@ pub struct ProbeProviderRequest<'a> {
     pub model: Option<&'a str>,
 }
 
+/// 上游 `/models` 里的一条：**清单身份**（`id`）+ 上游原样返回的那个 JSON 对象。
+///
+/// `raw` 存在的理由（[docs/28 §3]）：线路上记的模型信息 = 扫描时把上游那一条**逐字**记下来 ——
+/// 能读到的字段存，读不到的就没有。只留 `id` 会让"上游当时到底给了什么"永久丢失，
+/// 之后要么编字段、要么再拉一次；两者都不行。
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpstreamModelEntry {
+    /// 清单身份（`data[i].id`，已 `trim`）
+    pub id: String,
+    /// `data[i]` 的**原样对象**（含我们没建模的字段：`object` / `owned_by` / `created` /
+    /// `permission` / 上游自定义字段…），一字不改。
+    /// workspace 的 `serde_json` 开了 `preserve_order`，所以**键序**也保留。
+    pub raw: serde_json::Value,
+}
+
 /// 受控出站探测。**持有的是网关那一个 `OutboundDialer`**，没有别的出站方式。
 pub struct UpstreamProbe {
     dialer: Arc<dyn OutboundDialer>,
@@ -197,7 +212,7 @@ impl UpstreamProbe {
         if (200..300).contains(&outcome.status) {
             // 2xx = 端点存在、连接可用。响应体形状只影响 note：通就是通，
             // 不能因为形状不认识就把它报成"连不通"。
-            let shape_ok = parse_models(&outcome.body).is_some();
+            let shape_ok = parse_model_entries(&outcome.body).is_some();
             let note = if outcome.truncated {
                 Some(format!(
                     "连接是通的，但响应体超过 {} 字节上限已截断，清单不完整",
@@ -245,13 +260,17 @@ impl UpstreamProbe {
     ///
     /// **绝不拿状态码编清单**：非 2xx 一律 `Err`，`data` 形状不对也 `Err`，
     /// 体被上限截断同样 `Err`（半份清单比报错更坏：用户会以为"上游就这些模型"）。
-    pub async fn list_upstream_models(
+    ///
+    /// 这版把每条的**原文对象**一起带回来（[docs/28 §3]：扫描要逐字记录上游那一条模型对象）。
+    /// 只要名字的调用方用 [`Self::list_upstream_models`]（它是本方法的**薄包装**）——
+    /// 解析实现只有一份，测试钉住的也是同一份行为。
+    pub async fn list_upstream_models_with_raw(
         &self,
         lane: &LaneId,
         base_url: &str,
         headers: HeaderMap,
         query_auth: Option<(&AuthConfig, &str)>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<UpstreamModelEntry>> {
         let url =
             url_with_auth(passthrough::join_upstream_url(base_url, MODELS_PATH, None), query_auth);
         let outcome = self.fetch(lane, "GET", &url, headers, Bytes::new()).await?;
@@ -273,13 +292,29 @@ impl UpstreamProbe {
                 ),
             });
         }
-        parse_models(&outcome.body).ok_or_else(|| TaError::AllChannelsFailed {
+        parse_model_entries(&outcome.body).ok_or_else(|| TaError::AllChannelsFailed {
             message: format!(
                 "上游 /models 返回 HTTP {}，但响应体不是 {{ data: [{{ id }}] }} 形状，不敢猜清单。{}",
                 outcome.status,
                 excerpt_text(&outcome.body)
             ),
         })
+    }
+
+    /// 只要模型名的版本（与 [`Self::list_upstream_models_with_raw`] 同一条腿、同一套错误口径）。
+    pub async fn list_upstream_models(
+        &self,
+        lane: &LaneId,
+        base_url: &str,
+        headers: HeaderMap,
+        query_auth: Option<(&AuthConfig, &str)>,
+    ) -> Result<Vec<String>> {
+        Ok(self
+            .list_upstream_models_with_raw(lane, base_url, headers, query_auth)
+            .await?
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect())
     }
 
     /// 拼出这次探测要打的 URL（版本段重叠处理 + query 鉴权，都是转发路径那两份实现）。
@@ -360,21 +395,23 @@ fn url_with_auth(url: String, query_auth: Option<(&AuthConfig, &str)>) -> String
     }
 }
 
-/// 从 OpenAI 形状的清单体里取模型 id：`data[].id`，**按出现顺序去重**。
+/// 从 OpenAI 形状的清单体里取**每条**（`data[i].id` + 那条的**原文对象**），
+/// **按出现顺序去重**（重复 id 只留**首次出现**的那条 `raw`）。
 ///
 /// 不宽松兜底：`data` 不在、不是数组、或数组里有条目缺少非空字符串 `id` → `None`
 /// （"形状不对"必须与"上游一个模型都没有"（`data: []` → `Some(vec![])`）分开）。
-fn parse_models(body: &Bytes) -> Option<Vec<String>> {
+fn parse_model_entries(body: &Bytes) -> Option<Vec<UpstreamModelEntry>> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let data = value.get("data")?.as_array()?;
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<UpstreamModelEntry> = Vec::new();
     for item in data {
         let id = item.get("id")?.as_str()?.trim();
         if id.is_empty() {
             return None;
         }
-        if !out.iter().any(|existing| existing == id) {
-            out.push(id.to_string());
+        if !out.iter().any(|existing| existing.id == id) {
+            // `item` 就是 `data[i]` 本身 —— 不重建对象，字段与键序都不会被我们动过
+            out.push(UpstreamModelEntry { id: id.to_string(), raw: item.clone() });
         }
     }
     Some(out)
@@ -909,6 +946,65 @@ mod tests {
             .await
             .expect("2xx 形状正确就该出清单");
         assert_eq!(ids, vec!["b-model", "a-model", "c-model"], "顺序按上游出现顺序，重复要去掉");
+    }
+
+    /// [docs/28 §3]：扫描要把上游那一条模型对象**逐字**记下来。
+    /// 我们没建模的字段（`object` / `owned_by` / `created` / `permission` / 上游自定义字段）
+    /// 一个都不许丢、不许改；`preserve_order` 开着时键序也要原样。
+    #[tokio::test]
+    async fn model_entries_keep_the_upstream_object_verbatim() {
+        let body = r#"{"object":"list","data":[
+            {"id":"m-1","object":"model","created":1700000000,"owned_by":"upstream-org","permission":[{"id":"perm-1"}],"custom_x":1},
+            {"id":"m-2","object":"model","created":1700000001,"owned_by":"upstream-org"}
+        ]}"#;
+        let upstream = spawn_mock(vec![Reply::json(200, body)]).await;
+        let base = upstream.base_url();
+        let entries = probe()
+            .list_upstream_models_with_raw(&direct_lane(), &base, HeaderMap::new(), None)
+            .await
+            .expect("2xx 形状正确就该出清单");
+
+        assert_eq!(entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["m-1", "m-2"]);
+        assert_eq!(
+            entries[0].raw,
+            serde_json::json!({
+                "id": "m-1",
+                "object": "model",
+                "created": 1700000000,
+                "owned_by": "upstream-org",
+                "permission": [{"id": "perm-1"}],
+                "custom_x": 1,
+            }),
+            "原文对象必须逐字段相同"
+        );
+        // 键序也保留（否则下次导出会把上游的原文重排成我们碰过的样子）
+        assert_eq!(
+            serde_json::to_string(&entries[0].raw).expect("能序列化"),
+            r#"{"id":"m-1","object":"model","created":1700000000,"owned_by":"upstream-org","permission":[{"id":"perm-1"}],"custom_x":1}"#
+        );
+    }
+
+    /// 去重留下的必须是**首次出现**的那条的原文（后来的同 id 条目不许覆盖它）。
+    #[tokio::test]
+    async fn duplicate_ids_keep_the_first_occurrence_and_its_object() {
+        let body = r#"{"object":"list","data":[
+            {"id":"b","object":"model","owned_by":"first"},
+            {"id":"a","object":"model","owned_by":"only"},
+            {"id":"b","object":"model","owned_by":"second"}
+        ]}"#;
+        let upstream = spawn_mock(vec![Reply::json(200, body)]).await;
+        let base = upstream.base_url();
+        let entries = probe()
+            .list_upstream_models_with_raw(&direct_lane(), &base, HeaderMap::new(), None)
+            .await
+            .expect("2xx 形状正确就该出清单");
+
+        assert_eq!(entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+        assert_eq!(
+            entries[0].raw.get("owned_by").and_then(|v| v.as_str()),
+            Some("first"),
+            "同 id 重复时留下首次出现的那条原文"
+        );
     }
 
     #[tokio::test]

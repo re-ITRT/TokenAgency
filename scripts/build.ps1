@@ -11,6 +11,20 @@
 param(
     [switch]$SkipFrontend,
 
+    # ⚠️ GPL-3.0（[docs/46] 与 2026-10-13 的许可决策）。
+    #
+    # 这里原来写的是"mihomo 是 GPL-3.0，随安装包分发有**传染性**义务"——
+    # 那个判断是**偏严的**：mihomo 在本项目里是**独立进程**（`mihomo.exe` + 本地 HTTP 控制口），
+    # 属于 GPLv3 §5 末段的 aggregate（聚合），不把 GPL 传染到本仓代码。
+    #
+    # 但本仓**已经整体选了 GPL-3.0**（LICENSE），所以"要不要为了避 GPL 而让用户自备内核"
+    # 这个问题已经不存在了。`-NoKernel` 保留下来只为另一个用途：
+    # **给不想让安装包带上 58MB 内核的人**一个更小的包。
+    #
+    # 两个模式都必须满足 §6 的源码可得性：随包分发内核时，`scripts/fetch-mihomo.ps1 -Mode Source`
+    # 拉到的对应源码要**作为附件挂到同一个 Release**（不要只贴上游链接，那个 URL 不在我们手上）。
+    [switch]$NoKernel,
+
     # ⚠️ 默认**不**重新生成 `src/shared/bindings.ts`。
     #
     # 原因（第 11 轮实测）：那个文件现在装的是**手写的 105 条命令契约**，而
@@ -27,6 +41,25 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 function Step($n, $total, $msg) { Write-Host "[$n/$total] $msg" -ForegroundColor Cyan }
+
+# ---------------------------------------------------------------- 步骤 0：随包内核
+#
+# ⚠️ **顺序很要紧**：必须排在 `cargo build` 之前。`src-tauri/resources/**` 是 Tauri 的打包输入，
+# 而内核二进制**不入库**（65MB，理由见 .gitignore）—— 干净 clone 里它不存在。
+# 缺了它，`tauri build` 会**照常成功**，打出一个没有内核的安装包；那个包
+# 能装、能开、界面一切正常，只是**永远起不了内核**。这正是本仓最忌讳的静默失效。
+#
+# 所以这里按**钉死的 tag + sha256** 拉取（`scripts/fetch-mihomo.ps1`）：
+#   * 校验不符就抛错，绝不写出半成品；
+#   * 顺带让"**改没改过内核**"永远可查 —— 二进制不在仓库里，谁动过都对不上 sha256。
+#     这直接决定 GPL 下"要不要公开我们自己的改动"（现在是**没改**，已实测逐字节相同）。
+Write-Host '[0/5] 随包内核（按 tag + sha256 拉取）' -ForegroundColor Cyan
+if ($NoKernel) {
+    Write-Host '  跳过（-NoKernel：产出用户自备内核的小包）' -ForegroundColor DarkGray
+} else {
+    pwsh -File "$PSScriptRoot/fetch-mihomo.ps1" -Mode Runtime
+    if ($LASTEXITCODE -ne 0) { throw 'fetch-mihomo.ps1 未通过：内核二进制缺失或 sha256 不符' }
+}
 
 Step 1 5 '前端构建（tsc --noEmit + vite build）'
 #
@@ -68,7 +101,18 @@ cargo test --workspace --no-fail-fast
 if ($LASTEXITCODE -ne 0) { throw 'cargo test --workspace 未通过' }
 
 Step 5 5 'Tauri 打包（NSIS）'
-cargo tauri build --bundles nsis
+if ($NoKernel) {
+    # [docs/46] **GPL-3.0 合规备选**：用一个覆盖配置把 `bundle.resources` 清空，
+    # **不修改** `tauri.conf.json`（默认那版仍然内置内核）。用户自备内核时，
+    # 把 `mihomo.exe` 放在安装目录旁边即可被 `bundled_kernel_path()` 认出来。
+    $overlay = 'tauri.nokernel.conf.json'
+    '{ "bundle": { "resources": [] } }' | Set-Content $overlay -Encoding utf8
+    Write-Host '  -NoKernel：本次**不**打包内置内核（用户自备 mihomo.exe）' -ForegroundColor Yellow
+    cargo tauri build --bundles nsis --config $overlay
+    Remove-Item $overlay -Force -ErrorAction SilentlyContinue
+} else {
+    cargo tauri build --bundles nsis
+}
 if ($LASTEXITCODE -ne 0) { throw 'cargo tauri build 未通过' }
 
 Write-Host ''

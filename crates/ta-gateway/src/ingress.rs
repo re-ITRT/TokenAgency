@@ -32,7 +32,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 
 use ta_core::clock::Clock;
-use ta_core::domain::{ChannelConfig, ConfigDoc, Provider};
+use ta_core::domain::{ChannelConfig, ConfigDoc, Model, Provider};
 use ta_core::error::{FieldError, Result, TaError};
 use ta_core::types::{ChannelId, LaneId, Protocol};
 use ta_secrets::{classify_literal, is_reference, PlaintextKind};
@@ -102,7 +102,21 @@ pub fn classify(method: &Method, path: &str) -> Endpoint {
         ("POST", "/v1/files") => Endpoint::Files,
         ("POST", rest) if rest.starts_with("/v1/audio/") => Endpoint::Audio,
         ("GET", "/v1/models") => Endpoint::ModelsList,
+        // [docs/59] **不带 `/v1` 的 `/models` 也必须是本地清单**。
+        //
+        // 真机现象（用户第 325 轮）："选 OPENAI 会直接穿透拿到服务商的所有模型"。
+        // 根因就是这里：`classify` 只认 `/v1/models`，而客户端把 base_url 填成
+        // `http://127.0.0.1:<port>`（不带 `/v1`，OpenAI SDK 很常见的写法）时会请求
+        // `GET /models` → 落进 `fallback(any(handle))` → **原样透传上游** →
+        // 端回**服务商自己的完整模型清单**（还带着上游的真实模型名）。
+        //
+        // Anthropic 协议的客户端不发这个请求，所以"看起来正常" —— 差别不在协议分支，
+        // 而在**路径是否恰好命中**。
+        ("GET", "/models") => Endpoint::ModelsList,
         ("GET", rest) if rest.starts_with("/v1/models/") && rest.len() > "/v1/models/".len() => {
+            Endpoint::ModelGet
+        }
+        ("GET", rest) if rest.starts_with("/models/") && rest.len() > "/models/".len() => {
             Endpoint::ModelGet
         }
         ("GET", "/healthz") => Endpoint::Healthz,
@@ -227,9 +241,10 @@ pub struct PreparedRequest {
     /// 失败转移链（G2 的 `prepare` 填：`channel_id` 之外的后续候选，按顺序）。
     /// G1 的 `build_prepared_request` 恒填空表 —— 它不做路由决策。
     pub failover_chain: Vec<ChannelId>,
-    /// 策略级的全局线路覆盖（`PolicyAction::use_lane`）。G1 恒填 `None`；
-    /// G2 从 `RouteDecision` 抄过来，之后每个候选的 lane 解析都带上它。
-    pub lane_override: Option<LaneId>,
+    // 这里曾有 `lane_override: Option<LaneId>`（策略级全局线路覆盖，G2 从 RouteDecision 抄过来）。
+    //
+    // [docs/55]（第 322 轮）整条删除：线路分配只剩**服务商级**一处，`RouteDecision` 里那个
+    // 字段也删了，所以这里再没有任何东西可抄 —— 留着就是一段恒为 `None` 的死管线。
     /// 客户端原始请求（trace 用；body 与 headers 是 `Bytes`/`HeaderMap`，克隆很便宜）
     pub snapshot: RequestSnapshot,
 }
@@ -247,10 +262,41 @@ pub struct PrepareInput<'a> {
     pub lane_id: Option<LaneId>,
 }
 
+/// [docs/59] 跨协议时，**上游要打的端点路径**由目标协议的语义决定。
+///
+/// 不能把客户端的路径原样带过去：客户端发 `/v1/messages`（Anthropic）而后端是 OpenAI 兼容的
+/// 中转站时，`POST /v1/messages` 必然 404 —— 那是把"协议不匹配"伪装成"上游没有这个接口"。
+/// [docs/59] Gemini 的端点**路径里带模型名**，所以它不能只返回一个常量。
+/// 流式还换一个方法名（`:streamGenerateContent?alt=sse`）——
+/// 把 `alt=sse` 放进路径而不是查询串，是因为查询串那一格还要留给"调用方显式指定的 query"。
+fn gemini_path(upstream_model: &str, stream: bool) -> String {
+    let model = upstream_model.trim();
+    if stream {
+        format!("/v1beta/models/{model}:streamGenerateContent?alt=sse")
+    } else {
+        format!("/v1beta/models/{model}:generateContent")
+    }
+}
+
+pub fn upstream_path_for(target: Protocol, upstream_model: &str, stream: bool) -> String {
+    match target {
+        Protocol::Anthropic => "/v1/messages".to_string(),
+        Protocol::Openai | Protocol::Custom => "/v1/chat/completions".to_string(),
+        Protocol::OpenaiResponses => "/v1/responses".to_string(),
+        Protocol::Gemini => gemini_path(upstream_model, stream),
+    }
+}
+
 /// **G1 的核心纯函数**：把"客户端原始请求 + 选定通道"变成"发往上游的请求"。
 ///
 /// 只做契约允许的事：`model` 定点 patch、鉴权头替换、`host`/`content-length` 重算、
 /// hop-by-hop 剥离、以及用户显式配置的 `ChannelConfig::transform`。
+///
+/// [docs/59]（第 326 轮）**外加跨协议中转**：客户端协议与上游协议不同时，body 走
+/// `adapt` 的 IR 单向通道（客户端协议 → IR → 上游协议），路径换成目标协议的端点。
+/// 这一层原来写好了却**从来没有被调用** —— 于是网关一直原样透传客户端 body，
+/// 真机表现就是"客户端协议必须等于上游协议，否则必然 400"，用户被迫"把服务商切回
+/// OPENAI 才能输入"。
 pub fn build_prepared_request(input: PrepareInput<'_>) -> Result<PreparedRequest> {
     let channel = input.channel;
     let snapshot = input.snapshot;
@@ -262,19 +308,80 @@ pub fn build_prepared_request(input: PrepareInput<'_>) -> Result<PreparedRequest
         )));
     };
 
+    let client_protocol = snapshot.endpoint.protocol();
+    // [docs/59] **只在两边都有适配器时才转**（`adapt::can_translate`）。
+    //
+    // 不能写成"协议不同就转"：`Protocol::OpenaiResponses` / `Gemini` 目前**没有适配器**
+    // （`adapter_for` 返回 None），硬转会得到一个 `CapabilityLoss` —— 而在此之前
+    // `POST /v1/responses` 发往 OpenAI 上游是能原样透传的。接手一个改动不该顺手把
+    // 原本能走的路变成 415：**能转就转（openai-chat ↔ anthropic），不能转就保持原样**。
+    let cross_protocol = client_protocol != provider.protocol
+        && crate::adapt::can_translate(client_protocol, provider.protocol)
+        // [docs/59] 第 326 轮起**流式也转**：响应方向由 `adapt::session` 逐帧翻译
+        // （切帧 → IR → 目标协议），所以请求方向不再因为 `stream: true` 而区别对待。
+        ;
+
     // 路径：`transform.path` 覆盖客户端路径（少数上游路径不一致的场景）
-    let path = channel
+    let stream = snapshot.hints().stream;
+    let path: String = channel
         .transform
         .path
         .as_deref()
         .map(str::trim)
         .filter(|p| !p.is_empty())
-        .unwrap_or(snapshot.path.as_str());
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if cross_protocol {
+                upstream_path_for(provider.protocol, &channel.upstream_model, stream)
+            } else {
+                snapshot.path.clone()
+            }
+        });
     let mut upstream_url =
-        passthrough::join_upstream_url(&provider.base_url, path, snapshot.query.as_deref());
+        passthrough::join_upstream_url(&provider.base_url, &path, snapshot.query.as_deref());
     upstream_url = passthrough::apply_query_auth(&upstream_url, &provider.auth, input.secret);
+    // [docs/46 §305] **把"我们实际打给上游的地址"记进日志**（去掉查询串：`auth.scheme: query`
+    // 的密钥就在那里）。这一行是上一次排查时最缺的东西 —— 当时只能靠 base_url + 客户端路径手算，
+    // 才看出 `…/api/coding/v3/v1/chat/completions` 这种拼错的路径（上游回 404 且无响应体，
+    // 客户端只看到 `404 status code (no body)`）。字段名走 message，不加白名单外的新字段。
+    if let Some((origin, _)) = upstream_url.split_once('?') {
+        tracing::info!(
+            channel_id = %channel.id,
+            provider_id = %channel.provider,
+            "上游目标（已去掉查询串）{origin}"
+        );
+    } else {
+        tracing::info!(
+            channel_id = %channel.id,
+            provider_id = %channel.provider,
+            "上游目标 {upstream_url}"
+        );
+    }
 
-    let patched = input.policy.patch_body(&snapshot.body, channel)?;
+    // [docs/59] **跨协议：body 先走 IR 中转**（客户端协议 → IR → 上游协议）。
+    //
+    // 放在 `patch_body` **之前**：`translate_request` 已经按 `channel.upstream_model` 编码好了
+    // 模型名，紧接着的 `patch_body` 看到 `model` 已经等于上游名 → 不动它（幂等）。
+    // 空 loss 的路径（同协议）**一个字节都不动**：走下面的 `snapshot.body` 原样透传。
+    let translated = if cross_protocol {
+        Some(
+            crate::adapt::translate_request(
+                client_protocol,
+                provider.protocol,
+                &channel.upstream_model,
+                &snapshot.body,
+                // 有损时的处置是**网关级**设置（`GatewayConfig.passthrough.on_loss`）：
+                // "这次转换能不能接受损失"是全局策略，不是某一家上游的属性。
+                input.cfg.gateway.passthrough.on_loss,
+            )?
+            .body,
+        )
+    } else {
+        None
+    };
+    let body_for_upstream: &[u8] = translated.as_deref().unwrap_or(&snapshot.body);
+
+    let patched = input.policy.patch_body(body_for_upstream, channel)?;
     let mut headers = input.policy.build_headers(
         input.cfg,
         &snapshot.headers,
@@ -292,7 +399,22 @@ pub fn build_prepared_request(input: PrepareInput<'_>) -> Result<PreparedRequest
         endpoint: snapshot.endpoint,
         client_protocol: snapshot.endpoint.protocol(),
         protocol: provider.protocol,
-        model: hints.model,
+        // 把客户端发来的名字**归一成配置里的规范模型 id**（`id` 与任一 `alias` 都认）。
+        //
+        // 为什么必须归一、且必须**只在这一处**做：下游有三处都要用**同一个**名字 ——
+        // ① 定价（`PriceMatch.model` 匹配的是「对外模型名」）、
+        // ② 用量表的 `model` 列、③ 成本中心按模型的分组。
+        // 不归一的话，同一个模型会因为客户端发了别名而**算不出价**（显示"未定价"），
+        // 并且在成本中心被**拆成两行**（`m-a` 与 `alias-a` 各占一行、各算一半钱）。
+        //
+        // 查不到就**照原样保留**客户端发的名字：那属于"请求了一个没配置的模型"，
+        // 此时编一个规范 id 出来才是错的（网关要如实记下它收到了什么）。
+        model: hints
+            .model
+            .as_deref()
+            .and_then(|name| input.cfg.find_model(name))
+            .map(|m| m.id.clone())
+            .or(hints.model),
         upstream_model: channel.upstream_model.clone(),
         stream: hints.stream,
         has_image: hints.has_image,
@@ -303,7 +425,6 @@ pub fn build_prepared_request(input: PrepareInput<'_>) -> Result<PreparedRequest
         body: Bytes::from(patched),
         header_diff,
         failover_chain: Vec::new(),
-        lane_override: None,
         snapshot: snapshot.clone(),
     })
 }
@@ -589,6 +710,10 @@ pub fn router(state: Arc<IngressState>) -> Router {
         .route("/v1/files", post(handle))
         .route("/v1/models", get(handle))
         .route("/v1/models/{id}", get(handle))
+        // [docs/59] 不带 `/v1` 的形态也本地作答（否则会原样透传上游，把服务商的
+        // 完整模型清单端给客户端 —— 就是用户报的"穿透"）。
+        .route("/models", get(handle))
+        .route("/models/{id}", get(handle))
         .route("/healthz", get(handle))
         .fallback(any(handle))
         .with_state(state)
@@ -737,6 +862,23 @@ async fn handle_request(
         Ok(identity) => identity,
         Err(err) => return finish(error_response(&err, &request_id)),
     };
+
+    // [docs/59] **下游 API 家族开关**（用户第 326 轮："是打开关闭形式，按需求勾选"）。
+    //
+    // 三件事是刻意的：
+    // * 关掉的端点**当场明确报错**，绝不转发上游 —— 客户端配错却收到一个来自上游的
+    //   404/400 时，用户从错误里**看不出**是自己少勾了一个开关，那是最难查的一类问题；
+    // * 放在**鉴权之后**：没通过鉴权的调用者不该从错误文案里探到我们的配置状态；
+    // * 放在暂停闸门之后：暂停是"现在一律不接单"，比"这个家族关着"更外层。
+    if let Some(switch) = disabled_downstream(&cfg, endpoint) {
+        return finish(error_response(
+            &TaError::MalformedRequest(format!(
+                "这个 API 家族当前是关着的（{switch}）。\
+                 到 设置 → 服务 → 「对外提供的 API」把它打开，或者改用已打开的端点。"
+            )),
+            &request_id,
+        ));
+    }
     if let Some(limit) = state.options.rpm_limit {
         if let Err(retry_after_s) = state.rpm.check(now_ms, limit, state.options.rpm_window_ms) {
             let mut response = error_response(&TaError::RateLimited, &request_id);
@@ -750,6 +892,13 @@ async fn handle_request(
         Ok(body) => body,
         Err(err) => return finish(error_response(&err, &request_id)),
     };
+
+    // [docs/28 §4]：`GET /v1/models` 与 `GET /v1/models/{id}` **不透传上游** ——
+    // 鉴权 / 限流 / body 上限都过了之后，在"选线路"之前直接用我们自己的模型回答。
+    // 位置是刻意的：**没跳过任何鉴权**，也不再选 lane、不发任何上游请求。
+    if matches!(endpoint, Endpoint::ModelsList | Endpoint::ModelGet) {
+        return finish(models_response(&cfg, endpoint, &path, now_ms, &request_id));
+    }
 
     let snapshot = RequestSnapshot {
         request_id: request_id.clone(),
@@ -1026,6 +1175,26 @@ pub(crate) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
+/// [docs/59] 这个端点所属的**下游 API 家族**被关掉了吗？返回要打开的开关名。
+///
+/// 只覆盖"用户能勾的三个家族"：其它端点（`/v1/models`、embeddings、audio、files、
+/// wildcard）**没有开关**，一律照旧放行 —— `/v1/models` 尤其不能关，
+/// 它是客户端发现我们能提供什么模型的唯一入口。
+fn disabled_downstream(
+    cfg: &ta_core::domain::ConfigDoc,
+    endpoint: Endpoint,
+) -> Option<&'static str> {
+    let d = &cfg.gateway.downstream;
+    match endpoint {
+        Endpoint::ChatCompletions if !d.openai_chat => Some("gateway.downstream.openai_chat"),
+        Endpoint::Responses if !d.openai_responses => Some("gateway.downstream.openai_responses"),
+        Endpoint::Messages if !d.anthropic_messages => {
+            Some("gateway.downstream.anthropic_messages")
+        }
+        _ => None,
+    }
+}
+
 /// `docs/10 §1.5` 的错误信封。**只有网关自身判断失败才用它**，上游错误一律原样透传。
 pub fn error_response(err: &TaError, request_id: &str) -> Response {
     let status =
@@ -1066,6 +1235,125 @@ pub(crate) fn with_request_id(mut response: Response, request_id: &str) -> Respo
 fn healthz_response(state: &IngressState, request_id: &str) -> Response {
     let body = json!({ "status": "ok", "kernel": state.kernel.state().as_str() });
     with_request_id((StatusCode::OK, axum::Json(body)).into_response(), request_id)
+}
+
+// ================================================================ `/v1/models`：本地作答（[docs/28 §4]）
+
+/// `GET /v1/models` 的响应体：**我们自己的模型**，一条记录一个模型。
+///
+/// **为什么不再透传上游**：用户原话「返回的肯定是我们"模型"界面定义的每个模型的信息，
+/// 字段来自我们创建的信息」。上游只认识**它自己**有什么模型，不知道我们对外暴露的逻辑模型
+/// （一个逻辑模型背后可以有多条线路、多个上游）：透传会把上游的内部模型名当成我们的答案，
+/// 同一个逻辑模型在不同上游还会返回互相矛盾的两份清单。
+///
+/// **口径（都是显式选择，不是顺带发生的事）**：
+/// * **一个已配置模型一条记录**，`id` = 它的规范 id（[`Model::id`]）。别名是**被接受的名字**
+///   （`/v1/models/{别名}` 与 `chat_completions` 的 `model` 字段都认），但**不**在 `data` 里
+///   各占一条 —— 否则客户端会把同一个模型算成两个模型。
+/// * `expose = false` 的模型**不出现**（[`Model::new`] 的注释写的就是"`expose = true` 才出现在
+///   `/v1/models`"），它的 id/别名在这里也 404 —— 不然"隐藏"是假的。
+/// * 字段**只来自我们的配置**，一个都不编（[docs/28 §3]：上游没给的字段一个都不编）。
+///   上下文窗口 / 最大输出**只在我们的线路真的声明了**的时候才带（见 [`model_info`]，
+///   名字按客户端实际读的那两个键）；价格仍然一个都不带（我们没存价格）。
+fn models_list_body(cfg: &ConfigDoc, now_ms: i64) -> Value {
+    let data: Vec<Value> = cfg
+        .models
+        .iter()
+        .filter(|m| m.enabled && m.expose)
+        .map(|m| model_entry(cfg, m, now_ms))
+        .collect();
+    json!({ "object": "list", "data": data })
+}
+
+/// 按 id 或别名找**对外暴露**的模型（`None` = 不是我们的模型 → 调用方给 404）。
+///
+/// 路径段先按原样比（别名里的 `+` 是字面量，路径语义里不是空格），再退一步比百分号解码后的
+/// 形式（`openai%2Fgpt-4o` 这种编码过的别名）。
+fn exposed_model<'a>(cfg: &'a ConfigDoc, name: &str) -> Option<&'a Model> {
+    let decoded = passthrough::percent_decode(name);
+    cfg.models.iter().find(|m| {
+        m.enabled && m.expose && (m.matches(name) || (decoded != name && m.matches(&decoded)))
+    })
+}
+
+/// 该模型**公开出来的**能力数字 —— 直接取 [docs/46 §304] 那份**唯一口径**
+/// （`ConfigDoc::public_model_info`）：网关与模型页「查看模型信息」面板用的是同一个函数，
+/// 不会出现"客户端看到的"和"界面显示的"两套数字。
+///
+/// **为什么以前一个都不带**：用户原话「上下文信息那些根本没有透传过来」。客户端（DeepSeek Harness）
+/// 的「获取可用模型」读的正是 `context_window` / `max_output_tokens`
+/// （在它的 `readListing` 里逐字核过：`context_window` 之后才看 `context_length` / `max_input_tokens`；
+/// `max_output_tokens` 之后才看 `maxTokens` / `max_tokens`）。
+fn model_info(cfg: &ConfigDoc, model: &Model) -> (Option<u64>, Option<u64>) {
+    let info = cfg.public_model_info(model);
+    (info.context_window, info.max_output_tokens)
+}
+
+/// `/v1/models` 里一条记录的**唯一**构造点（[docs/28 §4]）。
+///
+/// * `created`：**本次回答的时刻**（`now_ms / 1000`）。我们的配置里不存模型的创建时间，
+///   而 OpenAI 客户端要求这个整数字段 —— 给响应时刻是唯一不编造"创建时间"的选择。
+/// * `owned_by`：见 [`owned_by`]。
+/// * `context_window` / `max_output_tokens`：见 [`model_info`]（**没声明就不出现**）。
+fn model_entry(cfg: &ConfigDoc, model: &Model, now_ms: i64) -> Value {
+    let mut entry = json!({
+        "id": model.id,
+        "object": "model",
+        "created": now_ms / 1000,
+        "owned_by": owned_by(cfg, model),
+    });
+    let (context_window, max_output_tokens) = model_info(cfg, model);
+    if let Some(map) = entry.as_object_mut() {
+        if let Some(v) = context_window {
+            map.insert("context_window".to_string(), json!(v));
+        }
+        if let Some(v) = max_output_tokens {
+            map.insert("max_output_tokens".to_string(), json!(v));
+        }
+    }
+    entry
+}
+
+/// `owned_by` = 该模型**第一条线路**所属服务商的 `id`（[docs/28 §1]：线路归服务商）。
+///
+/// 用 `Provider.id`（稳定标识）而不是 `name`（可改的显示名），也**不编**一个我们没有的机构名；
+/// 没有可解析的线路（悬空/空 `lines`，校验器本会拦下）时退化成我们自己的名字字面量
+/// `"tokenagency"`。
+fn owned_by(cfg: &ConfigDoc, model: &Model) -> String {
+    model
+        .lines
+        .first()
+        .and_then(|id| cfg.channel(id.as_str()))
+        .and_then(|channel| cfg.provider(channel.provider.as_str()))
+        .map(|provider| provider.id.as_str().to_string())
+        .unwrap_or_else(|| "tokenagency".to_string())
+}
+
+/// `/v1/models` 与 `/v1/models/{id}` 的本地响应（[docs/28 §4]）。
+///
+/// **不选线路、不发任何上游请求**：调用点在鉴权 / 限流 / body 上限之后、"选线路"之前。
+fn models_response(
+    cfg: &ConfigDoc,
+    endpoint: Endpoint,
+    path: &str,
+    now_ms: i64,
+    request_id: &str,
+) -> Response {
+    if endpoint == Endpoint::ModelsList {
+        let body = models_list_body(cfg, now_ms);
+        return with_request_id((StatusCode::OK, axum::Json(body)).into_response(), request_id);
+    }
+
+    // `classify` 保证了 `/v1/models/` 前缀 + 非空 id 段；取不到就按"不是我们的模型"处理。
+    let name = path.strip_prefix("/v1/models/").unwrap_or_default();
+    match exposed_model(cfg, name) {
+        Some(model) => with_request_id(
+            (StatusCode::OK, axum::Json(model_entry(cfg, model, now_ms))).into_response(),
+            request_id,
+        ),
+        // 不是我们的 id/别名 → 404，错误信封仍是 OpenAI 形状（`error.message/type/code`）
+        None => error_response(&TaError::ModelNotFound(name.to_string()), request_id),
+    }
 }
 
 // ================================================================ 测试
@@ -1179,6 +1467,454 @@ mod tests {
         state_with(test_cfg(), IngressOptions::default(), KernelState::Ready)
     }
 
+    /// `/v1/models` 的夹具（[docs/28 §4]）：**两个**模型，覆盖"两条线路 / 一条线路 / 隐藏"三种形态。
+    ///
+    /// * `gpt-4o`：两个别名，两条线路（`ch-openai` 在前 → `owned_by` 应是它那个服务商 `p-openai`）；
+    /// * `claude-sonnet-4-5`：一条线路；
+    /// * `m-hidden`：`expose = false` —— 清单与 `/v1/models/{id}` 里都不许出现。
+    fn models_cfg() -> ConfigDoc {
+        let mut doc = ConfigDoc::default();
+        doc.providers.push(Provider::new("p-openai", "OpenAI 中转", Protocol::Openai, "http://a"));
+        doc.providers.push(Provider::new(
+            "p-anthropic",
+            "Anthropic",
+            Protocol::Anthropic,
+            "http://b",
+        ));
+        doc.credentials
+            .push(ta_core::domain::Credential::new("c-openai", "p-openai", "K", "${s:1}"));
+        doc.credentials.push(ta_core::domain::Credential::new(
+            "c-anthropic",
+            "p-anthropic",
+            "K",
+            "${s:2}",
+        ));
+        // `ch-openai-2` 刻意排在前面，证明 `owned_by` 取的是**配置顺序的第一条**线路
+        doc.channels.push(ChannelConfig::new(
+            "ch-openai-2",
+            "",
+            "p-anthropic",
+            "c-anthropic",
+            "gpt-4o-b",
+        ));
+        doc.channels.push(ChannelConfig::new("ch-openai", "", "p-openai", "c-openai", "gpt-4o"));
+        doc.channels.push(ChannelConfig::new(
+            "ch-claude",
+            "",
+            "p-anthropic",
+            "c-anthropic",
+            "claude",
+        ));
+        // [docs/46 §303] 线路**声明**的能力 —— `/v1/models` 要把它透传给客户端：
+        // `gpt-4o` 的两条线路声明不同（200k/128k、8192/16384）⇒ 取**最小值**（不夸大）；
+        // `claude` 那条**什么都不声明** ⇒ 那两个键必须**不出现**（不编 0、不猜）。
+        {
+            let two = doc.channels.iter_mut().find(|c| c.id.as_str() == "ch-openai-2").unwrap();
+            two.capabilities.context_tokens = 200_000;
+            two.capabilities.max_output_tokens = Some(8_192);
+            let one = doc.channels.iter_mut().find(|c| c.id.as_str() == "ch-openai").unwrap();
+            one.capabilities.context_tokens = 128_000;
+            one.capabilities.max_output_tokens = Some(16_384);
+        }
+        doc.models.push(
+            Model::new("gpt-4o")
+                .with_aliases(["gpt-4o-2024-11-20", "openai/gpt-4o"])
+                .with_lines(["ch-openai-2", "ch-openai"]),
+        );
+        doc.models.push(Model::new("claude-sonnet-4-5").with_lines(["ch-claude"]));
+        doc.models.push(Model {
+            expose: false,
+            lines: vec![ChannelId::new("ch-claude")],
+            ..Model::new("m-hidden")
+        });
+        // [docs/48 §5] **模型级总开关关掉**的模型：`expose` 还是 true，
+        // 但它必须既不进清单、也不可通过 `/v1/models/{id}` 取到。
+        doc.models.push(Model {
+            enabled: false,
+            lines: vec![ChannelId::new("ch-claude")],
+            ..Model::new("m-off")
+        });
+        doc
+    }
+
+    fn models_state() -> Arc<IngressState> {
+        state_with(models_cfg(), IngressOptions::default(), KernelState::Ready)
+    }
+
+    /// [docs/28 §4]：`/v1/models` 的**本地**答案形状与口径。
+    ///
+    /// 断言的是完整 `data` 数组（逐字段），因为"多一条 / 少一条 / 多一个字段"都是这次改动的
+    /// 核心契约；`created` 用固定时钟的 `1_700_000_000` 钉住。
+    #[tokio::test]
+    async fn models_list_is_answered_locally_from_our_own_config() {
+        let (status, headers, value) =
+            send(models_state(), json_request("GET", "/v1/models", b"")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(headers.contains_key("x-tokenagency-request-id"));
+        assert_eq!(value["object"], "list");
+        assert_eq!(
+            value["data"],
+            json!([
+                {
+                    "id": "gpt-4o",
+                    "object": "model",
+                    "created": 1_700_000_000i64,
+                    // 第一条线路 `ch-openai-2` → 服务商 `p-anthropic`（不是按 id 猜出来的）
+                    "owned_by": "p-anthropic",
+                    // [docs/46 §303] 线路声明的能力透传给客户端；两条线路不同 ⇒ 取最小值
+                    "context_window": 128_000,
+                    "max_output_tokens": 8_192,
+                },
+                {
+                    "id": "claude-sonnet-4-5",
+                    "object": "model",
+                    "created": 1_700_000_000i64,
+                    "owned_by": "p-anthropic",
+                    // 这条线路什么都没声明 ⇒ 两个键都不出现（不编 0）
+                },
+            ]),
+            "一个已配置模型一条记录；别名不各占一条；expose=false 不出现；字段只来自配置：{value}"
+        );
+        // 字段集固定：没声明的模型**不许**有上下文/输出字段；声明过的模型**必须**有
+        let first = value["data"][0].as_object().expect("一条记录是对象");
+        assert_eq!(
+            first.keys().collect::<Vec<_>>(),
+            ["id", "object", "created", "owned_by", "context_window", "max_output_tokens"],
+            "声明过的能力要透传（名字按客户端实际读的键）"
+        );
+        let second = value["data"][1].as_object().expect("一条记录是对象");
+        assert_eq!(
+            second.keys().collect::<Vec<_>>(),
+            ["id", "object", "created", "owned_by"],
+            "没声明就不许编字段（[docs/28 §3]）"
+        );
+    }
+
+    /// [docs/48 §5]：**模型级开关关掉 = 彻底停用**，不是"藏起来"。
+    ///
+    /// 两件一起验，缺一不可：
+    /// * 清单里没有它（`enabled=false` 即使 `expose=true` 也不列）；
+    /// * 按名字取它 → **404 `ModelNotFound`**，而不是"查得到但不给用"。
+    ///
+    /// 只验第一条会让"藏起来但照旧能打"蒙混过关 —— 那正是用户说的"频繁删除与创建"
+    /// 想避免的坑：关掉就该等于不存在。
+    #[tokio::test]
+    async fn disabled_model_is_neither_listed_nor_resolvable() {
+        let state = models_state();
+        let (status, _, value) = send(state.clone(), json_request("GET", "/v1/models", b"")).await;
+        assert_eq!(status, StatusCode::OK);
+        let ids: Vec<&str> = value["data"]
+            .as_array()
+            .expect("data 是数组")
+            .iter()
+            .filter_map(|m| m["id"].as_str())
+            .collect();
+        assert!(!ids.contains(&"m-off"), "停用的模型不该出现在清单里：{ids:?}");
+
+        let (status, _, value) = send(state, json_request("GET", "/v1/models/m-off", b"")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "停用的模型按名字取必须 404：{value}");
+        assert_eq!(
+            value["error"]["type"], "tokenagency_model_not_found",
+            "必须是「模型不存在」，不能是别的错：{value}"
+        );
+    }
+
+    /// 反向：`expose=false` 但**启用**的模型仍旧"藏起来可调用"（既有语义，没被这一轮改掉）。
+    ///
+    /// 这条是上面那条的对照组 —— 两个开关语义不同，别把它们混成一个。
+    #[tokio::test]
+    async fn hidden_but_enabled_model_stays_unlisted_and_unresolvable_by_name() {
+        let (status, _, value) =
+            send(models_state(), json_request("GET", "/v1/models/m-hidden", b"")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "expose=false 也不该被 /v1/models/{{id}} 取到");
+        assert_eq!(value["error"]["type"], "tokenagency_model_not_found");
+    }
+
+    /// [docs/46 §303]：`/v1/models/{id}` 与清单**同一条记录**（能力字段也一起给）。
+    #[tokio::test]
+    async fn model_get_carries_the_same_declared_capabilities() {
+        let (status, _, value) =
+            send(models_state(), json_request("GET", "/v1/models/claude-sonnet-4-5", b"")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["context_window"], json!(null), "没声明就是没有：{value}");
+        assert_eq!(value["max_output_tokens"], json!(null));
+
+        let (status, _, value) =
+            send(models_state(), json_request("GET", "/v1/models/gpt-4o", b"")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["context_window"], json!(128_000));
+        assert_eq!(value["max_output_tokens"], json!(8_192));
+    }
+
+    /// 别名是**被接受的名字**：`/v1/models/{id}` 认它，但 `data` 里只有规范 id 一条。
+    #[tokio::test]
+    async fn model_get_answers_for_ids_and_aliases_alike() {
+        let state = models_state();
+        let expected = json!({
+            "id": "gpt-4o",
+            "object": "model",
+            "created": 1_700_000_000i64,
+            "owned_by": "p-anthropic",
+            "context_window": 128_000,
+            "max_output_tokens": 8_192,
+        });
+        for name in ["gpt-4o", "gpt-4o-2024-11-20", "openai/gpt-4o", "openai%2Fgpt-4o"] {
+            let (status, _, value) =
+                send(state.clone(), json_request("GET", &format!("/v1/models/{name}"), b"")).await;
+            assert_eq!(status, StatusCode::OK, "{name} 应当命中");
+            assert_eq!(value, expected, "{name} 应当返回同一条记录");
+        }
+    }
+
+    /// 不是我们的 id/别名 → **404 + OpenAI 形状的错误信封**（不是空对象、也不是编一条记录）。
+    #[tokio::test]
+    async fn model_get_404s_with_an_openai_shaped_error_for_unknown_names() {
+        let (status, _, value) =
+            send(models_state(), json_request("GET", "/v1/models/gpt-3.5-turbo", b"")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(value["error"]["type"], "tokenagency_model_not_found");
+        assert_eq!(value["error"]["code"], "TA-2001");
+        let message = value["error"]["message"].as_str().expect("要有 message");
+        assert!(message.contains("gpt-3.5-turbo"), "错误里要点名是哪个名字：{message}");
+
+        // `expose = false` 的模型在清单里被隐藏 → 按 id 也 404（"隐藏"不能是假的）
+        let (status, _, value) =
+            send(models_state(), json_request("GET", "/v1/models/m-hidden", b"")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(value["error"]["code"], "TA-2001");
+    }
+
+    /// `/v1/models` **不再走上游**：`models_list` 零请求、零线路选择。
+    ///
+    /// 手法：把网关接到一个**真的会记账的 dialer** 上（替身在本文件的测试模块里实现，
+    /// 因为 `pipeline.rs` 的替身是私有的），然后打 `/v1/models` —— 断言 `calls() == 0`；
+    /// 对照组打 `/v1/chat/completions`，证明"这台 dialer 真会记账"
+    /// （否则 `calls() == 0` 什么都证明不了）。
+    #[tokio::test]
+    async fn models_list_is_answered_locally_and_never_dials_upstream() {
+        struct CountingDialer {
+            calls: Arc<std::sync::atomic::AtomicU32>,
+        }
+        #[async_trait]
+        impl crate::dispatch::OutboundDialer for CountingDialer {
+            async fn execute(
+                &self,
+                _lane: &LaneId,
+                _req: crate::dispatch::UpstreamRequest,
+            ) -> Result<crate::dispatch::UpstreamResponse> {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(crate::dispatch::UpstreamResponse {
+                    status: StatusCode::OK,
+                    headers: HeaderMap::new(),
+                    body: crate::dispatch::byte_stream_from_bytes(Bytes::from_static(b"{}")),
+                })
+            }
+
+            async fn health(&self, lane: &LaneId) -> crate::dispatch::HealthReport {
+                crate::dispatch::HealthReport {
+                    lane_id: lane.clone(),
+                    ok: true,
+                    latency_ms: None,
+                    error: None,
+                }
+            }
+        }
+
+        /// 永远给一条候选 `ch-a`（对照组要能真的走到出站那一步）。
+        struct AlwaysChA;
+        impl ta_core::routing::PolicyEngine for AlwaysChA {
+            fn decide(
+                &self,
+                _hints: &ta_core::routing::RouteHints,
+                _ctx: &ta_core::routing::RouteContext,
+            ) -> ta_core::routing::RouteDecision {
+                ta_core::routing::RouteDecision {
+                    candidates: vec![ChannelId::new("ch-openai")],
+                    selector: ta_core::domain::Selector::BalancedSticky,
+                    on_no_candidate: ta_core::domain::NoCandidateAction::Error,
+                    ..Default::default()
+                }
+            }
+        }
+        struct FirstCandidate;
+        impl ta_core::routing::ChannelSelector for FirstCandidate {
+            fn select(
+                &self,
+                decision: &ta_core::routing::RouteDecision,
+                _hints: &ta_core::routing::RouteHints,
+                _ctx: &ta_core::routing::RouteContext,
+            ) -> Option<ta_core::routing::Selection> {
+                Some(ta_core::routing::Selection {
+                    channel: decision.candidates.first()?.clone(),
+                    sticky_hit: false,
+                    sticky_key: None,
+                    chain: decision.candidates.clone(),
+                })
+            }
+        }
+        struct SilentSink;
+        #[async_trait]
+        impl crate::pipeline::AttemptSink for SilentSink {
+            async fn on_attempt(&self, _r: crate::pipeline::AttemptRecord) {}
+        }
+
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let cfg = models_cfg();
+        let cfg_arc = Arc::new(arc_swap::ArcSwap::from_pointee(cfg.clone()));
+        let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+        // ★ 对照组要真的走到"出站"那一步，就得让 `prepare` 能把 `${s:1}` 解析出来 ——
+        //   否则它在选完通道之后、dial 之前就失败了，`calls()==0` 会变成一句空话
+        //   （这不是"没出站"，是"压根没走到出站"）。
+        let secrets: Arc<dyn crate::pipeline::SecretResolver> =
+            Arc::new(crate::pipeline::StaticSecrets::new([
+                ("${s:1}", "sk-openai"),
+                ("${s:2}", "sk-anthropic"),
+            ]));
+        let pipeline =
+            Arc::new(crate::pipeline::Pipeline::new(Arc::new(crate::pipeline::PipelineDeps {
+                cfg: cfg_arc.clone(),
+                clock: clock.clone(),
+                planner: Arc::new(crate::runtime::PolicySelectorPlanner::new(
+                    cfg_arc.clone(),
+                    Arc::new(AlwaysChA),
+                    Arc::new(FirstCandidate),
+                )),
+                secrets: secrets.clone(),
+                dialer: Arc::new(CountingDialer { calls: calls.clone() }),
+                passthrough: FullPassthrough::shared(),
+                sink: Arc::new(SilentSink),
+                meter: None,
+            })));
+        struct ReadyKernel;
+        impl KernelProbe for ReadyKernel {
+            fn state(&self) -> KernelState {
+                KernelState::Ready
+            }
+        }
+        let state = Arc::new(IngressState::new(
+            cfg_arc,
+            clock,
+            FullPassthrough::shared(),
+            secrets,
+            pipeline,
+            Arc::new(ReadyKernel),
+            IngressOptions::default(),
+        ));
+
+        let (status, _, value) = send(state.clone(), json_request("GET", "/v1/models", b"")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "models_list 不许有任何上游请求"
+        );
+
+        // [docs/59] **不带 `/v1` 的 `/models` 也必须本地作答。**
+        //
+        // 这条是用户第 325 轮"OpenAI 会直接穿透拿到服务商的所有模型"的**反回归闸门**：
+        // 客户端把 base_url 填成不带 `/v1` 的形态时会请求 `GET /models`，
+        // 以前它落进 `fallback` 被原样透传上游 → 端回服务商自己的完整清单
+        //（而且带着上游的真实模型名，等于把上游目录泄露给客户端）。
+        let (status, _, value) = send(state.clone(), json_request("GET", "/models", b"")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            value["data"].as_array().map(Vec::len),
+            Some(2),
+            "不带 /v1 也必须返回**我们自己配置的**模型清单"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "GET /models 也不许碰上游（以前这里是穿透）"
+        );
+
+        // 对照组：同一条装配打 chat_completions → 确实会出站（证明这台 dialer 会记账）
+        let body = serde_json::to_vec(&json!({"model": "gpt-4o", "messages": []})).unwrap();
+        let (_, _, _) = send(state, json_request("POST", "/v1/chat/completions", &body)).await;
+        assert!(
+            calls.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "对照组必须真的出站，否则 calls()==0 什么都没证明"
+        );
+    }
+
+    /// [docs/59] 设置页关掉的**下游 API 家族**必须当场明确报错。
+    ///
+    /// 用户第 326 轮的需求 2："可以在设置页面选择我们下游是统一成 OPENAI 的两种还是
+    /// Anthropic 的" —— 补一句"是打开关闭形式，按需求勾选"。这条钉两件事：
+    ///
+    /// ① 关掉的端点返回**明确**错误，且错误里点出**是哪个开关**（否则用户只知道"不通了"）；
+    /// ② **另一个家族不受影响** —— 三个开关是**独立**的，不是"选一个"。
+    #[tokio::test]
+    async fn disabled_downstream_family_is_refused_and_other_families_still_work() {
+        let mut cfg = models_cfg();
+        cfg.gateway.downstream.anthropic_messages = false;
+        let state = state_with(cfg, IngressOptions::default(), KernelState::Ready);
+
+        let (status, _, value) =
+            send(state.clone(), json_request("POST", "/v1/messages", b"{}")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "关掉的消息端点必须明确拒绝");
+        let message = value["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("anthropic_messages"),
+            "错误里必须点出是哪个开关，否则用户只能猜：{value}"
+        );
+
+        // OpenAI 家族**不该**被同一个开关连带关掉
+        let body = serde_json::to_vec(&json!({"model": "gpt-4o", "messages": []})).unwrap();
+        let (_, _, other) = send(state, json_request("POST", "/v1/chat/completions", &body)).await;
+        assert!(
+            !other.to_string().contains("是关着的"),
+            "chat/completions 不该被 anthropic_messages 的开关连带关掉：{other}"
+        );
+    }
+
+    /// [docs/59] 跨协议时**上游要打的端点路径**由目标协议决定（[docs/59] §2）。
+    ///
+    /// 三件事各自都会错（错一个就是必然 404/400）：
+    /// ① 不能把客户端的路径原样带过去（把 `/v1/messages` 打给 OpenAI 端点）；
+    /// ② Responses 有自己的端点 `/v1/responses`，不是 chat/completions；
+    /// ③ **Gemini 的模型名在路径里**，而且流式换一个方法名 —— 它给不出常量。
+    #[test]
+    fn upstream_path_follows_the_target_protocol() {
+        // 非 Gemini：常量端点
+        assert_eq!(upstream_path_for(Protocol::Anthropic, "whatever", false), "/v1/messages");
+        assert_eq!(upstream_path_for(Protocol::Openai, "whatever", true), "/v1/chat/completions");
+        assert_eq!(
+            upstream_path_for(Protocol::OpenaiResponses, "whatever", false),
+            "/v1/responses"
+        );
+        // Gemini：**模型名进路径**，流式换方法 + `alt=sse`
+        assert_eq!(
+            upstream_path_for(Protocol::Gemini, "gemini-2.5-pro", false),
+            "/v1beta/models/gemini-2.5-pro:generateContent"
+        );
+        assert_eq!(
+            upstream_path_for(Protocol::Gemini, "gemini-2.5-pro", true),
+            "/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"
+        );
+    }
+
+    /// 鉴权**没有**因为本地回答而被绕过：`local_key` 配了却带错 key → 401，而不是拿到清单。
+    #[tokio::test]
+    async fn models_list_still_requires_the_local_key() {
+        let mut cfg = models_cfg();
+        cfg.gateway.local_key = Some("sk-local".into());
+        let state = state_with(cfg, IngressOptions::default(), KernelState::Ready);
+
+        let (status, _, value) = send(state.clone(), json_request("GET", "/v1/models", b"")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(value["error"]["code"], "TA-1001");
+
+        let mut request = json_request("GET", "/v1/models", b"");
+        request
+            .headers_mut()
+            .insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer sk-local"));
+        let (status, _, value) = send(state, request).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["object"], "list");
+    }
+
     async fn send(state: Arc<IngressState>, request: Request) -> (StatusCode, HeaderMap, Value) {
         let response = router(state).oneshot(request).await.expect("路由必须能处理请求");
         let status = response.status();
@@ -1214,6 +1950,9 @@ mod tests {
             ("POST", "/v1/audio/some-future-endpoint", Endpoint::Audio),
             ("GET", "/v1/models", Endpoint::ModelsList),
             ("GET", "/v1/models/gpt-4o", Endpoint::ModelGet),
+            // [docs/59] 不带 `/v1` 的形态：**必须本地作答**，否则会被透传上游
+            ("GET", "/models", Endpoint::ModelsList),
+            ("GET", "/models/gpt-4o", Endpoint::ModelGet),
             ("GET", "/healthz", Endpoint::Healthz),
             ("ANY", "/some/unknown/path", Endpoint::Wildcard),
             ("GET", "/v1beta/models/gemini-2.5-pro:generateContent", Endpoint::Wildcard),
@@ -1244,8 +1983,13 @@ mod tests {
         assert!(model_from_path("/models/").is_none());
     }
 
+    /// **转发的**每一条注册路由都真的走到管线（`prepare` 能拿到它、端点分类正确）。
+    ///
+    /// `/v1/models` 与 `/v1/models/{id}` **不在**这个清单里：[docs/28 §4] 起它们由网关
+    /// **本地作答**（见 `models_list_is_answered_locally_and_never_dials_upstream`），
+    /// 故意不再进管线 —— 这里把它们排掉不是"漏了"，是防止有人把本地回答改回透传还看不出来。
     #[tokio::test]
-    async fn every_registered_route_reaches_the_pipeline() {
+    async fn every_forwarded_route_reaches_the_pipeline() {
         let state = state();
         let body = serde_json::to_vec(&json!({"model": "claude-sonnet-4-5"})).unwrap();
         for (method, uri, expected) in [
@@ -1256,8 +2000,6 @@ mod tests {
             ("POST", "/v1/images/generations", "images_generations"),
             ("POST", "/v1/files", "files"),
             ("POST", "/v1/audio/speech", "audio"),
-            ("GET", "/v1/models", "models_list"),
-            ("GET", "/v1/models/gpt-4o", "model_get"),
             ("PATCH", "/v1/unknown/future/endpoint", "wildcard"),
             ("POST", "/v1/some/future/endpoint", "wildcard"),
             ("DELETE", "/api/deep/path?x=1", "wildcard"),
@@ -1292,7 +2034,10 @@ mod tests {
     async fn golden_request_is_faithful_end_to_end_through_the_router() {
         let fixture = golden_fixture();
         let raw_body = serde_json::to_vec(&fixture.body).unwrap();
-        let mut builder = Request::builder().method("POST").uri("/v1/messages");
+        // [docs/59] **同协议**：这一条测"逐字节透传"，跨协议会被真的翻译掉。
+        // 跨协议的端到端路径由 `models_list_is_answered_locally...` 同族的用例与
+        // `pipeline::cross_protocol_request_body_is_translated_not_passed_through` 覆盖。
+        let mut builder = Request::builder().method("POST").uri("/v1/chat/completions");
         for (name, value) in fixture.headers.iter() {
             builder = builder.header(name, value);
         }
@@ -1332,13 +2077,17 @@ mod tests {
         expected_body["model"] = json!("claude-sonnet-4-5-20250929");
         assert_eq!(echoed["body"], expected_body);
         assert_eq!(echoed["upstream_model"], "claude-sonnet-4-5-20250929");
-        assert_eq!(echoed["endpoint"], "messages");
-        // 客户端说 anthropic 协议，而这个通道的上游服务商是 openai 协议
-        // → G2/G3 必须走 IR 路径（两者相等时才是 RAW 零改动透传）
-        assert_eq!(echoed["client_protocol"], "anthropic");
+        assert_eq!(echoed["endpoint"], "chat_completions");
+        // [docs/59] **同协议 → RAW 零改动透传**，这正是本测试要钉的东西（逐字节 faithful）。
+        //
+        // 跨协议会被**真的翻译**，那由
+        // `pipeline::cross_protocol_request_body_is_translated_not_passed_through` 覆盖。
+        // 原来这里写着"客户端 anthropic / 上游 openai → 必须走 IR 路径"，但断言的是
+        // **原样透传** —— 因为那条 IR 路径当时根本没被调用。夹具与注释现在都改齐了。
+        assert_eq!(echoed["client_protocol"], "openai");
         assert_eq!(echoed["protocol"], "openai");
         assert_eq!(echoed["has_image"], Value::Bool(true), "带图请求必须被识别（只读 hint）");
-        assert_eq!(echoed["upstream_url"], "https://relay.example.com/v1/messages");
+        assert_eq!(echoed["upstream_url"], "https://relay.example.com/v1/chat/completions");
         assert_eq!(echoed["channel_id"], "ch-relay-a");
     }
 
@@ -1930,6 +2679,89 @@ mod tests {
         );
         // 4) 都没有 → None（由 G2 决定 NoRoute / fallback_provider）
         assert!(snapshot(HeaderMap::new(), b"", "/v1/unknown").model_hint().is_none());
+    }
+
+    /// [docs/51] 客户端发**别名**时，`PreparedRequest.model` 必须归一到规范模型 id。
+    ///
+    /// 为什么必须归一、且必须只在一处做：下游三处都要用**同一个**名字 ——
+    /// ① 定价（`PriceMatch.model` 匹配对外模型名）、② 用量表的 `model` 列、
+    /// ③ 成本中心按模型的分组。不归一的话，同一个模型会因为客户端发了别名而
+    /// **算不出价**（显示"未定价"），并在成本中心被**拆成两行**、各算一半钱。
+    #[tokio::test]
+    async fn alias_is_canonicalized_to_the_model_id() {
+        let fixture = golden_fixture();
+        let mut doc = test_cfg();
+        // golden 通道服务 `claude-sonnet-4-5`；建一个带别名的模型并把它指到那条线路，
+        // 客户端发的是**别名**。
+        doc.models.push(
+            ta_core::domain::Model::new("m-canon")
+                .with_aliases(["claude-sonnet-4-5-alias"])
+                .with_lines([fixture.channel.id.clone()]),
+        );
+        let snapshot = RequestSnapshot {
+            request_id: "req_alias".into(),
+            method: Method::POST,
+            path: "/v1/messages".into(),
+            query: None,
+            endpoint: Endpoint::Messages,
+            headers: HeaderMap::new(),
+            body: Bytes::from(
+                serde_json::to_vec(&json!({"model": "claude-sonnet-4-5-alias", "messages": []}))
+                    .unwrap(),
+            ),
+            received_at_ms: 0,
+        };
+        let prepared = build_prepared_request(PrepareInput {
+            cfg: &doc,
+            policy: &FullPassthrough,
+            snapshot: &snapshot,
+            channel: &fixture.channel,
+            provider: Some(&fixture.provider),
+            secret: SECRET,
+            lane_id: None,
+        })
+        .expect("应当能构建");
+        assert_eq!(
+            prepared.model.as_deref(),
+            Some("m-canon"),
+            "客户端发的是别名 → 下游三处（定价/用量/成本分组）必须都看到规范 id"
+        );
+        // 归一的是**我们记下来的那个名字**，发往上游的 body 不受影响（上游认自己的名字）
+        assert_eq!(prepared.upstream_model, fixture.channel.upstream_model);
+    }
+
+    /// 客户端发了一个**配置里没有的**模型名 → 如实保留它，绝不编一个规范 id 出来。
+    #[tokio::test]
+    async fn unknown_model_name_is_kept_verbatim() {
+        let doc = test_cfg();
+        let fixture = golden_fixture();
+        let snapshot = RequestSnapshot {
+            request_id: "req_unknown".into(),
+            method: Method::POST,
+            path: "/v1/messages".into(),
+            query: None,
+            endpoint: Endpoint::Messages,
+            headers: HeaderMap::new(),
+            body: Bytes::from(
+                serde_json::to_vec(&json!({"model": "nope-not-configured"})).unwrap(),
+            ),
+            received_at_ms: 0,
+        };
+        let prepared = build_prepared_request(PrepareInput {
+            cfg: &doc,
+            policy: &FullPassthrough,
+            snapshot: &snapshot,
+            channel: &fixture.channel,
+            provider: Some(&fixture.provider),
+            secret: SECRET,
+            lane_id: None,
+        })
+        .expect("应当能构建");
+        assert_eq!(
+            prepared.model.as_deref(),
+            Some("nope-not-configured"),
+            "查不到就照原样记下客户端发的名字（网关要如实记下它收到了什么）"
+        );
     }
 
     #[tokio::test]

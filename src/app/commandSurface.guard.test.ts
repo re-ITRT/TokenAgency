@@ -28,7 +28,7 @@
  * 若它变红，先看报出来的 file:line 是不是自己新引用了未注册命令 —— 不要靠 mock 让它"看起来能用"。
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import path from "node:path";
 
@@ -133,6 +133,10 @@ function productionFiles(): string[] {
     .filter((f) => /\.(ts|tsx)$/.test(f))
     .filter((f) => !/\.test\.(ts|tsx)$/.test(f))
     .filter((f) => !EXCLUDED.includes(f))
+    // `git ls-files` 报的是**已跟踪**的文件：刚删掉、删除还没提交的文件仍在名单里。
+    // 那种文件没有调用点（它根本不存在），`readFileSync` 会以 ENOENT 把守卫整条打红 ——
+    // 那是扫描器的噪音，不是"引用了未注册命令"。所以只扫**磁盘上真的在**的文件。
+    .filter((f) => existsSync(f))
     .sort();
 }
 

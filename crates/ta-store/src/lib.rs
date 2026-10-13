@@ -10,10 +10,11 @@
 //! - [`subscription_traffic`] 订阅的"上次已知流量与更新时间"（docs/18 §1.2）。
 
 pub mod api_key;
+pub mod auto_choice;
 pub mod config_store;
 pub mod health_store;
 pub mod migrations;
-pub mod quota_backend;
+pub mod model_catalog;
 pub mod sticky_store;
 pub mod subscription_traffic;
 pub mod timebucket;
@@ -22,26 +23,26 @@ pub mod usage_store;
 mod util;
 
 pub use api_key::{ApiKeyCreated, ApiKeyView, SqliteApiKeyStore};
+pub use auto_choice::SqliteAutoChoiceStore;
 pub use config_store::{ConfigStore, SnapshotId, SnapshotMeta, SqliteConfigStore};
 pub use health_store::{
     HealthSample, HealthStore, SecretMeta, SecretMetaStore, SqliteHealthStore,
     SqliteSecretMetaStore,
 };
-pub use quota_backend::SqliteQuotaBackend;
+pub use model_catalog::{ModelCatalogRow, ModelCatalogStore, SqliteModelCatalogStore};
 pub use sticky_store::{SqliteStickyStore, StickyEntry, StickyStore};
 pub use subscription_traffic::{
     SqliteSubscriptionTrafficStore, SubscriptionTraffic, SubscriptionTrafficRow,
 };
 pub use timebucket::TimeBucket;
 pub use trace_store::{
-    ClearMode, LogPage, LogQuery, SqliteTraceStore, StorageStats, TraceAttempt, TraceDetail,
-    TraceLimits, TraceRecord, TraceRow, TraceStore,
+    ClearMode, LogPage, LogQuery, LogStats, SqliteTraceStore, StorageStats, TraceAttempt,
+    TraceDetail, TraceLimits, TraceRecord, TraceRow, TraceStore,
 };
 pub use usage_store::{
     ApiKeyUsageRow, CacheStat, DashboardCards, DashboardData, GroupDim, LaneHealthItem, Metric,
-    Num, QuotaBar, QuotaStateRow, Sparklines, SqliteUsageStore, StatusBar, TopModel, TrendPoint,
-    UsageFilters, UsageFormat, UsageQuery, UsageRow, UsageSeriesPoint, UsageStatus, UsageStore,
-    UsageTable,
+    Num, Sparklines, SqliteUsageStore, StatusBar, TopModel, TrendPoint, UsageFilters, UsageFormat,
+    UsageQuery, UsageRow, UsageSeriesPoint, UsageStatus, UsageStore, UsageTable,
 };
 
 use std::path::Path;

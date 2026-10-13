@@ -38,53 +38,29 @@
 
 import type { I18nKey } from "@/shared/i18n";
 import type { SemStatus } from "@/shared/components";
-import type { GroupType, Lane, LaneKind, Subscription, SubscriptionFormat } from "@/shared/bindings";
+/**
+ * 缺值占位符。
+ *
+ * **真源已收敛到 [`@/shared/format`]**（[docs/50]：这个字符原先在 7 个文件各写一遍）。
+ * 这里保留一次**再导出**：`./index`、`./assignments`、`./nodes` 三个兄弟模块都是从
+ * `./model` 取它的 —— 删掉再导出会让十几个调用点全部编译失败。
+ * 新代码请直接 `import { DASH } from "@/shared/format"`。
+ */
+export { DASH } from "@/shared/format";
+// [docs/52] 读后端原始对象的唯一实现（原先本文件自己写了 6 个读件）
+// [docs/55] `hasKey` / `pickArr` 随 `readAssignments` 一起不再被本文件使用 —— 去掉导入，
+// 需要它们的模块直接从 `@/shared/row` 取。
+import { asRow, pickBool, pickNum, pickStr } from "@/shared/row";
+import type { Subscription, SubscriptionFormat } from "@/shared/bindings";
 
 // ================================================================ 基础读取件
-
-type Row = Record<string, unknown>;
-
-/** 把任意值收窄成可安全取值的一层对象（不是对象就给空对象）。 */
-function asRow(value: unknown): Row {
-  return typeof value === "object" && value !== null ? (value as Row) : {};
-}
-
-/** 键**存在**（哪怕值是 `null`）—— 用来区分「未读取」与「未指定」。 */
-function hasKey(row: Row, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(row, key);
-}
-
-function pickStr(row: Row, ...keys: string[]): string | undefined {
-  for (const key of keys) {
-    const v = row[key];
-    if (typeof v === "string" && v !== "") return v;
-  }
-  return undefined;
-}
-
-function pickNum(row: Row, ...keys: string[]): number | undefined {
-  for (const key of keys) {
-    const v = row[key];
-    if (typeof v === "number" && Number.isFinite(v)) return v;
-  }
-  return undefined;
-}
-
-function pickBool(row: Row, ...keys: string[]): boolean | undefined {
-  for (const key of keys) {
-    const v = row[key];
-    if (typeof v === "boolean") return v;
-  }
-  return undefined;
-}
-
-function pickArr(row: Row, key: string): unknown[] | undefined {
-  const v = row[key];
-  return Array.isArray(v) ? v : undefined;
-}
+//
+// [docs/52] 全部来自 `@/shared/row` —— 这里原来自己写了一份（`asRow` / `hasKey` /
+// `pickStr` / `pickNum` / `pickBool` / `pickArr`），而 `asRow` 的口径与
+// `providers/*` 那份**已经不一样了**（这份收数组，那份挡数组）。收敛到一处之后
+// 全仓只有一种口径：**数组不是一行**。
 
 /** 数值缺失一律画"—"（**不画 0**：0 是"确实是 0"，缺失是"不知道"）。 */
-export const DASH = "—";
 
 // ================================================================ 网络代理是不是**在用**
 
@@ -112,11 +88,21 @@ export function readKernelPath(doc: unknown): string | undefined {
 
 // ================================================================ 文案映射（显式表，不用模板拼 key）
 
-/** 五种线路（[04 §7.1]）。 */
+/**
+ * 线路种类（[04 §7.1]）—— **界面认得的词表**。
+ *
+ * [docs/54] 用户第 321 轮："**直接放弃订阅里面分组这一概念，只拿节点**" ——
+ * `subscription_group`（订阅里自带的组）**从界面上彻底消失**，所以这里不再是五种。
+ * 后端仍然能反序列化老值（否则老配置在迁移前就解析失败），但那是**迁移用的遗留口**，
+ * 不是可选项 —— 校验器会把它当配置损坏点名报错。
+ *
+ * [docs/58]（第 325 轮）之后**没有"类型下拉"了**（手动建线路的界面整块删除），
+ * 但这个词表仍然有职责：`laneKindLabel` 的取值集合与它一一对应，
+ * 列表里显示的就是这四种名字；`network.test.tsx` 用它挡住"遗留值悄悄回到选项里"。
+ */
 export const LANE_KINDS = [
   "direct",
   "subscription_auto",
-  "subscription_group",
   "subscription_node",
   "filter",
 ] as const;
@@ -124,7 +110,6 @@ export const LANE_KINDS = [
 const LANE_KIND_LABEL: Record<string, I18nKey> = {
   direct: "network.laneKind.direct",
   subscription_auto: "network.laneKind.subscription_auto",
-  subscription_group: "network.laneKind.subscription_group",
   subscription_node: "network.laneKind.subscription_node",
   filter: "network.laneKind.filter",
 };
@@ -196,6 +181,20 @@ export type SubscriptionRow = {
   name?: string;
   /** **已遮蔽**密钥参数的地址（`maskSubscriptionUrl` 是唯一出口）。 */
   url: string;
+  /**
+   * [docs/57] **编辑时的回带底稿**：配置里那条订阅本身，但**已剔除 `url`**。
+   *
+   * 为什么必须有它：`subscription_upsert` 是**整条覆盖写**（Rust 侧 `*slot = subscription.clone()`），
+   * 而表单里没有、也不该有的字段（`user_agent` / `disabled_nodes` / `provider_key` / `extra`…）
+   * 一旦不回带，保存就会把它们**重置成类型默认值**。最要命的是 `disabled_nodes`
+   * —— 那是 [docs/54] 逐节点开关的存档，被清空 = 用户关掉的节点**全部被重新打开**，
+   * 而且保存那一刻不报错、还显示"已保存"。这与 [docs/23] 为 `provider_upsert` 根治的是同一个缺陷，
+   * 纪律逐字相同：**以原始记录为底，只覆盖用户真的改过的那些键**（见 `./providers/editor.ts`）。
+   *
+   * 剔除 `url` 的原因见本类型上方的注释：它是**唯一**不能进 DOM 的字段，底稿里也不留它。
+   * 编辑时地址留空 = 不改，由后端保证（[docs/57]）。
+   */
+  base: Record<string, unknown>;
   format?: string;
   /** Rust 侧 `#[serde(default)]` 的语义：省略 = 启用。 */
   enabled: boolean;
@@ -267,10 +266,18 @@ export function readSubscription(raw: unknown): SubscriptionRow {
   // 解析结果只在**外层**（`SubscriptionView` 把它们放在实体旁边）
   const parsed = wrapped ? outer : {};
 
+  // [docs/57] 编辑回带的底稿 = 实体本身，**剔除 `url`**（它是唯一不能进 DOM 的字段）。
+  // 注意取的是 `inner`（实体）而不是 `outer`：`outer` 在 `SubscriptionView` 形状下还带着
+  // `node_count` / `parser` / `error` 这些**视图字段** —— 把它们发回去会被 Rust 的
+  // `#[serde(flatten)] extra` 收下、**写进配置**（配置里凭空多出几个运行时字段）。
+  const base: Record<string, unknown> = { ...inner };
+  delete base["url"];
+
   return {
     id: pickStr(inner, "id") ?? "",
     name: pickStr(inner, "name"),
     url: maskSubscriptionUrl(pickStr(inner, "url") ?? ""),
+    base,
     format: pickStr(inner, "format"),
     enabled: pickBool(inner, "enabled") ?? true,
     intervalS: pickNum(inner, "interval_s"),
@@ -410,6 +417,12 @@ export type SubscriptionDraft = {
   include: string;
   exclude: string;
   enabled: boolean;
+  /**
+   * [docs/46 §E] 健康检查地址（**选填**）。
+   * 留空 ⇒ **不发这个字段**（Rust 侧 `health_check` 有 `#[serde(default)]`，用后端默认）；
+   * 填了 ⇒ 用它替换默认探测目标（无公网环境里指向本机地址，就能测出真实延迟）。
+   */
+  healthUrl: string;
 };
 
 /**
@@ -427,8 +440,99 @@ export function parseOptionalCount(text: string): number | undefined | null {
 }
 
 /** 三个没有 serde 默认值的字段（`id` / `name` / `url`）是否都填了。空值不发给后端。 */
-export function subscriptionDraftComplete(draft: SubscriptionDraft): boolean {
-  return draft.id.trim() !== "" && draft.name.trim() !== "" && draft.url.trim() !== "";
+export function subscriptionDraftComplete(
+  draft: SubscriptionDraft,
+  /**
+   * [docs/57] 编辑时 `url` **允许为空**：地址里带 token，界面从不回显原文
+   *（[`SubscriptionRow.base`]），所以编辑时那个框只能是空的 —— 留空 = 不改地址
+   *（由后端保证，同 `credential_set_secret` 的"留空 = 不改密钥"）。新建时仍然必填。
+   */
+  options: { urlRequired?: boolean } = {},
+): boolean {
+  const urlRequired = options.urlRequired ?? true;
+  return (
+    draft.id.trim() !== "" &&
+    draft.name.trim() !== "" &&
+    (!urlRequired || draft.url.trim() !== "")
+  );
+}
+
+/**
+ * [docs/57] 一行订阅 → **编辑**表单的初始草稿。
+ *
+ * **地址刻意留空**：`row.url` 是遮蔽过的（`token=***`）。把它填进输入框，
+ * 用户一保存就会把 `***` 当成真实地址写回配置 —— 那是个"保存成功、下次刷新全挂"的坑。
+ * 所以编辑时地址框是空的，语义是「留空 = 不改」（与 `providers.edit.keyHint` 同一条口径）。
+ */
+export function subscriptionDraftFromRow(row: SubscriptionRow): SubscriptionDraft {
+  const format = row.format;
+  return {
+    id: row.id,
+    name: row.name ?? "",
+    url: "",
+    format: (SUBSCRIPTION_FORMATS as readonly string[]).includes(format ?? "")
+      ? (format as SubscriptionFormat)
+      : "auto",
+    intervalS: row.intervalS === undefined ? "" : String(row.intervalS),
+    keepVersions: row.keepVersions === undefined ? "" : String(row.keepVersions),
+    include: row.include ?? "",
+    exclude: row.exclude ?? "",
+    enabled: row.enabled,
+    healthUrl: row.healthUrl ?? "",
+  };
+}
+
+/**
+ * [docs/57] **编辑**的载荷：以原始记录为底（`base`），只覆盖表单真正管的那些键。
+ *
+ * 与 `subscriptionPayload`（新建）的区别只有两处，两处都是必须的：
+ *
+ * 1. **带上底稿 `base`** —— 不回带就会把表单里没有的字段重置成类型默认值。
+ *    最要命的是 `disabled_nodes`（[docs/54] 逐节点开关）：它被清空 = 用户关掉的节点
+ *    **全部被重新打开**，而保存那一刻不报错、还显示"已保存"。
+ * 2. **地址可以留空**（留空 = 不改）—— 因为界面拿不到明文地址。
+ */
+export function subscriptionEditPayload(
+  draft: SubscriptionDraft,
+  base: Record<string, unknown>,
+): Subscription {
+  const payload: Record<string, unknown> = { ...base };
+  // 底稿里本来就没有 url（`readSubscription` 剔掉了）；这里再删一次是双保险。
+  delete payload["url"];
+  payload["id"] = draft.id.trim();
+  payload["name"] = draft.name.trim();
+  payload["format"] = draft.format;
+  payload["enabled"] = draft.enabled;
+  // 留空 ⇒ 后端保持原值（[docs/57]）—— 这是**唯一**允许留空的字段
+  payload["url"] = draft.url.trim();
+
+  // 数字：草稿已回填真值。清空 = 交回后端默认 → **删掉这个键**（不是发 0）。
+  const intervalS = parseOptionalCount(draft.intervalS);
+  if (intervalS === undefined) delete payload["interval_s"];
+  else if (intervalS !== null) payload["interval_s"] = intervalS;
+  const keepVersions = parseOptionalCount(draft.keepVersions);
+  if (keepVersions === undefined) delete payload["keep_versions"];
+  else if (keepVersions !== null) payload["keep_versions"] = keepVersions;
+
+  // 过滤：清空是**合法意图**（= 不要过滤）→ 必须显式覆盖成空对象。
+  // 这里不能照抄新建的"留空就不发"：那样底稿里的旧正则会被留下来
+  //（用户明明删掉了过滤条件，保存后它还在）。
+  const include = draft.include.trim();
+  const exclude = draft.exclude.trim();
+  const filter: Record<string, string> = {};
+  if (include !== "") filter.include = include;
+  if (exclude !== "") filter.exclude = exclude;
+  payload["filter"] = filter;
+
+  // 健康检查：保留底稿里的 enabled / interval_s / tolerance_ms，只换 url；
+  // 地址清空 = 交回后端默认探测目标（**删掉 url 键**，不是发空串）。
+  const health: Record<string, unknown> = { ...asRow(base["health_check"]) };
+  const healthUrl = draft.healthUrl.trim();
+  if (healthUrl === "") delete health["url"];
+  else health["url"] = healthUrl;
+  payload["health_check"] = health;
+
+  return payload as unknown as Subscription;
 }
 
 /**
@@ -459,6 +563,13 @@ export function subscriptionPayload(draft: SubscriptionDraft): Subscription {
     if (include !== "") filter.include = include;
     if (exclude !== "") filter.exclude = exclude;
     payload.filter = filter;
+  }
+  // [docs/46 §E] 健康检查地址：**只在用户真填了才发**（留空 = 交给 Rust 的 `#[serde(default)]`）。
+  // 这里**只放 `url`**，不补 `enabled`/`interval_s`/`tolerance_ms` —— 前端复刻后端默认值
+  // 就等于把默认值变成第二个真相源（理由见本函数上方的注释）。
+  const healthUrl = draft.healthUrl.trim();
+  if (healthUrl !== "") {
+    payload.health_check = { url: healthUrl };
   }
   return payload as unknown as Subscription;
 }
@@ -541,83 +652,18 @@ export function readLane(raw: unknown): LaneRow {
   };
 }
 
-// ================================================================ 写载荷（线路）
-
-/** 组策略（内核的组类型）。**kebab-case** —— 与其它枚举不同，`bindings.ts` 专门注明了。 */
-export const LANE_GROUP_TYPES: readonly GroupType[] = [
-  "select",
-  "url-test",
-  "fallback",
-  "load-balance",
-];
-
-/** 组策略 → 文案 key。取值表就是内核的那四个（kebab-case）。 */
-export const GROUP_TYPE_LABEL: Record<string, I18nKey> = {
-  select: "network.groupType.select",
-  "url-test": "network.groupType.url-test",
-  fallback: "network.groupType.fallback",
-  "load-balance": "network.groupType.load-balance",
-};
-
-/** 线路表单的原始输入（可选字段保持字符串：`""` = 没填 → **不发这个字段**）。 */
-export type LaneDraft = {
-  id: string;
-  name: string;
-  kind: LaneKind;
-  subscription: string;
-  group: string;
-  groupType: string;
-  node: string;
-  filter: string;
-  excludeFilter: string;
-  enabled: boolean;
-};
-
-/**
- * 后端 `Lane::missing_kind_field()`（`crates/ta-core/src/domain/behavior.rs`）的**前端镜像**：
- * 非 `direct` 必须有 `subscription`；`subscription_group` 要 `group`；`subscription_node` 要 `node`；
- * `filter` 要 `filter`。返回缺的那个**契约字段名**（给用户看的句子由 i18n 拼）。
+/*
+ * [docs/58]（第 325 轮）这里整节是**线路表单**的草稿类型与载荷构造器：
+ * `LaneDraft` / `laneMissingField` / `lanePayload` / `laneDraftFromRow` / `laneEditPayload`。
  *
- * 这不是"前端自己发明规则"：是同一条规则提前检查一次，免得把注定被拒的请求发出去 ——
- * 规则改动时两边会一起露出来（后端那边有 `missing_kind_field` 的单测）。
+ * 用户裁决「这个功能好像没有什么用，可以在界面上删了」之后，手动建/改线路的界面整块删除，
+ * 这些函数**一个调用方都没有了**。留着它们不只是死代码 —— 它们会让人以为
+ * "线路还能手建，只是这一页没画入口"，而事实是线路由后端在服务商选中时按需建出来。
+ *
+ * 载荷纪律本身没有丢：订阅那份还在（`subscriptionEditPayload`），
+ * 而线路的三种建法各有自己的后端命令（`lane_ensure_for_node` / `lane_ensure_direct` /
+ * `ensure_auto_lane`），它们是"这条线路该长什么样"的唯一真相源。
  */
-export function laneMissingField(draft: LaneDraft): string | undefined {
-  if (draft.id.trim() === "") return "id";
-  if (draft.name.trim() === "") return "name";
-  if (draft.kind === "direct") return undefined;
-  if (draft.subscription.trim() === "") return "subscription";
-  if (draft.kind === "subscription_group") return draft.group.trim() === "" ? "group" : undefined;
-  if (draft.kind === "subscription_node") return draft.node.trim() === "" ? "node" : undefined;
-  if (draft.kind === "filter") return draft.filter.trim() === "" ? "filter" : undefined;
-  return undefined;
-}
-
-/**
- * 草稿 → `lane_upsert` 的载荷：**只带用户真的填了的字段**（其余交后端 `#[serde(default)]`）。
- * 契约的 `Lane` 把可选字段写成 `string | null`，Rust 侧是 `Option<String>` —— 不填就是 `None`，
- * 与显式发一个空字符串**不是**一回事（后者会覆盖掉订阅里已有的名字）。
- */
-export function lanePayload(draft: LaneDraft): Lane {
-  const payload: Record<string, unknown> = {
-    id: draft.id.trim(),
-    name: draft.name.trim(),
-    kind: draft.kind,
-    enabled: draft.enabled,
-  };
-  const optionalFields: [string, string][] = [
-    ["subscription", draft.subscription],
-    ["group", draft.group],
-    ["group_type", draft.groupType],
-    ["node", draft.node],
-    ["filter", draft.filter],
-    ["exclude_filter", draft.excludeFilter],
-  ];
-  for (const [key, value] of optionalFields) {
-    if (value.trim() !== "") payload[key] = value.trim();
-  }
-  return payload as unknown as Lane;
-}
-
 // ================================================================ 线路分配（五级继承的**显式值**）
 
 /** 一条线路的引用（id + 可解析出的名字）。`laneName` 缺失 = 配置里没有这条线路。 */
@@ -660,190 +706,16 @@ export type ProviderLaneRow = {
   laneReadable: boolean;
 };
 
-/** 五级继承里某一级的名字（`lane_assignments` 的 `source` → 文案 key）。 */
-const LANE_SOURCE_LABEL: Record<string, I18nKey> = {
-  policy: "network.assignments.source.policy",
-  channel: "network.assignments.source.channel",
-  credential: "network.assignments.source.credential",
-  provider: "network.assignments.source.provider",
-  default: "network.assignments.source.default",
-};
-
-/** **后端**说这条结论来自哪一级。词表外的取值原样显示（是后端说的话，不改写）。 */
-export function laneSourceLabel(source: string | undefined): I18nKey | undefined {
-  if (source === undefined) return undefined;
-  return LANE_SOURCE_LABEL[source];
-}
-
-/** 倒排的一行：谁**显式**引用了这条线。 */
-export type ReverseLaneRow = {
-  laneId: string;
-  laneName?: string;
-  channels: string[];
-  credentials: string[];
-  providers: string[];
-  policies: string[];
-};
-
-export type AssignmentView = {
-  policies: PolicyLaneRow[];
-  channels: ChannelLaneRow[];
-  credentials: CredentialLaneRow[];
-  providers: ProviderLaneRow[];
-  defaultLane?: LaneRef;
-  reverse: ReverseLaneRow[];
-  /** `config_get` 是否给出了这些字段。`false` = **未读取**（不是"配置里是空的"）。 */
-  has: {
-    net: boolean;
-    lanes: boolean;
-    channels: boolean;
-    credentials: boolean;
-    providers: boolean;
-    policies: boolean;
-  };
-};
-
-/**
- * 读整份配置，收集**五级继承里每一级显式写了什么**，以及它的倒排。
+/*
+ * [docs/55]（第 322 轮）这里曾有 `LANE_SOURCE_LABEL` / `laneSourceLabel` / `ReverseLaneRow` /
+ * `AssignmentView` / `readAssignments` —— 「线路分配」页（`/network/assignments`）的整套读件。
  *
- * **不解析继承、不产出"最终生效线路"** —— 那是后端 `lane_assignments` 的职责
- * （[04 §8.1]）。前端算一遍就会与后端漂，而漂了不会报错。
+ * 那一页随"放弃线路级别的分配"整页删除（用户："取而代之的，每个服务商统一一个节点"），
+ * 所以这些读件没有任何调用方了。留着的害处不只是死代码：它们会让人以为
+ * "五级继承链还在，只是这一页没画" —— 而事实是前三级已经没有字段、没有写入口、也不参与解析。
+ *
+ * 现在要看/改走哪个节点，只有一处：服务商详情页的「网络代理」下拉（读 `lane_options`）。
  */
-export function readAssignments(doc: unknown): AssignmentView {
-  const d = asRow(doc);
-  const net = asRow(d["net"]);
-  const lanesRaw = pickArr(d, "lanes");
-  const channelsRaw = pickArr(d, "channels");
-  const credentialsRaw = pickArr(d, "credentials");
-  const providersRaw = pickArr(d, "providers");
-  const policiesRaw = pickArr(d, "policies");
-
-  // 线路 id → 名字（引用只有 id 时用它解析成用户能认的名字）
-  const laneNames = new Map<string, string>();
-  for (const item of lanesRaw ?? []) {
-    const row = asRow(item);
-    const id = pickStr(row, "id");
-    if (id !== undefined) laneNames.set(id, pickStr(row, "name") ?? id);
-  }
-
-  const ref = (laneId: string | undefined): LaneRef | undefined =>
-    laneId === undefined ? undefined : { laneId, laneName: laneNames.get(laneId) };
-
-  // ---- 服务商 / 套餐 的名字映射（通道行要用人能认的名字，不是 id）
-  const providerNames = new Map<string, string>();
-  for (const item of providersRaw ?? []) {
-    const row = asRow(item);
-    const id = pickStr(row, "id");
-    if (id !== undefined) providerNames.set(id, pickStr(row, "name", "id") ?? id);
-  }
-  const credentialLabels = new Map<string, string>();
-  for (const item of credentialsRaw ?? []) {
-    const row = asRow(item);
-    const id = pickStr(row, "id");
-    if (id !== undefined) credentialLabels.set(id, pickStr(row, "label", "id") ?? id);
-  }
-
-  const policies: PolicyLaneRow[] = [];
-  for (const item of policiesRaw ?? []) {
-    const row = asRow(item);
-    const lane = ref(pickStr(asRow(row["action"]), "use_lane"));
-    // 只列**显式**指定了的：use_lane 为空 = 这一级没说，不算一条分配
-    if (lane === undefined) continue;
-    policies.push({
-      id: pickStr(row, "id") ?? "",
-      name: pickStr(row, "name") ?? "",
-      priority: pickNum(row, "priority"),
-      enabled: pickBool(row, "enabled") ?? true,
-      lane,
-    });
-  }
-
-  const channels: ChannelLaneRow[] = (channelsRaw ?? []).map((item) => {
-    const row = asRow(item);
-    const providerId = pickStr(row, "provider");
-    const credentialId = pickStr(row, "credential");
-    return {
-      id: pickStr(row, "id") ?? "",
-      model: pickStr(row, "model"),
-      providerId,
-      providerName: providerId === undefined ? undefined : providerNames.get(providerId),
-      credentialId,
-      credentialLabel: credentialId === undefined ? undefined : credentialLabels.get(credentialId),
-      lane: ref(pickStr(row, "lane")),
-      laneReadable: hasKey(row, "lane"),
-      enabled: pickBool(row, "enabled") ?? true,
-    };
-  });
-
-  const credentials: CredentialLaneRow[] = (credentialsRaw ?? []).map((item) => {
-    const row = asRow(item);
-    const providerId = pickStr(row, "provider");
-    return {
-      id: pickStr(row, "id") ?? "",
-      label: pickStr(row, "label") ?? "",
-      providerId,
-      providerName: providerId === undefined ? undefined : providerNames.get(providerId),
-      lane: ref(pickStr(row, "lane")),
-      laneReadable: hasKey(row, "lane"),
-    };
-  });
-
-  const providers: ProviderLaneRow[] = (providersRaw ?? []).map((item) => {
-    const row = asRow(item);
-    return {
-      id: pickStr(row, "id") ?? "",
-      name: pickStr(row, "name") ?? "",
-      lane: ref(pickStr(row, "lane")),
-      // 契约的 `ProviderView` **没有** lane 字段：键不在 = 未读取（不是"未指定"）
-      laneReadable: hasKey(row, "lane"),
-    };
-  });
-
-  const defaultLaneId = pickStr(net, "default_lane");
-  const defaultLane = ref(defaultLaneId);
-
-  // ---- 倒排：配置里**显式**引用了每条线的四个来源。
-  // 先把配置里的线路按顺序放进去（没人引用的也要出现 —— 否则用户会以为它被用了）。
-  const reverseMap = new Map<string, ReverseLaneRow>();
-  const ensure = (laneId: string): ReverseLaneRow => {
-    const existing = reverseMap.get(laneId);
-    if (existing !== undefined) return existing;
-    const row: ReverseLaneRow = {
-      laneId,
-      laneName: laneNames.get(laneId),
-      channels: [],
-      credentials: [],
-      providers: [],
-      policies: [],
-    };
-    reverseMap.set(laneId, row);
-    return row;
-  };
-  for (const laneId of laneNames.keys()) ensure(laneId);
-  for (const c of channels) if (c.lane !== undefined) ensure(c.lane.laneId).channels.push(c.id);
-  for (const c of credentials) {
-    if (c.lane !== undefined) ensure(c.lane.laneId).credentials.push(c.label);
-  }
-  for (const p of providers) if (p.lane !== undefined) ensure(p.lane.laneId).providers.push(p.name);
-  for (const p of policies) if (p.lane !== undefined) ensure(p.lane.laneId).policies.push(p.name);
-
-  return {
-    policies,
-    channels,
-    credentials,
-    providers,
-    defaultLane,
-    reverse: [...reverseMap.values()],
-    has: {
-      net: Object.keys(net).length > 0,
-      lanes: lanesRaw !== undefined,
-      channels: channelsRaw !== undefined,
-      credentials: credentialsRaw !== undefined,
-      providers: providersRaw !== undefined,
-      policies: policiesRaw !== undefined,
-    },
-  };
-}
 
 // ================================================================ 给展示层用的小工具
 

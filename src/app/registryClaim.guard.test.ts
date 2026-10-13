@@ -23,7 +23,7 @@
  */
 
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -108,6 +108,10 @@ function productionFiles(): string[] {
     .filter((f) => !/\.test\.(ts|tsx)$/.test(f))
     // 模拟后端与契约门面镜像整份 CommandMap，"注册"一词在这里指的是 mock 注册，不是 Rust 注册表
     .filter((f) => f !== "src/shared/api/mock.ts" && f !== "src/shared/api/commands.ts")
+    // `git ls-files` 报的是**已跟踪**的文件：刚删掉、删除还没提交的文件仍在名单里。
+    // 那种文件里没有"断言"（它根本不存在），`readFileSync` 会以 ENOENT 把守卫整条打红 ——
+    // 那是扫描器的噪音，不是"说了假话"。所以只扫**磁盘上真的在**的文件。
+    .filter((f) => existsSync(f))
     .sort();
 }
 

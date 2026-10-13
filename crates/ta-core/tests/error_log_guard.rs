@@ -70,6 +70,24 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     // 由 wp/e3 的评审员从源码推出并报了回来。
     //
     // 规则：**EXEMPT 条目必须与其引用的文件在同一个提交/同一个合并里落地。**
+    //
+    // [docs/31 §35] 下面是**环境/系统层**失败：`tauri::Error` 没有 TA 码（它包的是 Windows/WebView2
+    // 的错误），而这几条日志的正文已经写清"是什么失败 + 常见原因 + 下一步"，比一个自造的码有用。
+    (
+        "src-tauri/src/lib.rs",
+        "主窗口创建失败",
+        "tauri::Error 没有 TA 码；窗口建不出来是环境问题（WebView2 运行时缺失 / 数据目录不可写）",
+    ),
+    (
+        "src-tauri/src/lib.rs",
+        "托盘不可用（装不上）",
+        "tauri::Error 没有 TA 码；托盘是便利功能，装不上就降级继续跑",
+    ),
+    (
+        "src-tauri/src/lib.rs",
+        "托盘数据源切换失败",
+        "tauri::Error 没有 TA 码；同样只是托盘状态不刷新，不影响界面与网关",
+    ),
 ];
 
 fn exemption_for(rel: &str, message: Option<&str>) -> Option<&'static str> {

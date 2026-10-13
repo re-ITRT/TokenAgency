@@ -30,7 +30,7 @@
 | 员工 | 主岗 | 主岗文件范围 | 副岗（主岗交付后顶上） |
 |---|---|---|---|
 | **E1 领域官** | 领域与配置 | `crates/ta-core/src/{domain,config}/**` | 前端外壳 F1（路由/主题/i18n/API 封装） |
-| **E2 决策官** | 决策与账本 | `crates/ta-core/src/{routing,sticky,quota,pricing,metering}/**` | **OB1 可观测性（§5.5，用户要求，优先于副岗）** → 前端 看板+日志 F2 |
+| **E2 决策官** | 决策与账本 | `crates/ta-core/src/{routing,sticky,pricing,metering}/**`（`quota` 模块**已删除**，见 [docs/60](60-ui-minimalism.md) 与 [docs/31](31-progress.md)） | **OB1 可观测性（§5.5，用户要求，优先于副岗）** → 前端 看板+日志 F2 |
 | **E3 数据官** | 数据与密钥 | `crates/ta-store/**`、`crates/ta-secrets/**` | 前端 配置类页面 F3 |
 | **E4 网络官** | 网络接入 | `crates/ta-kernel/**`、`crates/ta-subscription/**` | 前端 网络+成本 F4 |
 | **E5 网关官** | 网关（**关键路径 Owner**） | `crates/ta-gateway/**` | Tauri 层 T1+T2（命令/托盘/生命周期） |
@@ -130,7 +130,7 @@
 
 | 项 | 内容 |
 |---|---|
-| **拥有** | `crates/ta-core/src/quota/**`、`pricing/**`、`metering/**` |
+| **拥有** | `crates/ta-core/src/pricing/**`、`metering/**`（**`quota/` 已删除**：额度改由账本 + 定价表达） |
 | **做** | ① `QuotaLedger`：四观测源取最保守值 + 状态机（ok/soft/exhausted/unknown）+ 窗口滚动 ② `PricingEngine`：精确/通配匹配、倍率、`plan_fee`、价格快照 ③ `TokenMeter::normalize`：**严格按 [11 §6] 表实现，必须先把 cached 从 input 总数里减掉** |
 | **DoD** | 单测覆盖：三家上游 usage 样本各 5 个 → 归一化结果断言；额度到 100% 自动 exhausted；改价不改历史（快照） |
 
@@ -222,7 +222,7 @@
 | 项 | 内容 |
 |---|---|
 | **拥有** | `src-tauri/src/tray.rs`、`src-tauri/src/plugins.rs`、`src-tauri/src/lifecycle.rs`、`capabilities/` |
-| **做** | ① 托盘状态色图标（4 态 + 实验模式角标）② 动态菜单（策略/节点/额度/紧急开关，[05 §1.2]）③ **11 个插件注册**（原列 12 个；**`tauri-plugin-log` 已移除** —— 它与 `tracing_subscriber` 是两套并行日志系统，见 [14 §1.1]）④ 关窗退托盘、单实例、通知去重 ⑤ 启动编排（骨架屏 → 内核就绪 → 转绿）⑥ **开机自启动**（见下） |
+| **做** | ① 托盘状态色图标（4 态 + 实验模式角标）② 动态菜单（策略/节点/额度/紧急开关，[05 §1.2]）③ **插件注册**（原列 12 个；**`tauri-plugin-log` 已移除** —— 它与 `tracing_subscriber` 是两套并行日志系统，见 [14 §1.1]；**`fs`/`process`/`clipboard-manager`/`shell` 四个零调用插件也已移除**，见 [docs/50](50-plugin-and-capability-minimization.md)；当前 **7 个**）④ 关窗退托盘、单实例、通知去重 ⑤ 启动编排（骨架屏 → 内核就绪 → 转绿）⑥ **开机自启动**（见下） |
 | **开机自启动（本包必做，不是可选）** | ① `tauri-plugin-autostart` 接线，`MacosLauncher::LaunchAgent`；Windows 走 HKCU Run 键（免提权）② **`app_get_autostart` 必须真的去读系统状态**，不许回显配置值；填 `AutostartState` 全部字段（[10 §2.2](10-interface-spec.md)）③ 启动模式 `tray`（默认，静默进托盘）/ `window` ④ 启动延迟由我们自己实现（命令行传参 → 启动后先睡再拉内核）⑤ **卸载钩子删除系统条目**（NSIS `customUnInstall`）⑥ 漂移检测：`desired != actual` 时不自动改回，交给 UI 提示 ⑦ 边界规则见 [09 §1.2](09-architecture-design.md) E1–E5 |
 | **DoD** | 手动/自动验证：托盘菜单能切策略与节点；关窗不退进程；二次启动只唤起已有窗口 |
 

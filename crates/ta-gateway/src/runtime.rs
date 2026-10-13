@@ -33,7 +33,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use ta_core::domain::ConfigDoc;
-use ta_core::pricing::PricingEngine;
 use ta_core::routing::{
     ChannelSelector, EngineOptions, PolicyEngine, RouteContext, RouteDecision, RouteHints, Router,
     RouterOptions, Selection, SelectorOptions,
@@ -198,9 +197,14 @@ impl RoutingPlanner for PolicySelectorPlanner {
 /// 跟随配置热重载的路由门面（生产环境唯一的 [`RoutingPlanner`]）。
 pub struct LiveRouter {
     cfg: Arc<arc_swap::ArcSwap<ConfigDoc>>,
-    pricing: Option<Arc<dyn PricingEngine>>,
     /// 跨配置换代共享的粘性表（见模块头注释）。
     sticky: Arc<dyn StickyResolver>,
+    /// 各线路的 token 用量来源（平均粘性的依据，[docs/48 §4]）。
+    ///
+    /// 放在门面上而不是 HTTP 管线里：**只有这里同时看得见"用量来源"与"选路"**，
+    /// 于是"每请求取一次快照"只有一处实现。`None` = 没装配 → 退化为按 priority。
+    /// `BalanceSource` 的实现方自负缓存责任（每请求调一次 `used_tokens`）。
+    balance: Option<Arc<dyn ta_core::routing::BalanceSource>>,
     engine_options: EngineOptions,
     selector_options: SelectorOptions,
     /// 单调代次号。**不用地址当前值**：旧分配释放后地址可能复用，
@@ -227,23 +231,16 @@ struct Current {
 impl LiveRouter {
     pub fn new(
         cfg: Arc<arc_swap::ArcSwap<ConfigDoc>>,
-        pricing: Option<Arc<dyn PricingEngine>>,
+        balance: Option<Arc<dyn ta_core::routing::BalanceSource>>,
         sticky: Arc<dyn StickyResolver>,
     ) -> Self {
         let engine_options = EngineOptions::default();
         let selector_options = SelectorOptions::default();
         let doc = cfg.load_full();
-        let current = Mutex::new(Self::bind(
-            &doc,
-            1,
-            pricing.clone(),
-            &sticky,
-            &engine_options,
-            &selector_options,
-        ));
+        let current = Mutex::new(Self::bind(&doc, 1, &sticky, &engine_options, &selector_options));
         Self {
             cfg,
-            pricing,
+            balance,
             sticky,
             engine_options,
             selector_options,
@@ -255,7 +252,6 @@ impl LiveRouter {
     fn bind(
         doc: &Arc<ConfigDoc>,
         generation: u64,
-        pricing: Option<Arc<dyn PricingEngine>>,
         sticky: &Arc<dyn StickyResolver>,
         engine_options: &EngineOptions,
         selector_options: &SelectorOptions,
@@ -266,7 +262,6 @@ impl LiveRouter {
             engine: engine_options.clone(),
             selector: selector_options.clone(),
             clock: Arc::new(ta_core::clock::SystemClock),
-            pricing,
         };
         let router = Router::with_sticky(doc, opts, sticky.clone());
         Current { doc: doc.clone(), router, generation }
@@ -285,7 +280,6 @@ impl LiveRouter {
             *guard = Self::bind(
                 &doc,
                 generation,
-                self.pricing.clone(),
                 &self.sticky,
                 &self.engine_options,
                 &self.selector_options,
@@ -309,7 +303,18 @@ impl RoutingPlanner for LiveRouter {
         // **一把锁内跑完** decide + select：配置换代不可能插进两者之间。
         // `Router::route` 就是 ta-core 的"完整一次路由"，也保证两者用同一个 router 实例。
         let guard = self.current();
-        let (decision, selection) = guard.router.route(hints, ctx);
+        // 用量快照在这里取**一次**（[docs/48 §4]）：`used_tokens` 自带 TTL 缓存，
+        // 所以这是"每请求拷一份内存 map"，不是"每请求查一次库"。
+        // 没装配 → 直接用调用方给的 ctx（`balance` 为空）→ 选路退化为按 priority
+        // （**不是**"都没用过"）。
+        let (decision, selection) = match &self.balance {
+            None => guard.router.route(hints, ctx),
+            Some(src) => {
+                let mut filled = ctx.clone();
+                filled.balance = src.used_tokens();
+                guard.router.route(hints, &filled)
+            }
+        };
         RoutePlan { cfg: guard.doc.clone(), decision, selection }
     }
 }
@@ -365,14 +370,13 @@ impl GatewayRuntime {
 pub fn build_runtime(deps: &Arc<GatewayDeps>, parts: RuntimeParts) -> GatewayRuntime {
     let sticky: Arc<dyn StickyResolver> =
         Arc::new(MemoryStickyResolver::with_clock(deps.clock.clone()));
-    let router = Arc::new(LiveRouter::new(deps.config.clone(), Some(deps.pricing.clone()), sticky));
+    let router = Arc::new(LiveRouter::new(deps.config.clone(), deps.balance.clone(), sticky));
 
     let planner: Arc<dyn RoutingPlanner> = router.clone();
     let pipeline = Arc::new(Pipeline::new(Arc::new(PipelineDeps {
         cfg: deps.config.clone(),
         clock: deps.clock.clone(),
         planner,
-        quota: deps.quota.clone(),
         secrets: parts.secrets.clone(),
         dialer: deps.dialer.clone(),
         passthrough: parts.passthrough.clone(),
@@ -414,19 +418,17 @@ pub(crate) mod tests {
 
     use async_trait::async_trait;
     use bytes::Bytes;
-    use std::collections::BTreeMap;
     use ta_core::clock::ManualClock;
     use ta_core::domain::{
-        ChannelConfig, ChannelGroup, Credential, Lane, LaneKind, Model, Policy, PolicyAction,
-        PolicyMatch, Provider, Selector, StickyConfig,
+        ChannelConfig, ChannelGroup, Credential, Lane, LaneKind, Model, Provider, Selector,
+        StickyConfig,
     };
     use ta_core::error::Result;
-    use ta_core::pricing::{PriceSourceKind, ResolvedPrice};
-    use ta_core::quota::{QuotaLedger, QuotaObservation, QuotaState, QuotaStateKind};
-    use ta_core::routing::ChannelRuntimeState;
+    use ta_core::pricing::{PricingEngine, ResolvedPrice};
+    use ta_core::routing::{BalanceSource, ChannelRuntimeState};
     use ta_core::types::{
-        ChannelGroupId, ChannelId, CredentialId, LaneId, Money, PolicyId, Protocol, RequestSummary,
-        TokenKind, TokenUsage, UsageRecord,
+        ChannelGroupId, ChannelId, CredentialId, LaneId, Money, Protocol, RequestSummary,
+        TokenUsage, UsageRecord,
     };
 
     use crate::dispatch::{HealthReport, StaticLanePorts, UpstreamRequest, UpstreamResponse};
@@ -516,50 +518,10 @@ pub(crate) mod tests {
         }
     }
 
-    /// ch-a 贵、ch-b 便宜。用途只有一个：逼出"`cheapest` 选择器**到底有没有拿到**定价引擎"
-    /// —— 少传 pricing 时 ta-core 会退化为配置顺序（选 ch-a），正确装配选 ch-b，必然分叉。
-    struct TwoTierPricing;
-
-    impl PricingEngine for TwoTierPricing {
-        fn resolve(
-            &self,
-            _model: &str,
-            provider: &ta_core::types::ProviderId,
-            _cred: &CredentialId,
-        ) -> ResolvedPrice {
-            let rate = if provider.as_str() == "p-b" { 1.0 } else { 3.0 };
-            ResolvedPrice {
-                rates: BTreeMap::from([(TokenKind::Input, rate), (TokenKind::Output, rate)]),
-                multiplier: 1.0,
-                currency: "USD".into(),
-                divisor: 1_000_000.0,
-                source: PriceSourceKind::Manual,
-                plan_fee: None,
-                entry_index: 0,
-            }
-        }
-    }
-
-    pub(crate) struct NoQuota;
-
-    impl QuotaLedger for NoQuota {
-        fn state(&self, cred: &CredentialId) -> QuotaState {
-            QuotaState {
-                credential_id: cred.clone(),
-                kind: QuotaStateKind::Unknown,
-                ..Default::default()
-            }
-        }
-        fn observe(&self, _cred: &CredentialId, _obs: QuotaObservation) {}
-        fn mark_exhausted(&self, _cred: &CredentialId, _hint: Option<i64>) {}
-        fn mark_invalid(&self, _cred: &CredentialId) {}
-        fn roll_window(&self, _now_ms: i64) -> Vec<CredentialId> {
-            vec![]
-        }
-        fn remaining_ratio(&self, _cred: &CredentialId) -> Option<f64> {
-            None
-        }
-    }
+    // 这里曾有 `TwoTierPricing`（"ch-a 贵、ch-b 便宜"的替身），唯一用途是逼出
+    // "`cheapest` 选择器到底有没有拿到定价引擎"。选路策略收敛为平均粘性之后
+    // （[docs/48]）选路不再读价格，那个替身与它的用例一起删除。
+    // 定价引擎本身仍在：它服务的是**成本计量**（`meter.rs`），与选路无关。
 
     pub(crate) struct FixedKernel(pub(crate) KernelState);
 
@@ -581,38 +543,40 @@ pub(crate) mod tests {
         doc.models.push(Model::new(MODEL));
         doc.lanes.push(Lane::new("lane-jp", "日本", LaneKind::Direct));
         doc.lanes.push(Lane::new("lane-tokyo", "东京", LaneKind::Direct));
-        doc.providers.push(Provider::new("p-a", "A", Protocol::Openai, "https://a.example/v1"));
-        doc.credentials.push(Credential::new("c-a", "p-a", "A", "${secret:a}"));
-        doc.channels.push(
-            ChannelConfig::new("ch-a", MODEL, "p-a", "c-a", "upstream-a").with_lane("lane-jp"),
+        // [docs/55] 线路在**服务商**上（`channel.lane` 已删除）
+        doc.providers.push(
+            Provider::new("p-a", "A", Protocol::Openai, "https://a.example/v1")
+                .with_lane("lane-jp"),
         );
+        doc.credentials.push(Credential::new("c-a", "p-a", "A", "${secret:a}"));
+        doc.channels.push(ChannelConfig::new("ch-a", MODEL, "p-a", "c-a", "upstream-a"));
         for i in 0..extra {
             let suffix = (b'b' + i as u8) as char;
             let provider = format!("p-{suffix}");
             let credential = format!("c-{suffix}");
             let channel = format!("ch-{suffix}");
-            doc.providers.push(Provider::new(
-                provider.as_str(),
-                channel.as_str(),
-                Protocol::Openai,
-                format!("https://{suffix}.example/v1"),
-            ));
+            doc.providers.push(
+                Provider::new(
+                    provider.as_str(),
+                    channel.as_str(),
+                    Protocol::Openai,
+                    format!("https://{suffix}.example/v1"),
+                )
+                .with_lane("lane-tokyo"),
+            );
             doc.credentials.push(Credential::new(
                 credential.as_str(),
                 provider.as_str(),
                 channel.as_str(),
                 "${secret:a}",
             ));
-            doc.channels.push(
-                ChannelConfig::new(
-                    channel.as_str(),
-                    MODEL,
-                    provider.as_str(),
-                    credential.as_str(),
-                    format!("upstream-{suffix}"),
-                )
-                .with_lane("lane-tokyo"),
-            );
+            doc.channels.push(ChannelConfig::new(
+                channel.as_str(),
+                MODEL,
+                provider.as_str(),
+                credential.as_str(),
+                format!("upstream-{suffix}"),
+            ));
         }
         doc
     }
@@ -625,8 +589,30 @@ pub(crate) mod tests {
             events: Arc::new(NoEvents),
             clock: Arc::new(ManualClock::new(1_700_000_000_000)),
             pricing: Arc::new(NoPricing),
-            quota: Arc::new(NoQuota),
+            balance: None,
         })
+    }
+
+    /// 固定用量的 [`ta_core::routing::BalanceSource`] 替身（[docs/48 §4]）。
+    ///
+    /// 刻意**不含缓存逻辑**：这一层只验"门面有没有把快照喂进选路"，
+    /// TTL 缓存的正确性是 `BalanceSource` 实现方自己的测试（`src-tauri`）。
+    pub(crate) struct StaticBalance(pub Vec<(ChannelId, i64)>);
+
+    impl StaticBalance {
+        pub(crate) fn new<I, S>(pairs: I) -> Self
+        where
+            I: IntoIterator<Item = (S, i64)>,
+            S: Into<ChannelId>,
+        {
+            Self(pairs.into_iter().map(|(id, used)| (id.into(), used)).collect())
+        }
+    }
+
+    impl ta_core::routing::BalanceSource for StaticBalance {
+        fn used_tokens(&self) -> std::collections::BTreeMap<ChannelId, i64> {
+            self.0.iter().cloned().collect()
+        }
     }
 
     pub(crate) fn test_parts() -> RuntimeParts {
@@ -634,6 +620,143 @@ pub(crate) mod tests {
             Arc::new(StaticSecrets::new([("${secret:a}", "sk-test-secret")])),
             Arc::new(FixedKernel(KernelState::Ready)),
         )
+    }
+
+    /// **记录型** trace 表替身：只关心"有没有真的被写"，不关心 SQL。
+    ///
+    /// 为什么需要它：`with_trace_store` 原来**零测试**，而它又从未被生产调用 ——
+    /// 于是"生产没接 trace 表"这个缺口既没有测试覆盖，也没有任何东西会红。
+    /// 这个替身让"接线"可以被**行为**验证（而不是扫源码字符串）。
+    #[derive(Default)]
+    pub(crate) struct RecordingTraceStore {
+        pub(crate) written: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingTraceStore {
+        pub(crate) fn count(&self) -> usize {
+            self.written.lock().expect("trace 替身锁").len()
+        }
+    }
+
+    #[async_trait]
+    impl ta_store::TraceStore for RecordingTraceStore {
+        async fn write(&self, t: ta_store::TraceRecord) -> Result<()> {
+            self.written.lock().expect("trace 替身锁").push(t.request_id.as_str().to_string());
+            Ok(())
+        }
+        async fn query(&self, _q: &ta_store::LogQuery) -> Result<ta_store::LogPage> {
+            unimplemented!("本替身只验写入")
+        }
+        async fn stats(&self, _q: &ta_store::LogQuery) -> Result<ta_store::LogStats> {
+            unimplemented!("本替身只验写入")
+        }
+        async fn get(&self, _id: &str) -> Result<Option<ta_store::TraceDetail>> {
+            Ok(None)
+        }
+        async fn set_mode(&self, _m: ta_core::types::LogMode) -> Result<()> {
+            Ok(())
+        }
+        async fn set_retention(&self, _r: ta_core::types::Retention) -> Result<()> {
+            Ok(())
+        }
+        async fn storage_stats(&self) -> Result<ta_store::StorageStats> {
+            unimplemented!("本替身只验写入")
+        }
+        async fn clear(&self, _m: ta_store::ClearMode) -> Result<u64> {
+            Ok(0)
+        }
+        async fn gc(&self, _now_ms: i64) -> Result<u64> {
+            Ok(0)
+        }
+    }
+
+    /// `RequestTraceSummary` 的**最小**构造：只给测试真正关心的两个字段，其余取合理默认。
+    ///
+    /// 不实现 `Default`（`Protocol` 等字段没有"中性的错值"，硬给一个反而会掩盖漏填），
+    /// 所以这里显式写全，只是把"与本次断言无关"的值集中在一处。
+    pub(crate) fn trace_summary(request_id: &str) -> crate::pipeline::RequestTraceSummary {
+        crate::pipeline::RequestTraceSummary {
+            request_id: request_id.to_string(),
+            ts_ms: 1_700_000_000_000,
+            model: Some(MODEL.to_string()),
+            upstream_model: String::new(),
+            protocol_in: Protocol::Openai,
+            protocol_out: Protocol::Openai,
+            stream: false,
+            chosen_channel: None,
+            lane: None,
+            header_diff: None,
+            status: 200,
+            total_ms: 12,
+            ttfb_ms: None,
+            error: None,
+        }
+    }
+
+    /// 一次尝试记录的最小构造（与 [`trace_summary`] 同一个理由）。
+    pub(crate) fn attempt_record(
+        request_id: &str,
+        channel: &str,
+    ) -> crate::pipeline::AttemptRecord {
+        crate::pipeline::AttemptRecord {
+            request_id: request_id.to_string(),
+            channel_id: ChannelId::new(channel),
+            credential_id: CredentialId::new("cred-1"),
+            lane_id: None,
+            attempt: 1,
+            status: Some(200),
+            error_code: None,
+            latency_ms: 12,
+            bytes_sent: false,
+        }
+    }
+
+    /// `with_trace_store` 真的把 trace 表串进了 sink。
+    ///
+    /// 这条测试的**理由**（不是"为了覆盖率"）：`with_trace_store` 从未被生产装配调用，
+    /// 却也没有任何测试碰它 —— 那意味着"轨迹写不进库"这件事
+    /// 既不会编译报错、也不会测试变红，只会在用户发现"日志页查不到请求轨迹"时才暴露
+    /// （[docs/14 §6 G2]/G4 的原始缺口形态）。
+    ///
+    /// 所以分两层钉住：
+    /// 1. **行为**：装上之后 `sink` 真的把 `TraceRecord` 交给 store（下面这段）；
+    /// 2. **接线**：`src-tauri/src/gateway.rs` 的生产装配必须调用它
+    ///    （见 `the_gateway_assembly_actually_wires_the_api_key_verifier` 旁的
+    ///    `the_gateway_assembly_actually_wires_the_trace_store` —— 那条在应用层）。
+    #[tokio::test]
+    async fn with_trace_store_really_writes_records_to_the_store() {
+        let store = Arc::new(RecordingTraceStore::default());
+        let parts = test_parts().with_trace_store(store.clone());
+
+        // 一个请求走完：先有一次尝试，再收尾。
+        parts.sink.on_attempt(attempt_record("req-trace-1", "ch-a")).await;
+        parts.sink.on_request_complete(trace_summary("req-trace-1")).await;
+
+        assert_eq!(
+            store.count(),
+            1,
+            "with_trace_store 之后，请求收尾必须真的写进 trace 表（写不进去 = 前端日志页与 ta trace 都查不到轨迹）"
+        );
+        assert_eq!(
+            store.written.lock().expect("trace 替身锁").as_slice(),
+            ["req-trace-1"],
+            "写进去的必须是这个 request_id"
+        );
+    }
+
+    /// 对照组：**不**调 `with_trace_store` 时，日志 sink 仍然工作、但 trace 表一条都不写。
+    ///
+    /// 这条是"上面那条测试真的在验接线"的反证：如果没有它，
+    /// 上面那条测试可能因为"默认 sink 也会写"而假绿。
+    #[tokio::test]
+    async fn without_trace_store_nothing_reaches_the_trace_table() {
+        let store = Arc::new(RecordingTraceStore::default());
+        let parts = test_parts(); // ← 故意不接
+
+        parts.sink.on_attempt(attempt_record("req-trace-2", "ch-a")).await;
+        parts.sink.on_request_complete(trace_summary("req-trace-2")).await;
+
+        assert_eq!(store.count(), 0, "没接 trace 表就不该有任何记录");
     }
 
     // ---------------------------------------------------------- 装配
@@ -711,7 +834,7 @@ pub(crate) mod tests {
             id: ChannelGroupId::new("grp"),
             model: MODEL.into(),
             members: vec![ChannelId::new("ch-a"), ChannelId::new("ch-b")],
-            selector: Selector::StickyThenPriority,
+            selector: Selector::BalancedSticky,
             sticky: StickyConfig {
                 enabled: true,
                 ttl_h: 12,
@@ -729,20 +852,14 @@ pub(crate) mod tests {
             Arc::new(MemoryStickyResolver::with_clock(clock.clone()));
         let sticky_ref: Arc<dyn StickyResolver> =
             Arc::new(MemoryStickyResolver::with_clock(clock.clone()));
-        let pricing: Arc<dyn PricingEngine> = Arc::new(NoPricing);
-
-        let live = LiveRouter::new(
-            Arc::new(arc_swap::ArcSwap::from(doc.clone())),
-            Some(pricing.clone()),
-            sticky_live,
-        );
+        let live =
+            LiveRouter::new(Arc::new(arc_swap::ArcSwap::from(doc.clone())), None, sticky_live);
         let reference = <Router>::with_sticky(
             &cfg,
             RouterOptions {
                 engine: EngineOptions::default(),
                 selector: SelectorOptions::default(),
                 clock: Arc::new(ta_core::clock::SystemClock),
-                pricing: Some(pricing),
             },
             sticky_ref,
         );
@@ -752,7 +869,7 @@ pub(crate) mod tests {
         let mut ch_a_down = RouteContext { now_ms: NOW, ..Default::default() };
         ch_a_down.channel_state.insert(
             ChannelId::new("ch-a"),
-            ChannelRuntimeState { enabled: true, exhausted: true, ..Default::default() },
+            ChannelRuntimeState { enabled: false, ..Default::default() },
         );
         let hints = RouteHints {
             model: Some(MODEL.into()),
@@ -835,51 +952,52 @@ pub(crate) mod tests {
             "select 必须逐字段一致（无候选形态）"
         );
 
-        // ⑤ `cheapest` 形态：专盯"定价引擎有没有传进选择器"这一维。
-        //    少传 pricing 会退化成配置顺序（ch-a），正确装配按单价选 ch-b —— 必然分叉。
-        let mut cheap_cfg = cfg_with_channels(1);
-        cheap_cfg.policies.push(Policy {
-            id: PolicyId::new("pol-cheap"),
-            name: "最便宜优先".into(),
-            enabled: true,
-            priority: 1,
-            r#match: PolicyMatch { all: true, ..Default::default() },
-            action: PolicyAction { selector: Some(Selector::Cheapest), ..Default::default() },
-            extra: Default::default(),
-        });
-        let cheap_pricing: Arc<dyn PricingEngine> = Arc::new(TwoTierPricing);
-        let cheap_live = LiveRouter::new(
-            Arc::new(arc_swap::ArcSwap::from_pointee(cheap_cfg.clone())),
-            Some(cheap_pricing.clone()),
+        // ⑤ 平均粘性形态：专盯"用量快照有没有真的传进选择器"这一维。
+        //    这是 `docs/48` 之后唯一会改变选路结果的运行态输入。
+        //    用 `ch-a` 已经用掉 5000 token、`ch-b` 为 0 → 未命中粘性时必须选 `ch-b`；
+        //    少了这条，门面"取快照"那一步就没人盯着了。
+        //
+        //    两边必须用**同一份**配置（`doc` 带上面那个 `grp` 组）：
+        //    没有组就没有会话 key，选择器会走"无 key → 档内随机"那条路，
+        //    两边随机源不同自然会分叉 —— 那是夹具的错，不是装配的错。
+        let bal_live = LiveRouter::new(
+            Arc::new(arc_swap::ArcSwap::from(doc.clone())),
+            Some(Arc::new(StaticBalance::new([("ch-a", 5000), ("ch-b", 0)]))),
             Arc::new(MemoryStickyResolver::with_clock(clock.clone())),
         );
-        let cheap_ref = <Router>::with_sticky(
-            &cheap_cfg,
+        let bal_hints = RouteHints {
+            model: Some(MODEL.into()),
+            session_id: Some("bal-fresh".into()),
+            ..Default::default()
+        };
+        let bal_plan = bal_live.plan(&bal_hints, &both_free);
+        assert_eq!(
+            bal_plan.selection.as_ref().map(|s| s.channel.clone()),
+            Some(ChannelId::new("ch-b")),
+            "用量少的那条必须被选中（门面没取快照就会退化回 ch-a）"
+        );
+        // 与 ta-core 参照路由器逐字段一致：两边喂**同一份**用量快照。
+        let mut bal_ctx = RouteContext { now_ms: NOW, ..Default::default() };
+        bal_ctx.balance = StaticBalance::new([("ch-a", 5000), ("ch-b", 0)]).used_tokens();
+        let bal_ref = <Router>::with_sticky(
+            &cfg,
             RouterOptions {
                 engine: EngineOptions::default(),
                 selector: SelectorOptions::default(),
                 clock: Arc::new(ta_core::clock::SystemClock),
-                pricing: Some(cheap_pricing),
             },
             Arc::new(MemoryStickyResolver::with_clock(clock.clone())),
         );
-        let cheap_hints = RouteHints { model: Some(MODEL.into()), ..Default::default() };
-        let plan_cheap = cheap_live.plan(&cheap_hints, &both_free);
-        let (decision_cheap, selection_cheap) = cheap_ref.route(&cheap_hints, &both_free);
+        let (decision_bal, selection_bal) = bal_ref.route(&bal_hints, &bal_ctx);
         assert_eq!(
-            selection_cheap.as_ref().map(|s| s.channel.clone()),
-            Some(ChannelId::new("ch-b")),
-            "cheapest 必须选到便宜的那条（少传 pricing 就会退化成 ch-a）"
+            format!("{:?}", bal_plan.decision),
+            format!("{decision_bal:?}"),
+            "decide 必须逐字段一致（平均粘性形态）"
         );
         assert_eq!(
-            format!("{:?}", plan_cheap.decision),
-            format!("{decision_cheap:?}"),
-            "decide 必须逐字段一致（cheapest 形态）"
-        );
-        assert_eq!(
-            format!("{:?}", plan_cheap.selection),
-            format!("{selection_cheap:?}"),
-            "select 必须逐字段一致（cheapest 形态）"
+            format!("{:?}", bal_plan.selection),
+            format!("{selection_bal:?}"),
+            "select 必须逐字段一致（平均粘性形态）"
         );
     }
 
@@ -978,7 +1096,12 @@ pub(crate) mod tests {
             Ok(guard) => guard.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         };
-        assert_eq!(urls, vec!["https://a.example/v1/messages".to_string()]);
+        // [docs/59] 客户端发的是 Anthropic 的 `/v1/messages`，而夹具里的上游是
+        // `protocol: openai` → **跨协议**，所以真正打出去的是 OpenAI 的端点。
+        //
+        // 这条断言原来写的是 `…/v1/messages`，等于把"协议不匹配"当成了正确行为
+        //（用户第 325 轮的"选 Anthropic 访问不了"就是这么来的）。
+        assert_eq!(urls, vec!["https://a.example/v1/chat/completions".to_string()]);
     }
 
     /// `KernelDialer` 的构造细节不外包给装配方。

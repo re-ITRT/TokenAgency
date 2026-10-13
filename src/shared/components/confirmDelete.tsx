@@ -47,7 +47,14 @@ export type ConfirmDeleteProps = {
   /** 后端原文（被引用时的错误）。有它才展示，也只有它才能把级联按钮显出来。 */
   errorText?: string;
   onConfirm: () => void;
-  onConfirmCascade: () => void;
+  /**
+   * 级联确认（`force=true`）。
+   *
+   * **可以省略**：有些删除路径压根没有 `force` 语义（`channel_delete` 就是 —— 被策略点名引用时
+   * 它只会拒绝，绝不会"确认一下就连带删掉"）。那种情况下传了也没用，所以不必传；
+   * 配合 `cascadeAvailable={false}`，那个按钮根本不会出现（不会变成假按钮）。
+   */
+  onConfirmCascade?: () => void;
   onCancel: () => void;
 };
 
@@ -85,8 +92,16 @@ export function ConfirmDelete({
           </Typography>
           {listed.length > 0 ? (
             <Stack spacing={1}>
+              {/*
+                表头必须**分两种情况**，这是第 320 轮用户真机报上来的那个 bug：
+                * `cascadeAvailable`（provider / credential / model 有 force）→ 列出的东西**会被一并删掉**，
+                  说"会连带删除 / 影响"是对的；
+                * 没有 force（`subscription` / `lane`）→ 列出的引用**恰恰会拦住这次删除**：
+                  后端直接拒（TA-5001），一个字都不会删。原来这里也写"会连带删除"，
+                  于是对话框承诺了一件不会发生的事 —— 用户确认后只拿到一个 TA 码。
+              */}
               <Typography variant="body1" sx={{ color: "text.secondary" }}>
-                {t("delete.consequences")}
+                {cascadeAvailable ? t("delete.consequences") : t("delete.blockers")}
               </Typography>
               <List dense disablePadding data-testid={`${testIdPrefix}-delete-consequences`}>
                 {listed.map((line) => (

@@ -24,7 +24,19 @@ import type { ReactNode } from "react";
 import { errorMessage } from "@/shared/api";
 import { HelpTip, StatusDot, type SemStatus } from "@/shared/components";
 import { formatInt, formatLatency, formatLocalTime } from "@/shared/format";
-import { useTranslation } from "@/shared/i18n";
+import { useTranslation, type I18nKey } from "@/shared/i18n";
+
+/**
+ * [docs/32] L6：token 分项的**界面名字**。契约给的是 kind 的机器名（`input` / `output` …），
+ * 界面一律翻成人话；**认不出的 kind 就显示 kind 原文**（不猜、也不隐藏 —— 后端加了新 kind，
+ * 用户当场就能看见它，而不是被悄悄吞掉）。
+ */
+const KIND_LABEL: Record<string, I18nKey> = {
+  input: "logs.tokens.input",
+  input_cached: "logs.tokens.cached",
+  output: "logs.tokens.output",
+  reasoning: "logs.tokens.reasoning",
+};
 import { radius, typography } from "@/theme";
 
 import type { AttemptView, TraceView } from "./model";
@@ -329,6 +341,27 @@ export function TracePanel({ detail, isLoading, error, onRetry }: TracePanelProp
         ) : null}
       </Box>
 
+      {/* [docs/32] L6：按 kind 的 **Token 消耗表**（来自用量表 `usage_request.token_kinds`）。
+          它在 traces 之外的账本里，所以可能**没有**（日志保留期比用量长）→ 那时如实说「没有这份记录」，
+          **绝不**拿上面的总数去凑分项（那是编数）。 */}
+      <Stack spacing={2} data-testid="logs-token-kinds">
+        <Typography variant="h4">{t("logs.tokens.title")}</Typography>
+        {detail.tokenKinds === undefined || detail.tokenKinds === null ? (
+          <Typography variant="body1" data-testid="logs-token-kinds-missing" sx={{ color: "text.secondary" }}>
+            {t("logs.tokens.missing")}
+          </Typography>
+        ) : (
+          <Stack spacing={1}>
+            {Object.entries(detail.tokenKinds).map(([kind, value]) => (
+              <Stack key={kind} direction="row" spacing={2} sx={{ justifyContent: "space-between" }}>
+                <Mono>{KIND_LABEL[kind] === undefined ? kind : t(KIND_LABEL[kind]!)}</Mono>
+                <Mono data-testid={`logs-token-kind-${kind}`}>{formatInt(Number(value))}</Mono>
+              </Stack>
+            ))}
+          </Stack>
+        )}
+      </Stack>
+
       {/* ② 尝试链（C4 的核心） */}
       <Stack spacing={2}>
         <Typography variant="h4">{t("logs.trace.attempts", { value: detail.attempts.length })}</Typography>
@@ -410,12 +443,14 @@ export function TracePanel({ detail, isLoading, error, onRetry }: TracePanelProp
         </Stack>
       ) : null}
 
-      {/* ⑤ 原始字段：后端返回的整条记录，原样打印（UI 不替用户过滤证据） */}
+      {/* ⑤ 原始字段：后端返回的整条记录，原样打印（UI 不替用户过滤证据）。
+          「原样显示、未清洗」是**解释** → 收进标题右边的问号（[docs/22 §2]）；
+          下面 `pre` 里那份原文一个字都没动，`extraKeys` 那行（数据）照旧留在版面上。 */}
       <Stack spacing={1}>
-        <Typography variant="h4">{t("logs.trace.raw")}</Typography>
-        <Typography variant="caption" sx={{ color: "text.secondary" }}>
-          {t("logs.trace.rawHint")}
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
+          <Typography variant="h4">{t("logs.trace.raw")}</Typography>
+          <HelpTip text={t("logs.trace.rawHint")} testId="logs-trace-raw-help" />
+        </Box>
         {detail.extraKeys.length > 0 ? (
           <Typography variant="caption" sx={{ color: "text.secondary" }}>
             {t("logs.trace.extra", { keys: detail.extraKeys.join(", ") })}

@@ -1,4 +1,4 @@
-//! 插件注册（[12 §5 T2] ③）—— 11 个插件在这里**统一**注册，顺序有意。
+//! 插件注册（[12 §5 T2] ③）—— 7 个插件在这里**统一**注册，顺序有意。
 //!
 //! 为什么单独一个文件而不是散在 `lib.rs` 里：注册顺序、以及"哪些插件**故意不授予权限**"
 //! 都是要长期维护的决策，散在 builder 链上没人看得见（见 [`PLUGINS`] 与
@@ -15,8 +15,16 @@
 //!    （`attempted to set a logger after the logging system was already initialized`）。
 //!    第 10 轮之前用 `.skip_logger()` 绕过，那只是让 panic 不发生：
 //!    **两套系统仍然并存，日志该去哪仍然不确定**。正解是移除该插件（本文件已移除）。
-//! 3. `window-state` → `notification` → `deep-link` → …… → `shell`：其余顺序无强依赖，
+//! 3. `window-state` → `notification` → `deep-link` → …… ：其余顺序无强依赖，
 //!    按"越基础越靠前"排。
+//!
+//! # 只注册、零调用的插件一律不留（[docs/50]）
+//!
+//! `fs` / `process` / `clipboard-manager` / `shell` 四个插件曾是"注册了但前端一次都没调"
+//! 的状态，而前三个还在 `capabilities/` 里白给了 `fs:default` / `process:default` /
+//! `clipboard-manager:default` —— **未使用的权限就是白送的攻击面**。
+//! 它们已连同 Cargo/npm 依赖一起删除。要加回来必须先说明**谁在用**，
+//! 并且守卫 `plugin_ids_match_the_cargo_dependencies`（双向）会强制两边同步。
 //!
 //! # ⚠️ autostart 插件：注册但**绝不使用**、**绝不授予权限**
 //!
@@ -26,7 +34,7 @@
 //! 绕过 `app_get_autostart` 的真读逻辑（[10 §2.2] 规则 1）和 E3/E4。
 //!
 //! 因此：
-//! * 注册它是为了插件清单完整（[12 §5 T2] ③ 去 log 后的 11 个），**不调用它的 manager**；
+//! * 注册它是为了插件清单完整（[12 §5 T2] ③ 去 log 后的 7 个之一），**不调用它的 manager**；
 //! * `capabilities/` 里**不授予**任何 `autostart:*` 权限（未授予 = 前端调不到）；
 //! * 单元测试 `capabilities_never_grant_the_autostart_plugin` 会守住这条线，
 //!   谁以后手滑加了权限，测试立刻红。
@@ -49,9 +57,19 @@ pub struct PluginSpec {
     pub note: &'static str,
 }
 
-/// 11 个插件（[12 §5 T2] ③ 原列 12 个，**已去掉 `tauri-plugin-log`**，见模块文档第 2 条）。
-/// 顺序 = 注册顺序，见模块文档。
-pub const PLUGINS: [PluginSpec; 11] = [
+/// 7 个插件。
+///
+/// 数字的来历（**每一减都要有理由，不是随手改**）：
+/// * [12 §5 T2] ③ 原列 12 个；
+/// * 去掉 `tauri-plugin-log` → 11（单一日志路径，见模块文档第 2 条）；
+/// * **[docs/50] 去掉 `fs` / `process` / `clipboard-manager` / `shell` → 7**：
+///   这四个**只注册、零调用**，却在 `capabilities/` 里白给了 `fs:default` /
+///   `process:default` / `clipboard-manager:default` —— 那是攻击面白送。
+///   （剪贴板功能走的是**浏览器** `navigator.clipboard`，不需要插件；
+///   退出走 `lifecycle` 的 `QuitGuard`；起外部进程是 `ta-kernel` 里的 `std::process`。）
+///   守卫 `plugin_ids_match_the_cargo_dependencies` 是**双向**的，
+///   所以"Cargo 里还留着、注册表里删了"也会红。
+pub const PLUGINS: [PluginSpec; 7] = [
     PluginSpec {
         id: "single-instance",
         krate: "tauri-plugin-single-instance",
@@ -83,33 +101,13 @@ pub const PLUGINS: [PluginSpec; 11] = [
         note: "导入导出 YAML、选内核路径",
     },
     PluginSpec {
-        id: "fs",
-        krate: "tauri-plugin-fs",
-        note: "仅前端需要的文件选择/预览；权限按需最小化",
-    },
-    PluginSpec {
-        id: "process",
-        krate: "tauri-plugin-process",
-        note: "退出/重启；退出前必须走 lifecycle 的 QuitGuard，否则关窗会被当成退托盘",
-    },
-    PluginSpec {
-        id: "clipboard-manager",
-        krate: "tauri-plugin-clipboard-manager",
-        note: "「复制接入信息」（BASE_URL + KEY）—— 只复制，不落盘",
-    },
-    PluginSpec {
         id: "autostart",
         krate: "tauri-plugin-autostart",
         note: "⚠️ 只注册不使用、不授予权限：不支持 E1–E5（漂移/延迟/mode/命令行），真实现在 lifecycle::AutostartController",
     },
-    PluginSpec {
-        id: "shell",
-        krate: "tauri-plugin-shell",
-        note: "最后注册：能起外部进程，权限必须最小化（当前 capability 未授予 shell:default）",
-    },
 ];
 
-/// 把 11 个插件注册进 builder。
+/// 把 7 个插件注册进 builder。
 ///
 /// 调用方式（`lib.rs`）：
 /// ```ignore
@@ -129,21 +127,13 @@ pub fn register<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
         .plugin(tauri_plugin_deep_link::init())
         // 5) 打开目录/链接
         .plugin(tauri_plugin_opener::init())
-        // 6) 文件对话框
+        // 6) 文件对话框（`/cost` 的导出选路径——前端**唯一**用到的插件）
         .plugin(tauri_plugin_dialog::init())
-        // 7) 文件访问
-        .plugin(tauri_plugin_fs::init())
-        // 8) 进程控制
-        .plugin(tauri_plugin_process::init())
-        // 9) 剪贴板
-        .plugin(tauri_plugin_clipboard_manager::init())
-        // 10) 自启动插件：注册但永不调用（理由见模块文档）
+        // 7) 自启动插件：注册但永不调用（理由见模块文档）
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
-        // 11) shell：能力面最大，放最后
-        .plugin(tauri_plugin_shell::init())
 }
 
 /// `capabilities/` 里的全部 JSON（编译期嵌入，测试用）。
@@ -158,10 +148,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn eleven_plugins_with_unique_ids() {
-        // [12 §5 T2] ③ 原列 12 个；`tauri-plugin-log` 已按"单一日志路径"决策移除
-        // （模块文档第 2 条），故 11 个。这个数字是**决策的结果**，不是随手改的常量。
-        assert_eq!(PLUGINS.len(), 11, "插件数量与 [12 §5 T2] 的当前基线不一致");
+    fn seven_plugins_with_unique_ids() {
+        // [12 §5 T2] ③ 原列 12 个 →（去 `tauri-plugin-log`）11 个
+        // →（[docs/50] 去 `fs` / `process` / `clipboard-manager` / `shell` 四个零调用插件）7 个。
+        // 这个数字是**决策的结果**，不是随手改的常量；改它必须同时改上面的理由。
+        assert_eq!(PLUGINS.len(), 7, "插件数量与 [docs/50] 的当前基线不一致");
         let mut ids: Vec<&str> = PLUGINS.iter().map(|p| p.id).collect();
         ids.sort_unstable();
         let before = ids.len();
@@ -200,7 +191,7 @@ mod tests {
         // 模块文档第 2 条的强制化：`tracing_subscriber` 是**唯一**日志路径。
         // 谁把 `tauri-plugin-log` 加回来，日志就变成两套并行系统（[14 §1.1]），
         // 而且它的默认行为会再 `log::set_logger` 一次 → 启动即 panic。
-        // 这条守卫比"数量 == 11"更能表达真实意图：数量只是它的结果。
+        // 这条守卫比"数量 == 7"更能表达真实意图：数量只是它的结果。
         assert!(
             !PLUGINS.iter().any(|p| p.krate == "tauri-plugin-log"),
             "PLUGINS 里出现了 tauri-plugin-log：会与 tracing_subscriber 形成两套日志系统"
@@ -234,6 +225,42 @@ mod tests {
                 !body.contains("autostart:"),
                 "{name} 里出现了 autostart 权限：那会绕过漂移检测（[09 §1.2] E3/E4）"
             );
+        }
+    }
+
+    /// **通用版的最小权限守卫**（[docs/50]）：能力集里的每一个 `<plugin>:*` 权限，
+    /// 都必须对应一个**已注册**的插件。
+    ///
+    /// 为什么需要它：`fs:default` / `process:default` / `clipboard-manager:default` 就是这么
+    /// 白留了好几个轮次 —— 插件早就不用了，能力集却还在授权。**未使用的权限 = 白送的攻击面**，
+    /// 而它不会以任何方式报错（不像缺权限那样运行时炸）。
+    ///
+    /// `core:` 是 Tauri 内核自己的命名空间（窗口/事件等），不来自插件，所以放行。
+    #[test]
+    fn capabilities_only_grant_registered_plugins() {
+        for (name, body) in CAPABILITY_FILES {
+            let parsed: serde_json::Value =
+                serde_json::from_str(body).unwrap_or_else(|e| panic!("{name} 不是合法 JSON：{e}"));
+            let perms = parsed
+                .get("permissions")
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| panic!("{name} 缺 permissions 数组"));
+            for perm in perms {
+                let Some(text) = perm.as_str() else {
+                    // 对象形式（带 scope）也要取到它的 identifier —— 目前仓里没有，
+                    // 真出现了就让这条守卫明确报出来，而不是静默跳过。
+                    panic!("{name} 里的权限用了对象形式，守卫还没覆盖：{perm}");
+                };
+                if text.starts_with("core:") {
+                    continue;
+                }
+                let plugin = text.split(':').next().unwrap_or(text);
+                assert!(
+                    PLUGINS.iter().any(|p| p.id == plugin),
+                    "{name} 授予了 `{text}`，但 `{plugin}` 不在 PLUGINS 注册表里 —— \
+                     未注册插件的权限是白送的攻击面，删掉它（[docs/50]）"
+                );
+            }
         }
     }
 

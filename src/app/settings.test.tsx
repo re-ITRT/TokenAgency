@@ -212,6 +212,16 @@ async function waitForConfig(): Promise<HTMLElement> {
 
 // ================================================================ ① I2：只展示，不改系统设置
 
+  it("[docs/30 §3.18] 校验并应用固定在底部（长页面 1838 行）", () => {
+    renderPage();
+    const bar = document.querySelector('[data-testid="settings-apply-bar"]');
+    expect(bar).toBeTruthy();
+    expect(bar?.querySelector('[data-testid="settings-apply"]')).toBeTruthy();
+    const css = Array.from(document.querySelectorAll("style"))
+      .map((s) => s.textContent ?? "")
+      .join("");
+    expect(css).toMatch(/position:\s*sticky/);
+  });
 describe("[I2] 设置页只展示系统网络信息，不提供任何改系统设置的入口", () => {
   it("可改字段与禁止字段没有交集，且禁止字段覆盖 TUN / 系统代理 / 自启动开关", () => {
     const editable = EDITABLE_PATHS.map(pathKey);
@@ -286,8 +296,12 @@ describe("[09 §1.2 E1–E5] 开机自启动：开关绑系统事实，漂移可
     const actual = await screen.findByTestId("settings-autostart-actual");
     expect(actual.getAttribute("data-value")).toBe(String(baseAutostart.actual));
 
-    const desired = screen.getByTestId("settings-autostart-desired");
-    expect(desired.getAttribute("data-value")).toBe(String(baseAutostart.desired));
+    /*
+     * [极简 · 判据 1] 「配置里的期望值：X」那一行**已删**（期望值不是用户要看的东西：
+     * 它只在"开关与系统不一致"时有意义，而那种情况由 `settings-autostart-drifted` 那一句
+     * 加「修复自启动」按钮表达）。这里改成钉住**它不许回来**，并保留原来的夹具自证。
+     */
+    expect(screen.queryByTestId("settings-autostart-desired")).toBeNull();
     // 两个值确实不同（自证这条断言有意义）
     expect(baseAutostart.actual).not.toBe(baseAutostart.desired);
 
@@ -379,11 +393,13 @@ describe("[09 §1.2 E1–E5] 开机自启动：开关绑系统事实，漂移可
 // ================================================================ ③ 还没接的命令不画按钮
 
 describe("还没接的命令一律不画按钮，但留一行说明", () => {
-  it("日志导出：本页没有导出按钮（导出在日志页），只有一行点名 log_export 的指向说明", async () => {
+  it("日志导出：本页没有导出按钮（导出在日志页），只有一行指向「日志页」的说明", async () => {
     renderPage();
     await waitForConfig();
     expect(screen.queryByTestId("settings-log-export")).toBeNull();
-    expect(screen.getByTestId("settings-no-log-export").textContent).toMatch(/log_export/);
+    // [极简 · 判据 1] 原来这一行点名了写命令 `log_export`（函数名不上界面）；
+    // 现在它只说"导出在「日志页」"—— 恢复路径一个字没少（去哪里找那个按钮）。
+    expect(screen.getByTestId("settings-no-log-export").textContent).toMatch(/日志页/);
   });
 });
 
@@ -394,11 +410,15 @@ describe("[配置] 文件监听模式：真写配置，结论只可能「需要�
     renderPage();
     await waitForConfig();
 
-    const expected = String(baseDoc.system_integration.file_watch_mode === true);
-    const configRow = await screen.findByTestId("settings-file-watch-config");
-    expect(configRow.getAttribute("data-value")).toBe(expected);
+    /*
+     * [极简 · 判据 1「同一屏里同一个事实不许说两遍」] 开关旁边那行「配置里的值：开/关」已删除 ——
+     * 它读的是同一个 `draft.system_integration.file_watch_mode`，也就是开关自己的位置。
+     * 事实的来源一个都没少（开关 + 它的名字仍在版面上），所以这条断言改读开关，
+     * 并在这里钉住**那行字不许回来**。
+     */
+    expect(screen.queryByTestId("settings-file-watch-config")).toBeNull();
 
-    const box = screen.getByTestId("settings-file-watch-switch");
+    const box = await screen.findByTestId("settings-file-watch-switch");
     const toggle = within(box).getByRole("switch") as HTMLInputElement;
     expect(toggle.checked).toBe(baseDoc.system_integration.file_watch_mode === true);
     // 还没点过：不许显示任何结果
@@ -427,29 +447,25 @@ describe("[配置] 文件监听模式：真写配置，结论只可能「需要�
     expect(tray.textContent).not.toMatch(/正在监听/);
   });
 
-  it("写成功之后：开关与「配置里的值」都跟着**重读到的配置**走（不是本地状态）", async () => {
+  it("写成功之后：开关跟着**重读到的配置**走（不是本地状态）", async () => {
     renderPage();
     await waitForConfig();
 
-    const box = await screen.findByTestId("settings-file-watch-switch");
-    expect((within(box).getByRole("switch") as HTMLInputElement).checked).toBe(false);
+    // 开关是受控的：点它本身不改任何本地状态，mock 也只改 `config_get` 的返回值 ——
+    // 所以它从 false 变 true 只可能来自"写完 → 失效 qk.config → 回读 → 草稿更新"这条链。
+    // （原来这条链的第二个证人那行「配置里的值」已按判据 1 删除，见上面那条断言。）
+    const toggle = () =>
+      within(screen.getByTestId("settings-file-watch-switch")).getByRole(
+        "switch",
+      ) as HTMLInputElement;
+    expect(toggle().checked).toBe(false);
 
-    fireEvent.click(within(box).getByRole("switch"));
+    fireEvent.click(toggle());
     await waitFor(() => expect(fileWatchCalls.length).toBe(1));
 
-    // 库里已经是 true 了 → 重读之后开关必须变 true、值行也要变
-    await waitFor(() =>
-      expect(screen.getByTestId("settings-file-watch-config").getAttribute("data-value")).toBe(
-        "true",
-      ),
-    );
-    expect(
-      (
-        within(screen.getByTestId("settings-file-watch-switch")).getByRole(
-          "switch",
-        ) as HTMLInputElement
-      ).checked,
-    ).toBe(true);
+    await waitFor(() => expect(toggle().checked).toBe(true));
+    // 删掉的那行不许回来（它当年就是开关位置的复述）
+    expect(screen.queryByTestId("settings-file-watch-config")).toBeNull();
   });
 
   it("后端回 applied=false：如实说没有写入，不说「已写入」", async () => {
@@ -597,9 +613,9 @@ describe("[配置] 校验通过才应用，校验不通过一次都不调用 con
     validateResult = { nonsense: true };
     renderPage();
     await waitForConfig();
-    fireEvent.click(
-      within(screen.getByTestId("settings-field-exposeModels")).getByRole("checkbox"),
-    );
+    // [docs/28 §4] `settings-field-exposeModels` 这个死开关已删除；改用仍然存在的
+    // `settings-field-debugHeaders` 制造"草稿被改过"的局面（本用例只关心"校验形状读不出来"）。
+    fireEvent.click(within(screen.getByTestId("settings-field-debugHeaders")).getByRole("checkbox"));
     fireEvent.click(screen.getByTestId("settings-apply"));
 
     await waitFor(() =>
@@ -797,7 +813,12 @@ describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () 
       expect(text.length, key).toBeGreaterThan(12);
 
       const help = screen.getByTestId(`${section}-help`);
-      expect(help.getAttribute("aria-label"), key).toBe(text);
+      /*
+       * `aria-label` 的**第一行**逐字等于这段区块说明（"一个字都没丢"）：
+       * 同一个问号里还可能并着被收进来的解释（用 `\n` 连在**后面**，见下一条用例），
+       * 所以这里按行取第一行判等 —— 既不许改写这段说明，也不许把它挪出第一行。
+       */
+      expect(help.getAttribute("aria-label")?.split("\n")[0], key).toBe(text);
       // 版面上**不再**有那段正文
       expect(screen.queryByText(text), key).toBeNull();
       // §3：同一区块最多一个问号
@@ -810,6 +831,69 @@ describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () 
     expect(sectionHelpMode("来自配置")).toBe("inline");
     expect(sectionHelpMode("")).toBe("inline");
     expect(sectionHelpMode("这一组的输入框改的是本地草稿")).toBe("help");
+  });
+
+  /*
+   * [极简 · 判据 2「长解释一律收进问号」] 服务区块**两段非红线解释**并进同一个问号：
+   * ① `settings.service.localKey.hint`（62 字：这个密钥是什么 + 用下面哪个按钮）；
+   * ② `settings.service.downstream.hint`（34 字：勾选的作用）—— 它是一句成句的说明，
+   *    而三个开关的名字本身已经说清"勾什么"，所以按判据 2 搬进 tooltip。
+   *
+   * 为什么断言写得这么死：收进问号最容易两头错 —— ① 只删不搬（读屏/悬停的人都拿不到了）；
+   * ② 顺手把控件一起删了（"极简"变成"缺功能"）。所以这里同时钉住：
+   * 提示里逐字可读、版面上没有、密钥状态行与两个按钮、三个下游开关都还在。
+   */
+  it("[判据 2] 服务区块的两段说明整段收进同一个问号：版面上一字不剩，提示里一字不少", async () => {
+    renderPage();
+    await waitForConfig();
+
+    const hint = zhCN["settings.service.localKey.hint"];
+    const downstream = zhCN["settings.service.downstream.hint"];
+    // 自证：这两条确实是"长解释"（否则收不收都没有区别，这条断言就白写了）
+    expect(hint.length).toBeGreaterThan(40);
+    expect(downstream.length).toBeGreaterThan(12);
+
+    const help = screen.getByTestId("settings-section-service-help");
+    // 同一个问号里三句：区块说明 + 两段收进来的解释，用 `\n` 分隔，顺序不换
+    expect(help.getAttribute("aria-label")).toBe(
+      `${zhCN["settings.service.editHint"]}\n${hint}\n${downstream}`,
+    );
+    // 版面上**不再**有这两段解释（否则等于没收）
+    expect(screen.queryByText(hint)).toBeNull();
+    expect(screen.queryByText(downstream)).toBeNull();
+    // 功能没被一起删：状态行 + 两个按钮仍在版面上
+    expect(screen.getByText(zhCN["settings.service.localKey"])).toBeTruthy();
+    expect(screen.getByText(zhCN["settings.service.accessInfo.show"])).toBeTruthy();
+    expect(screen.getByText(zhCN["settings.service.copyAccessInfo"])).toBeTruthy();
+    // 三个下游开关**一个都没少**（说明进了 tooltip，不是控件被删）
+    for (const testId of [
+      "settings-field-downstreamOpenaiChat",
+      "settings-field-downstreamOpenaiResponses",
+      "settings-field-downstreamAnthropicMessages",
+    ]) {
+      expect(screen.getByTestId(testId), testId).toBeTruthy();
+    }
+  });
+
+  /*
+   * [极简 · 判据 1「同一屏里同一个事实不许说两遍」] 记录模式与保留期都读不到时，
+   * 原来两行各带一句一模一样的理由（"后端只有设置接口、没有读取接口，这里不猜"）。
+   * 现在理由留在**保留期**那行（它永远是"未读取"），模式那行只留结论。
+   * 红线的结论一个字没少，所以下面同时断言两行都还在版面上。
+   */
+  it("[判据 1] 「没有读取接口、这里不猜」这个理由在同一节里只说一遍，两行结论都还在", async () => {
+    renderPage();
+    await waitForConfig();
+
+    const storage = screen.getByTestId("settings-section-storage");
+    const reason = "没有读取接口";
+    // 自证夹具：两行都处在"未读取"状态（否则理由本来就不会出现，计数为 0 也算绿）
+    expect(screen.getByText(/^当前模式：未读取/)).toBeTruthy();
+    expect(screen.getByText(/^当前保留期：未读取/)).toBeTruthy();
+    // split 的长度 = 出现次数 + 1
+    expect((storage.textContent ?? "").split(reason).length - 1).toBe(1);
+    // 留在这里的那一遍是完整的一句（理由没有被截断成半句）
+    expect(storage.textContent).toMatch(/没有读取接口，这里不猜/);
   });
 
   it("红线不许收：读不到 / 未读取 / 破坏性后果 / 数值仍然一眼可见", async () => {
@@ -846,5 +930,73 @@ describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () 
     renderPage();
     await screen.findByTestId("settings-config-error");
     expect(screen.getByText(zhCN["settings.config.loadFailedHint"])).toBeTruthy();
+  });
+});
+
+// ================================================================ [docs/26 §2] 一级界面省略
+
+describe("[docs/26 §2] 快照「标签 · id」：省略后全文仍在 DOM", () => {
+  it("长标签整段留在 DOM 里；没溢出时一个提示都不挂（回滚确认框里还有同一个 id）", async () => {
+    const label = "apply · 生产环境 · 手动改过网关监听与日志上限的那一次";
+    const id = "snap-2026-07-18T10-00-00Z-long-id";
+    registerMock("config_history_list", () => [
+      { id, label, created_at_ms: 1_770_000_000_000, size_bytes: 2048 },
+    ]);
+    renderPage();
+    await waitForConfig();
+
+    const element = await screen.findByTestId("settings-snapshot-label-ellipsis");
+    expect(element.textContent).toBe(`${label} · ${id}`);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(element.getAttribute("tabindex")).toBeNull();
+
+    // 恢复路径之一：回滚确认框里带着同一个 id（不是"藏起来没有出口"）
+    fireEvent.click(screen.getByTestId("settings-rollback"));
+    expect(screen.getByTestId("settings-rollback-confirm").textContent).toContain(id);
+  });
+});
+
+/**
+ * [docs/59] **下游 API 家族开关**（用户第 326 轮需求 2）。
+ *
+ * 用户原话："可以在设置页面选择我们下游是统一成 OPENAI 的两种还是 Anthropic 的"，
+ * 补一句"是打开关闭形式，按需求勾选"。所以这里钉的是：
+ *
+ * ① 三个开关**都在**（不是"选一个"的下拉框）；
+ * ② 默认**全开**（升级不改变既有行为）；
+ * ③ 勾掉一个之后，**只有那一个**变成 false 并真的进了 `config_apply` 的文档 ——
+ *    "界面上点了"和"配置里改了"是两件事，这条把它们钉在一起。
+ */
+describe("[配置] 下游 API 家族是三个独立开关，勾掉的才写进配置", () => {
+  it("三个开关都渲染、默认全开，勾掉其中一个只改那一个", async () => {
+    renderPage();
+    await waitForConfig();
+
+    const chat = screen.getByTestId("settings-field-downstreamOpenaiChat");
+    const responses = screen.getByTestId("settings-field-downstreamOpenaiResponses");
+    const messages = screen.getByTestId("settings-field-downstreamAnthropicMessages");
+
+    // 没有 jest-dom：直接读原生 `checked`
+    const isChecked = (box: HTMLElement) =>
+      (within(box).getByRole("checkbox") as HTMLInputElement).checked;
+
+    // ② 默认全开
+    for (const box of [chat, responses, messages]) {
+      expect(isChecked(box)).toBe(true);
+    }
+
+    // ③ 勾掉 Anthropic Messages
+    fireEvent.click(within(messages).getByRole("checkbox"));
+    expect(isChecked(messages)).toBe(false);
+    // 另外两个**不受影响**（三个是独立的，不是"选一个"）
+    expect(isChecked(chat)).toBe(true);
+    expect(isChecked(responses)).toBe(true);
+
+    fireEvent.click(screen.getByTestId("settings-apply"));
+    await waitFor(() => expect(applyCalls.length).toBeGreaterThan(0));
+    const applied = applyCalls.at(-1)!.gateway.downstream;
+    expect(applied.anthropic_messages).toBe(false);
+    expect(applied.openai_chat).toBe(true);
+    expect(applied.openai_responses).toBe(true);
   });
 });

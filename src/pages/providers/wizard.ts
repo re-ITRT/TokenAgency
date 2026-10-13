@@ -1,27 +1,26 @@
 /**
- * `/providers` 的**两个添加向导**（[docs/17 §3.1]）的纯逻辑：草稿 → 本地预检 → 命令入参。
+ * `/providers` 的**添加服务商**（[docs/17 §3.1] 的「高级添加」单步对话框）的纯逻辑：
+ * 草稿 → 本地预检 → 命令入参。
  *
- * 为什么单独一层（而不是全塞进 `.tsx`）：这两个向导最容易写错的三件事都能在这里被单测钉死 ——
+ * 第 80 轮把这里的**凭据草稿**（`CredentialDraft` / `credentialPayload` / 额度三件套）
+ * 整段删掉了：原来它们只服务「添加密钥」对话框，而那个对话框已下线
+ * （[docs/28 §1] 硬规则 3：**一个服务商一把密钥**；要两个账号 → 再加一条服务商、取不同名字）。
+ * 密钥的写入口只剩两步向导第 1 步与详情页「密钥」块，都不需要"另造一份凭据 id"的能力。
  *
- * 1. **本地预检不过就一次都不发**：`validate*` 返回非空数组时，调用方直接 `return`
+ * 为什么单独一层（而不是全塞进 `.tsx`）：这个对话框最容易写错的三件事都能在这里被单测钉死 ——
+ *
+ * 1. **本地预检不过就一次都不发**：`validateProviderDraft` 返回非空数组时，调用方直接 `return`
  *    （与设置页 `config_validate`、线路页 `channelDraftIssues` 同一纪律）。
- * 2. **不替后端编默认值**：`ProviderInput` 的可选字段、`Credential` 的
- *    `quota`/`guard`/`tags`/`enabled` 在 Rust 侧都有 `#[serde(default)]`
+ * 2. **不替后端编默认值**：`ProviderInput` 的可选字段在 Rust 侧都有 `#[serde(default)]`
  *    （`crates/ta-core/src/domain/mod.rs`）—— 用户没填的，载荷里**一个都不放**。
- * 3. **明文不进载荷**：`credential.secret` 只能是 `${secret:<条目名>}` **引用**，
- *    真正的值由 `credential_set_secret` 单独写进密钥仓库（[docs/10 §2.4] 的引用语法）。
+ * 3. **重名在本地就挡住**：显示名称是用户区分"同一家的不同账号"的抓手（[docs/28 §1]）。
  *
- * 文案一律用既有的 i18n 键（`wizard.*`）；本层只返回**键**，不返回句子。
+ * 文案一律用既有的 i18n 键（`wizard.*` / `providers.wizard.nameTaken`）；本层只返回**键**，
+ * 不返回句子。
  */
 
-import type {
-  AuthConfig,
-  AuthScheme,
-  Credential,
-  Protocol,
-  ProviderInput,
-  QuotaWindow,
-} from "@/shared/bindings";
+import type { AuthConfig, AuthScheme, Protocol, ProviderInput } from "@/shared/bindings";
+import { optional } from "./editor";
 import type { I18nKey } from "@/shared/i18n";
 
 // ================================================================ 运行时常量（契约里只有编译期联合类型）
@@ -39,9 +38,6 @@ export const AUTH_SCHEMES = [
   "query",
   "none",
 ] as const satisfies readonly AuthScheme[];
-
-/** `QuotaWindow` 的运行时镜像（同上）。 */
-export const QUOTA_WINDOWS = ["hour", "day", "month", "none"] as const satisfies readonly QuotaWindow[];
 
 /** Rust `impl Default for AuthConfig` 的 `scheme`：没填鉴权细节时**什么都不带**（走这个默认）。 */
 export const DEFAULT_AUTH_SCHEME: AuthScheme = "bearer";
@@ -66,6 +62,11 @@ export type ProviderDraft = {
   authScheme: AuthScheme;
   authHeader: string;
   authPrefix: string;
+  /**
+   * [docs/29 §2.2] 代理（值可能是标记：`direct:` / `auto:<订阅>` / 空串 / 线路 id）。
+   * `undefined` = 这次不动它（高级对话框不暴露代理）；`""` = 显式清空（走继承）。
+   */
+  lane?: string;
 };
 
 export const EMPTY_PROVIDER_DRAFT: ProviderDraft = {
@@ -79,22 +80,42 @@ export const EMPTY_PROVIDER_DRAFT: ProviderDraft = {
 };
 
 /**
- * 必填 / id 形状 / 与现有 `provider_list` 去重 / `base_url` 协议头。
+ * 现有的服务商：**id 与显示名称各自去重**（[docs/17 §3.1] + [docs/28 §1]）。
+ *
+ * 形状与两步向导的 `ExistingProviders`（`providerWizardModel.ts`）同义，只是这里不区分
+ * "本会话刚落库的那一份"——高级添加对话框不落库，没有这一档。
+ */
+export type ExistingProviderRefs = {
+  ids: readonly string[];
+  names: readonly string[];
+};
+
+/**
+ * 必填 / id 形状 / 与现有 `provider_list` 的 id 去重 / **名称重名** / `base_url` 协议头。
  *
  * 顺序 = 用户填写的顺序；返回空数组才允许发命令。
+ *
+ * **名称为什么也要去重**（[docs/28 §1] 硬规则 3）：一个服务商一把密钥，所以"同一家的第二个
+ * 账号"的唯一表达方式是**第二条服务商**，而用户正是靠名字区分它们的（owner 原话："取不同名字"）。
+ * 两条同名记录在界面上分不出谁是谁 —— 这不是后端该拒的错，是本地就该拦下的输入。
+ * 文案复用两步向导那一条 `providers.wizard.nameTaken`（不另造句子、不自己编 TA 码）。
  */
 export function validateProviderDraft(
   draft: ProviderDraft,
-  existingIds: readonly string[],
+  existing: ExistingProviderRefs,
 ): WizardIssue[] {
   const issues: WizardIssue[] = [];
   const id = draft.id.trim();
 
   if (id === "") issues.push({ field: "id", message: "wizard.required" });
   else if (!ID_PATTERN.test(id)) issues.push({ field: "id", message: "wizard.invalidId" });
-  else if (existingIds.includes(id)) issues.push({ field: "id", message: "wizard.duplicateId" });
+  else if (existing.ids.includes(id)) issues.push({ field: "id", message: "wizard.duplicateId" });
 
-  if (draft.name.trim() === "") issues.push({ field: "name", message: "wizard.required" });
+  const name = draft.name.trim();
+  if (name === "") issues.push({ field: "name", message: "wizard.required" });
+  else if (existing.names.includes(name)) {
+    issues.push({ field: "name", message: "providers.wizard.nameTaken" });
+  }
 
   const baseUrl = draft.baseUrl.trim();
   if (baseUrl === "") issues.push({ field: "baseUrl", message: "wizard.required" });
@@ -120,6 +141,17 @@ export function providerPayload(draft: ProviderDraft): ProviderInput {
     base_url: draft.baseUrl.trim(),
   };
 
+  /**
+   * [docs/29 §2.2] 代理（用户第 112 轮：向导里要能为服务商选线路，且能看到
+   * 直连 / 自动 / 所有已配置线路）。值是**标记**（`direct:` / `auto:<订阅>`）或线路 id，
+   * 由后端 `provider_upsert` 解析成真实线路 —— 前端不建线路、不编 id。
+   *
+   * `undefined` = 这次不动它（高级对话框不暴露代理）；`""` = 显式清空（走继承链）。
+   */
+  if (draft.lane !== undefined) {
+    payload.lane = optional(draft.lane);
+  }
+
   const header = draft.authHeader.trim();
   // 值前缀的**尾随空格有意义**（`Bearer ` 与 `Bearer` 是两个不同的前缀）→ 只 trim 判断空，值原样带
   const prefix = draft.authPrefix;
@@ -135,107 +167,20 @@ export function providerPayload(draft: ProviderDraft): ProviderInput {
   return payload;
 }
 
-// ================================================================ 添加密钥
+// ================================================================ 凭据：这一层也没有了
+//
+// 这里原来住着「添加密钥」的整套纯逻辑：`CredentialDraft` / `EMPTY_CREDENTIAL_DRAFT` /
+// `sanitizeAmount` / `parseOptionalAmount` / `credentialSecretRef` / `validateCredentialDraft` /
+// `credentialPayload`（带 `quota: { limit, currency, window }`）。
+// 第 80 轮连同那个对话框一起删掉（[docs/28 §1] 硬规则 3：**一个服务商一把密钥**）。
+//
+// 为什么不留作"以后可能用得上"：它们唯一的用途是"让用户自己给凭据起 id、自己选挂在哪个
+// 服务商下"—— 也就是"同一家挂多份凭据"这条路。留着这段代码，下一个人接回一个入口就能复活
+// 那个被 owner 否掉的模型（这正是本轮要拆掉的东西）。要用两个账号 → 加两条服务商、取不同名字。
+//
+// 现在的密钥写入口（都不在这里，也不需要这些函数）：
+// · 两步向导第 1 步：`./providerWizardModel.ts` 的 `defaultCredentialId` / `defaultCredentialPayload`
+//   （凭据 id 恒为 `<provider>-default`）+ `credential_set_secret`；
+// · 详情页「密钥」块：`./detail.tsx` 的 `providers-edit-secret`（留空 = 不改）；
+// · 额度窗口：`./quotaWindows.ts`（挂在**那一把**凭据上，编辑口在详情页）。
 
-export type CredentialDraft = {
-  id: string;
-  label: string;
-  provider: string;
-  /** **明文**，只活在这个草稿与 `credential_set_secret` 的入参里；永不进日志 / 错误 / 载荷。 */
-  secret: string;
-  quotaLimit: string;
-  currency: string;
-  window: QuotaWindow;
-};
-
-export const EMPTY_CREDENTIAL_DRAFT: CredentialDraft = {
-  id: "",
-  label: "",
-  provider: "",
-  secret: "",
-  quotaLimit: "",
-  currency: "",
-  window: "month",
-};
-
-/**
- * 输入即净化：只让「数字 + 至多一个小数点（且前面已有数字）」进来。
- *
- * 这样 `Number()` 永远不会拿到 `NaN`（`"1.2.3"` / `"."` 这些进不来），
- * 本地就不需要为"额度必须是数字"另造一条 i18n 文案 ——
- * 与线路页的 `intInputFilter` 同一手法。
- */
-export function sanitizeAmount(raw: string): string {
-  let out = "";
-  let seenDot = false;
-  for (const ch of raw) {
-    if (ch >= "0" && ch <= "9") out += ch;
-    else if (ch === "." && !seenDot && out !== "") {
-      out += ch;
-      seenDot = true;
-    }
-  }
-  return out;
-}
-
-/** 空串 = **没填**（返回 `undefined`）；否则是净化的非负数。 */
-export function parseOptionalAmount(raw: string): number | undefined {
-  const text = raw.trim();
-  if (text === "") return undefined;
-  const value = Number(text);
-  return Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-/** 凭据的密钥条目名：`${secret:<id>}`。同一份凭据重填 = 覆盖同一个条目，不会留孤儿。 */
-export function credentialSecretRef(id: string): string {
-  return `\${secret:${id}}`;
-}
-
-/** 必填 / id 形状 / 与现有 `credential_list` 去重。**secret 不是必填**（可以以后再写密钥）。 */
-export function validateCredentialDraft(
-  draft: CredentialDraft,
-  existingIds: readonly string[],
-): WizardIssue[] {
-  const issues: WizardIssue[] = [];
-  const id = draft.id.trim();
-
-  if (id === "") issues.push({ field: "id", message: "wizard.required" });
-  else if (!ID_PATTERN.test(id)) issues.push({ field: "id", message: "wizard.invalidId" });
-  else if (existingIds.includes(id)) issues.push({ field: "id", message: "wizard.duplicateId" });
-
-  if (draft.label.trim() === "") issues.push({ field: "label", message: "wizard.required" });
-  if (draft.provider === "") issues.push({ field: "provider", message: "wizard.required" });
-
-  return issues;
-}
-
-/**
- * 草稿 → `credential_upsert` 的载荷。
- *
- * - `secret` 恒为**引用** `${secret:<id>}`：明文永远不在这里（写明文是 `credential_set_secret` 的事）；
- * - `quota` **只在用户真的填了上限时**才出现（`metric` 未声明 + 无上限没有意义）；
- *   币种留空就不带（Rust `default_currency()` = `"USD"`），窗口是下拉里用户看到的值，照带。
- *
- * TS 侧的 `Credential` 把 `quota`/`guard`/`tags`/`enabled` 写成了必填（读取形状），
- * 而 Rust 侧它们都有默认值 —— 与 `channelPayload` 同一手法：先拼 `Record`，最后断言成契约类型；
- * 单测（`providers.test.tsx` ⑦）钉住"这些字段一个都不在载荷里"。
- */
-export function credentialPayload(draft: CredentialDraft): Credential {
-  const id = draft.id.trim();
-  const payload: Record<string, unknown> = {
-    id,
-    provider: draft.provider,
-    label: draft.label.trim(),
-    secret: credentialSecretRef(id),
-  };
-
-  const limit = parseOptionalAmount(draft.quotaLimit);
-  if (limit !== undefined) {
-    const quota: Record<string, unknown> = { limit, window: draft.window };
-    const currency = draft.currency.trim();
-    if (currency !== "") quota["currency"] = currency;
-    payload["quota"] = quota;
-  }
-
-  return payload as unknown as Credential;
-}

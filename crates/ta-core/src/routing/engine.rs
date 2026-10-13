@@ -161,12 +161,15 @@ impl PolicyEngineImpl {
 
         // 7. pin_sticky：用户显式钉住一个通道 → 强制进候选（运行态不可用则忽略）
         let pinned = action.and_then(|a| a.pin_sticky.clone());
-        let pinned = self.apply_pin(pinned, action, ctx, &mut candidates, &mut eliminated);
+        // [docs/55] `action` 不再传进来：`apply_pin` 只用它读 `use_lane`，那个字段已删除
+        let pinned = self.apply_pin(pinned, ctx, &mut candidates, &mut eliminated);
 
-        let selector = action
-            .and_then(|a| a.selector)
-            .or_else(|| group_id.as_ref().and_then(|g| idx.group(g)).map(|g| g.selector))
-            .unwrap_or(Selector::StickyThenPriority);
+        // 选路策略现在只有一种（[docs/48]）：不再由策略覆盖，也不再由组逐字段指定 ——
+        // 全部落到 `BalancedSticky`。这里不再读 `action.selector`（该字段已删除），
+        // `group.selector` 仍然读出来只是为了**如实反映配置**（老配置里可能是历史取值，
+        // 反序列化时已统一成 `BalancedSticky`）。
+        let selector =
+            group_id.as_ref().and_then(|g| idx.group(g)).map(|g| g.selector).unwrap_or_default();
 
         let on_no_candidate = action.map(|a| a.on_no_candidate).unwrap_or_default();
         let error_code = action.and_then(|a| a.error_code).or_else(|| {
@@ -187,7 +190,6 @@ impl PolicyEngineImpl {
             error_code,
             matched_policy: matched.map(|p| p.id.clone()),
             pinned,
-            lane_override: action.and_then(|a| a.use_lane.clone()),
             eliminated,
         }
     }
@@ -260,7 +262,7 @@ impl PolicyEngineImpl {
             return Some(EliminateReason::Disabled);
         }
 
-        // 运行态：禁用 / 凭据失效 / 额度耗尽 / 冷却
+        // 运行态：禁用 / 凭据失效 / 冷却
         if let Some(st) = ctx.channel_state.get(id) {
             if !st.enabled {
                 return Some(EliminateReason::Disabled);
@@ -268,16 +270,13 @@ impl PolicyEngineImpl {
             if st.invalid_credential {
                 return Some(EliminateReason::InvalidCredential);
             }
-            if st.exhausted {
-                return Some(EliminateReason::QuotaExhausted);
-            }
             if st.cooling_until_ms.map(|t| t > ctx.now_ms).unwrap_or(false) {
                 return Some(EliminateReason::Cooling);
             }
         }
 
-        // 线路：policy.use_lane 覆盖 channel 的继承链
-        let lane = idx.lane_with_override(ch, action.and_then(|a| a.use_lane.as_ref()));
+        // 线路：**只看服务商那一个节点**（[docs/55]：policy/channel/credential 三级覆盖已删）
+        let lane = idx.resolve_lane(ch);
         if let Some(l) = lane {
             if !idx.lanes.contains_key(&l) {
                 if self.opts.strict_lane_check {
@@ -311,7 +310,6 @@ impl PolicyEngineImpl {
     fn apply_pin(
         &self,
         pinned: Option<ChannelId>,
-        action: Option<&PolicyAction>,
         ctx: &RouteContext,
         candidates: &mut Vec<ChannelId>,
         eliminated: &mut Vec<(ChannelId, EliminateReason)>,
@@ -328,7 +326,8 @@ impl PolicyEngineImpl {
                 return None;
             }
         }
-        let lane = self.index.lane_with_override(ch, action.and_then(|a| a.use_lane.as_ref()));
+        // 线路：**只看服务商那一个节点**（[docs/55]：policy/channel/credential 三级覆盖已删）
+        let lane = self.index.resolve_lane(ch);
         if let Some(l) = lane {
             if ctx.lane_health.get(&l) == Some(&false) {
                 return None;
@@ -443,17 +442,6 @@ pub fn policy_matches(
                 .iter()
                 .any(|c| m.channel_tags_all.iter().all(|w| c.tags.iter().any(|t| t == w)))
         {
-            return false;
-        }
-    }
-
-    if let Some(lt) = m.quota_remaining_lt {
-        // 任一候选通道的凭据剩余比例低于阈值即命中（未知额度不参与判定）
-        let hit = model_scope
-            .iter()
-            .filter_map(|id| idx.channel(id))
-            .any(|ch| matches!(ctx.quota_remaining.get(&ch.credential), Some(Some(r)) if *r < lt));
-        if !hit {
             return false;
         }
     }
@@ -586,11 +574,6 @@ pub fn time_window_matches(w: &TimeWindow, now_ms: i64, offset_minutes: i32) -> 
 }
 
 // ================================================================ 内部小工具
-
-/// 便捷：`RouteContext` 里查某个凭据的剩余比例。
-pub fn quota_remaining_of(ctx: &RouteContext, cred: &CredentialId) -> Option<f64> {
-    ctx.quota_remaining.get(cred).copied().flatten()
-}
 
 #[cfg(test)]
 mod tests {
@@ -775,7 +758,7 @@ policies:
         let d = doc(&format!("{BASE}\npolicies: []\n"));
         let dec = engine(&d).decide(&hints("gpt-4o"), &ctx());
         assert!(dec.matched_policy.is_none());
-        assert_eq!(dec.selector, Selector::StickyThenPriority);
+        assert_eq!(dec.selector, Selector::BalancedSticky);
         assert_eq!(dec.on_no_candidate, NoCandidateAction::Error);
         assert_eq!(ids(&dec), vec!["ch-a", "ch-b", "ch-c"]);
         assert!(dec.eliminated.is_empty());
@@ -980,30 +963,6 @@ policies:
     }
 
     #[test]
-    fn match_quota_remaining_lt() {
-        let d = doc(&format!(
-            "{BASE}
-policies:
-  - id: pol-quota
-    name: quota
-    priority: 10
-    match: {{ quota_remaining_lt: 0.15 }}
-    action: {{ exclude_channels: [ch-a] }}
-"
-        ));
-        let e = engine(&d);
-
-        let mut c = ctx();
-        c.quota_remaining.insert(CredentialId::from("c-relay-a"), Some(0.10));
-        assert_eq!(ids(&e.decide(&hints("gpt-4o"), &c)), vec!["ch-b", "ch-c"]);
-
-        let mut c2 = ctx();
-        c2.quota_remaining.insert(CredentialId::from("c-relay-a"), Some(0.5));
-        c2.quota_remaining.insert(CredentialId::from("c-openai"), None);
-        assert!(e.decide(&hints("gpt-4o"), &c2).matched_policy.is_none());
-    }
-
-    #[test]
     fn match_provider_in() {
         let d = doc(&format!(
             "{BASE}
@@ -1122,7 +1081,7 @@ channel_groups:
   - id: grp-cheap-first
     model: gpt-4o
     members: [ch-c, ch-b]
-    selector: priority
+    selector: balanced_sticky
 policies:
   - id: pol-group
     name: group
@@ -1133,7 +1092,7 @@ policies:
         ));
         let dec = engine(&d).decide(&hints("gpt-4o"), &ctx());
         assert_eq!(ids(&dec), vec!["ch-c", "ch-b"]);
-        assert_eq!(dec.selector, Selector::Priority);
+        assert_eq!(dec.selector, Selector::BalancedSticky);
         // ch-a 不在组里 → NotInGroup 可解释
         assert!(dec
             .eliminated
@@ -1263,8 +1222,12 @@ policies:
         assert!(dec2.candidates.contains(&ChannelId::from("ch-c")));
     }
 
+    /// 策略里的 `selector` 键**已经下线**（[docs/48]）：老配置里还留着它，
+    /// 必须**不报错、不生效**（被 `PolicyAction.extra` 吸收），而同一段里**其它**字段照旧生效。
+    ///
+    /// 这条用例同时钉住两件事，缺一不可：兼容性（解析不失败）与"已下线"（不再改选路）。
     #[test]
-    fn action_selector_and_failover_override() {
+    fn legacy_action_selector_is_ignored_while_failover_still_overrides() {
         let d = doc(&format!(
             "{BASE}
 policies:
@@ -1281,7 +1244,11 @@ policies:
 "
         ));
         let dec = engine(&d).decide(&hints("gpt-4o"), &ctx());
-        assert_eq!(dec.selector, Selector::LowestLatency);
+        assert_eq!(
+            dec.selector,
+            Selector::BalancedSticky,
+            "老配置里的 selector 不该再改变选路（它已下线）"
+        );
         assert_eq!(dec.failover.max_attempts, 7);
         assert_eq!(dec.failover.cooldown_s, 5);
         assert_eq!(dec.failover.on, vec![FailoverTrigger::Http429, FailoverTrigger::Timeout]);
@@ -1322,17 +1289,17 @@ policies:
 "
         ));
         let mut c = ctx();
-        // ch-b 额度耗尽：即使 use_any 也不能放回来（运行态不可用）
+        // ch-b 凭据失效：即使 use_any 也不能放回来（运行态不可用）
         c.channel_state.insert(
             ChannelId::from("ch-b"),
-            ChannelRuntimeState { enabled: true, exhausted: true, ..Default::default() },
+            ChannelRuntimeState { enabled: true, invalid_credential: true, ..Default::default() },
         );
         let dec = engine(&d).decide(&hints("gpt-4o"), &c);
         assert_eq!(ids(&dec), vec!["ch-a", "ch-c"]);
         assert!(dec
             .eliminated
             .iter()
-            .any(|(c, r)| c.as_str() == "ch-b" && *r == EliminateReason::QuotaExhausted));
+            .any(|(c, r)| c.as_str() == "ch-b" && *r == EliminateReason::InvalidCredential));
         assert_eq!(dec.error_code, None);
     }
 
@@ -1368,15 +1335,20 @@ policies:
         let mut c = ctx();
         c.channel_state.insert(
             ChannelId::from("ch-c"),
-            ChannelRuntimeState { enabled: true, exhausted: true, ..Default::default() },
+            ChannelRuntimeState { enabled: false, ..Default::default() },
         );
         let dec = engine(&d).decide(&hints("gpt-4o"), &c);
         assert!(dec.pinned.is_none());
         assert_eq!(ids(&dec), vec!["ch-a", "ch-b"]);
     }
 
+    /// [docs/55]（第 322 轮）策略级 `use_lane` **已删除**：老配置里写着它，也**不再有任何作用**。
+    ///
+    /// 这是"放弃线路级别分配"的反回归闸门 —— 它与旧断言（策略覆盖会变成
+    /// `RouteDecision.lane_override`）**方向相反**，所以必须显式钉住"它不生效"，
+    /// 否则哪天有人把那条链接回来，测试不会红。
     #[test]
-    fn action_use_lane_becomes_decision_lane_override() {
+    fn legacy_policy_use_lane_is_ignored() {
         let d = doc(&format!(
             "{BASE}
 policies:
@@ -1388,21 +1360,20 @@ policies:
 "
         ));
         let dec = engine(&d).decide(&hints("gpt-4o"), &ctx());
-        assert_eq!(dec.lane_override.as_ref().unwrap().as_str(), "lane-jp");
+        // 三条候选一个都没被淘汰：策略里的 use_lane 不再锁定任何东西
+        assert_eq!(ids(&dec), vec!["ch-a", "ch-b", "ch-c"]);
     }
 
+    /// [docs/55] 生效线路只看服务商 → **服务商那条线路 down 就全部淘汰**。
+    ///
+    /// 旧版本这条测试靠 `policy.use_lane` 把线路钉到 `lane-jp`；那条路已经删了，
+    /// 所以改成直接给两个服务商配 `lane: lane-jp` —— 这才是现在唯一能让它成立的方式。
     #[test]
-    fn use_lane_with_downed_lane_eliminates_everything() {
-        let d = doc(&format!(
-            "{BASE}
-policies:
-  - id: pol-lane
-    name: lane
-    priority: 10
-    match: {{ all: true }}
-    action: {{ use_lane: lane-jp }}
-"
-        ));
+    fn provider_lane_down_eliminates_everything() {
+        let mut d = doc(BASE);
+        for p in d.providers.iter_mut() {
+            p.lane = Some(LaneId::from("lane-jp"));
+        }
         let mut c = ctx();
         c.lane_health.insert(LaneId::from("lane-jp"), false);
         let dec = engine(&d).decide(&hints("gpt-4o"), &c);
@@ -1452,11 +1423,11 @@ policies:
 
         c.channel_state.insert(
             ChannelId::from("ch-a"),
-            ChannelRuntimeState { enabled: true, exhausted: true, ..Default::default() },
+            ChannelRuntimeState { enabled: false, ..Default::default() },
         );
         assert_eq!(
             e.decide(&hints("gpt-4o"), &c).eliminated,
-            vec![(ChannelId::from("ch-a"), EliminateReason::QuotaExhausted)]
+            vec![(ChannelId::from("ch-a"), EliminateReason::Disabled)]
         );
 
         // 冷却已过期 → 恢复候选

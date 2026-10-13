@@ -63,7 +63,35 @@ impl RoutingIndex {
                 idx.channel_order.push(c.id.clone());
             }
             idx.channels.insert(c.id.clone(), c.clone());
-            idx.channels_of_model.entry(c.model.clone()).or_default().push(c.id.clone());
+        }
+
+        // [docs/28 §2] `channels_of_model` 的**唯一真源是 `Model.lines`**（模型侧持有关系，
+        // 一条线路可以服务多个模型）：
+        //
+        // * 键用**模型的规范 id**（而不是线路自己写的那串名字）—— 这也顺手修掉一个既有缺陷：
+        //   老实现按 `channel.model` 的**原文**建索引、却按**规范 id** 查（`engine.rs`），
+        //   于是"线路写别名"的配置会查到一个空候选集；
+        // * **遗留字段兜底**：`ChannelConfig.model`（v1 老配置，迁移后通常已清空/已搬进 lines）
+        //   仍被认一次，这样从旧导出直接导入的文件也不会瞬间没有线路可用。
+        for m in &doc.models {
+            for line in &m.lines {
+                let bucket = idx.channels_of_model.entry(m.id.clone()).or_default();
+                if !bucket.contains(line) {
+                    bucket.push(line.clone());
+                }
+            }
+        }
+        for c in &doc.channels {
+            if c.model.trim().is_empty() {
+                continue;
+            }
+            // 老写法：解析到模型（id 或别名）后挂到**规范 id** 下；解析不到就按原文留着，
+            // 让校验器去报"引用了不存在的模型"。
+            let key = idx.model_alias.get(&c.model).cloned().unwrap_or_else(|| c.model.clone());
+            let bucket = idx.channels_of_model.entry(key).or_default();
+            if !bucket.contains(&c.id) {
+                bucket.push(c.id.clone());
+            }
         }
 
         for p in &doc.providers {
@@ -114,28 +142,19 @@ impl RoutingIndex {
         self.channels.get(id).map(|c| c.tags.as_slice()).unwrap_or(&[])
     }
 
-    /// lane 继承链：`channel.lane → credential.lane → provider.lane → net.default_lane`。
-    /// （`policy.use_lane` 优先级更高，由调用方先判定。）
+    /// 该通道的生效 lane：`provider.lane → net.default_lane`。
+    ///
+    /// [docs/55]（第 322 轮）收敛：用户裁决"线路级别的分配逻辑我们已经放弃了，
+    /// 取而代之的，**每个服务商统一一个节点**"。所以这里只看**这条通道所属的服务商**，
+    /// 通道自己与凭据上的覆盖字段已经整条删除。
+    ///
+    /// 这里曾按 `channel.lane → credential.lane → provider.lane → default` 逐级回退 ——
+    /// 那两级在界面上早已没有写入口，却仍能静默压过服务商级选择。保留坏处大于删掉。
     pub fn resolve_lane(&self, ch: &ChannelConfig) -> Option<LaneId> {
-        if let Some(l) = &ch.lane {
-            return Some(l.clone());
-        }
-        if let Some(l) = self.credentials.get(&ch.credential).and_then(|c| c.lane.clone()) {
-            return Some(l);
-        }
-        if let Some(l) = self.providers.get(&ch.provider).and_then(|p| p.lane.clone()) {
-            return Some(l);
-        }
-        self.default_lane.clone()
-    }
-
-    /// 该通道的生效 lane（含 policy 覆盖）。
-    pub fn lane_with_override(
-        &self,
-        ch: &ChannelConfig,
-        lane_override: Option<&LaneId>,
-    ) -> Option<LaneId> {
-        lane_override.cloned().or_else(|| self.resolve_lane(ch))
+        self.providers.get(&ch.provider).and_then(|p| p.lane.clone()).or_else(|| {
+            // 服务商不存在（配置有洞）或它自己没选 → 全局默认
+            self.default_lane.clone()
+        })
     }
 }
 
@@ -154,6 +173,8 @@ lanes:
 providers:
   - { id: p-a, name: A, protocol: openai, base_url: "https://a.example/v1", lane: lane-jp }
 credentials:
+  # 注意：这两条 `lane:` 是**老配置的残留**（[docs/55] 已删除该字段）。
+  # 故意留着：它证明"老配置仍能解析、且那个值不再参与任何判定"。
   - id: c-a
     provider: p-a
     label: A
@@ -218,12 +239,10 @@ policies:
         assert_eq!(idx.group_for_model("gpt-4o").unwrap().id.as_str(), "grp-gpt-4o");
         assert!(idx.group_for_model("claude-sonnet-4-5").is_none());
 
-        // lane 继承链：channel 无 lane → credential.lane
+        // [docs/55] 生效线路只看服务商那一处。这个 fixture 里 ch-2 的 provider 配的是 lane-jp
+        //（老配置里 credential 上也有 lane，但那个字段已经不参与判定了）
         let ch2 = idx.channel(&ChannelId::from("ch-2")).unwrap();
         assert_eq!(idx.resolve_lane(ch2).unwrap().as_str(), "lane-jp");
-        // policy 覆盖
-        let over = LaneId::from("lane-direct");
-        assert_eq!(idx.lane_with_override(ch2, Some(&over)).unwrap().as_str(), "lane-direct");
     }
 
     #[test]

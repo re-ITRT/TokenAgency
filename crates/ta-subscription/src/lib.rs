@@ -8,9 +8,11 @@
 //! 订阅级过滤 + 预览用的节点与分组清单。**节点协议与 Clash 配置解析归内核（mihomo）**，
 //! 这里的解析只是为了"预览、计数、防坏更新"，不追求覆盖全部可选字段。
 
+pub mod auto;
 pub mod detect;
 pub mod fetch;
 pub mod parse;
+pub mod schedule;
 pub mod sync;
 pub mod traffic;
 pub mod validate;
@@ -24,6 +26,10 @@ use serde::{Deserialize, Serialize};
 use ta_core::domain::Subscription;
 use ta_core::error::Result;
 
+pub use auto::{
+    choose_auto_export, AutoCandidate, AutoDecision, KeepReason, NoneReason, PickReason,
+};
+pub use schedule::{due_subscriptions, SubscriptionSchedule};
 pub use traffic::SubscriptionTraffic;
 
 /// 默认 UA：很多机场按 `User-Agent` 返回不同格式（clash / surge / v2ray），默认伪装 Clash 客户端。

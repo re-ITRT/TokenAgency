@@ -87,6 +87,14 @@ export type ChannelCapabilities = {
   → 「保存模型」`models-add-submit` → `model_upsert({ model })`；成功后回显后端返回值。
 
 ### 3.3 `/channels` 线路（= 用户说的"线路1/线路2"）
+
+> ⚠️ **这一节已整体过期**（第 315 轮，[docs/49]）：`/channels`（导航标签「套餐与线路」）**已被删除**，
+> 下面这串 `channels-add-*` testid **全部不存在了**（`channels-add-model` 更早就已不存在）。
+> 现在建线路只有一条路：**加服务商 → 扫描上游目录 → 建全部线路**（`provider_lines_create_all`），
+> 之后用滑块启停；能力由扫描从上游原文自动认领（`adopt_upstream_hints`）。
+> **新增定价**已搬到成本中心（`pricing-add-*`，见 [docs/49 §2](49-channels-page-removed.md)）。
+> 本节保留原文，作为当时流程的记录。
+
 - 「添加线路」`channels-add-open` → 表单（顺序即用户描述的顺序）：
   `channels-add-provider`（下拉，来自 `provider_list`）→ `channels-add-credential`（下拉，**按 provider 过滤**）
   → `channels-add-model`（下拉：已有 `model_list` + 允许直接输入新名字）→ `channels-add-upstreamModel`

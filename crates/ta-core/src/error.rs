@@ -57,7 +57,7 @@ pub enum TaError {
     CredentialInvalid { credential: String },
 
     // ---- 配置层 ----
-    #[error("配置校验失败")]
+    #[error("配置校验失败：{errors:?}")]
     ConfigInvalid { errors: Vec<FieldError> },
     #[error("对象被引用，禁止删除：{what}")]
     Referenced { what: String },

@@ -19,14 +19,13 @@
 # 防漂移：crates/ta-core/tests/example_config_guard.rs 会断言本文件能被当前类型读通，
 #         且不含任何落进 extra 的失效字段。改结构体忘了重新生成 → CI 直接红。
 # ============================================================================
-version: 1
+version: 3
 gateway:
   listen: 127.0.0.1:8787
   admin_listen: 127.0.0.1:8788
   local_key: ${secret:gateway-local-key}
   max_body_mb: 32
   debug_headers: true
-  expose_models_with_capabilities: false
   fallback_provider: null
   passthrough:
     header_mode: pass
@@ -42,6 +41,10 @@ gateway:
     backoff: exponential
   metering:
     inject_stream_usage: false
+  downstream:
+    openai_chat: true
+    openai_responses: true
+    anthropic_messages: true
 request_log:
   mode: meta
   retention: 30d
@@ -150,6 +153,7 @@ proxy_subscriptions:
     tolerance_ms: 100
   enabled: true
   provider_key: sub-jp
+  disabled_nodes: []
 lanes:
 - id: lane-direct
   name: 直连（本机网络）
@@ -162,23 +166,13 @@ lanes:
   exclude_filter: null
   enabled: true
 - id: lane-jp-auto
-  name: 日本 · 自动择优
+  name: 日本 · 自动选择
   kind: subscription_auto
   subscription: sub-jp
   group: null
-  group_type: url-test
+  group_type: select
   node: null
   filter: (?i)(日本|JP|Tokyo|Osaka)
-  exclude_filter: null
-  enabled: true
-- id: lane-jp-original
-  name: 🇯🇵 日本（订阅自带分组）
-  kind: subscription_group
-  subscription: sub-jp
-  group: 🇯🇵 日本
-  group_type: null
-  node: null
-  filter: null
   exclude_filter: null
   enabled: true
 - id: lane-us-fixed
@@ -200,7 +194,7 @@ providers:
     scheme: bearer
     header: null
     prefix: null
-  lane: null
+  lane: lane-jp-auto
   headers: {}
   on_header_conflict: keep_client
   passthrough:
@@ -224,7 +218,7 @@ providers:
     scheme: header
     header: x-api-key
     prefix: null
-  lane: null
+  lane: lane-jp-auto
   headers: {}
   on_header_conflict: keep_client
   passthrough:
@@ -270,16 +264,6 @@ credentials:
   provider: p-openai
   label: OpenAI 个人订阅
   secret: ${secret:openai-personal}
-  lane: lane-jp-original
-  quota:
-    metric: unknown
-    limit: null
-    currency: USD
-    window: month
-    reset_day: 1
-    soft_limit: 0.8
-    hard_limit: 1.0
-    reserve: 0.0
   guard:
     max_rpm: 60
     max_concurrency: 8
@@ -292,16 +276,6 @@ credentials:
   provider: p-anthropic
   label: Anthropic 个人订阅
   secret: ${secret:anthropic-personal}
-  lane: lane-jp-auto
-  quota:
-    metric: unknown
-    limit: null
-    currency: USD
-    window: month
-    reset_day: 1
-    soft_limit: 0.8
-    hard_limit: 1.0
-    reserve: 0.0
   guard:
     max_rpm: null
     max_concurrency: null
@@ -314,16 +288,6 @@ credentials:
   provider: p-mytoken
   label: 中转站A · 500万 token/月
   secret: ${secret:relay-a}
-  lane: lane-jp-auto
-  quota:
-    metric: tokens
-    limit: 5000000.0
-    currency: USD
-    window: month
-    reset_day: 1
-    soft_limit: 0.8
-    hard_limit: 0.98
-    reserve: 0.05
   guard:
     max_rpm: null
     max_concurrency: null
@@ -336,16 +300,6 @@ credentials:
   provider: p-mytoken
   label: 中转站B · 按量付费
   secret: ${secret:relay-b}
-  lane: lane-direct
-  quota:
-    metric: cost
-    limit: 20.0
-    currency: CNY
-    window: month
-    reset_day: 1
-    soft_limit: 0.8
-    hard_limit: 1.0
-    reserve: 0.0
   guard:
     max_rpm: null
     max_concurrency: null
@@ -364,6 +318,7 @@ models:
     group: OpenAI
     order: 10
   expose: true
+  enabled: true
 - id: claude-sonnet-4-5
   aliases:
   - claude-sonnet-4-5-20250929
@@ -372,18 +327,19 @@ models:
     group: Anthropic
     order: 20
   expose: true
+  enabled: true
 - id: gpt-4o-mini
   aliases: []
   display:
     group: OpenAI
     order: 11
   expose: true
+  enabled: true
 channels:
 - id: ch-openai-personal
   model: gpt-4o
   provider: p-openai
   credential: c-openai-personal
-  lane: lane-us-fixed
   upstream_model: gpt-4o-2024-11-20
   transform:
     path: null
@@ -397,11 +353,18 @@ channels:
   - official
   target_override: null
   enabled: true
+  capabilities:
+    vision: false
+    tools: false
+    reasoning: false
+    context_tokens: 0
+    max_output_tokens: null
+    modalities:
+    - text
 - id: ch-relay-a
   model: gpt-4o
   provider: p-mytoken
   credential: c-relay-a
-  lane: lane-jp-original
   upstream_model: gpt-4o
   transform:
     path: null
@@ -415,11 +378,18 @@ channels:
   - cheap
   target_override: null
   enabled: true
+  capabilities:
+    vision: false
+    tools: false
+    reasoning: false
+    context_tokens: 0
+    max_output_tokens: null
+    modalities:
+    - text
 - id: ch-relay-b
   model: gpt-4o
   provider: p-mytoken
   credential: c-relay-b
-  lane: lane-direct
   upstream_model: gpt-4o
   transform:
     path: null
@@ -433,11 +403,18 @@ channels:
   - backup
   target_override: null
   enabled: true
+  capabilities:
+    vision: false
+    tools: false
+    reasoning: false
+    context_tokens: 0
+    max_output_tokens: null
+    modalities:
+    - text
 - id: ch-claude-official
   model: claude-sonnet-4-5
   provider: p-anthropic
   credential: c-anthropic-personal
-  lane: null
   upstream_model: claude-sonnet-4-5-20250929
   transform:
     path: null
@@ -451,6 +428,14 @@ channels:
   - official
   target_override: null
   enabled: true
+  capabilities:
+    vision: false
+    tools: false
+    reasoning: false
+    context_tokens: 0
+    max_output_tokens: null
+    modalities:
+    - text
 channel_groups:
 - id: grp-gpt-4o
   model: gpt-4o
@@ -458,7 +443,7 @@ channel_groups:
   - ch-openai-personal
   - ch-relay-a
   - ch-relay-b
-  selector: sticky_then_priority
+  selector: balanced_sticky
   sticky:
     enabled: true
     ttl_h: 12
@@ -468,7 +453,6 @@ channel_groups:
     - metadata.user_id
     - body_hash
   release_on:
-  - quota_exhausted
   - hard_error
   - user_pin_change
 policies:
@@ -487,7 +471,6 @@ policies:
     input_tokens_lt: null
     input_tokens_gt: null
     stream: null
-    quota_remaining_lt: null
     time_window: null
     provider_in: []
   action:
@@ -496,12 +479,10 @@ policies:
     exclude_channels: []
     require_tag: null
     exclude_tag: no-vision
-    selector: null
     failover: null
     on_no_candidate: error
     error_code: 415
     pin_sticky: null
-    use_lane: null
 - id: pol-night-batch
   name: 夜间长文本走中转A
   enabled: false
@@ -518,7 +499,6 @@ policies:
     input_tokens_lt: null
     input_tokens_gt: 20000
     stream: null
-    quota_remaining_lt: null
     time_window: 01:00-07:00
     provider_in: []
   action:
@@ -528,12 +508,10 @@ policies:
     exclude_channels: []
     require_tag: null
     exclude_tag: null
-    selector: priority
     failover: null
     on_no_candidate: error
     error_code: null
     pin_sticky: null
-    use_lane: null
 - id: pol-avoid-relay-a
   name: 临时绕开中转A
   enabled: false
@@ -549,7 +527,6 @@ policies:
     input_tokens_lt: null
     input_tokens_gt: null
     stream: null
-    quota_remaining_lt: null
     time_window: null
     provider_in: []
   action:
@@ -559,12 +536,10 @@ policies:
     - ch-relay-a
     require_tag: null
     exclude_tag: null
-    selector: null
     failover: null
     on_no_candidate: error
     error_code: null
     pin_sticky: null
-    use_lane: null
 - id: pol-default
   name: 默认策略
   enabled: true
@@ -580,7 +555,6 @@ policies:
     input_tokens_lt: null
     input_tokens_gt: null
     stream: null
-    quota_remaining_lt: null
     time_window: null
     provider_in: []
   action:
@@ -589,7 +563,6 @@ policies:
     exclude_channels: []
     require_tag: null
     exclude_tag: null
-    selector: null
     failover:
       on:
       - http429
@@ -597,7 +570,6 @@ policies:
       - http5xx
       - timeout
       - connect_error
-      - quota_exhausted
       - channel_tagged_out
       max_attempts: 3
       cooldown_s: 120
@@ -605,7 +577,6 @@ policies:
     on_no_candidate: error
     error_code: null
     pin_sticky: null
-    use_lane: null
 system_integration:
   enable_tun: false
   enable_system_proxy: false

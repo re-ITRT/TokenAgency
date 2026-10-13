@@ -6,4 +6,10 @@
  */
 
 export { useAppStore, TOAST_DEDUPE_MS, type ToastItem } from "./app";
-export { useUiStore, type ThemeMode } from "./ui";
+export {
+  resolveThemeMode,
+  systemPrefersDark,
+  useUiStore,
+  type ResolvedThemeMode,
+  type ThemeMode,
+} from "./ui";

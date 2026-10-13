@@ -6,8 +6,9 @@
  *
  * 1. **只用已注册的命令**：`usage_dashboard` / `usage_query` / `usage_token_kinds` /
  *    `usage_export_csv` / `usage_request_stream_snapshot` / `pricing_unpriced_models` / `app_open_dir`，
- *    定价区块另发 `pricing_list`（读）与 `pricing_delete`（删）。
- *    定价的写命令 `pricing_upsert` **后端已可用、本页仍未接入 → 不放按钮，也不放禁用占位**。
+ *    定价区块另发 `pricing_list`（读）/ `pricing_upsert`（写）/ `pricing_delete`（删）。
+ *    计价条目的**唯一**写入口就在这里（`/channels` 整页删除后：那个"添加线路"向导曾代发
+ *    `pricing_upsert`，现在没有第二处了）。
  * 2. **估算不许冒充上游上报**（[11 §6] 铁律 4）：`UsageSource`（upstream / upstream_partial /
  *    estimated）只写在写入路径的 `UsageRecord` 上（`crates/ta-core/src/types.rs:282`），
  *    而**查询与看板的返回结构都没有带它**（`UsageRow` 只有 `dims`/`values`；`DashboardData`
@@ -30,8 +31,12 @@
  * - `useCommandQuery("usage_token_kinds", undefined, qk.usageTokenKinds)`                      → 指标候选
  * - `useCommandQuery("usage_request_stream_snapshot", {limit}, qk.usage("recent:…"))`          → 最近请求
  * - `useCommandQuery("pricing_unpriced_models", undefined, qk.unpricedModels)`                 → 未定价模型
- * - `useCommandQuery("pricing_list", undefined, qk.pricing)`                                   → 定价条目（新增区块）
- * - `useCommandMutation("usage_export_csv")` / `useCommandMutation("app_open_dir")` / `useCommandMutation("pricing_delete")`
+ * - `useCommandQuery("pricing_list", undefined, qk.pricing)`                                   → 定价条目（**只读展示**，[docs/51]）
+ * - `useCommandMutation("usage_export_csv")` / `useCommandMutation("app_open_dir")`
+ *
+ * **写命令一个都不在这页**（[docs/51] 第 318 轮）：`pricing_upsert` / `pricing_delete`
+ * 已随价格配置搬到模型页（`src/pages/models/PricingDialog.tsx`）。
+ * 本页只回答"钱是怎么算出来的"，不改动任何东西。
  */
 
 import {
@@ -51,22 +56,16 @@ import {
   Typography,
 } from "@mui/material";
 import { useTheme, type Theme } from "@mui/material/styles";
-import { useQueryClient } from "@tanstack/react-query";
+
 import * as echarts from "echarts";
 import type { EChartsOption } from "echarts";
-import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 
-import {
-  errorMessage,
-  isTauri,
-  pricing as pricingApi,
-  qk,
-  useCommandMutation,
-  useCommandQuery,
-} from "@/shared/api";
+import { errorMessage, isTauri, qk, useCommandMutation, useCommandQuery } from "@/shared/api";
 import type { RequestSummary, TimeRange, UsageQuery } from "@/shared/bindings";
-import { ConfirmDelete, HelpTip, NumberCard, PageHeader } from "@/shared/components";
+import { SECTION_SX, Caption, AutoEllipsis, HelpTip, NumberCard, PageHeader } from "@/shared/components";
 import {
+  DASH,
   formatExact,
   formatInt,
   formatLocalTime,
@@ -77,7 +76,7 @@ import {
 } from "@/shared/format";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { useAppStore } from "@/stores/app";
-import { radius, typography } from "@/theme";
+import { typography } from "@/theme";
 
 // ================================================================ 常量与文案映射
 
@@ -88,7 +87,6 @@ const RECENT_LIMIT = 50;
 const QUERY_LIMIT = 200;
 
 /** 数值缺失一律画"—"（**不画 0**：0 是"确实是 0"，缺失是"不知道"）。 */
-const DASH = "—";
 
 /**
  * 页面自己的范围词（`7d` / `30d` / `month`，只用于 i18n 与 query key）→
@@ -569,24 +567,14 @@ export function readDashboard(raw: unknown): DashboardView | undefined {
 
 // ================================================================ 小组件
 
-function Caption({ children }: { children: ReactNode }) {
-  return (
-    <Typography variant="caption" sx={{ color: "text.secondary" }}>
-      {children}
-    </Typography>
-  );
-}
 
 /**
- * 把同一区块的几句解释合成**一条**提示正文（[docs/22 §3]：一个区块最多一个问号）。
+ * 这里原有本页自己的 `mergeHelpText`（与 `network/index.tsx` 那份逐字相同）。
  *
- * 分隔符用换行：`aria-label` 里保留断句，读屏不会把几句话连成一坨。
- * （同一个函数的规范实现是 `network/index.tsx` 的 `mergeHelpText`；这里**不跨页 import**
- * 另一个页面模块 —— 那会把整个 network 页拖进本页的依赖里。）
+ * **第 319 轮删除**（[docs/52]）：收敛到 `@/shared/helpTip`。
+ * 原来的注释写着"不跨页 import 另一个页面模块 —— 那会把整个 network 页拖进本页的依赖里"，
+ * 那个顾虑是对的，而现在共享模块在 `shared/` 下，不再有这个代价。
  */
-function mergeHelpText(...parts: readonly (string | undefined)[]): string {
-  return parts.filter((part): part is string => part !== undefined && part !== "").join("\n");
-}
 
 /**
  * 一个区块的标题 + 右边的问号圆圈（[docs/22 §1/§2]）。
@@ -634,7 +622,6 @@ function chartPalette(theme: Theme): ChartPalette {
   };
 }
 
-const SECTION_SX = { p: 4, borderRadius: `${radius.surface}px` } as const;
 
 /**
  * 涨跌比率 `(now - prev) / prev`。`prev` 缺失或为 0 → `undefined`（**不给涨跌**）。
@@ -718,32 +705,27 @@ export function CostBody(props: CostBodyProps): ReactElement {
     [trendInput, palette],
   );
 
-  const filterSummary = [
-    `${t("cost.query.range")}=${t(RANGE_KEY[props.applied.range])}`,
-    `${t("cost.query.groupBy")}=${t(GROUP_KEY[props.applied.groupBy])}`,
-    `${t("cost.query.metrics")}=${props.applied.metrics.map((m) => metricText(m, t)).join(" / ")}`,
-  ].join(" · ");
-
   const unpricedList = props.unpriced ?? [];
   const tableFailed = props.tableError !== undefined && props.tableError !== null;
   const dashboardFailed = props.dashboardError !== undefined && props.dashboardError !== null;
 
   return (
     <Box sx={{ px: 8, pb: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-      {/* ① 数据口径：先把"哪些是估算"说清楚（[11 §6] 铁律 4） */}
+      {/* ① 数据口径：先把哪些是估算说清楚 —— 估算不许冒充上游上报 */}
       <Paper variant="outlined" sx={SECTION_SX}>
         <Stack spacing={2} data-testid="cost-provenance">
           {/*
-            「为什么 token 来源标记不可得」是**成段的设计解释**（[docs/22 §2] 的 prose）→ 收进问号
-            （§3：一个区块最多一个，正文一个字都没丢：它就是 `aria-label`）。
-            注意：但 `cost.provenance.cost`（"花费是本地算的、不是上游账单"）**留在版面上**：
-            它是**数据口径结论**（用户据此判断眼前这些数字能不能当账单用），属于 §2 红线第 1 条 ——
-            把它藏进悬停等于让用户拿估算当账单。带条数的 `cost.provenance.unpriced` 同理留在版面
-            （数值 + 结论，§2 第 5 条）。
+            [极简 · 判据 1] 原来这里还有一段 216 字的 token 来源说明：它讲的是来源标记的三个
+            枚举取值与"这些标记为什么读不到" —— 枚举值、字段名、出处没有一条该给用户看，
+            所以整段连同键一起删掉（见映射文件的 `delete`），版面上只剩结论。
+
+            留下的 [cost.provenance.cost]（"花费是本地算的、不是上游账单"）是**数据口径结论**：
+            用户据此判断眼前这些数字能不能当账单用，属于判断依据 → 必须留在版面上（判据 2 的取向：
+            结论留在版面上，解释才进问号）。问号里只留 token 细分那条仍在生效的诚实说明。
           */}
           <TitleWithHelp
             title={t("cost.provenance.title")}
-            text={mergeHelpText(t("cost.provenance.tokens"), t("cost.provenance.tokensNote"))}
+            text={t("cost.provenance.tokensNote")}
             testId="cost-provenance-help"
           />
           <Caption>{t("cost.provenance.cost")}</Caption>
@@ -829,14 +811,9 @@ export function CostBody(props: CostBodyProps): ReactElement {
                   }
                 />
               </Box>
-              {/* 没有上期字段就说清楚，而不是让四张卡看起来"本来就没有涨跌" */}
-              {props.dashboard.prevRequests === undefined &&
-              props.dashboard.prevTokens === undefined &&
-              props.dashboard.prevCost === undefined ? (
-                <Box data-testid="cost-delta-none">
-                  <Caption>{t("cost.deltaUnavailable")}</Caption>
-                </Box>
-              ) : null}
+              {/* [极简 · 判据 1] 原来这里还有一行「对比上期：不可得（后端返回里没有上期字段，
+                  所以不给涨跌）」—— 它解释的是**实现为什么没有这个数**。没有上期值就**不显示涨跌**
+                  本来就是正确的展示；再写一句解释只是把"我们做不到"印在界面上。整行已删。 */}
             </>
           )}
 
@@ -956,11 +933,16 @@ export function CostBody(props: CostBodyProps): ReactElement {
               <Typography variant="caption" sx={{ color: "error.main" }}>
                 {t("cost.query.metrics.error", { message: errorMessage(props.tokenKindsError) })}
               </Typography>
-            ) : props.tokenKinds.length === 0 ? (
-              <Caption>{t("cost.query.metrics.empty")}</Caption>
             ) : null}
+            {/* [极简 · 判据 1] 原来这里还有一句「后端没有报出任何 token 类型：只剩请求数与花费
+                两项指标可选。」—— 那是在解释**后端为什么没给枚举值**；而"只剩两项指标"
+                用户照着一排勾选框就能看出来。整句已删（键进映射文件的 `delete`）。 */}
           </Stack>
-
+        {/* [docs/30 §3.18] 长页面（1811 行）的主操作固定在底部：照抄 `providers-save-bar` 的 sticky 做法 */}
+        <Box
+          sx={{ position: "sticky", bottom: 0, zIndex: 1, bgcolor: "background.paper", py: 2 }}
+          data-testid="cost-query-bar"
+        >
           <Box sx={{ display: "flex", gap: 3, alignItems: "center" }}>
             <Button variant="contained" onClick={() => props.onSearch(draft)}>
               {t("cost.query.submit")}
@@ -975,11 +957,12 @@ export function CostBody(props: CostBodyProps): ReactElement {
               {t("cost.query.reset")}
             </Button>
           </Box>
+        </Box>
 
-          <Box data-testid="cost-applied">
-            <Caption>{t("cost.query.applied", { summary: filterSummary })}</Caption>
-          </Box>
-
+          {/* [极简 · 判据 1] 原来这里还有一行「当前条件：时间范围=今天 · 分组维度=模型 ·
+              指标=请求数 / 花费」—— 它紧贴上面那四个下拉框与下面那排勾选框，把用户刚选的东西
+              再念一遍（判据 1「同一屏里同一个事实不许说两遍」）。整块已删；导出用的是同一个
+              `applied` 条件，不依赖这行字。 */}
           {/* 结果 */}
           {tableFailed ? (
             <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
@@ -995,11 +978,14 @@ export function CostBody(props: CostBodyProps): ReactElement {
               {t("cost.result.loading")}
             </Typography>
           ) : resultTable === undefined || resultTable.rows.length === 0 ? (
-            <Stack spacing={1} data-testid="cost-empty">
+            /* [极简 · 判据 5] 空态只说"怎么开始"：1 行。
+               原来那两行（"可能这段时间没有请求经过网关…" / "缩小分组维度或放宽时间范围后重试"）
+               是在替用户推测原因并写一篇小作文。
+               [第 2 轮 · 判据 A] 这里原来还带一个「重置」按钮，与上方筛选区里的「重置」
+               **同标签同动作**：已删，条件收不回来时用筛选区那一个。 */
+            <Box data-testid="cost-empty">
               <Typography variant="body1">{t("cost.result.empty.title")}</Typography>
-              <Caption>{t("cost.result.empty.body")}</Caption>
-              <Caption>{t("cost.result.empty.narrow")}</Caption>
-            </Stack>
+            </Box>
           ) : (
             <>
               <Stack direction="row" spacing={3} alignItems="baseline" sx={{ flexWrap: "wrap" }}>
@@ -1058,8 +1044,12 @@ export function CostBody(props: CostBodyProps): ReactElement {
                   <TableBody>
                     {resultTable.rows.map((row, index) => (
                       <TableRow key={`${index}-${rowLabel(row, dimension)}`}>
-                        <TableCell sx={{ fontVariantNumeric: "tabular-nums", overflowWrap: "anywhere" }}>
-                          {rowLabel(row, dimension)}
+                        <TableCell sx={{ fontVariantNumeric: "tabular-nums" }}>
+                          {/* [docs/26 §2] 分组维度是模型/通道/服务商名（按 dimension 变），可能很长。
+                              恢复路径：本页没有详情页 → 悬停/聚焦的 tooltip 就是恢复路径。 */}
+                          <AutoEllipsis testId={`cost-row-label-ellipsis-${index}`} sx={{ maxWidth: 280 }}>
+                            {rowLabel(row, dimension)}
+                          </AutoEllipsis>
                         </TableCell>
                         {(resultTable.metrics.length > 0 ? resultTable.metrics : ["cost"]).map(
                           (metric) => {
@@ -1189,7 +1179,14 @@ export function CostBody(props: CostBodyProps): ReactElement {
                       <TableCell sx={{ fontVariantNumeric: "tabular-nums", color: "text.secondary" }}>
                         {formatLocalTime(item.ts_ms)}
                       </TableCell>
-                      <TableCell sx={{ overflowWrap: "anywhere" }}>{item.model}</TableCell>
+                      <TableCell sx={{ overflowWrap: "anywhere" }}>
+                        {/* [docs/26 §2] 最近请求里的模型名可能带很长的上游后缀。
+                            恢复路径：这一列没有详情入口 → 悬停/聚焦的 tooltip 就是恢复路径
+                            （本页的「最近请求」是流的快照，不承担逐条排查，逐条排查在 /logs）。 */}
+                        <AutoEllipsis testId="cost-recent-model-ellipsis" sx={{ maxWidth: 280 }}>
+                          {item.model}
+                        </AutoEllipsis>
+                      </TableCell>
                       <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
                         {formatTokens(item.total_tokens)}
                       </TableCell>
@@ -1263,231 +1260,45 @@ export function priceSourceText(source: unknown): string {
   return typeof source === "string" && source !== "" ? source : DASH;
 }
 
-/** 递归按 key 排序后的 JSON：**逐字段全等**的比较基准（与键序无关）。 */
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (isRecord(value)) {
-    const keys = Object.keys(value).sort();
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-
-export type PricingIndexCheck = "same" | "changed" | "missing";
-
 /**
- * [docs/21 §1.1 第 5 条] `pricing_delete` 收的是 **index**，所以删之前必须**重新读一次**
- * `pricing_list`，逐字段确认那个下标上**仍然是**用户看到的那一条（`JSON.stringify` 全等；
- * 这里先按 key 排序再比 —— 比较的仍是**全部字段**，只是不让键序抖动造成误判）。
+ * 「定价条目」区块：**只读展示**（[docs/51]）。
  *
- * `changed` / `missing` 都**拒绝执行**：绝不在错位上下手，宁可让用户重看一遍。
- */
-export function checkPricingIndex(
-  fresh: unknown,
-  index: number,
-  snapshot: unknown,
-): PricingIndexCheck {
-  if (!Array.isArray(fresh) || index < 0 || index >= fresh.length) return "missing";
-  return stableJson(fresh[index]) === stableJson(snapshot) ? "same" : "changed";
-}
-
-/**
- * 下标错位时用 `delete.result.staleIndex`（i18n 键已由主管补上）。
+ * 用户第 318 轮的两句话定下了它现在的形态：
  *
- * 为什么不在这里放模块常量：键缺失时先报主管是纪律，但键到位后**必须**换回 `t(...)` ——
- * 中文界面能看，英文界面显示中文就是未翻译的漏网之鱼。
- */
-
-/** 一条定价删除的结果。**逐条如实汇报**：成功说标识，失败说标识 + 后端原文。 */
-export type PricingDeleteOutcome = {
-  /** 身份标识：要删的那条**当时**所在的下标。 */
-  key: string;
-  /** 下标 + 匹配（写清"删的是哪一个"）。 */
-  label: string;
-  ok: boolean;
-  /** 失败时的后端原文（含 TA 码）。 */
-  error?: string;
-  /** 拒绝执行：重新读回来时那个下标上已经不是这一条（**没有**调用后端）。 */
-  stale?: boolean;
-};
-
-export type PricingDeleteReport = { batch: boolean; items: PricingDeleteOutcome[] };
-
-/** 一行在确认框 / 结果区里的标识：下标 + 匹配（原样数据，不改写）。 */
-function priceRowLabel(row: PricingEntryView): string {
-  const match = isRecord(row.raw) ? row.raw["match"] : undefined;
-  return `#${row.index} · ${priceMatchText(match)}`;
-}
-
-/** 删除结果区（失败逐条给标识 + 后端原文；批量补一行"成功 N 条，失败 M 条"）。 */
-function PricingDeleteReportBox({ report }: { report: PricingDeleteReport }): ReactElement {
-  const { t } = useTranslation();
-  const failed = report.items.filter((item) => !item.ok);
-  return (
-    <Box data-testid="pricing-delete-result">
-      <Stack spacing={1}>
-        {report.batch ? (
-          <Typography variant="body1" data-testid="pricing-delete-result-summary">
-            {t("delete.result.summary", {
-              ok: report.items.length - failed.length,
-              failed: failed.length,
-            })}
-          </Typography>
-        ) : null}
-        {report.items.map((item) =>
-          item.stale === true ? (
-            <Typography
-              key={item.key}
-              variant="body1"
-              data-testid={`pricing-delete-result-stale-${item.key}`}
-              sx={{ color: "error.main", overflowWrap: "anywhere" }}
-            >
-              {`${item.label} · ${t("delete.result.staleIndex")}`}
-            </Typography>
-          ) : (
-            <Typography
-              key={item.key}
-              variant="body1"
-              data-testid={`pricing-delete-result-${item.key}`}
-              sx={{
-                color: item.ok ? "text.primary" : "error.main",
-                overflowWrap: "anywhere",
-              }}
-            >
-              {item.ok
-                ? t("delete.result.ok", { name: item.label })
-                : `${item.label} · ${t("delete.result.failed", { message: item.error ?? "" })}`}
-            </Typography>
-          ),
-        )}
-      </Stack>
-    </Box>
-  );
-}
-
-/**
- * 「定价条目」区块：列表（匹配 / 输入价 / 输出价 / 来源）+ 单条与批量删除。
+ * * *"我是希望用户为每一个对外模型定价，来算自己大概花了多少，而不是对服务商的线路计价"*；
+ * * *"成本中心页面只做显示，价格配置到模型页面去"*。
  *
- * 三条硬规则与 `/policies` 完全一致（同一个 `ConfirmDelete`、同一套失败展示），
- * 外加**下标安全**这一条专属规则（见 `checkPricingIndex`）：
- * 每次删除之前都重新读一次 `pricing_list` 并逐字段比对，不一致就拒绝。
+ * 所以这里**没有任何写入口**：新增 / 改价 / 清除定价全在模型页（`PricingDialog`）。
+ * 保留这一区块的理由是它回答了"钱到底是怎么算出来的"——每个模型匹配到哪条价、
+ * 输入 / 输出各是多少、这条价从哪来（手工 / 导入 / 内置）。**它只陈述，不改动。**
+ *
+ * 「去哪儿改」那句话是**常驻版面**的、不收进问号：原来"添加定价"的按钮就在这里，
+ * 用户会回来这里找它（[docs/22 §2] 红线的道理 —— 恢复路径不能藏）。
  */
 export function PricingSection(): ReactElement {
   const { t } = useTranslation();
-  const qc = useQueryClient();
 
   const list = useCommandQuery("pricing_list", undefined, qk.pricing);
   const rows = useMemo(() => readPriceEntries(list.data), [list.data]);
-
-  const [selected, setSelected] = useState<number[]>([]);
-  /** 正在确认的单条；`null` = 没有。 */
-  const [target, setTarget] = useState<PricingEntryView | null>(null);
-  /** 批量确认（与单条共用 `ConfirmDelete`）。 */
-  const [batchOpen, setBatchOpen] = useState(false);
-  const [report, setReport] = useState<PricingDeleteReport | null>(null);
-  const remove = useCommandMutation("pricing_delete");
-
-  const selectedRows = rows.filter((row) => selected.includes(row.index));
-  const allSelected = rows.length > 0 && selectedRows.length === rows.length;
   const listFailed = list.error !== undefined && list.error !== null;
-
-  /** 定价表变了 → 未定价模型与花费视图也跟着变（同前缀 + 看板/用量）。 */
-  const invalidate = async (): Promise<void> => {
-    await qc.invalidateQueries({ queryKey: qk.pricing });
-    void qc.invalidateQueries({ queryKey: qk.dashboardPrefix });
-  };
-
-  /**
-   * 重新读一次 `pricing_list`。
-   *
-   * **故意不读缓存**：错位判断必须基于"后端现在手里那一份"，而缓存里那份恰恰可能是过时的
-   * （[docs/21 §1.1 第 5 条] 要的就是"删之前重新读一次"）。
-   */
-  async function freshEntries(): Promise<unknown> {
-    return await pricingApi.list();
-  }
-
-  const failedItem = (row: PricingEntryView, error: string): PricingDeleteOutcome => ({
-    key: String(row.index),
-    label: priceRowLabel(row),
-    ok: false,
-    error,
-  });
-
-  const runOne = async (row: PricingEntryView): Promise<void> => {
-    setTarget(null);
-    // 结果区只描述**最近一次**删除操作（上一次的结论不该混在这次里）
-    setReport(null);
-    let check: PricingIndexCheck;
-    try {
-      check = checkPricingIndex(await freshEntries(), row.index, row.raw);
-    } catch (err) {
-      // 重新读都失败 → 更不能删（如实显示后端原文）
-      setReport({ batch: false, items: [failedItem(row, errorMessage(err))] });
-      return;
-    }
-    if (check !== "same") {
-      // 列表变了 → **拒绝执行**（一条都不删），并把最新列表取回来让用户重看
-      setReport({
-        batch: false,
-        items: [{ key: String(row.index), label: priceRowLabel(row), ok: false, stale: true }],
-      });
-      setSelected([]);
-      await invalidate();
-      return;
-    }
-    try {
-      await remove.mutateAsync({ index: row.index });
-      setReport({
-        batch: false,
-        items: [{ key: String(row.index), label: priceRowLabel(row), ok: true }],
-      });
-      setSelected([]);
-    } catch (err) {
-      setReport({ batch: false, items: [failedItem(row, errorMessage(err))] });
-    }
-    await invalidate();
-  };
-
-  const runSelected = async (): Promise<void> => {
-    setBatchOpen(false);
-    setReport(null);
-    // 下标会随删除**整体前移**（删掉一条，它后面每条的下标都 −1）→ 从**大到小**删：
-    // 已经处理过的那些下标不会再被后面的删除挪动。
-    const ordered = [...selectedRows].sort((a, b) => b.index - a.index);
-    const items: PricingDeleteOutcome[] = [];
-    for (const row of ordered) {
-      let check: PricingIndexCheck;
-      try {
-        // 每一条都重新读 + 逐字段比对（[docs/21 §1.1 第 5 条]）
-        check = checkPricingIndex(await freshEntries(), row.index, row.raw);
-      } catch (err) {
-        items.push(failedItem(row, errorMessage(err)));
-        continue; // **不中止**其余条目
-      }
-      if (check !== "same") {
-        items.push({ key: String(row.index), label: priceRowLabel(row), ok: false, stale: true });
-        continue; // **不中止**其余条目
-      }
-      try {
-        await remove.mutateAsync({ index: row.index });
-        items.push({ key: String(row.index), label: priceRowLabel(row), ok: true });
-      } catch (err) {
-        items.push(failedItem(row, errorMessage(err)));
-      }
-    }
-    setReport({ batch: true, items });
-    setBatchOpen(false);
-    // 删过之后下标就整体变了 → 清空选择（列表紧接着会重取）
-    setSelected([]);
-    await invalidate();
-  };
 
   return (
     <Box sx={{ px: 8, pb: 8 }}>
       <Paper variant="outlined" sx={SECTION_SX}>
         <Stack spacing={3} data-testid="cost-pricing">
-          <Typography variant="h4">{t("cost.pricing.title")}</Typography>
+          <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
+            <Typography variant="h4">{t("cost.pricing.title")}</Typography>
+            {/* 「匹配是怎么算的」是解释 → 收进问号；「去哪儿改」是操作路径 → 留在版面上 */}
+            <HelpTip text={t("cost.pricing.help")} testId="cost-pricing-help" />
+          </Stack>
+
+          <Typography
+            variant="body1"
+            data-testid="cost-pricing-readonly"
+            sx={{ color: "text.secondary" }}
+          >
+            {t("cost.pricing.readonly")}
+          </Typography>
 
           {listFailed ? (
             <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
@@ -1507,135 +1318,51 @@ export function PricingSection(): ReactElement {
               {t("cost.pricing.empty")}
             </Typography>
           ) : (
-            <>
-              <Stack direction="row" spacing={2} alignItems="center" sx={{ flexWrap: "wrap" }}>
-                <Box data-testid="pricing-selected-count">
-                  <Caption>{t("delete.selectedCount", { count: selectedRows.length })}</Caption>
-                </Box>
-                <Button
-                  variant="outlined"
-                  color="error"
-                  data-testid="pricing-delete-selected"
-                  disabled={remove.isPending || selectedRows.length === 0}
-                  onClick={() => setBatchOpen(true)}
-                >
-                  {t("common.deleteSelected")}
-                </Button>
-              </Stack>
-
-              <Box sx={{ overflowX: "auto" }}>
-                <Table size="small" data-testid="pricing-table">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell padding="checkbox">
-                        <Box data-testid="pricing-select-all">
-                          <Checkbox
-                            size="small"
-                            checked={allSelected}
-                            indeterminate={selectedRows.length > 0 && !allSelected}
-                            onChange={(event) =>
-                              setSelected(event.target.checked ? rows.map((row) => row.index) : [])
-                            }
-                          />
-                        </Box>
-                      </TableCell>
-                      <TableCell>{t("cost.pricing.col.match")}</TableCell>
-                      <TableCell align="right">{t("cost.pricing.col.input")}</TableCell>
-                      <TableCell align="right">{t("cost.pricing.col.output")}</TableCell>
-                      <TableCell>{t("cost.pricing.col.source")}</TableCell>
-                      <TableCell>{t("common.delete")}</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {rows.map((row) => {
-                      // 一行一个防御性读取：形状不对就整格 `—`（不猜、不编）
-                      const raw = isRecord(row.raw) ? row.raw : {};
-                      return (
-                        <TableRow key={row.index} data-testid="pricing-row">
-                          <TableCell padding="checkbox">
-                            <Box data-testid="pricing-select">
-                              <Checkbox
-                                size="small"
-                                checked={selected.includes(row.index)}
-                                onChange={(event) =>
-                                  setSelected((prev) =>
-                                    event.target.checked
-                                      ? [...prev.filter((i) => i !== row.index), row.index]
-                                      : prev.filter((i) => i !== row.index),
-                                  )
-                                }
-                              />
-                            </Box>
-                          </TableCell>
-                          <TableCell
-                            sx={{
-                              minWidth: 240,
-                              fontFamily: typography.fontMono,
-                              overflowWrap: "anywhere",
-                            }}
-                          >
+            <Box sx={{ overflowX: "auto" }}>
+              <Table size="small" data-testid="pricing-table">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>{t("cost.pricing.col.match")}</TableCell>
+                    <TableCell align="right">{t("cost.pricing.col.input")}</TableCell>
+                    <TableCell align="right">{t("cost.pricing.col.output")}</TableCell>
+                    <TableCell align="right">{t("cost.pricing.col.cached")}</TableCell>
+                    <TableCell>{t("cost.pricing.col.source")}</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {rows.map((row) => {
+                    // 一行一个防御性读取：形状不对就整格 `—`（不猜、不编）
+                    const raw = isRecord(row.raw) ? row.raw : {};
+                    return (
+                      <TableRow key={row.index} data-testid="pricing-row">
+                        <TableCell sx={{ minWidth: 240, fontFamily: typography.fontMono }}>
+                          {/* [docs/26 §2] 匹配式可能很长。恢复路径：定价条目没有详情页
+                              → 悬停/聚焦的 tooltip 就是恢复路径。 */}
+                          <AutoEllipsis testId={`pricing-match-ellipsis-${row.index}`} sx={{ maxWidth: 320 }}>
                             {priceMatchText(raw["match"])}
-                          </TableCell>
-                          <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
-                            {priceRateText(raw["rates"], "input")}
-                          </TableCell>
-                          <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
-                            {priceRateText(raw["rates"], "output")}
-                          </TableCell>
-                          <TableCell sx={{ fontFamily: typography.fontMono }}>
-                            {priceSourceText(raw["source"])}
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              size="small"
-                              color="error"
-                              data-testid="pricing-delete"
-                              disabled={remove.isPending}
-                              onClick={() => setTarget(row)}
-                            >
-                              {t("common.delete")}
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </Box>
-            </>
+                          </AutoEllipsis>
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                          {priceRateText(raw["rates"], "input")}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                          {priceRateText(raw["rates"], "output")}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontVariantNumeric: "tabular-nums" }}>
+                          {priceRateText(raw["rates"], "input_cached")}
+                        </TableCell>
+                        <TableCell sx={{ fontFamily: typography.fontMono }}>
+                          {priceSourceText(raw["source"])}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </Box>
           )}
-
-          {report !== null ? <PricingDeleteReportBox report={report} /> : null}
         </Stack>
       </Paper>
-
-      <ConfirmDelete
-        open={target !== null || batchOpen}
-        testIdPrefix="pricing"
-        title={t("delete.title.pricing")}
-        // 确认框里写清删的是哪一个：单条 = 下标 + 匹配；批量 = 选中数 + 逐条标识
-        targetLabel={
-          target !== null
-            ? priceRowLabel(target)
-            : `${t("delete.selectedCount", { count: selectedRows.length })} · ${selectedRows
-                .map(priceRowLabel)
-                .join("、")}`
-        }
-        // `pricing_delete` 没有 force 语义（[docs/21 §1.1 第 3 条]）→ 不放级联按钮
-        cascadeAvailable={false}
-        pending={remove.isPending}
-        onConfirm={() => {
-          const row = target;
-          if (row !== null) void runOne(row);
-          else void runSelected();
-        }}
-        // `cascadeAvailable={false}` 时这个回调**永远不会被触发**（组件里那个按钮不渲染）
-        onConfirmCascade={() => {}}
-        onCancel={() => {
-          setTarget(null);
-          setBatchOpen(false);
-        }}
-      />
     </Box>
   );
 }
@@ -1757,7 +1484,6 @@ export default function CostPage(): ReactElement {
       <PageHeader
         title={t("nav.cost")}
         description={t("cost.description")}
-        docRef="07 §6 成本中心 · 10 §2.2 usage_query / usage_export_csv · 11 §6 铁律 4"
         actions={
           <>
             <Button variant="outlined" onClick={refreshAll}>

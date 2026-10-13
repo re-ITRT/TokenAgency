@@ -158,23 +158,48 @@ pub fn policy_channel_ids(doc: &ConfigDoc, policy: &Policy) -> Vec<String> {
     ids
 }
 
-/// 一组线路里，**同 `model`** 的线路能力必须一致；返回每一处不一致（一致的组不出现）。
+/// 一组线路里，**服务同一个逻辑模型**的线路能力必须一致；返回每一处不一致（一致的组不出现）。
+///
+/// [docs/28 §2] 分组口径：**按模型**——但一个模型要用哪些线路由 `Model.lines` 决定
+/// （一条线路可以同时服务多个模型，所以它可能落在**多个**组里）。
+/// 遗留字段 `channel.model` 仍然参与分组（迁移前的配置靠它）。
 ///
 /// 少于两条的组天然"一致"，不产生任何输出。
 pub fn capability_mismatches_for_channels(
     doc: &ConfigDoc,
     channel_ids: &[String],
 ) -> Vec<CapabilityMismatchDetail> {
-    // 按 model 分组（保序：第一次出现的顺序）
-    let mut groups: Vec<(String, Vec<(String, ChannelCapabilities)>)> = Vec::new();
+    // 哪些模型用到了这批线路里的每一条（[docs/28 §2] 的真源是 `Model.lines`）
+    let mut model_of: Vec<(String, String, ChannelCapabilities)> = Vec::new(); // (model, channel, caps)
     for id in channel_ids {
         let Some(channel) = doc.channels.iter().find(|c| c.id.as_str() == id.as_str()) else {
             continue;
         };
-        let entry = (channel.id.as_str().to_string(), channel.capabilities.clone());
-        match groups.iter_mut().find(|(model, _)| model == &channel.model) {
-            Some((_, entries)) => entries.push(entry),
-            None => groups.push((channel.model.clone(), vec![entry])),
+        let mut owners: Vec<String> =
+            doc.models.iter().filter(|m| m.uses_line(&channel.id)).map(|m| m.id.clone()).collect();
+        // 遗留兜底：老配置里线路自己写着模型名（迁移后通常已搬进 `lines`，这里只为兼容）
+        if !channel.model.trim().is_empty() && !owners.contains(&channel.model) {
+            owners.push(channel.model.clone());
+        }
+        // 没有模型认领它：用线路自己的 id 当"组"（这样两条都没人认领的线路不会互相误判）
+        if owners.is_empty() {
+            owners.push(channel.id.as_str().to_string());
+        }
+        for model in owners {
+            model_of.push((model, channel.id.as_str().to_string(), channel.capabilities.clone()));
+        }
+    }
+
+    // 按 model 分组（保序：第一次出现的顺序）
+    let mut groups: Vec<(String, Vec<(String, ChannelCapabilities)>)> = Vec::new();
+    for (model, id, caps) in model_of {
+        match groups.iter_mut().find(|(m, _)| m == &model) {
+            Some((_, entries)) => {
+                if !entries.iter().any(|(existing, _)| existing == &id) {
+                    entries.push((id, caps));
+                }
+            }
+            None => groups.push((model, vec![(id, caps)])),
         }
     }
 

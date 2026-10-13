@@ -26,7 +26,6 @@ import {
   KernelStateDot,
   NumberCard,
   PageHeader,
-  QuotaBar,
   StatusDot,
 } from "@/shared/components";
 import { radius } from "@/theme";
@@ -140,7 +139,7 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
           </ReadinessRow>
 
           {/* 关键：契约里没有"provider 是否加载成功"的判据 → 如实显示未知，不点绿灯。
-              "为什么是未知"这段解释收进问号圆圈（[docs/22 §2]：这是"怎么理解这一维"的说明）——
+              为什么是未知这段解释收进问号圆圈（[docs/22 §2]：这是怎么理解这一维的说明）——
               它本来就在 tooltip 里，收进统一件之后多了个看得见的问号与 `aria-label`（读屏也拿得到）。 */}
           <ReadinessRow label={t("dashboard.providerCheck")}>
             <StatusDot status="off" label={t("common.unknown")} />
@@ -260,41 +259,6 @@ export function DashboardBody({ status, data, isLoading, error, onRetry }: Dashb
         </Stack>
       ) : null}
 
-      {/* ④ 套餐额度（[05 §2.1]：未设上限要显式） */}
-      <Stack spacing={3}>
-        <Typography variant="h4">{t("dashboard.quota")}</Typography>
-        {data === undefined ? (
-          <Typography variant="body1" sx={{ color: "text.secondary" }}>
-            {isLoading ? t("common.loading") : t("common.empty")}
-          </Typography>
-        ) : data.quota.length === 0 ? (
-          <Typography variant="body1" sx={{ color: "text.secondary" }}>
-            {t("common.empty")}
-          </Typography>
-        ) : (
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-              gap: 4,
-            }}
-          >
-            {data.quota.map((q) => (
-              <Box key={q.credential_id} sx={{ minWidth: 0 }}>
-                <Typography
-                  variant="caption"
-                  noWrap
-                  sx={{ color: "text.primary", display: "block", mb: 0.5 }}
-                >
-                  {q.label}
-                </Typography>
-                <QuotaBar usedPct={q.used_pct} state={q.state} detail={q.detail} width={240} />
-              </Box>
-            ))}
-          </Box>
-        )}
-      </Stack>
-
       {data !== undefined && data.cache.hit_rate > 0 ? (
         <Typography variant="caption" sx={{ color: "text.secondary" }}>
           {t("dashboard.cache", {
@@ -319,7 +283,7 @@ export default function DashboardPage() {
 
   return (
     <>
-      <PageHeader title={t("nav.dashboard")} docRef="07 §1 首页看板" />
+      <PageHeader title={t("nav.dashboard")} />
       <DashboardBody
         status={status.data}
         data={dashboard.data}

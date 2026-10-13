@@ -1,27 +1,44 @@
 //! 选择器：把 `RouteDecision.candidates` 变成一个**有序的失败转移链**。
 //!
-//! 七种选择器（`docs/02` §2.7）全部在这里实现：
+//! **只有一种策略：平均粘性**（[docs/48]）。规则就三条：
 //!
-//! | selector | 语义 |
-//! |---|---|
-//! | `priority` | 严格按 `priority` 升序 |
-//! | `sticky_then_priority` | 先查粘性；未命中按 priority 并写回粘性（默认） |
-//! | `quota_first` | 剩余额度比例大的优先 |
-//! | `cheapest` | 单价低的优先（需要 `PricingEngine`；缺失时退化为配置顺序） |
-//! | `lowest_latency` | EWMA 延迟低的优先 |
-//! | `weighted_random` | 按 `weight` 加权随机 |
-//! | `round_robin` | 轮询 |
+//! 1. **粘**：按会话标识派生 key，命中且该线路仍可用 → 用它（同一会话固定走同一条线路）；
+//! 2. **平**：没命中（新会话）→ 挑 **token 用量最少**的线路；并列时按 `priority`，
+//!    再并列按候选集原序；
+//! 3. **改粘**：这条线路硬失败/冷却 → **释放**粘性，下个请求回到第 2 步 ——
+//!    于是那个会话自然"粘到另一个身上"（用户的原话）。
 //!
-//! **确定性**：`weighted_random` 的随机种子由 (now_ms, 会话, 候选集) 派生，
-//! `round_robin` 的状态放在 `self` 里。两者都保证"同一输入 + 同一状态 → 同一结果"，
-//! 模拟器因此可以复现真实决策。
+//! ## 「没有会话 ID 就随机」
+//!
+//! 派生不出任何会话标识时**没有 key 可写**，每次请求都走第 2 步。此时若并列还按原序，
+//! 一串无 ID 的并发请求会**全砸在同一条**上；所以无 key 时在"用量最少的那一档"里**随机**挑。
+//! 有 key 时**必须确定** —— 否则随机本身会打碎粘性（同一会话两个请求落两条线）。
+//! 这个区分是刻意的，不是随手加的。
+//!
+//! ## 「平均」的口径与边界
+//!
+//! 用量取自 [`RouteContext::balance`]（时间窗内各线路的 token 累计），由装配方
+//! （[`crate::routing::BalanceSource`]）提供。
+//!
+//! * `balance` **空表** = 不知道用量 → 退化为按 `priority`（**不把"没查到"当成"最闲"**）；
+//! * 表非空但**某条没有记录** = 这条时间窗内确实一次都没用过 → 当 `0`，
+//!   新加的线路因此会先拿到流量（这正是想要的）；
+//! * 平均只对**新会话**生效：老会话被粘住不动（这正是"粘"）。所以两条线路的用量
+//!   **不会**严格相等，而是新会话持续流向当前较轻的那条。
+//!
+//! ## 与旧版的差异
+//!
+//! 旧版有七种选择器（`priority` / `sticky_then_priority` / `cheapest` / `lowest_latency` /
+//! `weighted_random` / `round_robin`）。它们全部删除 —— `docs/47` 查清"各家额度耗尽返回什么"
+//! 之后确认**自动判断走不通**（同一家 429 既表限流也表额度耗尽、有的家把额度耗尽藏在 400 里），
+//! 于是改成**用户用开关手动调度 + 引擎只负责平均**（[docs/48]）。
+//! 旧的 `price_score` / 轮询 / 加权随机 / 延迟排序随之消失：选路不再读价格与延迟。
+//! 随机源 [`SplitMix64`] 保留，改用于无 key 时的档内随机。
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::domain::*;
-use crate::pricing::{PricingEngine, ResolvedPrice};
-use crate::routing::engine::quota_remaining_of;
 use crate::routing::index::RoutingIndex;
 use crate::routing::{
     ChannelSelector, EliminateReason, RouteContext, RouteDecision, RouteHints, Selection,
@@ -46,10 +63,16 @@ impl Default for SelectorOptions {
 pub struct ChannelSelectorImpl {
     index: Arc<RoutingIndex>,
     sticky: Option<Arc<dyn StickyResolver>>,
-    pricing: Option<Arc<dyn PricingEngine>>,
     opts: SelectorOptions,
-    /// round_robin 计数器：路由键（组 id / 模型名）→ 已轮询次数
-    rr: Mutex<BTreeMap<String, u64>>,
+    /// 无会话 key 时的档内随机**熵源**。
+    ///
+    /// 为什么不能只用 `ctx.now_ms` 当种子：同一个毫秒内到达的一串无 ID 请求会拿到
+    /// 同一个种子、选出同一条线路 —— 那正是"随机"想避免的事。这个计数器保证每次
+    /// `select` 的种子都不同。
+    ///
+    /// 它是**单调递增的**而不是"真随机"：这样"给定同一串调用顺序 → 结果可复现"，
+    /// 测试与诊断都还能对得上（`docs/48 §3.1`）。
+    entropy: AtomicU64,
 }
 
 impl ChannelSelectorImpl {
@@ -57,19 +80,13 @@ impl ChannelSelectorImpl {
         Self {
             index,
             sticky: None,
-            pricing: None,
             opts: SelectorOptions::default(),
-            rr: Mutex::new(BTreeMap::new()),
+            entropy: AtomicU64::new(0x5DEE_CE66_D1CE_4E5B),
         }
     }
 
     pub fn with_sticky(mut self, sticky: Arc<dyn StickyResolver>) -> Self {
         self.sticky = Some(sticky);
-        self
-    }
-
-    pub fn with_pricing(mut self, pricing: Arc<dyn PricingEngine>) -> Self {
-        self.pricing = Some(pricing);
         self
     }
 
@@ -111,113 +128,55 @@ impl ChannelSelectorImpl {
 
     /// 该选择器实际使用的候选顺序（**不含**粘性命中/固定通道）：
     /// 这是"失败转移链"的排序依据。
+    ///
+    /// `random_ties = false`（有会话 key）：用量 → priority → 候选集原序，**完全确定**。
+    /// `random_ties = true`（无会话 key）：在"用量最少的那一档"内部打乱，
+    /// 避免一串无 ID 的并发请求全砸在同一条上。
     pub fn order_candidates(
         &self,
         decision: &RouteDecision,
-        hints: &RouteHints,
+        _hints: &RouteHints,
         ctx: &RouteContext,
-        group: Option<&ChannelGroup>,
+        _group: Option<&ChannelGroup>,
+        random_ties: bool,
     ) -> Vec<ChannelId> {
-        let ids = decision.candidates.clone();
-        match decision.selector {
-            Selector::Priority | Selector::StickyThenPriority => self.by_priority(&ids),
-            Selector::QuotaFirst => {
-                let mut v = ids;
-                v.sort_by(|a, b| {
-                    let ra = self.quota_score(ctx, a);
-                    let rb = self.quota_score(ctx, b);
-                    rb.partial_cmp(&ra).unwrap_or(std::cmp::Ordering::Equal)
-                });
-                v
-            }
-            Selector::Cheapest => {
-                let mut v: Vec<(ChannelId, f64)> = ids
-                    .into_iter()
-                    .map(|id| {
-                        let s = self.price_score(&id);
-                        (id, s)
-                    })
-                    .collect();
-                v.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                v.into_iter().map(|(id, _)| id).collect()
-            }
-            Selector::LowestLatency => {
-                let mut v = ids;
-                v.sort_by_key(|id| ctx.latency_ms.get(id).copied().unwrap_or(u32::MAX));
-                v
-            }
-            Selector::WeightedRandom => self.weighted_order(&ids, hints, ctx),
-            Selector::RoundRobin => {
-                let ordered = self.by_priority(&ids);
-                let n = self.next_rr(&self.rr_key(decision, hints, group));
-                rotate(ordered, n)
-            }
-        }
-    }
-
-    fn by_priority(&self, ids: &[ChannelId]) -> Vec<ChannelId> {
-        let mut v: Vec<(usize, i32, ChannelId)> = ids
+        let ids = &decision.candidates;
+        // 空表 = 不知道用量：整列按 0 处理，排序于是完全由 priority 决定。
+        let known = !ctx.balance.is_empty();
+        let mut v: Vec<(usize, i64, i32, ChannelId)> = ids
             .iter()
             .enumerate()
             .map(|(i, id)| {
+                let used = if known { ctx.balance.get(id).copied().unwrap_or(0) } else { 0 };
                 let p = self.index.channel(id).map(|c| c.priority).unwrap_or(i32::MAX);
-                (i, p, id.clone())
+                (i, used, p, id.clone())
             })
             .collect();
-        // 稳定：priority 相同 → 保持候选集原顺序
-        v.sort_by_key(|(i, p, _)| (*p, *i));
-        v.into_iter().map(|(_, _, id)| id).collect()
-    }
+        // 稳定排序：用量 → priority → 候选集原序（`i` 保证"同用量同优先级"不抖动）
+        v.sort_by_key(|(i, used, p, _)| (*used, *p, *i));
+        let mut out: Vec<ChannelId> = v.into_iter().map(|(_, _, _, id)| id).collect();
 
-    fn quota_score(&self, ctx: &RouteContext, id: &ChannelId) -> f64 {
-        self.index
-            .channel(id)
-            .and_then(|ch| quota_remaining_of(ctx, &ch.credential))
-            .unwrap_or(-1.0)
-    }
-
-    fn price_score(&self, id: &ChannelId) -> f64 {
-        let Some(pricing) = &self.pricing else { return 0.0 };
-        let Some(ch) = self.index.channel(id) else { return f64::INFINITY };
-        price_score(&pricing.resolve(&ch.model, &ch.provider, &ch.credential))
-    }
-
-    fn rr_key(
-        &self,
-        decision: &RouteDecision,
-        hints: &RouteHints,
-        group: Option<&ChannelGroup>,
-    ) -> String {
-        if let Some(g) = group {
-            return format!("group:{}", g.id);
+        if random_ties && out.len() > 1 {
+            let used_of =
+                |id: &ChannelId| if known { ctx.balance.get(id).copied().unwrap_or(0) } else { 0 };
+            // "最轻的那一档" = 排序后与首元素用量相同的前缀。
+            let head = used_of(&out[0]);
+            let tier = out.iter().take_while(|id| used_of(id) == head).count();
+            if tier > 1 {
+                let seed = self.next_entropy() ^ (ctx.now_ms as u64);
+                let mut rng = SplitMix64::new(seed);
+                // Fisher-Yates 只打乱前 `tier` 个，后面保持"次轻→最重"的有序性。
+                for i in (1..tier).rev() {
+                    let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+                    out.swap(i, j);
+                }
+            }
         }
-        match (&decision.pinned, hints.model.as_deref()) {
-            (Some(p), _) => format!("pin:{p}"),
-            (None, Some(m)) => format!("model:{m}"),
-            (None, None) => "default".to_string(),
-        }
+        out
     }
 
-    fn next_rr(&self, key: &str) -> u64 {
-        let mut g = self.rr.lock().unwrap_or_else(|e| e.into_inner());
-        let e = g.entry(key.to_string()).or_insert(0);
-        let cur = *e;
-        *e = e.wrapping_add(1);
-        cur
-    }
-
-    fn weighted_order(
-        &self,
-        ids: &[ChannelId],
-        hints: &RouteHints,
-        ctx: &RouteContext,
-    ) -> Vec<ChannelId> {
-        let weights: Vec<u64> = ids
-            .iter()
-            .map(|id| self.index.channel(id).map(|c| (c.weight.max(1)) as u64).unwrap_or(1))
-            .collect();
-        let seed = weighted_seed(ids, hints, ctx.now_ms);
-        weighted_shuffle(ids, &weights, SplitMix64::new(seed))
+    fn next_entropy(&self) -> u64 {
+        self.entropy.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed)
     }
 
     /// 粘性命中（含"命中但已不可用 → 按原因释放"）。
@@ -240,7 +199,7 @@ impl ChannelSelectorImpl {
             if decision.candidates.contains(&rec.channel_id) {
                 return (Some(rec.channel_id), Some(key), true, false);
             }
-            // 粘住的通道这次不可用：能归因到运行态就立刻释放（额度耗尽 / 冷却 / 失效），
+            // 粘住的通道这次不可用：能归因到运行态就立刻释放（冷却 / 失效 / 禁用），
             // 纯策略收窄（标签排除、临时绕开）**不释放** —— 下个请求可能就不排除了。
             if let Some((_, reason)) =
                 decision.eliminated.iter().find(|(c, _)| c == &rec.channel_id)
@@ -268,24 +227,22 @@ impl ChannelSelector for ChannelSelectorImpl {
         }
         let group = self.resolve_group(decision, hints);
 
-        // 粘性只在 sticky_then_priority 下参与（其它选择器有各自的明确语义）
+        // 1) 粘性：现在是唯一策略，不再按 selector 分支（旧版这里要判 StickyThenPriority）。
         let mut sticky_hit = false;
         let mut sticky_key = None;
         let mut sticky_alive = false;
         let mut sticky_released = false;
         let mut chosen: Option<ChannelId> = None;
-        if decision.selector == Selector::StickyThenPriority {
-            if let Some(g) = group {
-                let (hit, key, alive, released) = self.sticky_pick(decision, hints, g);
-                sticky_hit = hit.is_some();
-                sticky_alive = alive;
-                sticky_released = released;
-                chosen = hit;
-                sticky_key = key;
-            }
+        if let Some(g) = group {
+            let (hit, key, alive, released) = self.sticky_pick(decision, hints, g);
+            sticky_hit = hit.is_some();
+            sticky_alive = alive;
+            sticky_released = released;
+            chosen = hit;
+            sticky_key = key;
         }
 
-        // 用户显式 pin 的通道优先级最高（engine 已保证它在候选集里）
+        // 2) 用户显式 pin 的通道优先级最高（engine 已保证它在候选集里）
         if let Some(p) = &decision.pinned {
             if decision.candidates.contains(p) {
                 chosen = Some(p.clone());
@@ -293,7 +250,8 @@ impl ChannelSelector for ChannelSelectorImpl {
             }
         }
 
-        let ordered = self.order_candidates(decision, hints, ctx, group);
+        // 没粘住 → 走平均顺序。**有 key 时确定、无 key 时档内随机**（见模块头注释）。
+        let ordered = self.order_candidates(decision, hints, ctx, group, sticky_key.is_none());
         let mut chain: Vec<ChannelId> = Vec::with_capacity(ordered.len());
         if let Some(c) = &chosen {
             chain.push(c.clone());
@@ -327,7 +285,6 @@ impl ChannelSelector for ChannelSelectorImpl {
 /// 淘汰原因 → 粘性释放原因。返回 `None` 表示"这次不释放"。
 pub fn release_reason_for(r: EliminateReason) -> Option<ReleaseReason> {
     match r {
-        EliminateReason::QuotaExhausted => Some(ReleaseReason::QuotaExhausted),
         EliminateReason::Cooling => Some(ReleaseReason::Cooldown),
         EliminateReason::Disabled
         | EliminateReason::InvalidCredential
@@ -339,31 +296,9 @@ pub fn release_reason_for(r: EliminateReason) -> Option<ReleaseReason> {
     }
 }
 
-/// 单价的标量代理：所有费率之和 × 倍率 / 除数。未定价 = `+∞`（排最后）。
-pub fn price_score(price: &ResolvedPrice) -> f64 {
-    if !price.is_priced() || price.divisor <= 0.0 {
-        return f64::INFINITY;
-    }
-    let sum: f64 = price.rates.values().sum();
-    if sum <= 0.0 {
-        f64::INFINITY
-    } else {
-        sum * price.multiplier / price.divisor
-    }
-}
-
-fn rotate<T: Clone>(mut v: Vec<T>, n: u64) -> Vec<T> {
-    if v.is_empty() {
-        return v;
-    }
-    let k = (n % v.len() as u64) as usize;
-    v.rotate_left(k);
-    v
-}
-
 // ---------------------------------------------------------------- 确定性 PRNG
 
-/// SplitMix64：小、快、无需 rand 依赖。
+/// SplitMix64：小、快、无需 rand 依赖。只用于"无会话 key 时档内打乱"。
 pub struct SplitMix64(u64);
 
 impl SplitMix64 {
@@ -379,61 +314,13 @@ impl SplitMix64 {
     }
 }
 
-/// 种子 = SHA256(now_ms ‖ 会话标识 ‖ 候选集)。同一输入必然同一种子 → 可复现。
-fn weighted_seed(ids: &[ChannelId], hints: &RouteHints, now_ms: i64) -> u64 {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(now_ms.to_le_bytes());
-    if let Some(s) = &hints.session_id {
-        h.update(s.as_bytes());
-    }
-    h.update(b"\x1f");
-    if let Some(s) = &hints.conversation_id {
-        h.update(s.as_bytes());
-    }
-    h.update(b"\x1f");
-    if let Some(s) = &hints.user_id {
-        h.update(s.as_bytes());
-    }
-    h.update(b"\x1f");
-    if let Some(s) = &hints.body_hash {
-        h.update(s.as_bytes());
-    }
-    for id in ids {
-        h.update(b"\x1f");
-        h.update(id.as_str().as_bytes());
-    }
-    let out = h.finalize();
-    u64::from_le_bytes(out[..8].try_into().expect("sha256 至少 8 字节"))
-}
-
-/// 无放回加权洗牌 → 得到一条完整的有序链（不只是第一名）。
-fn weighted_shuffle(ids: &[ChannelId], weights: &[u64], mut rng: SplitMix64) -> Vec<ChannelId> {
-    let mut pool: Vec<(&ChannelId, u64)> =
-        ids.iter().zip(weights.iter()).map(|(id, w)| (id, (*w).max(1))).collect();
-    let mut out = Vec::with_capacity(pool.len());
-    while !pool.is_empty() {
-        let total: u64 = pool.iter().map(|(_, w)| *w).sum();
-        let mut r = rng.next_u64() % total.max(1);
-        let mut idx = pool.len() - 1;
-        for (i, (_, w)) in pool.iter().enumerate() {
-            if r < *w {
-                idx = i;
-                break;
-            }
-            r -= *w;
-        }
-        out.push(pool.remove(idx).0.clone());
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::config;
     use crate::domain::ConfigDoc;
-    use crate::pricing::PriceSourceKind;
     use crate::sticky::resolver::MemoryStickyResolver;
 
     const YAML: &str = r#"
@@ -457,9 +344,9 @@ channel_groups:
   - id: grp-gpt-4o
     model: gpt-4o
     members: [ch-a, ch-b, ch-c]
-    selector: sticky_then_priority
+    selector: balanced_sticky
     sticky: { enabled: true, ttl_h: 12, key: [header:x-session-id, body_hash] }
-    release_on: [quota_exhausted, hard_error]
+    release_on: [hard_error]
 "#;
 
     fn doc() -> ConfigDoc {
@@ -471,10 +358,10 @@ channel_groups:
     }
 
     /// 直接把候选集塞进 RouteDecision，隔离测选择器
-    fn decision(sel: Selector, cands: &[&str]) -> RouteDecision {
+    fn decision(cands: &[&str]) -> RouteDecision {
         RouteDecision {
             candidates: cands.iter().map(|c| ChannelId::from(*c)).collect(),
-            selector: sel,
+            selector: Selector::BalancedSticky,
             ..Default::default()
         }
     }
@@ -487,213 +374,256 @@ channel_groups:
         }
     }
 
+    /// **没有任何会话标识**的请求（用来测"没有 ID 就随机"）。
+    fn hints_no_key() -> RouteHints {
+        RouteHints { model: Some("gpt-4o".into()), ..Default::default() }
+    }
+
     fn ctx() -> RouteContext {
         RouteContext { now_ms: 1_699_920_000_000, ..Default::default() }
+    }
+
+    fn ctx_with_usage(pairs: &[(&str, i64)]) -> RouteContext {
+        let mut c = ctx();
+        for (id, used) in pairs {
+            c.balance.insert(ChannelId::from(*id), *used);
+        }
+        c
     }
 
     fn selector_with(doc: &ConfigDoc, sticky: Arc<dyn StickyResolver>) -> ChannelSelectorImpl {
         ChannelSelectorImpl::new(idx(doc)).with_sticky(sticky)
     }
 
-    // ------------------------------------------------------------ 7 种选择器
-
-    #[test]
-    fn selector_priority_follows_channel_priority() {
-        let sel = ChannelSelectorImpl::new(idx(&doc()));
-        let d = decision(Selector::Priority, &["ch-c", "ch-a", "ch-b"]);
-        let s = sel.select(&d, &hints_session("s1"), &ctx()).unwrap();
-        assert_eq!(s.channel.as_str(), "ch-a");
-        assert_eq!(
-            s.chain.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
-            vec!["ch-a", "ch-b", "ch-c"]
-        );
-        assert!(!s.sticky_hit);
+    fn chain_of(s: &Selection) -> Vec<&str> {
+        s.chain.iter().map(|c| c.as_str()).collect()
     }
 
+    // ------------------------------------------------------------ 只剩一种策略
+
     #[test]
-    fn selector_sticky_then_priority_is_default_and_reuses_choice() {
+    fn balanced_sticky_is_the_default_and_the_only_variant() {
         let d = doc();
         assert_eq!(
             d.channel_groups[0].selector,
-            Selector::StickyThenPriority,
-            "默认选择器必须是 sticky_then_priority"
+            Selector::BalancedSticky,
+            "配置里写的 balanced_sticky 必须解成 BalancedSticky"
         );
+        assert_eq!(Selector::default(), Selector::BalancedSticky, "默认策略只有这一个");
+    }
+
+    /// 老配置里的历史取值必须**还能读**（一律落到唯一策略），否则老库升级即解析失败。
+    #[test]
+    fn legacy_selector_spellings_still_deserialize() {
+        for old in [
+            "\"priority\"",
+            "\"sticky_then_priority\"",
+            "\"cheapest\"",
+            "\"lowest_latency\"",
+            "\"weighted_random\"",
+            "\"round_robin\"",
+            "\"balanced_sticky\"",
+        ] {
+            let got: Selector =
+                serde_json::from_str(old).unwrap_or_else(|e| panic!("{old} 应能解析：{e}"));
+            assert_eq!(got, Selector::BalancedSticky, "{old} 应落到 BalancedSticky");
+        }
+    }
+
+    // ------------------------------------------------------------ 平：按用量
+
+    /// **题眼**：A 用得多、B 用得少 → 新会话给 B。
+    #[test]
+    fn new_session_picks_the_least_used_line() {
+        let d = doc();
+        let sticky = Arc::new(MemoryStickyResolver::memory());
+        let sel = selector_with(&d, sticky);
+
+        // 用量：a 已经用了一大堆，b/c 空。候选顺序故意把 a 放前面，
+        // 确保"选中 b"是因为**用量**，不是因为顺序。
+        let c = ctx_with_usage(&[("ch-a", 10_000), ("ch-b", 0), ("ch-c", 0)]);
+        let s = sel.select(&decision(&["ch-a", "ch-b", "ch-c"]), &hints_session("s1"), &c).unwrap();
+        assert_eq!(s.channel.as_str(), "ch-b", "b/c 并列最轻 → 按 priority 取 b(20) 而非 c(30)");
+        assert!(!s.sticky_hit);
+        assert_eq!(chain_of(&s), vec!["ch-b", "ch-c", "ch-a"], "次轻在前、最重最后");
+    }
+
+    /// 用量不同但**最轻的那条不在候选集里** → 就在剩下的里挑最轻的。
+    #[test]
+    fn least_used_is_chosen_within_candidates_only() {
+        let d = doc();
+        let sel = selector_with(&d, Arc::new(MemoryStickyResolver::memory()));
+        let c = ctx_with_usage(&[("ch-a", 5), ("ch-b", 900), ("ch-c", 40)]);
+        let s = sel.select(&decision(&["ch-b", "ch-c"]), &hints_session("s"), &c).unwrap();
+        assert_eq!(
+            s.channel.as_str(),
+            "ch-c",
+            "ch-a 最轻但不在候选集 → 取 ch-c(40) 而非 ch-b(900)"
+        );
+    }
+
+    /// 用量并列 → 按 priority（a=10 < b=20 < c=30）。
+    #[test]
+    fn equal_usage_falls_back_to_priority() {
+        let d = doc();
+        let sel = selector_with(&d, Arc::new(MemoryStickyResolver::memory()));
+        let c = ctx_with_usage(&[("ch-a", 7), ("ch-b", 7), ("ch-c", 7)]);
+        let s = sel.select(&decision(&["ch-c", "ch-b", "ch-a"]), &hints_session("s"), &c).unwrap();
+        assert_eq!(s.channel.as_str(), "ch-a", "并列时按 priority，不看候选集顺序");
+        assert_eq!(chain_of(&s), vec!["ch-a", "ch-b", "ch-c"]);
+    }
+
+    /// **空表 = 不知道**，不是"全是 0 所以随便挑"：必须退回 priority。
+    #[test]
+    fn empty_balance_falls_back_to_priority_not_zero() {
+        let d = doc();
+        let sel = selector_with(&d, Arc::new(MemoryStickyResolver::memory()));
+        let c = ctx(); // balance 为空
+        assert!(c.balance.is_empty());
+        let s = sel.select(&decision(&["ch-c", "ch-b", "ch-a"]), &hints_session("s"), &c).unwrap();
+        assert_eq!(s.channel.as_str(), "ch-a", "不知道用量时按 priority");
+        assert_eq!(chain_of(&s), vec!["ch-a", "ch-b", "ch-c"]);
+    }
+
+    /// 有会话 key 时**必须确定**：同一会话 + 同一用量 → 每次都同一条（否则粘性会被打碎）。
+    #[test]
+    fn with_session_key_the_choice_is_deterministic() {
+        let d = doc();
+        let sel = selector_with(&d, Arc::new(MemoryStickyResolver::memory()));
+        // 用量全并列：随机化若没被关掉，这里就会抖
+        let c = ctx_with_usage(&[("ch-a", 3), ("ch-b", 3), ("ch-c", 3)]);
+        let dec = decision(&["ch-a", "ch-b", "ch-c"]);
+        let mut seen = std::collections::BTreeSet::new();
+        for i in 0..40 {
+            let s = sel.select(&dec, &hints_session(&format!("s{i}")), &c).unwrap();
+            seen.insert(s.channel.to_string());
+        }
+        assert_eq!(seen.len(), 1, "有会话 key 时并列必须稳定，实得 {seen:?}");
+        assert_eq!(seen.iter().next().unwrap(), "ch-a");
+    }
+
+    // ------------------------------------------------------------ 随机（无 key）
+
+    /// **题眼**：没有会话 ID → 在"最轻的那一档"里随机，且**只**从那一档里挑。
+    #[test]
+    fn without_session_key_spreads_within_the_lightest_tier() {
+        let d = doc();
+        let sel = selector_with(&d, Arc::new(MemoryStickyResolver::memory()));
+        // a 很重，b/c 并列最轻 → 随机只该在 {b,c} 里
+        let c = ctx_with_usage(&[("ch-a", 10_000), ("ch-b", 0), ("ch-c", 0)]);
+        let dec = decision(&["ch-a", "ch-b", "ch-c"]);
+
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for _ in 0..120 {
+            let s = sel.select(&dec, &hints_no_key(), &c).unwrap();
+            *counts.entry(s.channel.to_string()).or_default() += 1;
+        }
+        assert!(!counts.contains_key("ch-a"), "最重的那条不该被挑中：{counts:?}");
+        assert!(
+            counts.contains_key("ch-b") && counts.contains_key("ch-c"),
+            "b/c 都该拿到活：{counts:?}"
+        );
+        // 均匀性：各约 60，给足容差只排除"几乎全给一条"
+        let (b, c2) = (counts["ch-b"], counts["ch-c"]);
+        assert!(b > 20 && c2 > 20, "档内应接近均匀，实得 b={b} c={c2}");
+    }
+
+    /// 无 key 时**不写**粘性表（没有 key 可写），所以也不该抱怨。
+    #[test]
+    fn without_session_key_nothing_is_stored() {
+        let d = doc();
         let sticky = Arc::new(MemoryStickyResolver::memory());
         let sel = selector_with(&d, sticky.clone());
-        let dec = decision(Selector::StickyThenPriority, &["ch-a", "ch-b", "ch-c"]);
+        let s = sel.select(&decision(&["ch-a", "ch-b"]), &hints_no_key(), &ctx()).unwrap();
+        assert!(s.sticky_key.is_none(), "派生不出 key 就不该编一个");
+        assert!(!s.sticky_hit);
+        assert!(sticky.releases().is_empty());
+    }
 
-        // 第一次：未命中 → 按 priority
+    // ------------------------------------------------------------ 粘
+
+    #[test]
+    fn sticky_reuses_choice_for_the_same_session() {
+        let d = doc();
+        let sticky = Arc::new(MemoryStickyResolver::memory());
+        let sel = selector_with(&d, sticky.clone());
+        let dec = decision(&["ch-a", "ch-b", "ch-c"]);
+
+        // 第一次：未命中（用量都未知 → priority → ch-a）
         let s1 = sel.select(&dec, &hints_session("s1"), &ctx()).unwrap();
         assert_eq!(s1.channel.as_str(), "ch-a");
         assert!(!s1.sticky_hit);
         assert_eq!(s1.sticky_key.as_ref().unwrap().as_str(), "s1");
 
-        // 第二次同会话：命中
-        let s2 = sel.select(&dec, &hints_session("s1"), &ctx()).unwrap();
+        // 第二次同会话：命中 —— 即使后来 ch-a 变得最重，也必须**仍然走 ch-a**（这才叫粘）
+        let heavy_a = ctx_with_usage(&[("ch-a", 99_999), ("ch-b", 0), ("ch-c", 0)]);
+        let s2 = sel.select(&dec, &hints_session("s1"), &heavy_a).unwrap();
         assert_eq!(s2.channel.as_str(), "ch-a");
-        assert!(s2.sticky_hit);
+        assert!(s2.sticky_hit, "同一会话第二个请求必须命中粘性");
 
-        // 换会话 → 重新按 priority（此处仍然 a，但必须是"未命中"）
-        let s3 = sel.select(&dec, &hints_session("s2"), &ctx()).unwrap();
-        assert_eq!(s3.channel.as_str(), "ch-a");
+        // 换会话 → 未命中，且此时 a 最重 → 走 b 或 c
+        let s3 = sel.select(&dec, &hints_session("s2"), &heavy_a).unwrap();
         assert!(!s3.sticky_hit);
+        assert_ne!(s3.channel.as_str(), "ch-a", "新会话应避开最重的那条");
     }
 
+    /// **题眼**：「这个会话的这个线路报错了，就粘到另一个身上」。
     #[test]
-    fn selector_quota_first_prefers_most_remaining() {
-        let sel = ChannelSelectorImpl::new(idx(&doc()));
-        let d = decision(Selector::QuotaFirst, &["ch-a", "ch-b", "ch-c"]);
-        let mut c = ctx();
-        c.quota_remaining.insert(CredentialId::from("c-a"), Some(0.9));
-        c.quota_remaining.insert(CredentialId::from("c-b"), Some(0.2));
-        c.quota_remaining.insert(CredentialId::from("c-c"), None);
-        let s = sel.select(&d, &hints_session("s"), &c).unwrap();
-        assert_eq!(
-            s.chain.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
-            vec!["ch-a", "ch-b", "ch-c"],
-            "额度大的优先，未知额度排最后"
-        );
-    }
-
-    #[test]
-    fn selector_cheapest_uses_pricing_engine() {
-        struct FakePricing;
-        impl PricingEngine for FakePricing {
-            fn resolve(&self, _m: &str, provider: &ProviderId, _c: &CredentialId) -> ResolvedPrice {
-                let rate = match provider.as_str() {
-                    "p-openai" => 10.0,
-                    "p-relay" => 1.0,
-                    _ => 5.0,
-                };
-                let mut rates = BTreeMap::new();
-                rates.insert(TokenKind::Input, rate);
-                ResolvedPrice {
-                    rates,
-                    multiplier: 1.0,
-                    currency: "USD".into(),
-                    divisor: 1_000_000.0,
-                    source: PriceSourceKind::Builtin,
-                    plan_fee: None,
-                    entry_index: 0,
-                }
-            }
-        }
-
-        let sel = ChannelSelectorImpl::new(idx(&doc())).with_pricing(Arc::new(FakePricing));
-        let d = decision(Selector::Cheapest, &["ch-a", "ch-b", "ch-c"]);
-        let s = sel.select(&d, &hints_session("s"), &ctx()).unwrap();
-        assert_eq!(s.channel.as_str(), "ch-b");
-        assert_eq!(
-            s.chain.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
-            vec!["ch-b", "ch-c", "ch-a"]
-        );
-
-        // 没有定价引擎 → 保持配置顺序（退化为原顺序，不 panic）
-        let sel2 = ChannelSelectorImpl::new(idx(&doc()));
-        let s2 = sel2.select(&d, &hints_session("s"), &ctx()).unwrap();
-        assert_eq!(s2.channel.as_str(), "ch-a");
-    }
-
-    #[test]
-    fn selector_lowest_latency() {
-        let sel = ChannelSelectorImpl::new(idx(&doc()));
-        let d = decision(Selector::LowestLatency, &["ch-a", "ch-b", "ch-c"]);
-        let mut c = ctx();
-        c.latency_ms.insert(ChannelId::from("ch-a"), 300);
-        c.latency_ms.insert(ChannelId::from("ch-b"), 80);
-        // ch-c 未知延迟 → 排最后
-        let s = sel.select(&d, &hints_session("s"), &c).unwrap();
-        assert_eq!(s.channel.as_str(), "ch-b");
-        assert_eq!(
-            s.chain.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
-            vec!["ch-b", "ch-a", "ch-c"]
-        );
-    }
-
-    #[test]
-    fn selector_weighted_random_is_deterministic_and_weighted() {
-        let sel = ChannelSelectorImpl::new(idx(&doc()));
-        let d = decision(Selector::WeightedRandom, &["ch-a", "ch-b", "ch-c"]);
-        let c = ctx();
-
-        // 同一输入 → 同一结果
-        let first = sel.select(&d, &hints_session("s"), &c).unwrap();
-        for _ in 0..50 {
-            let again = sel.select(&d, &hints_session("s"), &c).unwrap();
-            assert_eq!(
-                again.chain.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
-                first.chain.iter().map(|c| c.as_str()).collect::<Vec<_>>()
-            );
-        }
-
-        // 权重生效：ch-a(10) 应该明显多于 ch-c(1)
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for i in 0..2000 {
-            let mut cc = ctx();
-            cc.now_ms += i;
-            let s = sel.select(&d, &hints_session(&format!("s{i}")), &cc).unwrap();
-            *counts.entry(s.channel.to_string()).or_default() += 1;
-        }
-        let a = counts["ch-a"];
-        let c3 = counts["ch-c"];
-        assert!(a > 500, "ch-a(weight 10) 命中 {a} 次，太少");
-        assert!(a > c3 * 3, "权重未被尊重: a={a} c={c3}");
-    }
-
-    #[test]
-    fn selector_round_robin_rotates_and_wraps() {
-        let sel = ChannelSelectorImpl::new(idx(&doc()));
-        let d = decision(Selector::RoundRobin, &["ch-a", "ch-b", "ch-c"]);
-        let mut got = vec![];
-        for _ in 0..4 {
-            got.push(sel.select(&d, &hints_session("x"), &ctx()).unwrap().channel.to_string());
-        }
-        assert_eq!(got, vec!["ch-a", "ch-b", "ch-c", "ch-a"]);
-
-        // 链也随起点旋转
-        let s = sel.select(&d, &hints_session("x"), &ctx()).unwrap();
-        assert_eq!(
-            s.chain.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
-            vec!["ch-b", "ch-c", "ch-a"]
-        );
-    }
-
-    // ------------------------------------------------------------ 粘性链路
-
-    #[test]
-    fn sticky_auto_releases_when_quota_exhausted_and_reselects() {
+    fn hard_error_releases_sticky_so_the_session_moves_elsewhere() {
         let d = doc();
         let sticky = Arc::new(MemoryStickyResolver::memory());
         let sel = selector_with(&d, sticky.clone());
-        let all = decision(Selector::StickyThenPriority, &["ch-a", "ch-b", "ch-c"]);
-        let h = hints_session("sess-1");
+        let h = hints_session("sess-err");
         let c = ctx();
 
-        let s1 = sel.select(&all, &h, &c).unwrap();
+        // 会话先粘在 ch-a
+        let s1 = sel.select(&decision(&["ch-a", "ch-b"]), &h, &c).unwrap();
         assert_eq!(s1.channel.as_str(), "ch-a");
-        let s2 = sel.select(&all, &h, &c).unwrap();
-        assert!(s2.sticky_hit);
 
-        // ch-a 额度耗尽 → engine 会把它剔除并给原因
-        let mut after = decision(Selector::StickyThenPriority, &["ch-b", "ch-c"]);
-        after.eliminated.push((ChannelId::from("ch-a"), EliminateReason::QuotaExhausted));
-        let s3 = sel.select(&after, &h, &c).unwrap();
-        assert_eq!(s3.channel.as_str(), "ch-b", "释放后重选下一个候选");
-        assert!(!s3.sticky_hit);
+        // ch-a 这次被冷却剔除了（= 上游报错）→ 释放粘性、改用 ch-b
+        let mut dec = decision(&["ch-b"]);
+        dec.eliminated.push((ChannelId::from("ch-a"), EliminateReason::Cooling));
+        let s2 = sel.select(&dec, &h, &c).unwrap();
+        assert_eq!(s2.channel.as_str(), "ch-b");
         assert_eq!(
             sticky.releases(),
-            vec![(StickyKey::from("sess-1"), ReleaseReason::QuotaExhausted)]
+            vec![(StickyKey::from("sess-err"), ReleaseReason::Cooldown)],
+            "冷却必须释放粘性"
         );
 
-        // 同会话后续请求继续用新通道
-        let s4 = sel.select(&after, &h, &c).unwrap();
-        assert_eq!(s4.channel.as_str(), "ch-b");
-        assert!(s4.sticky_hit, "新通道也必须被固化，否则会话会漂移");
+        // **粘到另一个身上**：下个请求（ch-a 还没回来）仍然走 ch-b，而且是**命中**
+        let s3 = sel.select(&decision(&["ch-b"]), &h, &c).unwrap();
+        assert_eq!(s3.channel.as_str(), "ch-b");
+        assert!(s3.sticky_hit, "释放后应立刻把会话粘到新线路上，而不是回到未命中");
+        assert_eq!(
+            sticky
+                .lookup(&StickyKey::from("sess-err"), &ChannelGroupId::from("grp-gpt-4o"))
+                .expect("应有新记录")
+                .channel_id
+                .as_str(),
+            "ch-b",
+            "粘性记录必须已指向新线路"
+        );
+    }
 
-        // 老通道复活也不抢回粘性（额度连贯 + prompt cache）
-        let s5 = sel.select(&all, &h, &c).unwrap();
-        assert_eq!(s5.channel.as_str(), "ch-b");
-        assert!(s5.sticky_hit);
+    /// 凭据失效也算硬失败 → 也要释放。
+    #[test]
+    fn invalid_credential_also_releases_sticky() {
+        let d = doc();
+        let sticky = Arc::new(MemoryStickyResolver::memory());
+        let sel = selector_with(&d, sticky.clone());
+        let h = hints_session("sess-inv");
+        let c = ctx();
+        sel.select(&decision(&["ch-a", "ch-b"]), &h, &c).unwrap();
+
+        let mut dec = decision(&["ch-b"]);
+        dec.eliminated.push((ChannelId::from("ch-a"), EliminateReason::InvalidCredential));
+        let s = sel.select(&dec, &h, &c).unwrap();
+        assert_eq!(s.channel.as_str(), "ch-b");
+        assert_eq!(
+            sticky.releases(),
+            vec![(StickyKey::from("sess-inv"), ReleaseReason::HardError)]
+        );
     }
 
     #[test]
@@ -703,10 +633,10 @@ channel_groups:
         let sel = selector_with(&d, sticky.clone());
         let h = hints_session("sess-2");
         let c = ctx();
-        sel.select(&decision(Selector::StickyThenPriority, &["ch-a", "ch-b"]), &h, &c).unwrap();
+        sel.select(&decision(&["ch-a", "ch-b"]), &h, &c).unwrap();
 
         // ch-a 因标签被这条规则排除 → 不释放，也**不改写**会话归属（临时绕开而已）
-        let mut dec = decision(Selector::StickyThenPriority, &["ch-b"]);
+        let mut dec = decision(&["ch-b"]);
         dec.eliminated.push((ChannelId::from("ch-a"), EliminateReason::TaggedOut));
         let s = sel.select(&dec, &h, &c).unwrap();
         assert_eq!(s.channel.as_str(), "ch-b");
@@ -718,18 +648,18 @@ channel_groups:
     }
 
     #[test]
-    fn sticky_expires_by_ttl_and_reselects_by_priority() {
+    fn sticky_expires_by_ttl_and_reselects() {
         let d = doc();
         let clock = Arc::new(crate::clock::ManualClock::new(1_699_920_000_000));
         let sticky = Arc::new(MemoryStickyResolver::with_clock(clock.clone()));
         let sel = selector_with(&d, sticky.clone());
         let h = hints_session("sess-ttl");
-        let dec = decision(Selector::StickyThenPriority, &["ch-a", "ch-b"]);
+        let dec = decision(&["ch-a", "ch-b"]);
 
         let s1 = sel.select(&dec, &h, &ctx()).unwrap();
         assert_eq!(s1.channel.as_str(), "ch-a");
 
-        // 12h 后过期 → 未命中 → 按 priority 重新选择（"复活"回 ch-a）
+        // 12h 后过期 → 未命中 → 按 priority 重新选（"复活"回 ch-a）
         clock.advance(12 * 3_600_000 + 1);
         let s2 = sel.select(&dec, &h, &ctx()).unwrap();
         assert!(!s2.sticky_hit);
@@ -737,47 +667,53 @@ channel_groups:
     }
 
     #[test]
-    fn sticky_is_ignored_for_non_sticky_selectors() {
-        let d = doc();
-        let sticky = Arc::new(MemoryStickyResolver::memory());
-        let sel = selector_with(&d, sticky.clone());
-        let h = hints_session("sess-3");
-        sel.select(&decision(Selector::StickyThenPriority, &["ch-a", "ch-b"]), &h, &ctx()).unwrap();
-
-        let s =
-            sel.select(&decision(Selector::LowestLatency, &["ch-a", "ch-b"]), &h, &ctx()).unwrap();
-        assert!(!s.sticky_hit);
-        assert!(s.sticky_key.is_none());
-    }
-
-    #[test]
     fn pinned_channel_wins() {
         let d = doc();
         let sticky = Arc::new(MemoryStickyResolver::memory());
         let sel = selector_with(&d, sticky);
-        let mut dec = decision(Selector::StickyThenPriority, &["ch-c", "ch-a", "ch-b"]);
+        let mut dec = decision(&["ch-c", "ch-a", "ch-b"]);
         dec.pinned = Some(ChannelId::from("ch-c"));
         let s = sel.select(&dec, &hints_session("s"), &ctx()).unwrap();
         assert_eq!(s.channel.as_str(), "ch-c");
         assert!(!s.sticky_hit);
-        assert_eq!(
-            s.chain.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
-            vec!["ch-c", "ch-a", "ch-b"]
-        );
+        assert_eq!(chain_of(&s), vec!["ch-c", "ch-a", "ch-b"]);
+    }
+
+    /// 粘性关掉（`sticky.enabled = false`）→ 每次都是"新会话"语义，不写表。
+    #[test]
+    fn disabled_sticky_means_every_request_is_fresh() {
+        let mut d = doc();
+        d.channel_groups[0].sticky.enabled = false;
+        let sticky = Arc::new(MemoryStickyResolver::memory());
+        let sel = selector_with(&d, sticky.clone());
+        let dec = decision(&["ch-a", "ch-b"]);
+        let s1 = sel.select(&dec, &hints_session("s"), &ctx()).unwrap();
+        let s2 = sel.select(&dec, &hints_session("s"), &ctx()).unwrap();
+        assert!(!s1.sticky_hit && !s2.sticky_hit);
+        assert!(s1.sticky_key.is_none() && s2.sticky_key.is_none());
+        assert!(sticky.releases().is_empty());
     }
 
     #[test]
     fn release_reason_mapping_is_explicit() {
-        assert_eq!(
-            release_reason_for(EliminateReason::QuotaExhausted),
-            Some(ReleaseReason::QuotaExhausted)
-        );
         assert_eq!(release_reason_for(EliminateReason::Cooling), Some(ReleaseReason::Cooldown));
         assert_eq!(
             release_reason_for(EliminateReason::InvalidCredential),
             Some(ReleaseReason::HardError)
         );
+        assert_eq!(release_reason_for(EliminateReason::Disabled), Some(ReleaseReason::HardError));
         assert_eq!(release_reason_for(EliminateReason::TaggedOut), None);
+        assert_eq!(release_reason_for(EliminateReason::ExcludedByPolicy), None);
         assert_eq!(release_reason_for(EliminateReason::NotInGroup), None);
+    }
+
+    #[test]
+    fn splitmix64_is_deterministic_and_not_constant() {
+        let mut a = SplitMix64::new(42);
+        let mut b = SplitMix64::new(42);
+        let xs: Vec<u64> = (0..8).map(|_| a.next_u64()).collect();
+        let ys: Vec<u64> = (0..8).map(|_| b.next_u64()).collect();
+        assert_eq!(xs, ys, "同种子必须同序列（可复现）");
+        assert!(xs.windows(2).all(|w| w[0] != w[1]), "不该吐出常数");
     }
 }

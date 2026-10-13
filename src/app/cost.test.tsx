@@ -36,7 +36,6 @@ import CostPage, {
   buildChartOption,
   buildUsageQuery,
   chartInputFromTable,
-  checkPricingIndex,
   costFilterFingerprint,
   readDashboard,
   readPriceEntries,
@@ -49,6 +48,17 @@ import CostPage, {
   DEFAULT_COST_FILTER,
   type CostBodyProps,
 } from "@/pages/cost";
+// [docs/51] 价格配置已搬到模型页，所以定价的整形逻辑也搬到了 `@/shared/pricing`
+// （它不再属于任何一页 —— 成本中心只显示、模型页只写）。
+import {
+  draftFromEntry,
+  hasPrice,
+  invalidPriceFields,
+  parsePrice,
+  priceEntryFor,
+  priceRates,
+  type PricingDraft,
+} from "@/shared/pricing";
 // `registerMock` 由 `@/shared/api`（门面）导出，不是 `@/shared/api/mock` ——
 // 其它四个测试文件（channels/models/settings/providers）都是从门面导入的。
 import { registerBaselineMocks, registerMock, TokenAgencyError } from "@/shared/api";
@@ -191,6 +201,19 @@ type NarrowOption = {
 
 // ================================================================ ① 读表：两套字段名
 
+  it("[docs/30 §3.18] 筛选区的主操作固定在底部（长页面 1811 行）", () => {
+    const { container } = render(<CostBody {...makeProps()} />);
+    const bar = container.querySelector('[data-testid="cost-query-bar"]');
+    expect(bar).toBeTruthy();
+    // 主操作（查询）在 sticky 容器里；容器样式确实写了 position: sticky（emotion 会内联到 class）
+    const style = window.getComputedStyle(bar as Element);
+    const css = Array.from(document.querySelectorAll("style"))
+      .map((s) => s.textContent ?? "")
+      .join("");
+    expect(css).toMatch(/position:\s*sticky/);
+    expect(bar?.querySelector("button")).toBeTruthy();
+    void style;
+  });
 describe("读 usage_query 的结果（契约名与 Rust 名两套都认）", () => {
   it("契约形状：columns 里去掉维度列就是指标，rows[].metrics 是数值", () => {
     const table = readUsageTable(contractTable());
@@ -367,31 +390,36 @@ describe("usage_query 的查询形状（契约与 Rust 不一致处，两种都�
 // ================================================================ ④ 估算 vs 上游上报
 
 describe("估算 vs 上游上报：如实标注，不许把本地口径说成上游数据", () => {
-  it("口径说明：token 来源那句收进问号；「花费是本地算的、不是上游账单」留在版面上", () => {
+  it("口径说明：token 细分的诚实说明收进问号；「花费是本地估算」留在版面上", () => {
     renderBody();
-    // [docs/22 §2]：`tokens` / `tokensNote` 是"为什么这么算、为什么读不到来源标记"的**解释** →
-    // 收进标题右边的问号圆圈；断言从 `textContent` 改成读那个 `?` 的 `aria-label`，全文一个字没丢，
-    // 并且**额外**钉住"那段正文不再内联"。
+    // [极简 · 判据 1/2] 那 216 字的来源标记解释（枚举值 + 字段名 + 文档编号）整块**已删**；
+    // 问号里只剩仍在生效的诚实说明（缺的类型不补 0）。
     const label = screen.getByTestId("cost-provenance-help").getAttribute("aria-label") ?? "";
-    expect(label).toContain(zhCN["cost.provenance.tokens"]);
-    expect(label).toContain("usage_source");
-    expect(screen.queryByText(zhCN["cost.provenance.tokens"])).toBeNull();
+    expect(label).toContain(zhCN["cost.provenance.tokensNote"]);
+    expect(screen.queryByText(zhCN["cost.provenance.tokensNote"])).toBeNull();
 
-    // 注意：但 `cost.provenance.cost`（"花费是本地算的…不是上游账单"）是**数据口径结论**，
-    // 按 §2 红线第 1 条**必须留在版面上**（用户据此判断眼前数字能不能当账单）——
-    // 所以这条断言与上一版正好相反：它必须在 `[data-testid="cost-provenance"]` 里可见。
+    // 但 `cost.provenance.cost`（"花费是本地估算…不是上游账单"）是**数据口径结论**，
+    // 用户据此判断眼前数字能不能当账单用 → 必须留在版面上。
     expect(zhCN["cost.provenance.cost"]).toContain("本地");
     const section = screen.getByTestId("cost-provenance");
     expect(within(section).getByText(zhCN["cost.provenance.cost"])).toBeTruthy();
     expect(label).not.toContain(zhCN["cost.provenance.cost"]);
   });
 
+  it("枚举值与字段名一律不上界面（usage_source 那段解释整块已删）", () => {
+    renderBody();
+    const section = screen.getByTestId("cost-provenance");
+    const help = screen.getByTestId("cost-provenance-help").getAttribute("aria-label") ?? "";
+    // 记录里确实有这三个取值，但它们不该出现在版面上，也不该出现在提示里
+    for (const token of ["usage_source", "upstream_partial", "estimated"]) {
+      expect(section.textContent ?? "", token).not.toContain(token);
+      expect(help, token).not.toContain(token);
+    }
+  });
+
   it("读表结果里没有来源字段可用 —— 页面不假装有（DTO 就没带）", () => {
     const table = readUsageTable(rustTable())!;
     expect(Object.keys(table)).not.toContain("usageSource");
-    // 后端记录里确实有这三个取值，但查询 DTO 没带 → 页面只说明，不标
-    expect(zhCN["cost.provenance.tokens"]).toContain("estimated");
-    expect(zhCN["cost.provenance.tokens"]).toContain("upstream");
   });
 
   it("未定价模型要显式说出来：花费数字不完整", () => {
@@ -420,7 +448,14 @@ describe("估算 vs 上游上报：如实标注，不许把本地口径说成上
     });
     expect(dash!.prevRequests).toBeUndefined();
     renderBody({ dashboard: dash });
-    expect(screen.getByTestId("cost-delta-none").textContent).toBe(zhCN["cost.deltaUnavailable"]);
+    /*
+     * [极简 · 判据 1] 原来这里还有一行「对比上期：不可得（后端返回里没有上期字段…）」——
+     * 那是在解释"我们为什么没画涨跌"。没有上期值就不画涨跌本来就是正确展示，
+     * 所以那一行**已删**；这条用例改成直接钉住"一张带涨跌的卡都没有"（意图不变：
+     * 不许编一个涨跌出来，也不许拿一句解释当借口）。
+     */
+    expect(screen.queryByTestId("cost-delta-none")).toBeNull();
+    expect(screen.queryByText(/^[+-]\d/)).toBeNull();
   });
 
   it("后端给了上期值才画涨跌，且画的是比率不是差值", () => {
@@ -438,7 +473,6 @@ describe("估算 vs 上游上报：如实标注，不许把本地口径说成上
     expect(dash!.prevCost).toBe(16.4);
     renderBody({ dashboard: dash });
     expect(screen.queryByTestId("cost-delta-none")).toBeNull();
-
     // (1284-1120)/1120 = 14.64% → "+14.6%"（NumberCard 的 delta.value 是比率，不是差值：
     // 传差值会画成 +16400.0%，这条断言就是钉住这一点）
     expect(screen.getByText("+14.6%")).toBeTruthy();
@@ -450,7 +484,7 @@ describe("估算 vs 上游上报：如实标注，不许把本地口径说成上
 // ================================================================ ⑤ 空态 / 错误态
 
 describe("空态与错误态都说实话", () => {
-  it("明细为空：诚实空状态，不画空表格也不画空坐标系", () => {
+  it("明细为空：诚实空状态，不画空表格也不画空坐标系（只有 1 行）", () => {
     renderBody({
       table: readUsageTable({ metrics: ["cost"], group_by: ["model"], rows: [], total_groups: 0, truncated: false }),
     });
@@ -458,7 +492,12 @@ describe("空态与错误态都说实话", () => {
     expect(screen.queryByTestId("cost-chart")).toBeNull();
     const empty = screen.getByTestId("cost-empty");
     expect(empty.textContent).toContain(zhCN["cost.result.empty.title"]);
-    expect(empty.textContent).toContain(zhCN["cost.result.empty.body"]);
+    // [极简 · 判据 5] 空态只说"怎么开始"：一行结论，
+    // 不再有"可能这段时间没有请求…"那两行解释（它们在替用户做推测）。
+    expect(empty.querySelectorAll("p")).toHaveLength(1);
+    // [第 2 轮 · 判据 A] 空态不再自带「重置」—— 筛选区里已经有同标签同动作的那一个
+    expect(within(empty).queryByTestId("cost-empty-reset")).toBeNull();
+    expect(empty.querySelectorAll("button")).toHaveLength(0);
   });
 
   it("有行但没有一条指标能画：给图表空状态，表格照常显示", () => {
@@ -647,24 +686,11 @@ function priceEntry(overrides: Partial<PriceEntry> = {}): PriceEntry {
   };
 }
 
-/** 按 zh-CN 的真源拼预期文案（断言里不写死中文）。 */
-function textOf(key: I18nKey, vars: Record<string, string | number> = {}): string {
-  let out: string = zhCN[key];
-  for (const [name, value] of Object.entries(vars)) {
-    out = out.replace(`{{${name}}}`, String(value));
-  }
-  return out;
-}
-
-/** 行内「删除」按钮（第 index 行）。 */
-async function rowDeleteButtons() {
-  return await screen.findAllByTestId("pricing-delete");
-}
-
-function confirmPricingDelete() {
-  fireEvent.click(screen.getByTestId("pricing-delete-confirm"));
-}
-
+/**
+ * [docs/51] 这一节现在只验**只读展示**：成本中心不再有任何定价写入口
+ * （新增 / 改价 / 清除全在模型页），所以下面没有一行"点删除"的断言 ——
+ * 那些断言跟着入口一起搬到了 `models.test.tsx`。
+ */
 describe("[定价条目] 读列表与展示（取不到就 —，不猜）", () => {
   it("空列表：给诚实的空态，不画 0 行的空表格", async () => {
     registerMock("pricing_list", () => []);
@@ -715,198 +741,35 @@ describe("[定价条目] 读列表与展示（取不到就 —，不猜）", () 
     expect(priceSourceText(3)).toBe("—");
   });
 
-  it("保持后端顺序、下标就是删除入参（不重排）", () => {
+  it("保持后端顺序、下标就是那一行在列表里的位置（不重排）", () => {
     const rows = readPriceEntries([priceEntry(), priceEntry(), priceEntry()]);
     expect(rows.map((row) => row.index)).toEqual([0, 1, 2]);
   });
-});
 
-describe("[定价条目] 删除：先确认、按 index 调用", () => {
-  it("点行内「删除」只弹确认框（一条命令都不发），确认后才发 pricing_delete({index})", async () => {
-    const calls: { index: number }[] = [];
-    registerMock("pricing_list", () => [
-      priceEntry({ match: { model: "m-1" } }),
-      priceEntry({ match: { model: "m-2" } }),
-    ]);
-    registerMock("pricing_delete", (args) => {
-      calls.push(args as unknown as { index: number });
-      return undefined;
-    });
-
+  /**
+   * [docs/51] **结构性**断言：成本中心不再有任何定价写入口。
+   *
+   * 与真机 e2e 的 step10 同一条判据（那边还多验一句"改在哪儿"的说明必须在）。
+   * 单测这一条的价值在于它是**纯前端的**：只要有人把写对话框加回这一页，它立刻红，
+   * 不需要等到真机跑一遍。
+   */
+  it("只做显示：这一页没有任何 pricing-add* / pricing-delete / pricing-edit 控件", async () => {
+    registerMock("pricing_list", () => [priceEntry()]);
     renderPage();
-    const buttons = await rowDeleteButtons();
-    expect(buttons).toHaveLength(2);
-    fireEvent.click(buttons[1]!);
-
-    expect(screen.getByTestId("pricing-delete-dialog")).toBeTruthy();
-    // 确认框里写清删的是哪一个：下标 + 匹配
-    const target = screen.getByTestId("pricing-delete-target").textContent ?? "";
-    expect(target).toContain("#1");
-    expect(target).toContain("model=m-2");
-    // **二次确认之前绝不调用后端**
-    expect(calls).toHaveLength(0);
-
-    confirmPricingDelete();
-    await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0]).toEqual({ index: 1 });
-    // 成功后在结果区如实写「已删除 <标识>」（标识 = 下标 + 匹配）
-    const result = await screen.findByTestId("pricing-delete-result");
-    expect(result.textContent).toContain(textOf("delete.result.ok", { name: "#1" }));
-    // `pricing_delete` 没有 force 语义 → 不放级联按钮
-    expect(screen.queryByTestId("pricing-delete-cascade")).toBeNull();
-  });
-
-  it("单条删除失败时：结果区原样显示后端原文（含 TA 码），不写「已删除」", async () => {
-    registerMock("pricing_list", () => [priceEntry({ match: { model: "m-1" } })]);
-    registerMock("pricing_delete", () => {
-      throw new TokenAgencyError({ code: "TA-1004", message: "定价条目不存在（index 0）" });
-    });
-
-    renderPage();
-    fireEvent.click(await screen.findByTestId("pricing-delete"));
-    confirmPricingDelete();
-
-    const failed = await screen.findByTestId("pricing-delete-result-0");
-    expect(failed.textContent).toContain("TA-1004");
-    expect(failed.textContent).toContain("定价条目不存在（index 0）");
-    expect(screen.queryByText(textOf("delete.result.ok", { name: "#0" }))).toBeNull();
-    // 这不是"下标错位"那条路（错位根本不会调后端）
-    expect(screen.queryByTestId("pricing-delete-result-stale-0")).toBeNull();
-  });
-
-  it("**下标错位就拒绝**：重新读回来的那个下标已经是另一条 → 一条都不删，并让用户重看", async () => {
-    let current: PriceEntry[] = [priceEntry({ match: { model: "m-1" } })];
-    let reads = 0;
-    registerMock("pricing_list", () => {
-      reads += 1;
-      return current;
-    });
-    const calls: { index: number }[] = [];
-    registerMock("pricing_delete", (args) => {
-      calls.push(args as unknown as { index: number });
-      return undefined;
-    });
-
-    renderPage();
-    fireEvent.click(await screen.findByTestId("pricing-delete"));
-    const readsBeforeDelete = reads;
-
-    // 用户看着列表的时候，列表变了：同一下标上已经是**另一条**
-    current = [priceEntry({ match: { model: "m-2" } })];
-    confirmPricingDelete();
-
-    const stale = await screen.findByTestId("pricing-delete-result-stale-0");
-    // ① 绝不执行删除
-    expect(calls).toHaveLength(0);
-    // ② 重新读了一次（错位判断建立在刚刚返回的那一份上）
-    expect(reads).toBeGreaterThan(readsBeforeDelete);
-    // ③ 把话说清楚
-    expect(stale.textContent).toContain("重看");
-  });
-
-  it("批量时每一条都重新比对；列表真的一条条变短也不会错位（从大到小的理由）", async () => {
-    // 这次让 mock **真的**随着删除变短：只有"从大到小 + 每条重新比对"才可能全成功
-    let current: PriceEntry[] = [
-      priceEntry({ match: { model: "m-1" } }),
-      priceEntry({ match: { model: "m-2" } }),
-    ];
-    registerMock("pricing_list", () => current);
-    const calls: { index: number }[] = [];
-    registerMock("pricing_delete", (args) => {
-      const call = args as unknown as { index: number };
-      calls.push(call);
-      current = current.filter((_, index) => index !== call.index);
-      return undefined;
-    });
-
-    renderPage();
-    fireEvent.click(
-      within(await screen.findByTestId("pricing-select-all")).getByRole("checkbox"),
+    await screen.findByTestId("pricing-table");
+    const ids = Array.from(document.querySelectorAll("[data-testid]")).map((el) =>
+      el.getAttribute("data-testid"),
     );
-    fireEvent.click(screen.getByTestId("pricing-delete-selected"));
-    confirmPricingDelete();
-
-    await waitFor(() => expect(calls).toHaveLength(2));
-    // 两条都删掉了：先下标 1（列表变短后，原来下标 0 那条仍在 0），再下标 0
-    expect(calls.map((call) => call.index)).toEqual([1, 0]);
-    expect(current).toEqual([]);
-    const result = await screen.findByTestId("pricing-delete-result");
-    expect(result.textContent).toContain(textOf("delete.result.summary", { ok: 2, failed: 0 }));
-  });
-
-  it("批量：按下标**从大到小**逐条删（下标会前移），1 成功 1 失败逐条汇报，不中止其它条", async () => {
-    const calls: { index: number }[] = [];
-    registerMock("pricing_list", () => [
-      priceEntry({ match: { model: "m-1" } }),
-      priceEntry({ match: { model: "m-2" } }),
-    ]);
-    registerMock("pricing_delete", (args) => {
-      const call = args as unknown as { index: number };
-      calls.push(call);
-      if (call.index === 0) {
-        throw new TokenAgencyError({ code: "TA-2007", message: "定价条目非法：删不掉" });
-      }
-      return undefined;
-    });
-
-    renderPage();
-    const toolbarButton = await screen.findByTestId("pricing-delete-selected");
-    expect((toolbarButton as HTMLButtonElement).disabled).toBe(true);
-
-    fireEvent.click(within(screen.getByTestId("pricing-select-all")).getByRole("checkbox"));
-    expect(screen.getByTestId("pricing-selected-count").textContent).toContain(
-      textOf("delete.selectedCount", { count: 2 }),
+    const writes = ids.filter(
+      (id) => id !== null && (id.startsWith("pricing-add") || id === "pricing-delete" || id === "pricing-edit"),
     );
-
-    fireEvent.click(toolbarButton);
-    // 一次确认
-    expect(screen.getByTestId("pricing-delete-dialog")).toBeTruthy();
-    expect(calls).toHaveLength(0);
-    confirmPricingDelete();
-
-    const result = await screen.findByTestId("pricing-delete-result");
-    await waitFor(() => expect(calls).toHaveLength(2));
-    // 从大到小：先删下标 1，再删下标 0（否则第一条删完，后面每条的下标都会前移）
-    expect(calls.map((call) => call.index)).toEqual([1, 0]);
-    // 逐条如实汇报，而不是一句"批量删除成功"
-    expect(result.textContent).toContain(textOf("delete.result.summary", { ok: 1, failed: 1 }));
-    const failed = screen.getByTestId("pricing-delete-result-0").textContent ?? "";
-    expect(failed).toContain("TA-2007");
-    expect(failed).toContain("定价条目非法：删不掉");
+    expect(writes).toEqual([]);
+    // 并且必须有一句**常驻**的「改在哪儿」（用户会回来这里找已经被搬走的那个按钮）
+    expect(screen.getByTestId("cost-pricing-readonly").textContent).not.toBe("");
   });
 });
 
-describe("[定价条目] 下标比对（单测：删之前必须逐字段全等）", () => {
-  const a = priceEntry({ match: { model: "m-1" } });
-  const b = priceEntry({ match: { model: "m-2" } });
 
-  it("同一下标仍是同一条 → same（键序不同不改结论：比的还是全部字段）", () => {
-    expect(checkPricingIndex([a], 0, a)).toBe("same");
-    expect(checkPricingIndex([JSON.parse(JSON.stringify(a))], 0, a)).toBe("same");
-    const reordered = {
-      source: a.source,
-      effective_from: a.effective_from,
-      rates: a.rates,
-      match: a.match,
-      plan_fee: a.plan_fee,
-      currency: a.currency,
-      multiplier: a.multiplier,
-    };
-    expect(checkPricingIndex([reordered], 0, a)).toBe("same");
-  });
-
-  it("下标处已经是另一条 → changed（拒绝执行）", () => {
-    expect(checkPricingIndex([b], 0, a)).toBe("changed");
-    // 少一个字段也算变了（逐字段全等，不是"看起来差不多"）
-    expect(checkPricingIndex([{ ...a, rates: {} }], 0, a)).toBe("changed");
-  });
-
-  it("下标越界 / 不是数组 → missing（两边都拒绝）", () => {
-    expect(checkPricingIndex([], 0, a)).toBe("missing");
-    expect(checkPricingIndex([a], 5, a)).toBe("missing");
-    expect(checkPricingIndex("nope", 0, a)).toBe("missing");
-  });
-});
 
 // ================================================================ ⑨ [docs/22] 长简介收进「问号圆圈 + 悬停提示」
 //
@@ -932,16 +795,14 @@ describe("⑨ [docs/22] 长简介收进问号圆圈，数值与单位一句都�
     return label ?? "";
   }
 
-  it("数据口径：token 来源两段合成一个问号（正文不再内联）；花费口径结论留在版面上", () => {
+  it("数据口径：token 细分的诚实说明进问号（正文不再内联）；花费口径结论留在版面上", () => {
     renderBody();
 
     const label = helpLabel("cost-provenance-help");
-    for (const key of ["cost.provenance.tokens", "cost.provenance.tokensNote"] as const) {
-      expect(label, `${key} 应当进同一个提示`).toContain(copy(key));
-      expect(screen.queryByText(copy(key)), `${key} 不该再内联`).toBeNull();
-    }
-    // 注意：`cost.provenance.cost` 是**数据口径结论**（§2 红线第 1 条）→ 必须在版面上，
-    // 也**不许**同时出现在提示里（两处都有就是两个真相源）。
+    expect(label, "诚实说明应当进提示").toContain(copy("cost.provenance.tokensNote"));
+    expect(screen.queryByText(copy("cost.provenance.tokensNote")), "不该再内联").toBeNull();
+    // 注意：`cost.provenance.cost` 是**数据口径结论**（用户据此判断数字能不能当账单）→
+    // 必须在版面上，也**不许**同时出现在提示里（两处都有就是两个真相源）。
     expect(screen.queryByText(copy("cost.provenance.cost"))).not.toBeNull();
     expect(label).not.toContain(copy("cost.provenance.cost"));
     // 一个区块只有一个 `?`（§3）
@@ -976,7 +837,7 @@ describe("⑨ [docs/22] 长简介收进问号圆圈，数值与单位一句都�
     }
   });
 
-  it("红线仍内联：截断的数值 / 后端原文 / 带例子与禁用条件的导出说明 / 空态 / 不可得的结论", () => {
+  it("红线仍内联：截断的数值 / 原文 / 带例子与禁用条件的导出说明 / 空态结论", () => {
     renderBody({
       table: readUsageTable(rustTable()),
       tokenKindsError: new TokenAgencyError({ code: "TA-9001", message: "未注册 mock：usage_token_kinds" }),
@@ -991,14 +852,16 @@ describe("⑨ [docs/22] 长简介收进问号圆圈，数值与单位一句都�
     expect(screen.getByTestId("cost-export-hint").textContent).toContain(copy("cost.export.pathHint"));
     cleanup();
 
-    // §2 第 1 条：空态（"可能这段时间没有请求…"是给用户下一步的说明，与空态绑在一起）
+    // [判据 5] 空态：一行结论（不再是那两行推测性解释）
+    // [第 2 轮 · 判据 A] 也不再自带「重置」—— 筛选区里已经有了同标签同动作的那一个
     renderBody({ table: undefined });
-    const empty = screen.getByTestId("cost-empty").textContent ?? "";
-    expect(empty).toContain(copy("cost.result.empty.title"));
-    expect(empty).toContain(copy("cost.result.empty.body"));
+    const empty = screen.getByTestId("cost-empty");
+    expect(empty.textContent).toContain(copy("cost.result.empty.title"));
+    expect(empty.querySelectorAll("p")).toHaveLength(1);
+    expect(within(empty).queryByTestId("cost-empty-reset")).toBeNull();
     cleanup();
 
-    // §2 第 1 条：没有上期字段就是没有涨跌 —— 这条结论一眼可见
+    // [判据 1] 没有上期字段就**没有涨跌**（不再用一行解释说明"为什么没有"）
     renderBody({
       dashboard: readDashboard({
         cards: {
@@ -1011,6 +874,129 @@ describe("⑨ [docs/22] 长简介收进问号圆圈，数值与单位一句都�
         unpriced_models: [],
       }),
     });
-    expect(screen.getByTestId("cost-delta-none").textContent).toBe(copy("cost.deltaUnavailable"));
+    expect(screen.queryByTestId("cost-delta-none")).toBeNull();
+    expect(screen.queryByText(/^[+-]\d/)).toBeNull();
+  });
+});
+
+// ================================================================ [docs/26 §2] 一级界面省略
+
+describe("[docs/26 §2] 成本表分组名 / 最近请求模型 / 定价匹配式：省略后全文仍在 DOM", () => {
+  it("表格里的两个长值整段留在 DOM 里；没溢出时一个提示都不挂", () => {
+    const longModel = "claude-sonnet-4-5-2026-07-18-preview-long-upstream";
+    renderBody({
+      applied: { ...DEFAULT_COST_FILTER, groupBy: "model" },
+      table: readUsageTable({
+        columns: ["model", "cost"],
+        rows: [{ dims: { model: longModel }, metrics: { cost: 1.42 } }],
+        total: 1,
+      }),
+      recent: [recent({ model: longModel })],
+    });
+
+    expect(screen.getByTestId("cost-row-label-ellipsis-0").textContent).toBe(longModel);
+    expect(screen.getByTestId("cost-recent-model-ellipsis").textContent).toBe(longModel);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(screen.getByTestId("cost-row-label-ellipsis-0").getAttribute("tabindex")).toBeNull();
+  });
+
+  it("定价表的匹配式整段留在 DOM 里（`model=/provider=/credential=` 拼起来的长串）", async () => {
+    const model = "claude-sonnet-4-5-2026-07-18-preview";
+    registerMock("pricing_list", () => [
+      priceEntry({
+        match: { model, provider: "p-bytedance-tokyo-bgp", credential: "c-bytedance-monthly" },
+      }),
+    ]);
+    renderPage();
+
+    const element = await screen.findByTestId("pricing-match-ellipsis-0");
+    expect(element.textContent).toBe(
+      `model=${model} · provider=p-bytedance-tokyo-bgp · credential=c-bytedance-monthly`,
+    );
+    expect(element.getAttribute("tabindex")).toBeNull();
+  });
+});
+
+// ================================================================ ⑨ 按对外模型定价（[docs/51]）
+
+/**
+ * **这一节的来历与它现在的口径**：
+ *
+ * * `pricing_upsert` 原先只由已删的「套餐与线路」页代发（[docs/49]）；
+ * * 第 318 轮用户指出**口径错了**：*"我是希望用户为每一个对外模型定价，来算自己大概花了多少，
+ *   而不是对服务商的线路计价"*，并要求*"成本中心页面只做显示，价格配置到模型页面去"*。
+ *
+ * 所以这组断言现在钉的是**按对外模型定价**（[docs/51]）：
+ * `match` 里**只有 model**，不再发服务商/凭据 —— 那两样与"这个模型花了多少钱"无关。
+ * 交互（对话框、按钮、清除定价）的断言在 `models.test.tsx` 里，因为入口在模型页。
+ */
+describe("[定价] 按对外模型定价的整形：只发填了的价，绝不把「没定价」写成「免费」", () => {
+  /** 一份草稿；只覆盖关心的字段。 */
+  function draft(overrides: Partial<PricingDraft> = {}): PricingDraft {
+    return { model: "m-a", priceInput: "", priceOutput: "", priceCached: "", ...overrides };
+  }
+
+  it("价格：空 = 不计价（undefined）；非负数字才认；负号 / 非数字 / 半截小数都不认", () => {
+    expect(parsePrice("")).toBeUndefined();
+    expect(parsePrice("   ")).toBeUndefined();
+    // `"0"` 是**明确的价**（0 美元），不是"没填"
+    expect(parsePrice("0")).toBe(0);
+    expect(parsePrice("1.5")).toBe(1.5);
+    expect(parsePrice("-1")).toBeUndefined();
+    expect(parsePrice("很贵")).toBeUndefined();
+    expect(parsePrice("1.2.3")).toBeUndefined();
+  });
+
+  it("有任意一项非空 = 要写定价；三项全空 = 不写（`hasPrice` 是那个闸）", () => {
+    expect(hasPrice(draft())).toBe(false);
+    expect(hasPrice(draft({ priceInput: "0" }))).toBe(true);
+    expect(hasPrice(draft({ priceCached: "1" }))).toBe(true);
+  });
+
+  it("rates 只放填了的键 —— 补 0 会把「没定价」写成「免费」", () => {
+    expect(priceRates(draft({ priceInput: "1.5", priceCached: "0.25" }))).toEqual({
+      input: 1.5,
+      input_cached: 0.25,
+    });
+    expect(priceRates(draft())).toEqual({});
+  });
+
+  it("载荷：`match` **只有 model**（这是本轮修正的核心），source=manual，币种/生效时间显式 null", () => {
+    const entry = priceEntryFor(draft({ model: " m-a ", priceOutput: "6" }));
+    expect(entry.match).toEqual({ model: "m-a" });
+    // 修正前这里发的是 `{provider, credential}` —— 那正是用户指出的错：
+    // 定价挂在"某家服务商的某条线路"上，而用户想知道的是"**这个模型**花了多少钱"。
+    expect((entry.match as Record<string, unknown>)["provider"]).toBeUndefined();
+    expect((entry.match as Record<string, unknown>)["credential"]).toBeUndefined();
+    expect(entry.rates).toEqual({ output: 6 });
+    expect(entry.multiplier).toBe(1);
+    expect(entry.source).toBe("manual");
+    expect(entry.currency).toBeNull();
+    expect(entry.effective_from).toBeNull();
+  });
+
+  it("本地预检：填了但不是合法非负数字的字段逐个点名", () => {
+    expect(invalidPriceFields(draft())).toEqual([]);
+    expect(invalidPriceFields(draft({ priceInput: "-1", priceOutput: "很贵" }))).toEqual([
+      "priceInput",
+      "priceOutput",
+    ]);
+  });
+
+  it("回填：打开对话框时把当前价显示出来（没有那一项就留空，**不回填 0**）", () => {
+    const filled = draftFromEntry("m-a", priceEntry({ rates: { input: 1.5, output: 6 } }));
+    expect(filled).toEqual({
+      model: "m-a",
+      priceInput: "1.5",
+      priceOutput: "6",
+      // rates 里没有 input_cached ⇒ 留空（= 不计价）。回填 0 会把"没定价"写成"免费"。
+      priceCached: "",
+    });
+    expect(draftFromEntry("m-b", undefined)).toEqual({
+      model: "m-b",
+      priceInput: "",
+      priceOutput: "",
+      priceCached: "",
+    });
   });
 });

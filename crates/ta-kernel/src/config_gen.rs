@@ -274,7 +274,7 @@ impl MhConfigGen {
         lane: &'a Lane,
         i: usize,
         errors: &mut Vec<FieldError>,
-    ) -> Option<(String, Option<GroupPlan<'a>>)> {
+    ) -> Option<(String, Option<GroupPlan>)> {
         match lane.kind {
             // 直连：不建组
             LaneKind::Direct => Some(("DIRECT".to_string(), None)),
@@ -303,8 +303,12 @@ impl MhConfigGen {
                     name: name.clone(),
                     group_type: lane.group_type.unwrap_or(GroupType::UrlTest),
                     provider_key: p.key.clone(),
-                    filter: non_blank(lane.filter.as_deref()),
-                    exclude_filter: non_blank(lane.exclude_filter.as_deref()),
+                    filter: non_blank(lane.filter.as_deref()).map(str::to_string),
+                    // ★ 用户关掉的节点必须从这里排除出去（[docs/54]）—— 见 `merge_disabled_exclude`。
+                    exclude_filter: merge_disabled_exclude(
+                        lane.exclude_filter.as_deref(),
+                        &p.sub.disabled_nodes,
+                    ),
                     probe_url: self.lane_probe_url(doc, p.sub),
                     interval_s: lane_health_interval(doc),
                     tolerance_ms: p.sub.health_check.tolerance_ms,
@@ -312,28 +316,19 @@ impl MhConfigGen {
                 Some((name, Some(group)))
             }
 
-            // 直接用订阅自带的组：不建组，但必须确认这个组名真的存在
+            // 只按「订阅里的组」这种用法已被取消（[docs/54]，用户第 321 轮："直接放弃订阅里面
+            // 分组这一概念，只拿节点"）。v2 → v3 迁移会把老数据转成 `subscription_auto`，
+            // 所以走到这里只可能是"迁移没跑到 / 有人手工写回来" —— **明确报错**，
+            // 不能落进下面任何一条分支（那会静默按 url-test 建组，出口 IP 自己乱跳）。
             LaneKind::SubscriptionGroup => {
-                let p = self.require_subscription(index, lane, i, errors)?;
-                if !is_blank(lane.filter.as_deref()) || !is_blank(lane.exclude_filter.as_deref()) {
-                    tracing::warn!(
-                        lane_id = %lane.id,
-                        "kind: subscription_group 的 lane 级 filter 被忽略（内核的 filter 只作用于 provider，不作用于已有组）"
-                    );
-                }
-                let name = match non_blank(lane.group.as_deref()) {
-                    Some(g) => g.to_string(),
-                    None => {
-                        errors.push(field_error(
-                            &lane_path(i, "group"),
-                            "missing_group",
-                            "kind: subscription_group 需要 group（订阅里自带的组名，如 \"🇯🇵 日本\"）",
-                        ));
-                        return None;
-                    }
-                };
-                self.check_known(&p.key, RefKind::Group, &name, &lane_path(i, "group"), errors);
-                Some((name, None))
+                errors.push(field_error(
+                    &lane_path(i, "kind"),
+                    "removed_kind",
+                    "`subscription_group`（用订阅里自带的组）已取消：请改成 `subscription_auto`\
+                     （「自动选择」：所有启用节点 ping 服务商 URL 取最低延迟 + 按地址粘性）\
+                     或 `subscription_node`（固定某个节点）",
+                ));
+                None
             }
 
             // 固定节点：不建组
@@ -419,14 +414,15 @@ impl MhConfigGen {
         path: &str,
         errors: &mut Vec<FieldError>,
     ) {
+        // [docs/54] 只剩"节点"一种引用要查：`subscription_group` 已取消，
+        // 而 `subscription_auto` / `filter` 走的是**我们自己建的组**（名字由 lane id 派生），
+        // `direct` 是内核内置。所以这里没有第二种。
         let what = match kind {
-            RefKind::Group => "组",
             RefKind::Node => "节点",
         };
         match self.known.get(provider_key) {
             Some(known) => {
                 let found = match kind {
-                    RefKind::Group => known.has_group(name),
                     RefKind::Node => known.has_node(name),
                 };
                 if !found {
@@ -544,8 +540,7 @@ impl MhConfigGen {
         let _ = writeln!(out);
 
         // ---- proxy-groups：我们生成的（不是订阅的）
-        let groups: Vec<&GroupPlan<'_>> =
-            plan.lanes.iter().filter_map(|l| l.group.as_ref()).collect();
+        let groups: Vec<&GroupPlan> = plan.lanes.iter().filter_map(|l| l.group.as_ref()).collect();
         if groups.is_empty() {
             let _ = writeln!(out, "proxy-groups: []");
         } else {
@@ -570,10 +565,10 @@ impl MhConfigGen {
                     // 且无任何告警；改成 `REJECT` 后 `all=[REJECT]` 且请求明确失败。
                     "empty-fallback: REJECT".to_string(),
                 ];
-                if let Some(f) = g.filter {
+                if let Some(f) = &g.filter {
                     fields.push(format!("filter: {}", q(f)));
                 }
-                if let Some(f) = g.exclude_filter {
+                if let Some(f) = &g.exclude_filter {
                     fields.push(format!("exclude-filter: {}", q(f)));
                 }
                 let _ = writeln!(out, "  - {{{}}}", fields.join(", "));
@@ -640,17 +635,24 @@ pub struct LanePlan<'a> {
     /// `listeners[].proxy`
     pub target: String,
     /// 需要我们生成的 proxy-group（`direct` / `subscription_group` / `subscription_node` 为 None）
-    pub group: Option<GroupPlan<'a>>,
+    pub group: Option<GroupPlan>,
     pub port: u16,
 }
 
 #[derive(Debug)]
-pub struct GroupPlan<'a> {
+pub struct GroupPlan {
     pub name: String,
     pub group_type: GroupType,
     pub provider_key: String,
-    pub filter: Option<&'a str>,
-    pub exclude_filter: Option<&'a str>,
+    /// 收窄正则（用户写的）。**已关闭节点的排除不在这里** —— 见 `exclude_filter`。
+    pub filter: Option<String>,
+    /// 排除正则：**用户写的 + 我们补的「排除已关闭节点」**（见 [`merge_disabled_exclude`]）。
+    ///
+    /// 为什么关闭节点要落在**排除正则**上、而不是"根本不让它进 provider"：内核的
+    /// `proxy-providers` 是整份订阅一个条目，节点是内核自己拉的，我们没有逐节点增删的入口。
+    /// 组级 `exclude-filter` 是**唯一**能让"用户关掉的节点"不参与择优的地方 —— 少了它，
+    /// 关掉的节点照样会被 `url-test`/`fallback`/`load-balance` 选中（[docs/54] 之前就是这样）。
+    pub exclude_filter: Option<String>,
     pub probe_url: String,
     pub interval_s: u32,
     pub tolerance_ms: u32,
@@ -658,7 +660,6 @@ pub struct GroupPlan<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RefKind {
-    Group,
     Node,
 }
 
@@ -681,14 +682,14 @@ pub fn lane_target_at(
     };
     match lane.kind {
         LaneKind::Direct => Ok("DIRECT".to_string()),
-        LaneKind::SubscriptionGroup => match non_blank(lane.group.as_deref()) {
-            Some(g) => Ok(g.to_string()),
-            None => Err(field_error(
-                &path("group"),
-                "missing_group",
-                "kind: subscription_group 需要 group",
-            )),
-        },
+        // [docs/54] 这个值在 v3 之后是配置损坏：**不落进任何"能用"的分支**，
+        // 而是明确报错（否则会拿一个我们不再维护的组名当目标）。
+        LaneKind::SubscriptionGroup => Err(field_error(
+            &path("kind"),
+            "removed_kind",
+            "`subscription_group`（用订阅里自带的组）已取消：请改成 `subscription_auto`\
+             （「自动选择」）或 `subscription_node`（固定某个节点）",
+        )),
         LaneKind::SubscriptionNode => match non_blank(lane.node.as_deref()) {
             Some(n) => Ok(n.to_string()),
             None => {
@@ -845,6 +846,48 @@ fn non_blank(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
 }
 
+/// 把「用户关掉的节点」拼成一个**排除正则**，与用户自己的 `exclude_filter` 合并（[docs/54]）。
+///
+/// # 为什么要有这个函数
+///
+/// 用户第 321 轮要求"每个节点可以打开或者关闭"。**关**必须真的不生效，否则那是一个假开关：
+/// 关掉的节点仍然会被 `url-test` / `fallback` / `load-balance` 那种组选中 —— 用户以为把它关掉了，
+/// 出口却还是它。
+///
+/// # 为什么用正则而不是"别把节点写进去"
+///
+/// 内核的 `proxy-providers` 是**整份订阅**一个条目，节点清单由内核自己去拉，
+/// 我们没有"逐节点增删"的接口。组级 `exclude-filter` 是唯一能表达"这些节点不要"的地方。
+///
+/// # 三条纪律
+///
+/// 1. **转义**：节点名是用户数据（机场起的，可能是 `东京(01)`、`a.b`、`x+y`），
+///    直接拼进正则会让括号/点号变成元字符 —— 那会排除**别的**节点。所以逐个 `regex::escape`。
+/// 2. **全字匹配**：用 `^(?:...)$` 而不是裸 `a|b`。裸 alternation 会做**子串**匹配：
+///    关掉 `Tokyo` 会连带把 `Tokyo-01` 也排除掉（用户没要求这个）。
+/// 3. **一个都没关 → 原样返回**（不发一个空的 `^(?:)$` —— 那会匹配空名字，行为诡异）。
+///
+/// 用户自己的 `exclude_filter` **保留并优先合并**：两个排除条件互不冲突，是"并集"。
+fn merge_disabled_exclude(user_exclude: Option<&str>, disabled: &[String]) -> Option<String> {
+    let user = non_blank(user_exclude);
+    let mut parts: Vec<String> =
+        disabled.iter().map(|n| n.trim()).filter(|n| !n.is_empty()).map(regex::escape).collect();
+    if parts.is_empty() {
+        // 没关任何节点 → 一个字都不加（不写空的排除规则）
+        return user.map(str::to_string);
+    }
+    // 去掉重复（同一节点被关了两次没有意义），并保证**稳定顺序**：
+    // 生成的 YAML 必须对同一份配置逐字节可复现，否则每次重载都"看起来变了"。
+    parts.sort();
+    parts.dedup();
+    let ours = format!("^(?:{})$", parts.join("|"));
+    match user {
+        // 用户的排除 + 我们的排除 = 并集（两个条件各自独立生效）
+        Some(u) => Some(format!("{u}|{ours}")),
+        None => Some(ours),
+    }
+}
+
 fn is_blank(s: Option<&str>) -> bool {
     non_blank(s).is_none()
 }
@@ -971,15 +1014,10 @@ lanes:
     name: "直连（本机网络）"
     kind: direct
   - id: lane-jp-auto
-    name: "日本 · 自动择优"
+    name: "日本 · 自动选择"
     kind: subscription_auto
     subscription: sub-jp
-    group_type: url-test
-  - id: lane-jp-original
-    name: "🇯🇵 日本（订阅自带分组）"
-    kind: subscription_group
-    subscription: sub-jp
-    group: "🇯🇵 日本"
+    group_type: select
   - id: lane-us-fixed
     name: "美国 · 固定节点"
     kind: subscription_node
@@ -1065,7 +1103,6 @@ lanes:
                 &ports(&[
                     ("lane-direct", 39100),
                     ("lane-jp-auto", 39101),
-                    ("lane-jp-original", 39102),
                     ("lane-us-fixed", 39103),
                 ]),
             )
@@ -1160,7 +1197,6 @@ lanes:
                 &ports(&[
                     ("lane-direct", 39100),
                     ("lane-jp-auto", 39101),
-                    ("lane-jp-original", 39102),
                     ("lane-us-fixed", 39103),
                 ]),
             )
@@ -1195,7 +1231,11 @@ lanes:
         assert_eq!(groups.len(), 1);
         let g = &groups[0];
         assert_eq!(g.get("name").unwrap().as_str(), Some("LANE-lane-jp-auto"));
-        assert_eq!(g.get("type").unwrap().as_str(), Some("url-test"));
+        assert_eq!(
+            g.get("type").unwrap().as_str(),
+            Some("select"),
+            "「自动选择」必须是 select（url-test 会自己周期性换出口，粘性就没了）"
+        );
         assert_eq!(g.get("use").unwrap()[0].as_str(), Some("sub-jp"));
         assert_eq!(g.get("interval").unwrap().as_i64(), Some(60));
         assert_eq!(g.get("tolerance").unwrap().as_i64(), Some(100));
@@ -1203,7 +1243,7 @@ lanes:
 
         // listeners：每条 lane 一个，绑 loopback + 指定 proxy + udp: false
         let ls = at(&v, "listeners").as_sequence().unwrap();
-        assert_eq!(ls.len(), 4);
+        assert_eq!(ls.len(), 3, "[docs/54] 直连 / 自动选择 / 固定节点");
         let by_name = |n: &str| {
             ls.iter()
                 .find(|l| l.get("name").unwrap().as_str() == Some(n))
@@ -1216,10 +1256,6 @@ lanes:
         assert_eq!(d.get("proxy").unwrap().as_str(), Some("DIRECT"));
         assert_eq!(d.get("udp").unwrap().as_bool(), Some(false));
         // 订阅自带组名（含 emoji）必须原样透传
-        assert_eq!(
-            by_name("lane-lane-jp-original").get("proxy").unwrap().as_str(),
-            Some("🇯🇵 日本")
-        );
         assert_eq!(
             by_name("lane-lane-us-fixed").get("proxy").unwrap().as_str(),
             Some("美国-洛杉矶-01")
@@ -1253,6 +1289,125 @@ lanes:
             .find(|g| g.get("name").unwrap().as_str() == Some("LANE-lane-fallback"))
             .unwrap();
         assert_eq!(fb.get("type").unwrap().as_str(), Some("fallback"));
+    }
+
+    // ------------------------------------------------ [docs/54] 关掉的节点必须真的不参与
+
+    /// **用户关掉的节点必须从每个我们生成的组里排除出去**（[docs/54]，用户第 321 轮）。
+    ///
+    /// 不这么做的话「节点开关」就是**假开关**：关掉的节点仍然会被 `url-test` / `fallback` /
+    /// `load-balance` 选中，用户以为关了、出口却还是它。
+    ///
+    /// 这条测试同时钉住三件事（每条都对应一个曾经会写错的地方）：
+    /// 1. 排除规则真的出现在 `exclude-filter` 里；
+    /// 2. 节点名里的正则元字符被**转义**（`东京(01)` 不能把 `东京01` 也排掉）；
+    /// 3. 用 `^(?:...)$` **全字**匹配（关掉 `Tokyo` 不许连带排掉 `Tokyo-01`）。
+    #[test]
+    fn disabled_nodes_are_excluded_from_generated_groups() {
+        let y = r#"
+proxy_subscriptions:
+  - id: sub-jp
+    name: A
+    url: "https://example.com/sub"
+    disabled_nodes: ["东京(01)", "Tokyo"]
+lanes:
+  - id: lane-auto
+    name: 自动
+    kind: subscription_auto
+    subscription: sub-jp
+    group_type: select
+"#;
+        let yaml = gen().generate(&doc(y), &ports(&[("lane-auto", 39100)])).unwrap();
+        let v = parse(&yaml);
+        let g = &at(&v, "proxy-groups").as_sequence().unwrap()[0];
+        let ex = g.get("exclude-filter").unwrap().as_str().unwrap();
+
+        // ① 真的排除了
+        assert!(ex.contains("Tokyo"), "关掉的节点必须在排除正则里：{ex}");
+        // ② 元字符被转义：`东京(01)` 不能变成"东京 或 01"那种正则
+        assert!(ex.contains(r"东京\(01\)"), "括号必须被转义，否则会误伤别的节点：{ex}");
+        assert!(!ex.contains("东京(01)"), "不允许出现未转义的原文：{ex}");
+        // ③ 全字匹配：不能是裸 alternation（那会连带排掉 Tokyo-01）
+        assert!(ex.starts_with("^(?:"), "必须全字匹配：{ex}");
+        assert!(ex.ends_with(")$"), "必须全字匹配：{ex}");
+
+        // 而且它**真的能用正则编译**（拼错了就是内核静默不排除）
+        Regex::new(ex).expect("生成的排除正则必须合法");
+    }
+
+    /// 用户自己写的 `exclude-filter` **一个字都不能丢**，与我们的排除是**并集**。
+    #[test]
+    fn user_exclude_filter_is_kept_alongside_disabled_nodes() {
+        let y = r#"
+proxy_subscriptions:
+  - id: sub-jp
+    name: A
+    url: "https://example.com/sub"
+    disabled_nodes: ["坏节点"]
+lanes:
+  - id: lane-f
+    name: F
+    kind: filter
+    subscription: sub-jp
+    filter: "(?i)日本"
+    exclude_filter: "(?i)剩余流量"
+"#;
+        let yaml = gen().generate(&doc(y), &ports(&[("lane-f", 39100)])).unwrap();
+        let v = parse(&yaml);
+        let g = &at(&v, "proxy-groups").as_sequence().unwrap()[0];
+        let ex = g.get("exclude-filter").unwrap().as_str().unwrap();
+        assert!(ex.contains("(?i)剩余流量"), "用户自己的排除不能被覆盖：{ex}");
+        assert!(ex.contains("坏节点"), "我们补的排除也要在：{ex}");
+    }
+
+    /// **一个节点都没关 → 一个字都不加**（不写空的 `^(?:)$`，那玩意匹配空名字）。
+    #[test]
+    fn no_disabled_nodes_means_no_extra_exclude() {
+        let y = r#"
+proxy_subscriptions:
+  - id: sub-jp
+    name: A
+    url: "https://example.com/sub"
+lanes:
+  - id: lane-auto
+    name: 自动
+    kind: subscription_auto
+    subscription: sub-jp
+"#;
+        let yaml = gen().generate(&doc(y), &ports(&[("lane-auto", 39100)])).unwrap();
+        let v = parse(&yaml);
+        let g = &at(&v, "proxy-groups").as_sequence().unwrap()[0];
+        assert_eq!(
+            g.get("exclude-filter").and_then(|x| x.as_str()),
+            None,
+            "没关节点就不该有排除规则"
+        );
+    }
+
+    /// 同一份配置生成两次**逐字节相同** —— 关掉的节点顺序不同也不许影响输出。
+    #[test]
+    fn disabled_node_order_does_not_change_the_output() {
+        let mk = |order: &str| {
+            format!(
+                r#"
+proxy_subscriptions:
+  - id: sub-jp
+    name: A
+    url: "https://example.com/sub"
+    disabled_nodes: {order}
+lanes:
+  - id: lane-auto
+    name: 自动
+    kind: subscription_auto
+    subscription: sub-jp
+"#
+            )
+        };
+        let a =
+            gen().generate(&doc(&mk(r#"["b0", "a0"]"#)), &ports(&[("lane-auto", 39100)])).unwrap();
+        let b =
+            gen().generate(&doc(&mk(r#"["a0", "b0"]"#)), &ports(&[("lane-auto", 39100)])).unwrap();
+        assert_eq!(a, b, "顺序不许影响生成结果（否则每次重载都像变了）");
     }
 
     /// ★ **宁可响亮地失败，不可静默降级。**
@@ -1296,7 +1451,6 @@ lanes:
                 &ports(&[
                     ("lane-direct", 39100),
                     ("lane-jp-auto", 39101),
-                    ("lane-jp-original", 39102),
                     ("lane-us-fixed", 39103),
                 ]),
             )
@@ -1313,8 +1467,11 @@ lanes:
 
     // ------------------------------------------------------------ 引用校验
 
+    /// [docs/54] 「订阅自带分组」已取消 → 这条引用校验（组名必须在订阅里存在）**整条作废**：
+    /// 现在带 `subscription_group` 的配置会先在 `kind` 上被拒，走不到组名校验。
+    /// 保留一条断言钉住"拒在 kind 上，而且说清了该换什么"。
     #[test]
-    fn unknown_subscription_group_is_rejected_with_path() {
+    fn subscription_group_is_rejected_on_kind_with_the_replacement() {
         let y = r#"
 proxy_subscriptions:
   - id: sub-jp
@@ -1329,9 +1486,13 @@ lanes:
 "#;
         let err = gen().generate(&doc(y), &ports(&[("lane-x", 39100)])).unwrap_err();
         let errors = errors_of(err);
-        let e = find(&errors, "lanes[0].group");
-        assert_eq!(e.code, "unknown_reference");
-        assert!(e.message.contains("🇭🇰 香港"), "{}", e.message);
+        let e = find(&errors, "lanes[0].kind");
+        assert_eq!(e.code, "removed_kind");
+        assert!(
+            e.message.contains("subscription_auto") && e.message.contains("subscription_node"),
+            "要给出两个可换的种类：{}",
+            e.message
+        );
     }
 
     #[test]
@@ -1354,6 +1515,9 @@ lanes:
     }
 
     #[test]
+    /// [docs/54] 这条原来验的是"组名引用在严格模式下被拒"。组的概念取消后，
+    /// 剩下**唯一**要在严格模式下查的外部引用就是**节点名**（`subscription_node`），
+    /// 所以改用它把同一条纪律钉住：没有清单 → 拒绝；放松 → 放行。
     fn missing_catalog_is_rejected_in_strict_mode_only() {
         let y = r#"
 proxy_subscriptions:
@@ -1363,22 +1527,23 @@ proxy_subscriptions:
 lanes:
   - id: lane-x
     name: X
-    kind: subscription_group
+    kind: subscription_node
     subscription: sub-jp
-    group: "🇯🇵 日本"
+    node: "🇯🇵 日本-01"
 "#;
         // 严格模式（默认）：没有清单 → 拒绝
         let err =
             MhConfigGen::new("s").generate(&doc(y), &ports(&[("lane-x", 39100)])).unwrap_err();
         let errors = errors_of(err);
-        assert_eq!(find(&errors, "lanes[0].group").code, "unverified_reference");
+        assert_eq!(find(&errors, "lanes[0].node").code, "unverified_reference");
 
-        // 放松后放行
+        // 放松后放行：**放行的是"我们确认不了"，不是"它一定对"** ——
+        // 所以配置里要原样带上这个节点名
         let yaml = MhConfigGen::new("s")
             .with_strict_refs(false)
             .generate(&doc(y), &ports(&[("lane-x", 39100)]))
             .unwrap();
-        assert!(yaml.contains("🇯🇵 日本"));
+        assert!(yaml.contains("🇯🇵 日本-01"));
     }
 
     #[test]
@@ -1446,7 +1611,8 @@ lanes:
                 )
                 .unwrap_err(),
         );
-        assert_eq!(find(&errors, "lanes[0].group").code, "missing_group");
+        // [docs/54] lanes[0] 现在是「种类已取消」（不再是"缺 group"——那个概念没了）
+        assert_eq!(find(&errors, "lanes[0].kind").code, "removed_kind");
         assert_eq!(find(&errors, "lanes[1].node").code, "missing_node");
         assert_eq!(find(&errors, "lanes[2].filter").code, "missing_filter");
     }
@@ -1583,10 +1749,10 @@ url: "https://example.com/sub"
         let find_lane = |id: &str| d.lanes.iter().find(|l| l.id.as_str() == id).unwrap().clone();
         assert_eq!(lane_target(&d, &find_lane("lane-direct")).unwrap(), "DIRECT");
         assert_eq!(lane_target(&d, &find_lane("lane-jp-auto")).unwrap(), "LANE-lane-jp-auto");
-        assert_eq!(lane_target(&d, &find_lane("lane-jp-original")).unwrap(), "🇯🇵 日本");
         assert_eq!(lane_target(&d, &find_lane("lane-us-fixed")).unwrap(), "美国-洛杉矶-01");
 
-        // 缺 group 的 lane 要报出 lanes[?].group 这种路径
+        // [docs/54] `subscription_group` 已取消：报 `lanes[?].kind`（不是 `.group`），
+        // 且消息要说清该换什么。
         let bad = doc(r#"
 lanes:
   - id: lane-g
@@ -1596,7 +1762,12 @@ lanes:
 "#);
         match lane_target(&bad, &bad.lanes[0]).unwrap_err() {
             TaError::ConfigInvalid { errors } => {
-                assert_eq!(errors[0].path, "lanes[0].group");
+                assert_eq!(errors[0].path, "lanes[0].kind");
+                assert!(
+                    errors[0].message.contains("已取消"),
+                    "要说清这个概念没了：{}",
+                    errors[0].message
+                );
             }
             other => panic!("期望 ConfigInvalid，得到 {other:?}"),
         }
@@ -1613,8 +1784,9 @@ lanes:
 
     #[test]
     fn escaping_is_flow_mapping_safe() {
-        // 组名里带引号/逗号/冒号/反斜杠也必须能解析回原值
-        let nasty = "组\"名, {a}: b\\c";
+        // 节点名里带引号/逗号/冒号/反斜杠也必须能解析回原值
+        // （[docs/54] 之后"组名"没有用户输入入口了，改成用节点名走**同一条**转义路径）
+        let nasty = "节点\"名, {a}: b\\c";
         let d = doc(&format!(
             r#"
 proxy_subscriptions:
@@ -1624,16 +1796,16 @@ proxy_subscriptions:
 lanes:
   - id: lane-x
     name: X
-    kind: subscription_group
+    kind: subscription_node
     subscription: sub-jp
-    group: {}
+    node: {}
 "#,
             serde_yaml_ng::to_string(&serde_yaml_ng::Value::String(nasty.to_string())).unwrap()
         ));
         let g = "sub-jp".to_string();
-        assert_eq!(d.lanes[0].group.as_deref(), Some(nasty), "fixture 解析错了");
+        assert_eq!(d.lanes[0].node.as_deref(), Some(nasty), "fixture 解析错了");
         let yaml = gen()
-            .with_known_proxies(g, KnownProxies::new(vec![nasty.to_string()], vec![]))
+            .with_known_proxies(g, KnownProxies::new(vec![], vec![nasty.to_string()]))
             .generate(&d, &ports(&[("lane-x", 39100)]))
             .unwrap();
         let v = parse(&yaml);
@@ -1651,12 +1823,7 @@ lanes:
         let source = GeneratedConfigSource::new(
             Box::new(gen()),
             doc(WITH_GROUPS),
-            ports(&[
-                ("lane-direct", 39100),
-                ("lane-jp-auto", 39101),
-                ("lane-jp-original", 39102),
-                ("lane-us-fixed", 39103),
-            ]),
+            ports(&[("lane-direct", 39100), ("lane-jp-auto", 39101), ("lane-us-fixed", 39103)]),
             dir.path(),
         );
         let expected = source.render().unwrap();
@@ -1673,7 +1840,6 @@ lanes:
         let targets = source.lane_targets().unwrap();
         assert_eq!(targets[&LaneId::new("lane-direct")], "DIRECT");
         assert_eq!(targets[&LaneId::new("lane-jp-auto")], "LANE-lane-jp-auto");
-        assert_eq!(targets[&LaneId::new("lane-jp-original")], "🇯🇵 日本");
 
         // 换配置后重新生成
         source.set_doc(doc(ONLY_DIRECT));

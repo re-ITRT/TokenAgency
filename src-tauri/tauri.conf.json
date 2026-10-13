@@ -19,7 +19,8 @@
         "minWidth": 1040,
         "minHeight": 640,
         "resizable": true,
-        "visible": true
+        "visible": true,
+        "create": false
       }
     ],
     "security": {
@@ -28,7 +29,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "publisher": "TokenAgency",
     "shortDescription": "一个人的 LLM 中转站",
     "longDescription": "本地网关 + 语义路由 + 内嵌内核出网 + Clash Verge 式托盘",
@@ -37,6 +40,15 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": [
+      "resources/mihomo/mihomo.exe",
+      "resources/mihomo/Country.mmdb"
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
   }
 }

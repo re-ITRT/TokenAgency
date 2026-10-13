@@ -139,6 +139,17 @@ struct RouteDecision {
 
 ## 3. 通道组与选择器（解决"用完一个换下一个 + 粘性"）
 
+> **§3 的选择器部分已收敛（[docs/48]）**：这里原本设计/实现过**七种**选择器
+> （`priority` / `sticky_then_priority` / `cheapest` / `lowest_latency` /
+> `weighted_random` / `round_robin`），现在**只剩一种「平均粘性」**。
+> 原因见 [docs/47](47-quota-exhaustion-error-shapes.md)：各家额度耗尽的返回形状
+> **分码也分不干净**，所以"引擎自动挑线路"放弃，改成**用户用开关手动调度 + 引擎只做平均**。
+>
+> 下面 §3.1 的流程仍然成立（"粘 → 平 → 改粘"三步），只是第 2 步的"按 selector 排序"
+> 现在**只有一种排法**：挑 token 用量最少的线路（并列按 priority；没有会话 ID 时档内随机）。
+> **§5.1 的 `selector` / 策略级选择器覆盖也已经删除。**
+> 以 [docs/48](48-balanced-sticky-only-routing.md) 为准。
+
 ### 3.1 选择流程
 
 ```
@@ -282,7 +293,7 @@ if attempt >= max_attempts { ... }
 
 - 有明确对应关系 → 正常转换（`image_url` (data URL) ↔ `source: {type: base64, ...}`，`detail` ↔ 忽略）。
 - **无法映射 → 按 `on_no_candidate` 处理（默认直接报 415），绝不把图片悄悄替换成 `"[image]"` 文本。** 静默文本化才是把你"干成瞎子"的元凶。
-- `/v1/models` 默认**原样透传**，不注入额外字段（注入 `capabilities` 反而可能让某些客户端的严格解析失败）；需要时可以开 `gateway.expose_models_with_capabilities`。
+- `/v1/models` 由网关**本地作答**（[docs/28 §4]）：返回我们"模型"界面定义的每个模型（字段来自我们创建的信息）—— 不注入上游没告诉我们的能力字段，也不再把上游的模型清单转发出去。
 
 ## 7. 全透传（默认，而且基本就是全部答案）
 

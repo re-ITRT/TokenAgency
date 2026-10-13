@@ -12,7 +12,6 @@ pub mod domain;
 pub mod error;
 pub mod metering;
 pub mod pricing;
-pub mod quota;
 pub mod routing;
 pub mod sticky;
 pub mod trace;

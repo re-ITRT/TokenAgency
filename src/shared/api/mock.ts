@@ -26,12 +26,12 @@ import type {
   CredentialView,
   DashboardData,
   KernelStatus,
-  LaneAssignment,
   LaneId,
   LaneView,
   LogPage,
   MatrixView,
   ModelView,
+  NodeView,
   Policy,
   ProviderView,
   RequestSummary,
@@ -39,7 +39,7 @@ import type {
   TrayState,
 } from "@/shared/bindings";
 
-import { isTauri, registerMock } from "./client";
+import { isTauri, registerMock, TokenAgencyError } from "./client";
 
 // ---------------------------------------------------------------- 基准场景常量
 
@@ -124,22 +124,6 @@ const dashboard: DashboardData = {
     output: 60_000 + i * 900,
     cost: 0.5 + i * 0.02,
   })),
-  quota: [
-    {
-      credential_id: "c-bytedance",
-      label: "字节方舟 · 500万 token/月",
-      used_pct: 0.82,
-      state: "soft",
-      detail: "410万 / 500万 · 额度/月 · 每月 1 号重置",
-    },
-    {
-      credential_id: "c-commandcode",
-      label: "command code · 按量",
-      used_pct: 0.21,
-      state: "ok",
-      detail: "¥4.2 / ¥20 · 按量",
-    },
-  ],
   lanes: [
     { lane_id: LANE_DIRECT, name: "直连（本机网络）", node: undefined, latency_ms: 18, ok: true },
     { lane_id: LANE_JP, name: "日本线", node: "东京-03", latency_ms: 82, ok: true },
@@ -195,27 +179,11 @@ const credentials: CredentialView[] = [
       label: "字节 · 500万 token/月",
       secret: "${secret:bytedance}",
       lane: LANE_DIRECT,
-      quota: {
-        metric: "tokens",
-        limit: 5_000_000,
-        currency: "CNY",
-        window: "month",
-        reset_day: 1,
-        soft_limit: 0.8,
-        hard_limit: 0.98,
-        reserve: 0.05,
-      },
       guard: { max_rpm: 60, max_concurrency: 8, max_input_tokens: null, on_exceed: "wait" },
       tags: ["cn-direct"],
       enabled: true,
     },
     provider_name: "字节方舟",
-    quota: {
-      credential_id: "c-bytedance",
-      state: "soft",
-      used_tokens: 4_100_000,
-      updated_at_ms: now() - 12_000,
-    },
     channel_count: 1,
   },
   {
@@ -225,27 +193,11 @@ const credentials: CredentialView[] = [
       label: "command code · 按量",
       secret: "${secret:commandcode}",
       lane: LANE_JP,
-      quota: {
-        metric: "cost",
-        limit: 20,
-        currency: "CNY",
-        window: "month",
-        reset_day: 1,
-        soft_limit: 0.8,
-        hard_limit: 1,
-        reserve: 0,
-      },
       guard: { max_rpm: null, max_concurrency: null, max_input_tokens: null, on_exceed: "next_candidate" },
       tags: ["backup"],
       enabled: true,
     },
     provider_name: "command code",
-    quota: {
-      credential_id: "c-commandcode",
-      state: "ok",
-      used_cost: 4.2,
-      updated_at_ms: now() - 40_000,
-    },
     channel_count: 1,
   },
 ];
@@ -347,9 +299,29 @@ const subscriptions: SubscriptionView[] = [
 
 const models: ModelView[] = [
   {
-    model: { id: MODEL, aliases: [], display: { group: "字节", order: 10 }, expose: true },
+    // [docs/28 §2] 关系在模型侧：这个 mock 模型"用"的是下面两条线路
+    // （`channel_list` / `channel_matrix` 里的 ch-bytedance / ch-commandcode）。
+    model: {
+      id: MODEL,
+      aliases: [],
+      display: { group: "字节", order: 10 },
+      expose: true,
+      enabled: true,
+      lines: ["ch-bytedance", "ch-commandcode"],
+    },
     channel_count: 2,
     upstream_names: [MODEL],
+    // [docs/46 §304] 对外暴露的信息（后端算好的一份；mock 里给两条线路"都声明过"的样子，
+    // 数字取最小值、能力取并集 —— 与 `ConfigDoc::public_model_info` 同一口径）
+    public_info: {
+      context_window: 131072,
+      max_output_tokens: 8192,
+      vision: true,
+      tools: true,
+      reasoning: false,
+      modalities: ["image", "text"],
+      owned_by: "p-bytedance",
+    },
     priced: false,
     cost_hint: null,
   },
@@ -360,7 +332,7 @@ const groups: ChannelGroup[] = [
     id: "grp-deepseek",
     model: MODEL,
     members: ["ch-bytedance", "ch-commandcode"],
-    selector: "sticky_then_priority",
+    selector: "balanced_sticky",
     sticky: {
       enabled: true,
       ttl_h: 12,
@@ -371,7 +343,7 @@ const groups: ChannelGroup[] = [
         "body_hash",
       ],
     },
-    release_on: ["quota_exhausted", "hard_error"],
+    release_on: ["hard_error"],
   },
 ];
 
@@ -392,7 +364,6 @@ const policies: Policy[] = [
       input_tokens_lt: null,
       input_tokens_gt: null,
       stream: null,
-      quota_remaining_lt: null,
       time_window: null,
       provider_in: [],
     },
@@ -402,9 +373,8 @@ const policies: Policy[] = [
       exclude_channels: [],
       require_tag: null,
       exclude_tag: null,
-      selector: null,
       failover: {
-        on: ["http429", "http402", "http5xx", "timeout", "connect_error", "quota_exhausted"],
+        on: ["http429", "http402", "http5xx", "timeout", "connect_error"],
         max_attempts: 3,
         cooldown_s: 120,
         backoff: "exponential",
@@ -423,7 +393,6 @@ const matrix: MatrixView = {
     credential_id: c.credential.id,
     label: c.credential.label,
     provider_name: c.provider_name,
-    quota: c.quota,
   })),
   cells: [
     {
@@ -451,10 +420,32 @@ const matrix: MatrixView = {
   ],
 };
 
-const assignments: LaneAssignment[] = [
-  { model_id: MODEL, channel_id: "ch-bytedance", lane_id: LANE_DIRECT, source: "credential" },
-  { model_id: MODEL, channel_id: "ch-commandcode", lane_id: LANE_JP, source: "credential" },
+// [docs/55] 这里曾有一份 `assignments: LaneAssignment[]` 的 mock（`lane_assignments` 的载荷）。
+// 那条命令与 `LaneAssignment` 类型都删除了（线路分配只剩服务商级一处），
+// 所以这份"每条通道走哪条线、来自哪一级"的假数据也一并删除 —— 留着它只会在
+// mock 场景里继续制造"还有五级继承"的错觉。
+
+// ---------------------------------------------------------------- 订阅节点（用户第 202 轮）
+
+/**
+ * 一份订阅解析出来的节点（真实样本里组名带 emoji，[15 §2.2]：用户数据原样透传）。
+ *
+ * **默认全部启用**：下面那个集合记的是"**关掉的那些**"，与 Rust `Subscription.disabled_nodes`
+ * 逐字同义 —— 所以"机场新增的节点默认是开着的"这件事在 mock 里也成立（不是特例代码）。
+ */
+const MOCK_NODES = [
+  { name: "东京-03", type: "vmess", group: "🇯🇵 日本", latency_ms: 82, ok: true },
+  { name: "大阪-01", type: "trojan", group: "🇯🇵 日本", latency_ms: 96, ok: true },
+  { name: "首尔-02", type: "ss", group: "🇰🇷 韩国", latency_ms: null, ok: false },
 ];
+
+/** 被用户关掉的节点名（`disabled_nodes` 的本地镜像）。 */
+const disabledNodes = new Set<string>();
+
+/** 当前节点清单：`enabled` 由"有没有被关掉"算出来（唯一真源就是这个集合）。 */
+function nodeViews(): NodeView[] {
+  return MOCK_NODES.map((node) => ({ ...node, enabled: !disabledNodes.has(node.name) }));
+}
 
 // ---------------------------------------------------------------- 注册
 
@@ -511,13 +502,6 @@ export function registerBaselineMocks(): void {
   }));
 
   mockCommand("credential_list", () => credentials);
-  mockCommand("credential_clear_quota", (args) => ({
-    credential_id: args.id,
-    state: "ok" as const,
-    used_tokens: 0,
-    used_cost: 0,
-    updated_at_ms: now(),
-  }));
   mockCommand("provider_list", () => providers);
   mockCommand("provider_test", () => ({
     ok: true,
@@ -531,25 +515,17 @@ export function registerBaselineMocks(): void {
   mockCommand("policy_list", () => policies);
   mockCommand("channel_matrix", () => matrix);
   mockCommand("lane_list", () => lanes);
-  mockCommand("lane_assignments", () => assignments);
-  mockCommand("lane_pick_options", () => [
-    {
-      group: "直连",
-      options: [{ lane_id: LANE_DIRECT, name: "直连（本机网络）", kind: "direct" as const }],
-    },
-    {
-      group: "机场A",
-      options: [
-        {
-          lane_id: LANE_JP,
-          name: "🇯🇵 日本（订阅自带分组）",
-          kind: "subscription_group" as const,
-          node_count: 3,
-          latency_ms: 82,
-        },
-      ],
-    },
-  ]);
+  // [docs/55] 不再 mock `lane_assignments` / `lane_pick_options` / `lane_reverse_lookup`：
+  // 那三条命令已经从契约里删除，mock 里留着它们会与契约对不上（而且 mock 的意义就是
+  // "让页面在没有后端时也能跑" —— 没有页面再调它们了）。
+  mockCommand("lane_ensure_direct", () => ({
+    id: LANE_DIRECT,
+    name: "直连（本机网络）",
+    kind: "direct" as const,
+    subscription: null,
+    node: null,
+    enabled: true,
+  }));
   mockCommand("lane_test", () => [
     { node: "东京-03", latency_ms: 82, ok: true },
     { node: "大阪-01", latency_ms: 96, ok: true },
@@ -562,9 +538,26 @@ export function registerBaselineMocks(): void {
     { name: "🇭🇰 香港", type: "url-test" as const, node_count: 5 },
     { name: "♻️ 自动选择", type: "url-test" as const, node_count: 12 },
   ]);
-  mockCommand("subscription_nodes", () => [
-    { name: "东京-03", type: "vmess", group: "🇯🇵 日本", latency_ms: 82, ok: true },
-  ]);
+  mockCommand("subscription_nodes", () => nodeViews());
+  /**
+   * 节点级启用 / 关闭（用户第 202 轮）——与后端**同一套语义**：库里只记"关掉的那些"
+   * （`Subscription.disabled_nodes`），所以默认全开、且机场新增节点默认就是开着的。
+   * `nodes` 为空清单 → 与后端一样**明确报错**（空清单不是「全部」）；返回**改完之后**的完整清单。
+   */
+  mockCommand("subscription_nodes_enabled", (args) => {
+    if (args.nodes.length === 0) {
+      throw new TokenAgencyError({
+        // TA-1004 = `TaError::MalformedRequest`（Rust 侧空清单走的就是这一条，[11 §5]）
+        code: "TA-1004",
+        message: "要设哪些节点？`nodes` 不能为空清单（空清单不是「全部」，那会静默改掉整份订阅）",
+      });
+    }
+    for (const name of args.nodes) {
+      if (args.enabled) disabledNodes.delete(name);
+      else disabledNodes.add(name);
+    }
+    return nodeViews();
+  });
 
   // 日志查询：**按条件过滤**（不是每次返回全量）—— 否则浏览器开发时日志页的筛选看起来像坏的，
   // 而"看起来在用、其实没生效"的筛选正是我们要避免的那类假象。
@@ -675,6 +668,16 @@ export function registerBaselineMocks(): void {
     { credential_id: "c-bytedance", lane_id: LANE_DIRECT, ok: true, latency_ms: 18, status: 200 },
     { credential_id: "c-commandcode", lane_id: LANE_JP, ok: true, latency_ms: 82, status: 200 },
   ]);
+
+  /**
+   * 服务商模型目录（[docs/25]）：默认**空目录**（"还没扫过"）。
+   *
+   * 为什么基线要有这一条：详情页把它当成"扫描记录 = 建线路的候选"在读，
+   * 少了它整页会走进「读不到目录」那条分支（`catalog === undefined`），
+   * 而"还没扫过"和"读不到"在界面上是**两句不同的话**（[docs/28 §1]）。
+   * 基线给空数组 = 未扫过；要测"读不到"的用例自己注册一个抛错的 mock。
+   */
+  mockCommand("provider_model_catalog", () => []);
 }
 
 /**
@@ -690,14 +693,13 @@ export function registerDevMocks(): void {
 /** 最小可用的配置树（与 `ta-core::config::default_doc()` 的语义一致，只保留场景相关部分）。 */
 function baselineConfigDoc(): ConfigDoc {
   return {
-    version: 1,
+    version: 2,
     gateway: {
       listen: "127.0.0.1:8787",
       admin_listen: "127.0.0.1:8788",
       local_key: "${secret:gateway-local-key}",
       max_body_mb: 32,
       debug_headers: true,
-      expose_models_with_capabilities: false,
       fallback_provider: null,
       passthrough: {
         header_mode: "pass",
@@ -714,6 +716,8 @@ function baselineConfigDoc(): ConfigDoc {
         backoff: "exponential",
       },
       metering: { inject_stream_usage: false },
+      // [docs/59] 下游 API 家族开关：mock 与 ta-core 的默认值保持一致（**全开**）
+      downstream: { openai_chat: true, openai_responses: true, anthropic_messages: true },
     },
     request_log: {
       mode: "meta",

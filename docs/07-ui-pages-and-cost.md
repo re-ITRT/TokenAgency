@@ -235,7 +235,7 @@ pricing:
                input_cache_write: 3.75, input_cache_write_1h: 6.00, output: 15.00 }
       source: builtin            # builtin | manual | imported
 
-    # 2) 通配匹配（按顺序，首个命中生效）
+    # 2) 通配匹配
     - match: { model: "gpt-4o*" }
       rates: { input: 2.50, input_cached: 1.25, output: 10.00 }
       source: builtin
@@ -250,7 +250,14 @@ pricing:
       plan_fee: { amount: 99, currency: CNY, window: month }
 ```
 
-**价格来源优先级**：`manual`（用户填）> `imported`（导入的表）> `builtin`（内置库）。未定价的模型在成本中心高亮提醒，不阻塞使用。
+**价格来源优先级**：`manual`（用户填）> `imported`（导入的表）> `builtin`（内置库）。
+**同一档内**：精确（无 `*`）优于通配 → 条件写得多的更具体者优先（`{model, provider}` 压过 `{model}`）
+→ 最后才按声明顺序。未定价的模型在成本中心高亮提醒，不阻塞使用。
+
+> **后记（2026-09-30，第 318 轮）**：**定价对象是对外模型**，界面上的定价入口在
+> `/models` 的每一行（成本中心只做只读展示）。上面的 `provider` / `credential`
+> 仍然可选、仍然生效（手工配置与导入表都在用），但**界面上不再把可选条件做成必填**。
+> 见 [docs/51](51-model-keyed-pricing.md)。
 
 ### 计算
 

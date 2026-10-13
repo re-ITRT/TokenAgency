@@ -464,57 +464,6 @@ fn check_credentials(doc: &ConfigDoc, r: &mut ValidationReport) {
         require_text(&c.label, &format!("credentials[{i}].label"), "label", r);
         require_text(&c.secret, &format!("credentials[{i}].secret"), "secret", r);
 
-        let q = &c.quota;
-        if !q.soft_limit.is_finite() || q.soft_limit < 0.0 || q.soft_limit > 1.0 {
-            r.push_error(
-                format!("credentials[{i}].quota.soft_limit"),
-                codes::INVALID_VALUE,
-                format!("soft_limit 是 0~1 的比率，实际 {}", q.soft_limit),
-            );
-        }
-        if !q.hard_limit.is_finite() || q.hard_limit <= 0.0 {
-            r.push_error(
-                format!("credentials[{i}].quota.hard_limit"),
-                codes::INVALID_VALUE,
-                format!("hard_limit 是 > 0 的比率，实际 {}", q.hard_limit),
-            );
-        }
-        if q.soft_limit.is_finite() && q.hard_limit.is_finite() && q.soft_limit > q.hard_limit {
-            r.push_error(
-                format!("credentials[{i}].quota.soft_limit"),
-                codes::INVALID_VALUE,
-                "soft_limit（告警线）不能大于 hard_limit（耗尽线）",
-            );
-        }
-        if !q.reserve.is_finite() || q.reserve < 0.0 || q.reserve >= 1.0 {
-            r.push_error(
-                format!("credentials[{i}].quota.reserve"),
-                codes::INVALID_VALUE,
-                format!("reserve 是 0~1 的比率，实际 {}", q.reserve),
-            );
-        }
-        if q.is_manual() {
-            match q.limit {
-                None => r.push_error(
-                    format!("credentials[{i}].quota.limit"),
-                    codes::MISSING_FIELD,
-                    "metric 不是 unknown 时必须给 limit（否则无法判定额度）",
-                ),
-                Some(limit) if !limit.is_finite() || limit <= 0.0 => r.push_error(
-                    format!("credentials[{i}].quota.limit"),
-                    codes::INVALID_VALUE,
-                    format!("limit 必须 > 0，实际 {limit}"),
-                ),
-                _ => {}
-            }
-        }
-        if q.reset_day == 0 || q.reset_day > 31 {
-            r.push_error(
-                format!("credentials[{i}].quota.reset_day"),
-                codes::INVALID_VALUE,
-                "reset_day 必须在 1 ~ 31",
-            );
-        }
         if c.guard.max_rpm == Some(0) {
             r.push_error(
                 format!("credentials[{i}].guard.max_rpm"),
@@ -603,7 +552,9 @@ fn check_models(doc: &ConfigDoc, r: &mut ValidationReport) {
 fn check_channels(doc: &ConfigDoc, r: &mut ValidationReport) {
     for (i, c) in doc.channels.iter().enumerate() {
         require_text(&c.id.0, &format!("channels[{i}].id"), "id", r);
-        require_text(&c.model, &format!("channels[{i}].model"), "model", r);
+        // [docs/28 §2] **不再要求 `channel.model`**：线路归服务商，可以是"还没有被任何模型使用"
+        // 的独立线路（用户在服务商页把上游模型加成线路，模型要到模型页把线路分配给它）。
+        // 遗留字段非空时仍然必须解析得到（见下面的引用检查）—— 老配置里它就是关系的载体。
         require_text(
             &c.upstream_model,
             &format!("channels[{i}].upstream_model"),
@@ -781,6 +732,21 @@ fn check_lanes(doc: &ConfigDoc, r: &mut ValidationReport) {
         require_text(&l.id.0, &format!("lanes[{i}].id"), "id", r);
         require_text(&l.name, &format!("lanes[{i}].name"), "name", r);
 
+        // [docs/54] 「订阅里分组」这个概念已被取消（用户第 321 轮："直接放弃订阅里面分组这一概念，
+        // 只拿节点"）。v2 → v3 迁移会把老数据转成「自动选择」，所以**迁移之后**还出现这个值
+        // 只可能是：① 有人手工改配置写回来的，② 迁移失败留下的。
+        // 两种情况都必须点名报错 —— 静默接受会让它继续按 `url-test` 跑（出口 IP 自己乱跳）。
+        if l.kind == LaneKind::SubscriptionGroup {
+            r.push_error(
+                format!("lanes[{i}].kind"),
+                codes::INVALID_VALUE,
+                "`subscription_group`（用订阅里自带的组）已取消：请改成 `subscription_auto`\
+                 （即「自动选择」：所有启用节点 ping 服务商 URL 取最低延迟 + 按地址粘性）\
+                 或 `subscription_node`（固定某个节点）"
+                    .to_string(),
+            );
+        }
+
         if let Some(field) = l.missing_kind_field() {
             r.push_error(
                 format!("lanes[{i}].{field}"),
@@ -852,9 +818,8 @@ fn check_references(doc: &ConfigDoc, ix: &Index<'_>, r: &mut ValidationReport) {
             "providers[].id",
             r,
         );
-        if let Some(l) = &c.lane {
-            ref_exists(&ix.lanes, l.as_str(), &format!("credentials[{i}].lane"), "lanes[].id", r);
-        }
+        // [docs/55] `credentials[].lane` 已删除 → 不再是校验对象（老配置里的值落进 `extra`，
+        // 既不解析也不报错）。下面 `channels[].lane` / `policies[].action.use_lane` 同理。
     }
 
     // ---- 线路 → 订阅
@@ -865,19 +830,6 @@ fn check_references(doc: &ConfigDoc, ix: &Index<'_>, r: &mut ValidationReport) {
                 s.as_str(),
                 &format!("lanes[{i}].subscription"),
                 "proxy_subscriptions[].id",
-                r,
-            );
-        }
-    }
-
-    // ---- 模型（`default_lane` 是"下一次建通道的默认线"，同样必须指向存在的线路）
-    for (i, m) in doc.models.iter().enumerate() {
-        if let Some(l) = &m.default_lane {
-            ref_exists(
-                &ix.lanes,
-                l.as_str(),
-                &format!("models[{i}].default_lane"),
-                "lanes[].id",
                 r,
             );
         }
@@ -899,16 +851,31 @@ fn check_references(doc: &ConfigDoc, ix: &Index<'_>, r: &mut ValidationReport) {
             "credentials[].id",
             r,
         );
-        if let Some(l) = &c.lane {
-            ref_exists(&ix.lanes, l.as_str(), &format!("channels[{i}].lane"), "lanes[].id", r);
+        // [docs/55] `channels[].lane` 已删除 → 不再是校验对象（见上面凭据那段的说明）。
+        // [docs/28 §2] **遗留字段**：非空时必须解析得到（老配置里它就是"这条线路服务哪个模型"）。
+        // 空 = 新写法（线路还没被任何模型使用），合法。
+        if !c.model.trim().is_empty() {
+            ref_exists(
+                &ix.models,
+                c.model.trim(),
+                &format!("channels[{i}].model"),
+                "models[].id 或 models[].aliases",
+                r,
+            );
         }
-        ref_exists(
-            &ix.models,
-            c.model.as_str(),
-            &format!("channels[{i}].model"),
-            "models[].id 或 models[].aliases",
-            r,
-        );
+    }
+
+    // ---- 模型 → 线路（[docs/28 §2]：关系的真源在模型侧）
+    for (i, m) in doc.models.iter().enumerate() {
+        for (j, line) in m.lines.iter().enumerate() {
+            ref_exists(
+                &ix.channels,
+                line.as_str(),
+                &format!("models[{i}].lines[{j}]"),
+                "channels[].id",
+                r,
+            );
+        }
     }
 
     // ---- 通道组
@@ -942,15 +909,8 @@ fn check_references(doc: &ConfigDoc, ix: &Index<'_>, r: &mut ValidationReport) {
                 r,
             );
         }
-        if let Some(l) = &p.action.use_lane {
-            ref_exists(
-                &ix.lanes,
-                l.as_str(),
-                &format!("policies[{i}].action.use_lane"),
-                "lanes[].id",
-                r,
-            );
-        }
+        // [docs/55] `policies[].action.use_lane` 已删除 → 不再是校验对象
+        //（老配置里的值落进 `extra`，既不解析也不报错；见上面凭据那段的说明）。
         for (j, c) in p.action.use_channels.iter().enumerate() {
             ref_exists(
                 &ix.channels,
@@ -1236,7 +1196,6 @@ mod tests {
             "c-missing",
             "gpt-4o",
         ));
-        d.channels.last_mut().unwrap().lane = Some(LaneId::new("lane-missing"));
         d.channels.last_mut().unwrap().model = "model-missing".into();
         let report = check(&d);
         let idx = d.channels.len() - 1;
@@ -1244,7 +1203,6 @@ mod tests {
         for expected in [
             format!("channels[{idx}].provider"),
             format!("channels[{idx}].credential"),
-            format!("channels[{idx}].lane"),
             format!("channels[{idx}].model"),
         ] {
             assert!(paths.contains(&expected), "缺少 {expected}：{paths:#?}");
@@ -1289,40 +1247,77 @@ mod tests {
         assert_no_error_at(&check(&doc()), "channels[2].credential");
     }
 
+    /// [docs/55]（第 322 轮）`channels[].lane` **已删除** → 老配置里写着它
+    /// **不是校验对象**：值落进 `ChannelConfig.extra`，既不报"悬空"、也不报"未知字段"。
+    ///
+    /// 这一条与 [`removed_model_default_lane_is_not_a_reference_to_check`] 同源：
+    /// 「已删除的字段」要证明的是**它真的不再参与任何判定**，而不是"我们忘了检查"。
     #[test]
-    fn channel_lane_must_exist_when_set() {
-        let mut d = doc();
-        d.channels[1].lane = Some(LaneId::new("lane-nope"));
-        assert_error(&check(&d), "channels[1].lane", codes::NOT_FOUND);
-
-        // 不填 lane 是合法的（继承 credential → provider → net.default_lane）
-        assert_no_error_at(&check(&doc()), "channels[3].lane");
+    fn removed_channel_lane_is_not_a_reference_to_check() {
+        let mut raw = serde_json::to_value(doc()).expect("序列化");
+        raw["channels"][1]["lane"] = serde_json::json!("lane-nope");
+        let d: ConfigDoc = serde_json::from_value(raw).expect("老配置必须能解析");
+        let report = check(&d);
+        assert!(
+            report.errors.is_empty(),
+            "已删除字段不许在校验器里留下任何错误：{:?}",
+            report.error_paths()
+        );
+        assert_no_error_at(&report, "channels[1].lane");
     }
 
-    /// `Model.default_lane`（[docs/20 §1.3]）与通道的 `lane` 同一口径：写了就必须存在，
-    /// 不写 = 往下继承（合法）。
+    /// [docs/55] `credentials[].lane` 同上：已删除 → 不再是引用、不再报错。
     #[test]
-    fn model_default_lane_must_exist_when_set() {
-        let mut d = doc();
-        d.models[0].default_lane = Some(LaneId::new("lane-nope"));
-        assert_error(&check(&d), "models[0].default_lane", codes::NOT_FOUND);
+    fn removed_credential_lane_is_not_a_reference_to_check() {
+        let mut raw = serde_json::to_value(doc()).expect("序列化");
+        raw["credentials"][1]["lane"] = serde_json::json!("lane-nope");
+        let d: ConfigDoc = serde_json::from_value(raw).expect("老配置必须能解析");
+        let report = check(&d);
+        assert!(
+            report.errors.is_empty(),
+            "已删除字段不许在校验器里留下任何错误：{:?}",
+            report.error_paths()
+        );
+        assert_no_error_at(&report, "credentials[1].lane");
+    }
 
-        let mut d = doc();
-        d.models[0].default_lane = Some(LaneId::new("lane-direct"));
-        assert_no_error_at(&check(&d), "models[0].default_lane");
-        assert_no_error_at(&check(&doc()), "models[0].default_lane");
+    /// [docs/55] `policies[].action.use_lane` 同上。
+    #[test]
+    fn removed_policy_use_lane_is_not_a_reference_to_check() {
+        let mut raw = serde_json::to_value(doc()).expect("序列化");
+        raw["policies"][0]["action"]["use_lane"] = serde_json::json!("lane-nope");
+        let d: ConfigDoc = serde_json::from_value(raw).expect("老配置必须能解析");
+        let report = check(&d);
+        assert!(
+            report.errors.is_empty(),
+            "已删除字段不许在校验器里留下任何错误：{:?}",
+            report.error_paths()
+        );
+        assert_no_error_at(&report, "policies[0].action.use_lane");
     }
 
     #[test]
-    fn credential_provider_and_lane_must_exist() {
+    fn credential_provider_must_exist() {
         let mut d = doc();
         d.credentials[0].provider = ProviderId::new("p-nope");
         assert_error(&check(&d), "credentials[0].provider", codes::NOT_FOUND);
+    }
 
-        let mut d = doc();
-        d.credentials[1].lane = Some(LaneId::new("lane-nope"));
-        assert_error(&check(&d), "credentials[1].lane", codes::NOT_FOUND);
-        assert_no_error_at(&check(&doc()), "credentials[1].lane");
+    /// `Model.default_lane` 已删除（[docs/28 §1.1]：代理是线路的属性，模型不挑代理），
+    /// 所以老配置里写的 `models[].default_lane` **不是**校验对象：它会落进 `Model.extra`
+    /// 原样保留、不再有任何引用完整性要求（既不报"悬空"，也不报"未知字段"）。
+    #[test]
+    fn removed_model_default_lane_is_not_a_reference_to_check() {
+        let mut raw = serde_json::to_value(doc()).expect("序列化");
+        raw["models"][0]["default_lane"] = serde_json::json!("lane-nope");
+        let d: ConfigDoc = serde_json::from_value(raw).expect("老配置必须能解析");
+        let report = check(&d);
+        assert!(
+            report.errors.is_empty(),
+            "已删除字段不许在校验器里留下任何错误：{:?}",
+            report.error_paths()
+        );
+        assert_no_error_at(&report, "models[0].default_lane");
     }
 
     #[test]
@@ -1339,8 +1334,8 @@ mod tests {
         d.lanes[1].subscription = Some(SubscriptionId::new("sub-nope"));
         assert_error(&check(&d), "lanes[1].subscription", codes::NOT_FOUND);
 
-        // 正例：lane-us-fixed 引用已存在的 sub-jp
-        assert_no_error_at(&check(&doc()), "lanes[3].subscription");
+        // 正例：lane-us-fixed（现在是 lanes[2]）引用已存在的 sub-jp
+        assert_no_error_at(&check(&doc()), "lanes[2].subscription");
     }
 
     #[test]
@@ -1415,11 +1410,10 @@ mod tests {
     #[test]
     fn policy_extra_references_and_match_provider_in() {
         let mut d = doc();
-        d.policies[0].action.use_lane = Some(LaneId::new("lane-nope"));
         d.policies[0].action.pin_sticky = Some(ChannelId::new("ch-nope"));
         d.policies[0].r#match.provider_in = vec![ProviderId::new("p-nope")];
         let report = check(&d);
-        assert_error(&report, "policies[0].action.use_lane", codes::NOT_FOUND);
+        // [docs/55] `use_lane` 已从这条断言里去掉：它不再是字段，也就没有引用可查
         assert_error(&report, "policies[0].action.pin_sticky", codes::NOT_FOUND);
         assert_error(&report, "policies[0].match.provider_in[0]", codes::NOT_FOUND);
     }
@@ -1492,7 +1486,7 @@ mod tests {
         // lanes
         let mut d = doc();
         d.lanes.push(d.lanes[0].clone());
-        assert_error(&check(&d), "lanes[4].id", codes::DUPLICATE_ID);
+        assert_error(&check(&d), "lanes[3].id", codes::DUPLICATE_ID);
 
         // proxy_subscriptions
         let mut d = doc();
@@ -1629,13 +1623,22 @@ mod tests {
 
     #[test]
     fn lane_kind_requires_matching_fields() {
+        // [docs/54] `subscription_group` 已取消 → 它的"缺 group"这条分支不再适用，
+        // 改成钉"它本身被明确拒绝"（概念取消 + 该换什么）。
         let mut d = doc();
-        d.lanes[2].group = None; // subscription_group 没有 group
-        assert_error(&check(&d), "lanes[2].group", codes::MISSING_FIELD);
+        assert_eq!(d.lanes.len(), 3, "默认配置：直连 / 自动选择 / 固定节点");
+        d.lanes.push(Lane::subscription_group("lane-old", "老分组", "sub-jp", "🇯🇵 日本"));
+        let report = check(&d);
+        assert_error(&report, "lanes[3].kind", codes::INVALID_VALUE);
+        assert!(
+            report.errors.iter().any(|e| e.path == "lanes[3].kind" && e.message.contains("已取消")),
+            "要说明该换什么：{:#?}",
+            report.errors
+        );
 
         let mut d = doc();
-        d.lanes[3].node = None; // subscription_node 没有 node
-        assert_error(&check(&d), "lanes[3].node", codes::MISSING_FIELD);
+        d.lanes[2].node = None; // subscription_node 没有 node
+        assert_error(&check(&d), "lanes[2].node", codes::MISSING_FIELD);
 
         let mut d = doc();
         d.lanes[1].subscription = None; // subscription_auto 没有 subscription
@@ -1647,16 +1650,18 @@ mod tests {
 
     #[test]
     fn lane_port_range_must_fit_lanes() {
+        // [docs/54] 默认配置 3 条线路，但 `direct` **不要端口**（它指内核内置的 DIRECT）
+        // → 恰好需要 2 个端口。所以"不够"要拿 1 个端口来试。
         let mut d = doc();
-        d.net.kernel.lane_port_range = [39100, 39101]; // 2 个端口，但需要 3 条
+        assert_eq!(d.net.lanes_needing_port(&d.lanes), 2, "前提：正好 2 条要端口");
+        d.net.kernel.lane_port_range = [39100, 39100]; // 1 个端口，但需要 2 条
         assert_error(&check(&d), "net.kernel.lane_port_range", codes::INVALID_VALUE);
-
         let mut d = doc();
         d.net.kernel.lane_port_range = [39299, 39100];
         assert_error(&check(&d), "net.kernel.lane_port_range", codes::INVALID_VALUE);
 
         let mut d = doc();
-        d.net.kernel.lane_port_range = [39100, 39102];
+        d.net.kernel.lane_port_range = [39100, 39101]; // 恰好 2 个
         assert_no_error_at(&check(&d), "net.kernel.lane_port_range");
     }
 
@@ -1680,33 +1685,6 @@ mod tests {
         let mut d = doc();
         d.request_log.sample_rate = 0.1;
         assert_no_error_at(&check(&d), "request_log.sample_rate");
-    }
-
-    #[test]
-    fn quota_shape_rules() {
-        let mut d = doc();
-        d.credentials[2].quota.limit = None; // metric = tokens 但没有 limit
-        assert_error(&check(&d), "credentials[2].quota.limit", codes::MISSING_FIELD);
-
-        let mut d = doc();
-        d.credentials[0].quota.soft_limit = 1.2;
-        assert_error(&check(&d), "credentials[0].quota.soft_limit", codes::INVALID_VALUE);
-
-        let mut d = doc();
-        d.credentials[0].quota.soft_limit = 0.9;
-        d.credentials[0].quota.hard_limit = 0.5;
-        assert_error(&check(&d), "credentials[0].quota.soft_limit", codes::INVALID_VALUE);
-
-        let mut d = doc();
-        d.credentials[0].quota.reserve = 1.0;
-        assert_error(&check(&d), "credentials[0].quota.reserve", codes::INVALID_VALUE);
-
-        let mut d = doc();
-        d.credentials[0].quota.reset_day = 32;
-        assert_error(&check(&d), "credentials[0].quota.reset_day", codes::INVALID_VALUE);
-
-        // 正例：unknown metric 不需要 limit
-        assert_no_error_at(&check(&doc()), "credentials[0].quota.limit");
     }
 
     #[test]
@@ -1755,7 +1733,7 @@ mod tests {
         assert_error(&check(&d), "pricing.entries[2].multiplier", codes::INVALID_VALUE);
 
         let mut d = doc();
-        d.pricing.entries[3].plan_fee = Some(PlanFee::new(99.0, "", QuotaWindow::Month));
+        d.pricing.entries[3].plan_fee = Some(PlanFee::new(99.0, "", PlanFeeCycle::Month));
         assert_error(&check(&d), "pricing.entries[3].plan_fee.currency", codes::MISSING_FIELD);
     }
 
@@ -1854,9 +1832,9 @@ mod tests {
         d.proxy_subscriptions[0].enabled = false;
         let report = check(&d);
         assert_clean(&report);
+        // [docs/54] 默认配置 3 条线路：lanes[1] 自动选择 / lanes[2] 固定节点都引用订阅
         assert_warning(&report, "lanes[1].subscription", codes::DISABLED_REF);
         assert_warning(&report, "lanes[2].subscription", codes::DISABLED_REF);
-        assert_warning(&report, "lanes[3].subscription", codes::DISABLED_REF);
         // direct lane 不引用订阅 → 不该有警告
         assert!(!report.warnings.iter().any(|w| w.path == "lanes[0].subscription"));
     }

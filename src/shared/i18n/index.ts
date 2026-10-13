@@ -19,6 +19,33 @@ import { en } from "./en";
 import { zhCN, type I18nKey } from "./zh-CN";
 
 export type { I18nKey };
+// 中文是键集合的**真源**：测试里要断言"界面用的是真源那句话"时从这里取，
+// 而不是把中文再抄一遍（抄一遍就变成第二个真相源，文案一改测试还在断言旧句子）。
+export { zhCN };
+
+/**
+ * 把一个**运行时拼出来的**键名断言成 `I18nKey`。
+ *
+ * # 为什么需要它
+ *
+ * `tsc` 只知道字面量类型：`const M = { a: "models.x" }` 推断出的是 `string`，
+ * 于是 `t(M.a)` 过不了「key 必须属于 `zhCN`」那条约束。
+ * 这个函数就是那处**唯一**的收口点，把"我知道这个键存在"写成代码，
+ * 而不是把整张表都放宽成 `string`。
+ *
+ * # 用它的纪律
+ *
+ * 只允许两种情况用：① 键名由已知前缀 + 受控词拼成（例：`models.add.issue.${field}`）；
+ * ② 字面量表要给 `I18nKey` 做注解时。
+ * **不许**用它把一个用户输入/后端返回值直接塞给 `t()` —— 那等于关掉类型检查。
+ *
+ * 放在共享层之前，`models` / `providers/detail` / `providers/providerWizard` 各写了一份
+ * 逐字相同的 `function i18nKey(key: string): I18nKey { return key as I18nKey; }`；
+ * 收敛成一处，名字保持不变（调用点一个字不用改）。
+ */
+export function i18nKey(key: string): I18nKey {
+  return key as I18nKey;
+}
 
 export const LOCALES = ["zh-CN", "en"] as const;
 export type Locale = (typeof LOCALES)[number];

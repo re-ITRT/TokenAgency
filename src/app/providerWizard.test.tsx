@@ -4,7 +4,7 @@
  *
  * 这一份测的是**用户点得到的那条路**，所以每一条都尽量按真机 E2E 的方式驱动：
  * 开的入口是 `providers-add-open` → 第 1 步 `provider-wizard-step1` → `pw-*` →
- * 第 2 步 `provider-wizard-step2`，`data-testid` 一个都不改名（真机按它们驱动）。
+ * 第 2 步 `provider-wizard-step2`。
  *
  * 三条硬纪律在这里被钉住：
  *
@@ -15,9 +15,19 @@
  *    这里用一个假金丝雀值证明它不在服务商/凭据载荷里，也不在页面上（真机上那是密钥泄漏）。
  *
  * 命令接线（[docs/19 §1.3]）：`provider_upsert` → `credential_upsert`（id = `<provider>-default`）
- * → 填了密钥才 `credential_set_secret`；扫描与添加走 `model_import_from_provider` /
- * `model_apply_import`；改网络代理走 `model_bulk_update({ ids, patch: { lane } })`。
- * 这三条本轮由另一个写者在 Rust 注册（`collect_commands!`），所以**测试用 `registerMock` 驱动**，
+ * → 填了密钥才 `credential_set_secret`；扫描 `model_import_from_provider`；
+ * **创建线路** `model_apply_import`。
+ *
+ * **[docs/28 §1] 第 2 步建的是「线路」，不是「模型」**（owner 原话："创建完服务商和线路之后，
+ * 模型是不自动创建的，是等待用户去分配的"）。这一份测试因此多钉三件事：
+ *
+ * * 第 2 步的标题 / 说明 / 按钮 / 结果区**不再说"模型会被创建"**（`pw-step2-why`、
+ *   `pw-scan-add`、`pw-channels-created`），并且给出 `pw-goto-models`（去模型页分配线路）；
+ * * 上面那块是**本服务商已有的线路**（`channel_matrix` 派生，每行 = 上游模型名 + 线路 id +
+ *   **只读**的网络代理），testid 用线路语义 `pw-line-lane*`；
+ * * **走完整个第 2 步，`model_upsert` 的调用次数必须为 0**（见文末第 ⑥ 节）。
+ *
+ * 这三条命令由另一个写者在 Rust 注册（`collect_commands!`），所以**测试用 `registerMock` 驱动**，
  * 页面本身通过 `@/shared/api` 的类型化门面调用（`api.provider.test` 等），
  * 不写裸命令字符串 —— `commandSurface.guard.test.ts` 因此保持绿。
  */
@@ -32,7 +42,7 @@ import ProvidersPage from "@/pages/providers";
 import { resetWizardSession, validateStep1 } from "@/pages/providers/providerWizardModel";
 import { TokenAgencyError, registerMock } from "@/shared/api";
 import { registerBaselineMocks } from "@/shared/api/mock";
-import { i18n } from "@/shared/i18n";
+import { i18n, type I18nKey } from "@/shared/i18n";
 import { buildTheme } from "@/theme";
 
 beforeAll(async () => {
@@ -56,6 +66,24 @@ afterEach(() => {
 /** 明文金丝雀：它出现在这里，正是为了证明它**不会**出现在服务商/凭据载荷与页面上。 */
 const KEY = "sk-plaintext-canary-0001"; // ta-allow-fake-secret —— 假值
 
+/**
+ * [docs/28] 第 2 步新用的文案键 → 文本。
+ *
+ * 这 10 个键由主管补进 `src/shared/i18n/**`（本任务的写作用域**不含 i18n**）。键还没落地时
+ * `t(key)` 原样返回键名 —— 所以这里**不写死中文**，而是问 i18n 要同一份资源：
+ * 组件与断言取的是同一个值（键补齐后这几条断言自动变成"用户真的看到那句中文"，一个字都不用改）。
+ *
+ * 顺带好处：这份测试不会把"键名"和"文案"绑成两个真相源 —— 改文案不许让测试变红。
+ */
+function copy(key: string): string {
+  return i18n.t(key as I18nKey);
+}
+
+/** 带 `{{count}}` 插值的键（`linesCreated`）。 */
+function copyCount(key: string, count: number): string {
+  return i18n.t(key as I18nKey, { count });
+}
+
 function inputOf(testId: string): HTMLInputElement {
   const input = screen.getByTestId(testId).querySelector("input");
   if (input === null) throw new Error(`[data-testid="${testId}"] 里没有 input`);
@@ -67,17 +95,13 @@ function typeInto(testId: string, value: string): void {
 }
 
 /**
- * 读「已添加的模型」行里那条线路的展示文案。
+ * 读「本服务商已有的线路」行里那条代理的展示文案。
  *
- * [docs/21 §4.3] 之后它不是下拉而是**只读展示**（用户原话"线路设置不能点进服务商里面去修改"），
- * 所以断言的是文案而不是 combobox 的值。原来的 `selectTextOf` / `chooseOption` 两个下拉 helper
- * 随这次改动一起删掉了 —— 留着没人用的 helper 只会让下一个读代码的人以为还有下拉可点。
+ * [docs/28 §1 第 2 条] 之后它不是下拉而是**只读展示**（代理是线路的属性，编辑口在服务商详情页的
+ * 「编辑线路」里；向导里**不许**出现可写的代理下拉），所以断言的是文案而不是 combobox 的值。
+ * 旧的 `selectTextOf` / `chooseOption` 两个下拉 helper 随那次改动一起删掉了 ——
+ * 留着没人用的 helper 只会让下一个读代码的人以为还有下拉可点。
  */
-function laneTextOf(row?: HTMLElement): string {
-  const scope = row ?? screen.getAllByTestId("pw-model-row")[0]!;
-  return (within(scope).getByTestId("pw-model-lane-name").textContent ?? "").trim();
-}
-
 function recordingMock(result: unknown): {
   calls: Record<string, unknown>[];
   handler: (args?: Record<string, unknown>) => unknown;
@@ -106,6 +130,15 @@ function NetworkStub() {
   );
 }
 
+/**
+ * `/models` 的替身：只为了断言"`pw-goto-models` 真的把人送到模型页"
+ * （[docs/28 §1 第 1 条]：线路建完之后，模型要用户自己去**分配**线路）。
+ */
+function ModelsStub() {
+  const location = useLocation();
+  return <span data-testid="models-stub-path">{location.pathname}</span>;
+}
+
 function renderApp() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
@@ -115,6 +148,7 @@ function renderApp() {
           <Routes>
             <Route path="/providers" element={<ProvidersPage />} />
             <Route path="/network" element={<NetworkStub />} />
+            <Route path="/models" element={<ModelsStub />} />
           </Routes>
         </MemoryRouter>
       </ThemeProvider>
@@ -125,46 +159,6 @@ function renderApp() {
 // ---------------------------------------------------------------- 后端夹具
 
 /** `credential_list` 的一行（`CredentialView` 形状）：把凭据挂到某个服务商上。 */
-function credentialView(id: string, provider: string): unknown {
-  return {
-    credential: {
-      id,
-      provider,
-      label: "默认凭据",
-      secret: `\${secret:${id}}`,
-      lane: null,
-      quota: {
-        metric: "cost",
-        limit: 20,
-        currency: "CNY",
-        window: "month",
-        reset_day: 1,
-        soft_limit: 0.8,
-        hard_limit: 1,
-        reserve: 0,
-      },
-      guard: { max_rpm: null, max_concurrency: null, max_input_tokens: null, on_exceed: "wait" },
-      tags: [],
-      enabled: true,
-    },
-    provider_name: provider,
-    quota: { credential_id: id, state: "ok" },
-    channel_count: 1,
-  };
-}
-
-/** `channel_matrix`：模型与凭据的挂载关系（"这个服务商下有哪些模型"的唯一真源）。 */
-function matrixView(
-  cells: Record<string, unknown>[],
-  models: Record<string, unknown>[] = [],
-): unknown {
-  return {
-    models,
-    credentials: [],
-    cells: cells.map((cell) => ({ tags: [], enabled: true, ...cell })),
-  };
-}
-
 /** 落库三个命令的 recorder（`provider_upsert` / `credential_upsert` / `credential_set_secret`）。 */
 function registerUpsertMocks() {
   const provider = recordingMock({
@@ -222,6 +216,7 @@ describe("[docs/19 §1.1] 第 1 步预检要区分'本会话已落库的那一�
     protocol: "openai",
     baseUrl: "https://gw.example.com/v1",
     key: "",
+    lane: "direct:",
   } as const;
   const saved = { providerId: "my-gateway", name: "My Gateway", secretStored: true };
 
@@ -522,503 +517,384 @@ describe("[docs/19 §1.1 / §1.3] pw-test：先真落库（并说出来），再
   });
 });
 
-// ================================================================ ③ 第 2 步：结构与已添加模型
+// ================================================================ ③ 第 2 步：结构与「本服务商已有的线路」
 
-describe("[docs/19 §1.2] 第 2 步：添加模型", () => {
-  it("pw-next 真的落库并进入第 2 步：滚动容器 / 已添加模型 / 保存说明 / 扫描与完成都在", async () => {
-    const { provider, credential, secret } = registerUpsertMocks();
+// ================================================================ ③ 第 2 步：一个列表（[docs/28 §1.4]）
 
-    await gotoStep2();
-
-    // 第 1 步的落库真的发生了
-    expect(provider.calls).toHaveLength(1);
-    expect(credential.calls).toHaveLength(1);
-    expect(secret.calls).toHaveLength(1);
-
-    // 第 1 步的容器退场，第 2 步登场
-    expect(screen.queryByTestId("provider-wizard-step1")).toBeNull();
-    expect(screen.getByTestId("provider-wizard-step2")).toBeTruthy();
-
-    // 已落库要说清楚（关掉向导不会撤销）
-    expect(screen.getByTestId("pw-saved-notice").textContent).toContain("服务商与凭据已经写入配置");
-
-    // 整页可滚动：上下两块都在**同一个**滚动容器里
-    const scroll = screen.getByTestId("pw-step2-scroll");
-    expect(within(scroll).getByTestId("pw-added-models")).toBeTruthy();
-    expect(within(scroll).getByTestId("pw-scan")).toBeTruthy();
-    expect(within(scroll).getByTestId("pw-finish")).toBeTruthy();
-
-    // 这个服务商下还没有模型 → 诚实空态（不是 0 行的表，也不是假数据）
-    expect(screen.getByText("这个服务商下还没有模型")).toBeTruthy();
-  });
-
-  it("已添加模型来自 channel_matrix：行里只有网络代理可改，信息面板是只读的", async () => {
-    registerUpsertMocks();
-    registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
-    registerMock("channel_matrix", () =>
-      matrixView(
-        [
-          {
-            model_id: "m-added",
-            credential_id: "my-gateway-default",
-            channel_id: "ch-1",
-            lane_id: "lane-jp",
-            upstream_model: "upstream-added",
-          },
-        ],
-        [{ model_id: "m-added", display_name: "m-added", unpriced: true }],
-      ),
-    );
-
-    await gotoStep2();
-
-    const row = (await screen.findAllByTestId("pw-model-row"))[0]!;
-    // 行里显示的是后端给的值（模型 id 与上游名）
-    expect(row.textContent).toContain("m-added");
-    expect(row.textContent).toContain("upstream-added");
-
-    // 「设置图标」按钮：hover 提示必须是「查看模型信息」
-    const info = within(row).getByTestId("pw-model-info");
-    expect(info.getAttribute("title")).toBe("查看模型信息");
-
-    // 点开只读面板
-    fireEvent.click(within(info).getByRole("button"));
-    const panel = within(row).getByTestId("pw-model-info-panel");
-    expect(panel.textContent).toContain("这些信息来自配置，只能看不能改");
-    // 面板里不许有任何可写控件（唯一的例外是同一行的 pw-model-lane，它不在面板内）
-    expect(panel.querySelectorAll("input, select, textarea, button")).toHaveLength(0);
-
-    // 该行唯一可改的就是网络代理（默认显示后端给的 lane，而不是一个猜的值）
-    expect(within(row).getByTestId("pw-model-lane")).toBeTruthy();
-  });
-
-  it("[docs/21 §4.3] 第 2 步的线路列是**只读展示**：读出的值按 channel → Model.default_lane → net.default_lane → 直连", async () => {
-    registerUpsertMocks();
-    registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
-    let cellLane: string | null = null;
-    registerMock("channel_matrix", () =>
-      matrixView(
-        [
-          {
-            model_id: "m-added",
-            credential_id: "my-gateway-default",
-            channel_id: "ch-1",
-            lane_id: cellLane,
-            upstream_model: "upstream-added",
-          },
-        ],
-        [{ model_id: "m-added", display_name: "m-added" }],
-      ),
-    );
-
-    // ① 第 1 步没选（net.default_lane = null）且 channel 没有 lane → 直连
-    registerMock("config_get", () => ({ net: { default_lane: null } }));
-    await gotoStep2();
-    await screen.findAllByTestId("pw-model-row");
-    expect(laneTextOf()).toBe("直连");
-
-    cleanup();
-    resetWizardSession();
-
-    // ② 第 1 步（在 /network 上）选了 lane-jp → 新模型默认继承它
-    registerMock("config_get", () => ({ net: { default_lane: "lane-jp" } }));
-    await gotoStep2();
-    await screen.findAllByTestId("pw-model-row");
-    await waitFor(() => expect(laneTextOf()).toContain("日本"));
-
-    cleanup();
-    resetWizardSession();
-
-    // ③ channel 自己已经有 lane → 以后端为准
-    cellLane = "lane-jp";
-    await gotoStep2();
-    await screen.findAllByTestId("pw-model-row");
-    expect(laneTextOf()).toContain("日本");
-
-    cleanup();
-    resetWizardSession();
-
-    // ④ 还没有 channel、但模型级默认 lane 已经存下来了（`Model.default_lane`）→ 显示它
-    cellLane = null;
-    registerMock("config_get", () => ({ net: { default_lane: null } }));
-    registerMock("model_list", () => [
-      { model: { id: "m-added", aliases: [], display: { group: null, order: 0 }, expose: true, default_lane: "lane-jp" }, channel_count: 0, upstream_names: [], priced: false },
-    ]);
-    await gotoStep2();
-    await screen.findAllByTestId("pw-model-row");
-    expect(laneTextOf()).toContain("日本");
-  });
-
-  it("[docs/21 §4.3] 向导里**改不了**线路：没有下拉、一次 model_bulk_update 都不发，并指路到通道页", async () => {
-    registerUpsertMocks();
-    registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
-    registerMock("channel_matrix", () =>
-      matrixView(
-        [
-          {
-            model_id: "m-added",
-            credential_id: "my-gateway-default",
-            channel_id: "ch-1",
-            lane_id: "lane-jp",
-            upstream_model: "upstream-added",
-          },
-        ],
-        [{ model_id: "m-added", display_name: "m-added" }],
-      ),
-    );
-    const bulk = recordingMock({ applied: true, restart_required: false, kernel_reload: false });
-    registerMock("model_bulk_update", bulk.handler);
-
-    await gotoStep2();
-    const row = (await screen.findAllByTestId("pw-model-row"))[0]!;
-
-    // 用户原话：「线路设置不能点进服务商里面去修改」——这一列必须只剩只读展示
-    const laneBox = within(row).getByTestId("pw-model-lane");
-    expect(within(laneBox).queryByRole("combobox")).toBeNull();
-    expect(within(laneBox).queryByRole("textbox")).toBeNull();
-    expect(within(row).getByTestId("pw-model-lane-name").textContent).toContain("日本");
-    expect(within(row).getByTestId("pw-model-lane-readonly").textContent).not.toBe("");
-
-    // 点它、敲它都不该产生任何落库调用（旧代码里这是个可改的下拉）
-    fireEvent.click(laneBox);
-    fireEvent.keyDown(laneBox, { key: "ArrowDown" });
-    expect(bulk.calls).toHaveLength(0);
-  });
-
-  it("pw-cancel / pw-finish 都能关掉向导（cancel 一次命令都不发）", async () => {
-    const { provider } = registerUpsertMocks();
-
-    await openWizard();
-    fillStep1();
-    fireEvent.click(screen.getByTestId("pw-cancel"));
-    // MUI 的关闭过渡结束后内容才卸载，所以这里等一下（不是断言放宽）
-    await waitFor(() => expect(screen.queryByTestId("provider-wizard-step1")).toBeNull());
-    expect(provider.calls).toHaveLength(0);
-
-    // 换一棵干净的树（同一个 `screen` 里两次 render 会撞出两个同名入口）
-    cleanup();
-    await gotoStep2();
-    fireEvent.click(screen.getByTestId("pw-finish"));
-    await waitFor(() => expect(screen.queryByTestId("provider-wizard-step2")).toBeNull());
-  });
-});
-
-// ================================================================ ④ 扫描与添加
-
-describe("[docs/19 §1.2] 一键扫描：结果只来自后端", () => {
-  const PREVIEW = {
-    preview_token: "pv-1",
-    models: [
-      { upstream_model: "deepseek-v4.1flash", suggested_id: "deepseek-v4.1flash", exists: false },
-      { upstream_model: "gpt-4o-mini", suggested_id: "gpt-4o-mini", exists: true },
-    ],
-    skipped: [{ upstream_model: "bad model", reason: "名称不合法" }],
-  };
-
-  function registerScanMocks(preview: unknown = PREVIEW) {
-    registerUpsertMocks();
-    const scan = recordingMock(preview);
-    const apply = recordingMock({
-      applied: true,
-      restart_required: false,
-      kernel_reload: false,
-      channels_created: 1,
-    });
-    registerMock("model_import_from_provider", scan.handler);
-    registerMock("model_apply_import", apply.handler);
-    return { scan, apply };
+/**
+ * 用户第 82 轮的重构原话：
+ * 「添加服务商默认添加所有线路，然后通过滑块来'启用'和'关闭'。因此，可以直接写在在一个列表里面，
+ *  没有添加的线路也可以设置'网络代理'，只是有个滑块控制是否可见」
+ *
+ * 所以第 2 步 = **详情页那一节**（同一个 `LinesSection`）：扫描（记录目录 + 把清单里的每条线路
+ * 都建出来，**默认关闭**）+ 每行（上游原文 / 网络代理 / 启用滑块）+ 全选。
+ * 这里钉住"一个列表"这件事本身，以及**旧的"勾一下才创建"控件一个都不许再出现**。
+ */
+describe("[docs/28 §1.4] 第 2 步：一个列表（扫描即全部建出、滑块控制启停、每行都能设代理）", () => {
+  /** 一条线路（`channel_list` 的一行）：字段给全，用来钉"整条覆盖写不丢字段"。 */
+  function channelLine(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      id: "ch-my-gateway-my-gateway-default-ta-e2e-node-hk",
+      model: "",
+      provider: "my-gateway",
+      credential: "my-gateway-default",
+      lane: null,
+      upstream_model: "ta-e2e-node-hk",
+      transform: {
+        path: null,
+        headers_add: { "x-keep": "1" },
+        headers_remove: [],
+        headers_override: {},
+        body_patch: {},
+      },
+      priority: 100,
+      weight: 10,
+      tags: ["keep-me"],
+      enabled: false,
+      capabilities: {
+        vision: true,
+        tools: false,
+        reasoning: false,
+        context_tokens: 128000,
+        modalities: ["text"],
+      },
+      ...overrides,
+    };
   }
 
-  it("pw-scan 真调 model_import_from_provider；勾选后 pw-scan-add 真调 model_apply_import", async () => {
-    const { scan, apply } = registerScanMocks();
+  /** 目录里的一行（`provider_model_catalog`）：上游原文从这里来。 */
+  function catalogEntry(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      provider_id: "my-gateway",
+      upstream_model: "ta-e2e-node-hk",
+      suggested_id: "ta-e2e-node-hk",
+      seen_in_last_scan: true,
+      first_seen_ms: 1,
+      last_seen_ms: 2,
+      added: true,
+      channel_ids: ["ch-my-gateway-my-gateway-default-ta-e2e-node-hk"],
+      enabled: false,
+      raw: { id: "ta-e2e-node-hk", object: "model", owned_by: "vendor-x", created: 1712345678 },
+      ...overrides,
+    };
+  }
+
+  /** 扫描/建线路/列表的最常见一套替身；返回几个 recorder 供断言。 */
+  function registerStep2Backend(
+    lineOverrides: Record<string, unknown>[] = [
+      {},
+      { id: "ch-2", upstream_model: "m-2", enabled: true },
+    ],
+  ) {
+    registerUpsertMocks();
+    const scan = recordingMock({
+      preview_token: "pv-1",
+      models: [
+        { upstream_model: "ta-e2e-node-hk", suggested_id: "ta-e2e-node-hk", exists: false },
+        { upstream_model: "m-2", suggested_id: "m-2", exists: false },
+      ],
+      skipped: [],
+    });
+    registerMock("model_import_from_provider", scan.handler);
+    const createAll = recordingMock({ created: 2, total: 2 });
+    registerMock("provider_lines_create_all", createAll.handler);
+    const lines = lineOverrides.map((over) => channelLine(over));
+    registerMock("channel_list", () => lines);
+    registerMock("provider_model_catalog", () => [
+      catalogEntry(),
+      catalogEntry({ upstream_model: "m-2", suggested_id: "m-2", channel_ids: ["ch-2"], raw: {} }),
+    ]);
+    registerMock("config_get", () => ({ net: { default_lane: null } }));
+    return { scan, createAll, lines };
+  }
+
+  it("pw-next 真的落库并进入第 2 步：保存说明 / 语义说明 / 扫描 / 一个列表 / 指路 / 完成", async () => {
+    registerStep2Backend();
 
     await gotoStep2();
-    fireEvent.click(screen.getByTestId("pw-scan"));
 
+    // 已落库这件事必须说出来（关掉向导不会撤销）
+    expect(screen.getByTestId("pw-saved-notice").textContent).toContain(
+      copy("providers.wizard.savedNotice"),
+    );
+    // 这一节建的是**线路**，模型要用户自己去分配
+    expect(screen.getByTestId("pw-step2-why").textContent).toBe(copy("providers.wizard.step2.why"));
+    expect(screen.getByTestId("pw-step2-scroll")).toBeTruthy();
+    // 扫描按钮（历史 testid `pw-scan`）+ 完成 / 指路
+    expect(screen.getByTestId("pw-scan").textContent).toBe(copy("providers.wizard.scan"));
+    // [docs/28 §1.7] **主操作不参与滚动**：长列表时「完成」必须还在（所以它放在对话框的
+    // 固定按钮区，不在 `pw-step2-scroll` 那个滚动容器里）。
+    expect(screen.getByTestId("pw-finish").textContent).toBe(copy("providers.wizard.finish"));
+    expect(within(screen.getByTestId("pw-step2-scroll")).queryByTestId("pw-finish")).toBeNull();
+    expect(screen.getByTestId("pw-cancel").textContent).toBe(copy("common.cancel"));
+    expect(screen.getByTestId("pw-goto-models")).toBeTruthy();
+    expect(screen.getByTestId("pw-scan-goto-detail")).toBeTruthy();
+    // **一个列表**：行就是这家服务商的线路（`channel_list`）
+    expect((await screen.findAllByTestId("providers-line-row")).length).toBe(2);
+
+    // 旧的"勾一下才创建"三步法控件**一个都不许再出现**
+    expect(screen.queryByTestId("pw-scan-check")).toBeNull();
+    expect(screen.queryByTestId("pw-scan-add")).toBeNull();
+    expect(screen.queryByTestId("pw-scan-select-all")).toBeNull();
+    expect(screen.queryByTestId("pw-scan-row")).toBeNull();
+  });
+
+  it("[docs/28 §1.4] 扫描 = 记录目录 + 把清单里的每条线路都建出来（两条命令，入参逐字）", async () => {
+    const { scan, createAll } = registerStep2Backend();
+
+    await gotoStep2();
+
+    // 进第 2 步就自动扫了一次
     await waitFor(() => expect(scan.calls).toHaveLength(1));
-    // 入参 snake_case + 真的是这个服务商
-    expect(scan.calls[0]!["provider_id"]).toBe("my-gateway");
+    expect(scan.calls[0]).toEqual({ provider_id: "my-gateway", prefix_filter: undefined });
+    await waitFor(() => expect(createAll.calls).toHaveLength(1));
+    // [docs/29 §2.1] **不带 lane**：代理只属于服务商（同一服务商一个 URL），向导不写线路级代理
+    expect(createAll.calls[0]).toEqual({ provider_id: "my-gateway", lane: null });
 
-    const rows = await screen.findAllByTestId("pw-scan-row");
+    // 「重新扫描」再走一轮（真命令，不是本地拼）
+    fireEvent.click(screen.getByTestId("pw-scan"));
+    await waitFor(() => expect(scan.calls).toHaveLength(2));
+    await waitFor(() => expect(createAll.calls).toHaveLength(2));
+
+    // 数字如实说：扫到 2 条、本次新建 2 条、目录里共 2 条
+    const notice = await screen.findByTestId("providers-model-notice");
+    expect(notice.textContent).toContain("2");
+  });
+
+  it("[docs/28 §1.4] 每行 = 上游原文 + 网络代理 + 启用滑块；**未启用**的行也能设代理", async () => {
+    registerStep2Backend([{ enabled: false }, { id: "ch-2", upstream_model: "m-2", enabled: true }]);
+
+    await gotoStep2();
+
+    const rows = await screen.findAllByTestId("providers-line-row");
     expect(rows).toHaveLength(2);
-    // exists=true 的行标出来，且默认不勾
-    expect(rows[1]!.textContent).toContain("已存在");
-    expect(within(rows[1]!).getByTestId("pw-scan-check").querySelector("input")?.checked).toBe(false);
-    expect(within(rows[0]!).getByTestId("pw-scan-check").querySelector("input")?.checked).toBe(false);
+    const offRow = rows.find((row) => (row.textContent ?? "").includes("ta-e2e-node-hk"))!;
+    const onRow = rows.find((row) => (row.textContent ?? "").includes("m-2"))!;
 
-    // skipped 如实显示条数
-    expect(screen.getByTestId("pw-scan-result").textContent).toContain("跳过 1 条");
+    // 滑块反映库里的真实状态（默认关闭 = 用户要的"默认关闭"）
+    expect(
+      (within(offRow).getByTestId("providers-line-enabled").querySelector("input") as HTMLInputElement)
+        .checked,
+    ).toBe(false);
+    expect(
+      (within(onRow).getByTestId("providers-line-enabled").querySelector("input") as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    // **没有添加的线路（未启用）也能设网络代理** —— 用户原话
+    // [docs/29 §2.1] **线路不再有自己的代理**（出口只由服务商决定）→ 行里没有代理控件
+    expect(within(offRow).queryByTestId("providers-line-lane")).toBeNull();
+    // [docs/28 §1.5] **列表是清单，不是每条一张卡片**（用户原话："一条就是左边名字，
+    // 右边选择滑块就好了"）：行里**不许**显示上游原文 / 线路 id / 优先级权重；它们都在
+    // 点开的详情里。先证明"列表干净"，再点开证明"详情看得到"。
+    expect(within(offRow).queryByTestId("providers-line-raw-json")).toBeNull();
+    expect(within(offRow).queryByTestId("providers-line-id")).toBeNull();
+    expect(within(offRow).queryByTestId("providers-line-priority")).toBeNull();
 
-    // 全选：只勾 exists=false 的行
-    fireEvent.click(screen.getByTestId("pw-scan-select-all"));
-    expect(within(rows[0]!).getByTestId("pw-scan-check").querySelector("input")?.checked).toBe(true);
-    expect(within(rows[1]!).getByTestId("pw-scan-check").querySelector("input")?.checked).toBe(false);
-
-    fireEvent.click(screen.getByTestId("pw-scan-add"));
-    await waitFor(() => expect(apply.calls).toHaveLength(1));
-    // [docs/20 §3]：默认 lane 也要一起发出去（基准 mock 的 net.default_lane = lane-direct）
-    expect(apply.calls[0]).toEqual({
-      preview_token: "pv-1",
-      selected: ["deepseek-v4.1flash"],
-      lane: "lane-direct",
+    fireEvent.click(within(offRow).getByTestId("providers-line-info"));
+    const panel = await within(offRow).findByTestId("providers-line-info-panel");
+    const rawJson = within(panel).getByTestId("providers-line-raw-json").textContent ?? "";
+    expect(JSON.parse(rawJson)).toEqual({
+      id: "ta-e2e-node-hk",
+      object: "model",
+      owned_by: "vendor-x",
+      created: 1712345678,
     });
+    expect(within(panel).getByTestId("providers-line-id")).toBeTruthy();
+    // 再点一次收起（同时证明它是个开关，不是只进不出的抽屉）
+    fireEvent.click(within(offRow).getByTestId("providers-line-info"));
+    await waitFor(() =>
+      expect(within(offRow).queryByTestId("providers-line-info-panel")).toBeNull(),
+    );
 
-    // 添加完说清楚加了几个（后端返回 applied=true）
-    expect((await screen.findByTestId("pw-scan-result")).textContent).toContain("已添加 1 个模型");
+    // 目录里记的是 `{}` → 详情里如实说"上游没给对象"，不画空 JSON 框
+    fireEvent.click(within(onRow).getByTestId("providers-line-info"));
+    const onPanel = await within(onRow).findByTestId("providers-line-info-panel");
+    expect(within(onPanel).queryByTestId("providers-line-raw-json")).toBeNull();
+    expect(within(onPanel).getByTestId("providers-line-raw-empty").textContent).toBeTruthy();
+  });
+
+
+  it("[docs/28 §1 第 1 条] 向导里没有任何路径会创建模型；也没有删除线路的入口", async () => {
+    const { scan, createAll } = registerStep2Backend();
+    const upsertModel = recordingMock({});
+    registerMock("model_upsert", upsertModel.handler);
+    // 另一条会建 `Model` 的命令（[docs/25] 的"接入"）：向导里也不许出现
+    const attach = recordingMock({});
+    registerMock("provider_model_attach", attach.handler);
+
+    await gotoStep2();
+    await waitFor(() => expect(scan.calls).toHaveLength(1));
+    await waitFor(() => expect(createAll.calls).toHaveLength(1));
+    fireEvent.click(screen.getByTestId("pw-scan"));
+    await waitFor(() => expect(scan.calls).toHaveLength(2));
+
+    expect(upsertModel.calls).toHaveLength(0);
+    expect(attach.calls).toHaveLength(0);
+    // 向导是**新增**流程：不在这里删东西（删除走详情页 / 通道页）
+    expect(screen.queryByTestId("providers-line-remove")).toBeNull();
   });
 
   it("空结果 → pw-scan-empty 说「上游没有返回任何模型」，不编数据", async () => {
-    registerScanMocks({ preview_token: "pv-empty", models: [], skipped: [] });
+    registerUpsertMocks();
+    registerMock("model_import_from_provider", () => ({
+      preview_token: "pv-empty",
+      models: [],
+      skipped: [],
+    }));
+    registerMock("provider_lines_create_all", () => ({ created: 0, total: 0 }));
+    registerMock("channel_list", () => []);
+    registerMock("provider_model_catalog", () => []);
+    registerMock("config_get", () => ({ net: { default_lane: null } }));
 
     await gotoStep2();
-    fireEvent.click(screen.getByTestId("pw-scan"));
 
-    expect((await screen.findByTestId("pw-scan-empty")).textContent).toContain(
-      "上游没有返回任何模型",
+    expect((await screen.findByTestId("pw-scan-empty")).textContent).toBe(
+      copy("providers.wizard.scanEmpty"),
     );
-    expect(screen.queryByTestId("pw-scan-row")).toBeNull();
   });
 
   it("扫描失败 → pw-scan-error 显示后端原文（含 TA 码）", async () => {
     registerUpsertMocks();
     registerMock("model_import_from_provider", () => {
-      throw new TokenAgencyError({ code: "TA-1004", message: "预览已过期，请重新扫描" });
+      throw new TokenAgencyError({ code: "TA-2001", message: "上游连不上" });
     });
+    registerMock("channel_list", () => []);
+    registerMock("provider_model_catalog", () => []);
+    registerMock("config_get", () => ({ net: { default_lane: null } }));
 
     await gotoStep2();
-    fireEvent.click(screen.getByTestId("pw-scan"));
 
-    const error = await screen.findByTestId("pw-scan-error");
-    expect(error.textContent).toContain("TA-1004");
-    expect(error.textContent).toContain("预览已过期，请重新扫描");
+    const err = await screen.findByTestId("pw-scan-error");
+    expect(err.textContent).toContain("TA-2001");
+    expect(err.textContent).toContain("上游连不上");
   });
 
-  it("只有真的 pending 才显示 pw-scanning 的文案；结果回来才出现 pw-scan-result", async () => {
+  it("[docs/27 §1.5] 进第 2 步就自动扫描：扫描期间只有真实的 pending 文案", async () => {
     registerUpsertMocks();
-    let resolve!: (value: unknown) => void;
-    registerMock(
-      "model_import_from_provider",
-      () => new Promise((r) => { resolve = r; }),
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    registerMock("model_import_from_provider", async () => {
+      await gate;
+      return { preview_token: "pv", models: [], skipped: [] };
+    });
+    registerMock("provider_lines_create_all", () => ({ created: 0, total: 0 }));
+    registerMock("channel_list", () => []);
+    registerMock("provider_model_catalog", () => []);
+    registerMock("config_get", () => ({ net: { default_lane: null } }));
+
+    await gotoStep2();
+
+    // 真的在等后端才说"正在扫描"（无假进度）
+    expect(screen.getByTestId("providers-model-scanning").textContent).toBe(
+      copy("providers.catalog.rescanning"),
     );
+    release?.();
+    await screen.findByTestId("pw-scan-empty");
+    expect(screen.queryByTestId("providers-model-scanning")).toBeNull();
+  });
+
+  it("pw-cancel / pw-finish 都能关掉向导（cancel 一次命令都不发）", async () => {
+    const { scan, createAll } = registerStep2Backend();
 
     await gotoStep2();
-    expect(screen.queryByText("正在扫描上游模型")).toBeNull();
+    await waitFor(() => expect(scan.calls).toHaveLength(1));
+    const afterScan = scan.calls.length;
+    const afterCreate = createAll.calls.length;
 
-    fireEvent.click(screen.getByTestId("pw-scan"));
-    expect(await screen.findByText("正在扫描上游模型")).toBeTruthy();
-    expect(screen.queryByTestId("pw-scan-result")).toBeNull();
-
-    await act(async () => {
-      resolve(PREVIEW);
-    });
-    expect(await screen.findByTestId("pw-scan-result")).toBeTruthy();
-    expect(screen.queryByText("正在扫描上游模型")).toBeNull();
+    fireEvent.click(screen.getByTestId("pw-cancel"));
+    // MUI 的 Dialog 退场过渡结束后才真正卸载
+    await waitFor(() => expect(screen.queryByTestId("provider-wizard-step2")).toBeNull());
+    expect(scan.calls).toHaveLength(afterScan);
+    expect(createAll.calls).toHaveLength(afterCreate);
   });
 });
 
-// ================================================================ ⑤ [docs/20 §3] 添加之后立刻能看、每行能改线路
+// ================================================================ ⑥ [docs/22] 长解释收进问号圆圈
 
-/** 一份只有一条待添加模型的扫描结果（tid 与真机一致）。 */
-const LANE_PREVIEW = {
-  preview_token: "pv-lane",
-  models: [{ upstream_model: "m-new", suggested_id: "m-new", exists: false }],
-  skipped: [],
-};
-
-/** 一条已被这个服务商挂上的 cell（`channel_matrix` 的形状）。 */
-function matrixCell(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    model_id: "m-x",
-    credential_id: "my-gateway-default",
-    channel_id: "ch-x",
-    lane_id: null,
-    upstream_model: "up-x",
-    ...overrides,
-  };
-}
-
-/**
- * 「后端真的建了通道」的替身。
- *
- * 为什么必须由替身建：第 2 步上面那块是**从 `channel_matrix` 派生的**（[docs/20 §0]），
- * 前端不许自己往清单里塞行；所以"添加之后看得到"这件事，只能靠替身在 apply 之后
- * 真的往矩阵里加一条 —— 否则测的就是前端编的假数据。
- *
- * 改线路也一样：`model_bulk_update` 的替身把 lane 写回矩阵，界面上的值只有**重取**之后
- * 才会变（这正是"值要真的变回来"那条要求）。
- */
-function registerMatrixBackend() {
-  registerUpsertMocks();
-  registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
-  const cells: Record<string, unknown>[] = [];
-  registerMock("channel_matrix", () => matrixView(cells, []));
-  const bulkCalls: Record<string, unknown>[] = [];
-  registerMock("model_bulk_update", (args) => {
-    bulkCalls.push(args ?? {});
-    const ids = (args?.["ids"] ?? []) as string[];
-    const patch = (args?.["patch"] ?? {}) as Record<string, unknown>;
-    for (const cell of cells) {
-      if (ids.includes(cell["model_id"] as string)) cell["lane_id"] = patch["lane"] ?? null;
-    }
-    return { applied: true, restart_required: false, kernel_reload: false, channels_created: 0 };
-  });
-  return { cells, bulkCalls };
-}
-
-describe("[docs/20 §3] 添加之后上面立刻看得到，且每一行都能改线路", () => {
-  it("model_apply_import 带上默认 lane；后端真建了通道 → 行立刻出现；channels_created 如实显示", async () => {
-    const { cells } = registerMatrixBackend();
-    registerMock("model_import_from_provider", () => LANE_PREVIEW);
-    const applyCalls: Record<string, unknown>[] = [];
-    registerMock("model_apply_import", (args) => {
-      applyCalls.push(args ?? {});
-      // 后端建通道（[docs/20 §1.1]）：这条之后矩阵里才有它
-      cells.push(
-        matrixCell({
-          model_id: "m-new",
-          channel_id: "ch-my-gateway-my-gateway-default-m-new",
-          lane_id: (args?.["lane"] as string | null) ?? null,
-        }),
-      );
-      return { applied: true, restart_required: false, kernel_reload: false, channels_created: 1 };
-    });
-
-    await gotoStep2();
-    fireEvent.click(screen.getByTestId("pw-scan"));
-    fireEvent.click(await screen.findByTestId("pw-scan-select-all"));
-    fireEvent.click(screen.getByTestId("pw-scan-add"));
-
-    // ① 入参带上当前默认 lane
-    await waitFor(() => expect(applyCalls).toHaveLength(1));
-    expect(applyCalls[0]).toEqual({
-      preview_token: "pv-lane",
-      selected: ["m-new"],
-      lane: "lane-direct",
-    });
-
-    // ② 上面那块立刻有东西（不是点完添加、上面永远空着）
-    const row = await screen.findByTestId("pw-model-row");
-    expect(row.textContent).toContain("m-new");
-
-    // ③ 后端说新建了几条线路就显示几条（不编数字、不写死）
-    expect(screen.getByTestId("pw-channels-created").textContent).toContain("1");
-  });
-
-  it("[docs/21 §4.3] 只读展示也永不为空：没配过就是「直连」，并在旁边指路到通道页", async () => {
-    registerUpsertMocks();
-    registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
-    // 第 1 步也没选过默认代理：链路末端就是直连
-    registerMock("config_get", () => ({ net: { default_lane: null } }));
-    registerMock("channel_matrix", () => matrixView([matrixCell()]));
-
-    await gotoStep2();
-    const row = (await screen.findAllByTestId("pw-model-row"))[0]!;
-
-    // 旧代码里这里是个空下拉（用户看到的"未配置"）；现在必须是可读的名字 + 指路文案
-    expect(within(row).getByTestId("pw-model-lane-name").textContent).toBe("直连");
-    expect(within(row).getByTestId("pw-model-lane-readonly").textContent).not.toBe("");
-    expect(within(row).queryByRole("combobox")).toBeNull();
-  });
-
-  it("[docs/21 §4.3] 线路的编辑入口不在向导里：旧代码那条 model_bulk_update 路径必须消失", async () => {
-    const { cells, bulkCalls } = registerMatrixBackend();
-    cells.push(matrixCell());
-    registerMock("config_get", () => ({ net: { default_lane: null } }));
-
-    await gotoStep2();
-    const row = (await screen.findAllByTestId("pw-model-row"))[0]!;
-
-    // 行内只剩只读展示：点它、敲它都不会产生任何落库调用（旧代码这里是可改的下拉）
-    const laneBox = within(row).getByTestId("pw-model-lane");
-    fireEvent.click(laneBox);
-    fireEvent.keyDown(laneBox, { key: "ArrowDown" });
-    expect(bulkCalls).toHaveLength(0);
-    expect(laneTextOf(row)).toBe("直连");
-  });
-});
-
-// ================================================================ ⑤ [docs/22] 长解释收进问号圆圈
-
-/**
- * [docs/22]（用户第 74 轮：「简介好长，好多字……做成一个问号加一个圆圈」）的验收。
- *
- * 向导这一块的边界特别要紧：**第 2 步线路那一行已经明确"只读 + 指路到通道页"**
- * （[docs/21 §4.3]），那句 `pw-model-lane-readonly` 是用户必须一眼看到的约束，
- * 不是可藏起来的解释 —— 收紧它等于把"这里改不了"变成"要悬停才知道这里改不了"。
- */
 describe("[docs/22] 长解释收进问号圆圈，红线一律留在版面上", () => {
-  it("第 2 步：modelLaneDefaultHint 收进 pw-added-models-help，正文不再内联", async () => {
-    await gotoStep2();
-
-    // 先钉"不再内联"（旧代码上这一条先红：那句灰字正挂在区块标题下面）
-    expect(screen.queryByText(/没选过就是直连/)).toBeNull();
-
-    const help = screen.getByTestId("pw-added-models-help");
-    // 正文一个字都没丢：`aria-label` 就是全文
-    expect(help.getAttribute("aria-label")).toBe("没选过就是直连（继承链末端是直连）");
-    expect(screen.getAllByTestId("pw-added-models-help")).toHaveLength(1);
-
-    // 区块标题与**空态**都还在版面上（空态是结论，不是解释：[docs/22 §2 第 1 条]）
-    expect(screen.getByText("已添加的模型")).toBeTruthy();
-    expect(screen.getByTestId("pw-added-models-empty").textContent).toBe(
-      "这个服务商下还没有模型",
-    );
-    expect(help.getAttribute("aria-label") ?? "").not.toContain("这个服务商下还没有模型");
-  });
-
-  it("第 2 步：线路的只读指路文案 pw-model-lane-readonly 仍然内联（不许收进问号）", async () => {
-    registerUpsertMocks();
-    registerMock("credential_list", () => [credentialView("my-gateway-default", "my-gateway")]);
-    registerMock("channel_matrix", () =>
-      matrixView([
-        {
-          model_id: "m-added",
-          credential_id: "my-gateway-default",
-          channel_id: "ch-1",
-          lane_id: "lane-jp",
-          upstream_model: "upstream-added",
-        },
-      ]),
-    );
-
-    await gotoStep2();
-    const row = (await screen.findAllByTestId("pw-model-row"))[0]!;
-
-    const readonly = within(row).getByTestId("pw-model-lane-readonly");
-    expect(readonly.textContent).toContain("线路只在通道页改");
-    // 这一行只有那一个区块级的问号，行内没有第二个
-    expect(within(row).queryByTestId("pw-model-lane-help")).toBeNull();
-    expect(screen.getAllByTestId("pw-added-models-help")).toHaveLength(1);
-  });
-
-  it("第 1 步红线仍内联：非必填说明、密钥字段语义、按钮文案，且第 1 步没有问号", async () => {
+  it("第 1 步红线仍内联：非必填说明、密钥字段语义、按钮文案；唯一问号是密钥那条", async () => {
     await openWizard();
     const step1 = within(screen.getByTestId("provider-wizard-step1"));
 
-    // §2 第 3 条：必填 / 可选这类提示留在版面上
-    expect(step1.getByText("测试连接不是必须的，可以先跳过")).toBeTruthy();
-    // 密钥字段的语义（只写密钥仓库、永不回显）是字段级提示，留在字段下面
-    expect(step1.getByText("密钥（只写入密钥仓库，界面上永不回显）")).toBeTruthy();
-    // 第 1 步里**一个问号都没有**：它里面的长句全是红线（校验 / 后果 / 按钮）
-    expect(step1.queryAllByTestId(/-help$/)).toHaveLength(0);
+    // [docs/29 §2.1] 第 1 步不再有"新建线路默认代理"（代理只属于服务商）→ 问号只剩密钥那一条。
+    // 其余红线**内联**。
+    expect(
+      step1.getAllByTestId(/-help$/).map((el) => el.getAttribute("data-testid")),
+    ).toEqual(["pw-key-multiple-help"]);
+    const help = step1.getByTestId("pw-key-multiple-help").getAttribute("aria-label") ?? "";
+    expect(help).toBe(copy("providers.key.multipleHint"));
+    for (const el of step1.queryAllByTestId(/-help$/)) {
+      const label = el.getAttribute("aria-label") ?? "";
+      expect(label).not.toContain("测试连接不是必须的");
+      expect(label).not.toContain("只写入密钥仓库");
+    }
   });
 
-  it("第 2 步的落库后果、扫描结果里的数与后端原文仍然一眼可见", async () => {
+  it("第 2 步的落库后果、扫描结果里的数与上游原文仍然一眼可见", async () => {
+    registerUpsertMocks();
+    registerMock("model_import_from_provider", () => ({
+      preview_token: "pv-1",
+      models: [{ upstream_model: "m-1", suggested_id: "m-1", exists: false }],
+      skipped: [{ upstream_model: "bad model", reason: "名称不合法" }],
+    }));
+    registerMock("provider_lines_create_all", () => ({ created: 1, total: 1 }));
+    registerMock("channel_list", () => [
+      {
+        id: "ch-1",
+        model: "",
+        provider: "my-gateway",
+        credential: "my-gateway-default",
+        lane: null,
+        upstream_model: "m-1",
+        enabled: false,
+        priority: 1,
+        weight: 1,
+        tags: [],
+        transform: { path: null, headers_add: {}, headers_remove: [], headers_override: {}, body_patch: {} },
+        capabilities: { vision: false, tools: false, reasoning: false, context_tokens: 0, modalities: [] },
+      },
+    ]);
+    registerMock("provider_model_catalog", () => [
+      {
+        provider_id: "my-gateway",
+        upstream_model: "m-1",
+        suggested_id: "m-1",
+        seen_in_last_scan: true,
+        first_seen_ms: 1,
+        last_seen_ms: 2,
+        added: true,
+        channel_ids: ["ch-1"],
+        enabled: false,
+        raw: { id: "m-1", object: "model" },
+      },
+    ]);
+    registerMock("config_get", () => ({ net: { default_lane: null } }));
+
     await gotoStep2();
 
-    // §2 第 4 条：关掉向导不会撤销已经写入的配置 —— 破坏性/持久化后果
+    // 落库后果（关掉向导不回滚）
     expect(screen.getByTestId("pw-saved-notice").textContent).toContain(
-      "服务商与凭据已经写入配置；关掉向导不会撤销它们",
+      copy("providers.wizard.savedNotice"),
     );
-    // §2 第 6 条：按钮文案永远留在按钮上
-    expect(screen.getByTestId("pw-scan").textContent).toBe("一键扫描");
-    expect(screen.getByTestId("pw-finish").textContent).toBe("完成");
-    expect(screen.getByTestId("pw-cancel").textContent).toBe("取消");
-    // 页面上任何一个问号的正文都不是这几句红线
-    for (const help of screen.queryAllByTestId(/-help$/)) {
-      const label = help.getAttribute("aria-label") ?? "";
-      expect(label).not.toContain("关掉向导不会撤销");
-      expect(label).not.toContain("一键扫描");
-    }
+    // 按钮文案永远留在按钮上
+    expect(screen.getByTestId("pw-scan").textContent).toBe(copy("providers.wizard.scan"));
+    // [docs/28 §1.7] **主操作不参与滚动**：长列表时「完成」必须还在（所以它放在对话框的
+    // 固定按钮区，不在 `pw-step2-scroll` 那个滚动容器里）。
+    expect(screen.getByTestId("pw-finish").textContent).toBe(copy("providers.wizard.finish"));
+    expect(within(screen.getByTestId("pw-step2-scroll")).queryByTestId("pw-finish")).toBeNull();
+    expect(screen.getByTestId("pw-cancel").textContent).toBe(copy("common.cancel"));
+    // 扫到几条 + 跳过了几条都在版面上；上游原文在**点开的详情**里（[docs/28 §1.5]）
+    expect((await screen.findByTestId("providers-model-notice")).textContent).toContain("1");
+    const skipped = screen.getByText(copyCount("providers.wizard.scanSkipped", 1));
+    expect(skipped).toBeTruthy();
+    const row = (await screen.findAllByTestId("providers-line-row"))[0]!;
+    fireEvent.click(within(row).getByTestId("providers-line-info"));
+    const panel = await within(row).findByTestId("providers-line-info-panel");
+    expect(JSON.parse(within(panel).getByTestId("providers-line-raw-json").textContent ?? "{}")).toEqual({
+      id: "m-1",
+      object: "model",
+    });
   });
 });

@@ -1,25 +1,29 @@
 /**
- * `/providers` 的两个添加向导（[docs/17 §3.1]）：**添加服务商** 与 **添加密钥**。
+ * `/providers` 的「高级添加」对话框（[docs/17 §3.1]）：**添加服务商**（单步、字段全）。
  *
- * 单独成文件（不在 `index.tsx` 里）的理由：这两个对话框是**唯一会写配置的入口**，
- * 它们的"说什么、发什么、什么时候清空"值得单独看清楚；列表页只管读。
+ * 单独成文件（不在 `index.tsx` 里）的理由：它是列表页唯一会写**服务商**的对话框，
+ * 它的"说什么、发什么、什么时候清空"值得单独看清楚；列表页只管读。
+ *
+ * **这里原来还有第二个对话框「添加密钥」**（一次建一份凭据，带额度上限 / 币种 / 窗口）——
+ * 第 80 轮已**整条删除**（[docs/28 §1] 硬规则 3：**一个服务商一把密钥**）。留着它就是
+ * "给一个已存在的服务商再挂一份凭据"的活入口，正是 owner 明确反对的那个模型：
+ * 要两个账号 → **再加一条服务商、取不同名字**（提示文案 `providers.key.multipleHint`）。
+ * 密钥的写入口现在只有两处 —— 两步向导第 1 步（`./providerWizard.tsx` 的 `pw-key`）
+ * 与详情页「密钥」块（`./detail.tsx` 的 `providers-edit-secret`）。
  *
  * 硬纪律（写在这里，免得下一个人再犯）：
  *
- * 1. **只调已注册的命令**：`provider_upsert` / `credential_upsert` / `credential_set_secret`
- *    都在 `src-tauri/src/commands/mod.rs` 的 `collect_commands!` 里
- *    （`src/app/commandSurface.guard.test.ts` 机械检查）。
- * 2. **本地预检不过就一次都不发**（`./wizard.ts` 的 `validate*`）。
+ * 1. **只调已注册的命令**：`provider_upsert` 在 `src-tauri/src/commands/mod.rs` 的
+ *    `collect_commands!` 里（`src/app/commandSurface.guard.test.ts` 机械检查）。
+ * 2. **本地预检不过就一次都不发**（`./wizard.ts` 的 `validateProviderDraft`）。
  * 3. **回显的是后端返回值**（`mutation.data`），不是我们提交的草稿 —— 后端可能改字段。
- * 4. **明文只进密钥仓库**：`credential.secret` 只是 `${secret:<id>}` 引用；
- *    用户填的明文只出现在 `credential_set_secret({ id, plaintext })` 的入参里，
- *    不进日志、不进错误消息，成功后**就地清空输入框**。
+ * 4. **名称是用户区分"同一家的不同账号"的抓手**（[docs/28 §1] 硬规则 3）：重名在本地就挡住
+ *    （对现有 `name` 去重），不等到配置里出现两条长得一样的记录；后端错误原文仍原样显示。
  * 5. `data-testid` 挂在**外层元素**上（MUI 的 `TextField` / `Select` / `Checkbox` 不吃它，
  *    会 TS2353）；真机 E2E 与单测都用 `[data-testid="X"] input` 命中同一形状。
  */
 
 import {
-  Box,
   Button,
   Dialog,
   DialogActions,
@@ -31,26 +35,20 @@ import {
   Typography,
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 
 import { errorMessage, qk, useCommandMutation } from "@/shared/api";
-import type { ProviderView } from "@/shared/bindings";
-import { HelpTip } from "@/shared/components";
+import { Caption, HelpTip } from "@/shared/components";
 import { useTranslation, type I18nKey } from "@/shared/i18n";
 import { typography } from "@/theme";
 
 import { PROTOCOLS } from "./protocols";
 import {
   AUTH_SCHEMES,
-  EMPTY_CREDENTIAL_DRAFT,
   EMPTY_PROVIDER_DRAFT,
-  QUOTA_WINDOWS,
-  credentialPayload,
   providerPayload,
-  sanitizeAmount,
-  validateCredentialDraft,
   validateProviderDraft,
-  type CredentialDraft,
+  type ExistingProviderRefs,
   type ProviderDraft,
   type WizardIssue,
 } from "./wizard";
@@ -73,13 +71,6 @@ const AUTH_SCHEME_LABEL: Record<string, I18nKey> = {
   none: "providers.authScheme.none",
 };
 
-const WINDOW_LABEL: Record<string, I18nKey> = {
-  hour: "providers.quota.window.hour",
-  day: "providers.quota.window.day",
-  month: "providers.quota.window.month",
-  none: "providers.quota.window.none",
-};
-
 /** 本地预检点名哪个字段时用的标题（文案全部复用既有键）。 */
 export const FIELD_LABEL: Record<string, I18nKey> = {
   id: "providers.field.id",
@@ -93,13 +84,6 @@ export const FIELD_LABEL: Record<string, I18nKey> = {
 
 // ================================================================ 小组件
 
-function Caption({ children }: { children: ReactNode }) {
-  return (
-    <Typography variant="caption" sx={{ color: "text.secondary" }}>
-      {children}
-    </Typography>
-  );
-}
 
 /**
  * 一个下拉字段。`data-testid` 挂在**容器**上（与线路页 `SelectField` 同一形状）。
@@ -115,6 +99,7 @@ export function SelectField({
   onChange,
   options,
   emptyLabel,
+  labelHidden = false,
 }: {
   testId: string;
   label: string;
@@ -122,6 +107,13 @@ export function SelectField({
   onChange: (value: string) => void;
   options: readonly { value: string; label: string }[];
   emptyLabel: string;
+  /**
+   * [15 §2] **极简**：列表里的重复标签不画在每一行上，改由**列头**说一次。
+   *
+   * 这时 `label` 仍然必须给：它变成 `aria-label`（无障碍名称一个字不少），
+   * 只是不占版面。别把"看不见"做成"读不到"。
+   */
+  labelHidden?: boolean;
 }) {
   const labelOf = (id: string): string => options.find((o) => o.value === id)?.label ?? id;
   return (
@@ -130,7 +122,8 @@ export function SelectField({
         select
         size="small"
         fullWidth
-        label={label}
+        label={labelHidden ? undefined : label}
+        aria-label={labelHidden ? label : undefined}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         slotProps={{
@@ -174,18 +167,23 @@ function Issues({ testId, issues }: { testId: string; issues: readonly WizardIss
 
 export type ProviderAddDialogProps = {
   open: boolean;
-  /** 现有 `provider_list` 的 id：本地去重用（[docs/17 §3.1]）。 */
-  existingIds: readonly string[];
+  /**
+   * 现有 `provider_list` 的 id **与显示名称**：本地去重用（[docs/17 §3.1] + [docs/28 §1]）。
+   *
+   * 名称也要去重：`name` 是用户区分"同一家的不同账号"的抓手（"我要两个账号就再加一条服务商、
+   * 取不同名字"），两条同名记录在界面上根本分不出谁是谁 —— 所以本地就挡住，不发命令。
+   */
+  existing: ExistingProviderRefs;
   onClose: () => void;
 };
 
 /**
  * 「添加服务商」向导。保存只做一件事：`provider_upsert({ provider })`。
  *
- * **没有 API Key 输入框**：密钥属于凭据域（见「添加密钥」）。这里只配"这家服务商怎么连"
- * （id / 名称 / 协议 / 地址 / 鉴权方式），凭据由另一个向导写。
+ * **没有 API Key 输入框**：密钥属于凭据域，而凭据的写入口只有两处（两步向导第 1 步与详情页
+ * 「密钥」块）—— 这里只配"这家服务商怎么连"（id / 名称 / 协议 / 地址 / 鉴权方式）。
  */
-export function ProviderAddDialog({ open, existingIds, onClose }: ProviderAddDialogProps) {
+export function ProviderAddDialog({ open, existing, onClose }: ProviderAddDialogProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const upsert = useCommandMutation("provider_upsert");
@@ -205,7 +203,7 @@ export function ProviderAddDialog({ open, existingIds, onClose }: ProviderAddDia
   };
 
   const submit = (): void => {
-    const found = validateProviderDraft(draft, existingIds);
+    const found = validateProviderDraft(draft, existing);
     setIssues(found);
     // 本地预检不过 → **一次都不发**
     if (found.length > 0) return;
@@ -360,220 +358,15 @@ export function ProviderAddDialog({ open, existingIds, onClose }: ProviderAddDia
   );
 }
 
-// ================================================================ 添加密钥
-
-export type CredentialAddDialogProps = {
-  open: boolean;
-  /** `provider_list`：服务商下拉的选项（`credential.provider` 是一个外键）。 */
-  providers: readonly ProviderView[];
-  /** 现有 `credential_list` 的 id：本地去重用。 */
-  existingIds: readonly string[];
-  onClose: () => void;
-};
-
-/**
- * 「添加密钥」向导。保存**两步**（[docs/17 §3.1]）：
- *
- * 1. `credential_upsert({ credential })` —— 落配置，`secret` 是 `${secret:<id>}` **引用**；
- * 2. **只有用户真的填了明文**，才 `credential_set_secret({ id, plaintext })` 把值写进密钥仓库。
- *
- * 所以明文只进密钥仓库：载荷里没有它、日志里没有它、错误消息里没有它，
- * 成功后输入框立刻清空（失败时**保留**，用户还要重试）。
- */
-export function CredentialAddDialog({
-  open,
-  providers,
-  existingIds,
-  onClose,
-}: CredentialAddDialogProps) {
-  const { t } = useTranslation();
-  const queryClient = useQueryClient();
-  const upsert = useCommandMutation("credential_upsert");
-  const setSecret = useCommandMutation("credential_set_secret");
-
-  const [draft, setDraft] = useState<CredentialDraft>(EMPTY_CREDENTIAL_DRAFT);
-  const [issues, setIssues] = useState<readonly WizardIssue[]>([]);
-
-  const set = <K extends keyof CredentialDraft>(key: K, value: CredentialDraft[K]): void =>
-    setDraft((previous) => ({ ...previous, [key]: value }));
-
-  const close = (): void => {
-    setDraft(EMPTY_CREDENTIAL_DRAFT);
-    setIssues([]);
-    upsert.reset();
-    setSecret.reset();
-    onClose();
-  };
-
-  const submit = (): void => {
-    const found = validateCredentialDraft(draft, existingIds);
-    setIssues(found);
-    if (found.length > 0) return;
-
-    // 明文先取出来（下面会清空草稿）：它只进 `credential_set_secret`
-    const plaintext = draft.secret;
-    upsert.reset();
-    setSecret.reset();
-    upsert.mutate(
-      { credential: credentialPayload(draft) },
-      {
-        onSuccess: (saved) => {
-          void queryClient.invalidateQueries({ queryKey: qk.credentials });
-          if (plaintext === "") {
-            // 没填密钥：只建凭据（引用已经写好），密钥留待以后单独写
-            setDraft(EMPTY_CREDENTIAL_DRAFT);
-            return;
-          }
-          // 用**后端返回的 id** 写密钥：写的是后端真的落库的那一条
-          setSecret.mutate(
-            { id: saved.id, plaintext },
-            { onSuccess: () => setDraft(EMPTY_CREDENTIAL_DRAFT) },
-          );
-        },
-      },
-    );
-  };
-
-  const saved = upsert.data;
-  /** 两个 mutation 只可能有一个错：写密钥只在建凭据成功后才发。 */
-  const failure = upsert.error ?? setSecret.error;
-
-  return (
-    <Dialog open={open} onClose={close} fullWidth maxWidth="sm">
-      <DialogTitle>{t("credentials.add.title")}</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          <Stack spacing={1} data-testid="credentials-add-id">
-            <TextField
-              label={t("providers.field.id")}
-              value={draft.id}
-              onChange={(event) => set("id", event.target.value)}
-              size="small"
-              fullWidth
-            />
-          </Stack>
-
-          <Stack spacing={1} data-testid="credentials-add-label">
-            <TextField
-              label={t("providers.credentials.col.label")}
-              value={draft.label}
-              onChange={(event) => set("label", event.target.value)}
-              size="small"
-              fullWidth
-            />
-          </Stack>
-
-          <SelectField
-            testId="credentials-add-provider"
-            label={t("channels.add.provider")}
-            value={draft.provider}
-            onChange={(value) => set("provider", value)}
-            options={providers.map((provider) => ({ value: provider.id, label: provider.name }))}
-            emptyLabel={t("wizard.required")}
-          />
-
-          {/* 明文输入：type=password，**永不回显**（成功后清空） */}
-          <Stack spacing={1} data-testid="credentials-add-secret">
-            <TextField
-              type="password"
-              label={t("credentials.add.secret")}
-              value={draft.secret}
-              onChange={(event) => set("secret", event.target.value)}
-              size="small"
-              fullWidth
-              autoComplete="new-password"
-            />
-          </Stack>
-
-          {/*
-            额度块。上限 / 币种 / 窗口三个控件的字段名在 i18n 里**没有现成的键**
-            （[docs/17 §3.0] 只落了 `credentials.add.secret`），所以这里：
-            · 用既有的 `providers.credentials.col.quota`（「额度」）当**分组标题**；
-            · 上限输入框用它当字段标题；币种用 ISO 码做 placeholder（`CNY` 是代码不是文案）；
-            · 窗口下拉直接显示选中的窗口文案（每小时/每天/每月/不重置）。
-            缺的键已报给主管，补上后把这里的 placeholder 换成正式 label。
-          */}
-          <Stack spacing={1}>
-            <Caption>{t("providers.credentials.col.quota")}</Caption>
-            <Stack data-testid="credentials-add-quotaLimit">
-              <TextField
-                label={t("providers.credentials.col.quota")}
-                value={draft.quotaLimit}
-                /* 输入即净化：`Number()` 拿不到 NaN，本地就不需要"必须是数字"的新文案 */
-                onChange={(event) => set("quotaLimit", sanitizeAmount(event.target.value))}
-                size="small"
-                fullWidth
-                slotProps={{ htmlInput: { inputMode: "decimal" } }}
-              />
-            </Stack>
-            <Box sx={{ display: "flex", gap: 2 }}>
-              <Stack sx={{ flex: 1 }} data-testid="credentials-add-currency">
-                <TextField
-                  placeholder="CNY"
-                  value={draft.currency}
-                  onChange={(event) => set("currency", event.target.value)}
-                  size="small"
-                  fullWidth
-                />
-              </Stack>
-              <Stack sx={{ flex: 1 }} data-testid="credentials-add-window">
-                <TextField
-                  select
-                  size="small"
-                  fullWidth
-                  value={draft.window}
-                  onChange={(event) => set("window", event.target.value as CredentialDraft["window"])}
-                  slotProps={{
-                    select: {
-                      renderValue: (selected: unknown) =>
-                        t(WINDOW_LABEL[selected as string] ?? "providers.quota.window.month"),
-                    },
-                  }}
-                >
-                  {QUOTA_WINDOWS.map((window) => (
-                    <MenuItem key={window} value={window}>
-                      {t(WINDOW_LABEL[window] ?? "providers.quota.window.month")}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              </Stack>
-            </Box>
-          </Stack>
-
-          <Issues testId="credentials-add-issues" issues={issues} />
-
-          {/* 后端的错原样显示（TA 码），本地预检不替代它；**错误里不会有明文** */}
-          {failure !== null ? (
-            <Typography variant="body1" data-testid="credentials-add-error" sx={{ color: "error.main" }}>
-              {errorMessage(failure)}
-            </Typography>
-          ) : null}
-
-          {/* 成功：显示**后端返回的那个 Credential** */}
-          {saved !== undefined ? (
-            <Stack spacing={1} data-testid="credentials-add-result">
-              <Typography variant="body1">{t("wizard.saved", { id: saved.id })}</Typography>
-              <Typography
-                variant="body1"
-                sx={{ fontFamily: typography.fontMono, overflowWrap: "anywhere" }}
-              >
-                {[saved.label, saved.provider, saved.secret].join(" · ")}
-              </Typography>
-            </Stack>
-          ) : null}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={close}>{t("common.cancel")}</Button>
-        <Button
-          variant="contained"
-          data-testid="credentials-add-submit"
-          disabled={upsert.isPending || setSecret.isPending}
-          onClick={submit}
-        >
-          {t("common.save")}
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
+// ================================================================ 凭据：这里没有向导了
+//
+// 第 80 轮删掉的 `CredentialAddDialog`（「添加密钥」）不会再回来（[docs/28 §1] 硬规则 3：
+// **一个服务商一把密钥**；要两个账号 → 再加一条服务商、取不同名字，见 `providers.key.multipleHint`）。
+// 它当年做的是"给一个**已存在**的服务商再挂一份凭据（带自己的额度上限/币种/窗口）"——
+// 正是 owner 反对的那个模型，也是"多份凭据 → 多个删除入口"的源头。
+//
+// 凭据的写入口现在只有两处（都不在这个文件里）：
+// · 两步向导第 1 步（`./providerWizard.tsx` 的 `pw-key` → `credential_set_secret`，
+//   凭据 id 恒为 `<provider>-default`，一个服务商就这一把）；
+// · 详情页「密钥」块（`./detail.tsx` 的 `providers-edit-secret`，留空 = 不改）。
+// 额度窗口挂在**那一把**凭据上，编辑口在详情页的 `providers-quota-windows`。

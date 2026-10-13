@@ -949,26 +949,6 @@ mod tests {
                 ta_core::pricing::ResolvedPrice::unpriced("USD", 1.0)
             }
         }
-        struct NoQuota;
-        impl ta_core::quota::QuotaLedger for NoQuota {
-            fn state(&self, _cred: &ta_core::types::CredentialId) -> ta_core::quota::QuotaState {
-                ta_core::quota::QuotaState::default()
-            }
-            fn observe(
-                &self,
-                _cred: &ta_core::types::CredentialId,
-                _obs: ta_core::quota::QuotaObservation,
-            ) {
-            }
-            fn mark_exhausted(&self, _cred: &ta_core::types::CredentialId, _hint: Option<i64>) {}
-            fn mark_invalid(&self, _cred: &ta_core::types::CredentialId) {}
-            fn roll_window(&self, _now_ms: i64) -> Vec<ta_core::types::CredentialId> {
-                vec![]
-            }
-            fn remaining_ratio(&self, _cred: &ta_core::types::CredentialId) -> Option<f64> {
-                None
-            }
-        }
 
         let deps = Arc::new(GatewayDeps {
             config: Arc::new(arc_swap::ArcSwap::from_pointee(test_cfg())),
@@ -977,7 +957,7 @@ mod tests {
             events: Arc::new(NoEvents),
             clock: Arc::new(ManualClock::new(0)),
             pricing: Arc::new(NoPricing),
-            quota: Arc::new(NoQuota),
+            balance: None,
         });
         let state = AdminState::from_deps(
             &deps,

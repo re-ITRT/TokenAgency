@@ -192,6 +192,91 @@ impl KernelRest {
         Ok(())
     }
 
+    /// `GET /providers/proxies/{key}/healthcheck?url=<probe>` —— 触发**整份订阅**的体检。
+    ///
+    /// ★ **为什么不能用 `GET /proxies/{name}/delay` 测 provider 的节点**（[docs/46 §297] 实测，
+    /// mihomo v1.19.31）：proxy-provider 的节点**不在 `/proxies` 顶层** —— 顶层只有内核内置的
+    /// 8 项（`COMPATIBLE/DIRECT/GLOBAL/PASS/PASS-RULE/REJECT/REJECT-DROP` + 我们建的组）。
+    /// 四条命名形式 `/proxies/<name>/delay`、`/proxies/<provider>/<name>/delay`、
+    /// `/proxies/<provider>|<name>/delay`、`/providers/proxies/<provider>/<name>/delay`
+    /// **全部 404**。provider 的节点只走 provider 命名空间：先体检，再读
+    /// [`KernelRest::provider_node_delays`] 里的 `history[].delay`。
+    pub async fn provider_healthcheck(
+        &self,
+        key: &str,
+        probe_url: &str,
+        timeout_ms: u64,
+    ) -> Result<()> {
+        let mut url = reqwest::Url::parse(
+            &self.url(&format!("/providers/proxies/{}/healthcheck", encode_path_segment(key))),
+        )
+        .map_err(|e| TaError::Kernel(format!("构造 provider 体检 URL 失败：{e}")))?;
+        url.query_pairs_mut()
+            .append_pair("timeout", &timeout_ms.to_string())
+            .append_pair("url", probe_url);
+        let rb = self
+            .client
+            .get(url)
+            // 内核要一家一家去拨（34 条节点），给它比单节点测速宽得多的余量；
+            // 我们的客户端超时必须**晚于**内核收工，否则会把"慢"误判成"控制面坏了"。
+            .timeout(Duration::from_millis(timeout_ms.max(1_000).saturating_add(15_000)));
+        self.send(&format!("GET /providers/proxies/{key}/healthcheck"), self.auth(rb)).await?;
+        Ok(())
+    }
+
+    /// `GET /providers/proxies/{key}` → 节点名 → 内核测出来的延迟（`None` = 测不到）。
+    pub async fn provider_node_delays(&self, key: &str) -> Result<BTreeMap<String, Option<u32>>> {
+        let rb =
+            self.client.get(self.url(&format!("/providers/proxies/{}", encode_path_segment(key))));
+        let body: serde_json::Value =
+            self.send_json(&format!("GET /providers/proxies/{key}"), self.auth(rb)).await?;
+        parse_provider_delays(&body, key)
+    }
+
+    /// **「自动」出口要的那张延迟表**：先触发一次全 provider 体检，再读到"体检跑完"为止。
+    ///
+    /// 为什么要轮询：内核的 `healthcheck` 是**并发**拨号的，`204` 回来时不一定每个节点都写好了
+    /// `history`。判据**不是**"睡够多久"，而是下面两条之一：
+    ///
+    /// 1. `measured == total`（全都量到了 ⇒ 表是完整的，立刻用）；
+    /// 2. 连续 **1 秒**（4 次 × 250ms）没有任何新进展、且至少量到一条 ⇒ 剩下的确实量不出来。
+    ///
+    /// ★ 为什么 ② 不能写成"连续两次读数相同"：那只要 **250 ms** 就成立，而并发拨号里节点是
+    /// **陆续**写 `history` 的 —— 半路下结论会把**真最快那条**当成"还没测到"而错过它
+    /// （真机实测：应用只量到 27/34 就裁决，选出来的那条随后被量出 2308ms，而真最快是 137ms）。
+    ///
+    /// 到点仍然一条都没测出来时**如实返回空/全 `None`** —— 由上层落成 `all_unreachable`，
+    /// 绝不在这里编一个延迟出来。
+    pub async fn provider_delays(
+        &self,
+        key: &str,
+        probe_url: &str,
+        wait_ms: u64,
+    ) -> Result<BTreeMap<String, Option<u32>>> {
+        self.provider_healthcheck(key, probe_url, DEFAULT_READ_TIMEOUT.as_millis() as u64).await?;
+        let deadline = std::time::Instant::now() + Duration::from_millis(wait_ms);
+        let mut prev: Option<usize> = None;
+        let mut stable = 0u32;
+        loop {
+            let map = self.provider_node_delays(key).await?;
+            let total = map.len();
+            // 空 provider（还没拉到节点）不必等：等下去也不会自己长出节点来。
+            if total == 0 {
+                return Ok(map);
+            }
+            let measured = map.values().filter(|v| v.is_some()).count();
+            stable = if prev == Some(measured) { stable + 1 } else { 0 };
+            if measured == total || (stable >= 4 && measured > 0) {
+                return Ok(map);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(map);
+            }
+            prev = Some(measured);
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     /// `GET /proxies`（原始 JSON）
     pub async fn proxies(&self) -> Result<serde_json::Value> {
         let rb = self.client.get(self.url("/proxies"));
@@ -311,6 +396,43 @@ pub fn parse_provider_counts(providers: &serde_json::Value) -> Result<BTreeMap<S
     Ok(env.providers.into_iter().map(|(key, raw)| (key, raw.proxies.len())).collect())
 }
 
+/// `GET /providers/proxies/{key}` → 节点名 → 内核测出来的延迟（`None` = 测不到）。
+///
+/// 判据与 [`NodeRef::latest_delay`] 同源：**只信内核给的 `alive` + 末次 `history[].delay`**。
+/// 三条都要落成 `None`：`alive == false`、`history` 为空（没测过）、末次 `delay == 0`
+/// （内核测失败时写 0）。**绝不用 0 冒充"最快"** —— 那会选出一条其实不通的出口。
+pub fn parse_provider_delays(
+    body: &serde_json::Value,
+    key: &str,
+) -> Result<BTreeMap<String, Option<u32>>> {
+    #[derive(Deserialize)]
+    struct OneProvider {
+        #[serde(default)]
+        proxies: Vec<ProviderNodeRaw>,
+    }
+    let one: OneProvider = serde_json::from_value(body.clone())
+        .map_err(|e| TaError::Kernel(format!("GET /providers/proxies/{key} 形态不符：{e}")))?;
+    Ok(one
+        .proxies
+        .into_iter()
+        .map(|n| {
+            let delay = node_delay(&n);
+            (n.name, delay)
+        })
+        .collect())
+}
+
+/// 一个 provider 节点"测出来的延迟"。
+fn node_delay(n: &ProviderNodeRaw) -> Option<u32> {
+    if !n.alive {
+        return None;
+    }
+    match n.history.last() {
+        Some(h) if h.delay > 0 => Some(h.delay),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ProxiesEnvelope {
     #[serde(default)]
@@ -359,7 +481,7 @@ struct ProviderRaw {
 }
 
 /// provider 里带的节点。字段与 [`ProxyRaw`] 同源（同一个 mihomo 节点结构），
-/// 但这里只需要索引要用的三个 —— 其余字段由 serde 忽略，**不多写就是不多猜**。
+/// 这里只取索引与测速要用的字段 —— 其余字段由 serde 忽略，**不多写就是不多猜**。
 #[derive(Debug, Deserialize)]
 struct ProviderNodeRaw {
     #[serde(default)]
@@ -368,6 +490,9 @@ struct ProviderNodeRaw {
     kind: String,
     #[serde(default)]
     alive: bool,
+    /// ★ provider 节点的延迟**只在这里**（`/proxies` 顶层没有它们，`delay` 路由也 404）。
+    #[serde(default)]
+    history: Vec<HistoryRaw>,
 }
 
 // ================================================================ 工具
@@ -665,6 +790,67 @@ mod tests {
 
         rest(&server).refresh_provider("sub-jp").await.unwrap();
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn provider_delays_triggers_healthcheck_then_reads_history() {
+        // ★ [docs/46 §297] 这是「自动」出口测速的**唯一**正确路径：
+        //   `/proxies/<name>/delay` 对 provider 节点是全 404 的（顶层没有它们）。
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/providers/proxies/sub-jp/healthcheck"))
+            .and(query_param("url", "https://ark.example/v3/models"))
+            .and(query_param("timeout", "10000"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/providers/proxies/sub-jp"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "name": "机场A",
+                "vehicleType": "HTTP",
+                "proxies": [
+                    { "name": "东京-03", "type": "Vmess", "alive": true,
+                      "history": [{ "time": "t1", "delay": 0 }, { "time": "t2", "delay": 120 }] },
+                    { "name": "大阪-01", "type": "Vmess", "alive": true, "history": [] },
+                    { "name": "首尔-01", "type": "Vmess", "alive": false,
+                      "history": [{ "time": "t1", "delay": 300 }] }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let map = rest(&server)
+            .provider_delays("sub-jp", "https://ark.example/v3/models", 3_000)
+            .await
+            .unwrap();
+
+        assert_eq!(map.get("东京-03"), Some(&Some(120)), "末次 120ms 要读出来");
+        assert_eq!(map.get("大阪-01"), Some(&None), "history 为空 = 没测过 = None");
+        assert_eq!(map.get("首尔-01"), Some(&None), "alive=false 一律 None（哪怕历史里有数）");
+
+        // 体检必须**先**发生（顺序），而且带上了我们要探测的那个上游端点。
+        let reqs = server.received_requests().await.unwrap();
+        assert!(reqs[0].url.path().ends_with("/healthcheck"), "第一个请求应是 healthcheck");
+    }
+
+    #[test]
+    fn parse_provider_delays_never_invents_a_delay() {
+        let body = json!({
+            "proxies": [
+                { "name": "没测过", "alive": true, "history": [] },
+                { "name": "测失败", "alive": true, "history": [{ "time": "t", "delay": 0 }] },
+                { "name": "不通", "alive": false, "history": [{ "time": "t", "delay": 40 }] },
+                { "name": "通了", "alive": true, "history": [{ "time": "t", "delay": 40 }] }
+            ]
+        });
+        let map = parse_provider_delays(&body, "sub-jp").unwrap();
+        assert_eq!(map.get("没测过"), Some(&None));
+        assert_eq!(map.get("测失败"), Some(&None));
+        assert_eq!(map.get("不通"), Some(&None));
+        assert_eq!(map.get("通了"), Some(&Some(40)));
+        // 形态不符要报错，不能静默当成"全都测不到"（那会把一次解析错误说成"节点全不通"）。
+        assert!(parse_provider_delays(&json!({ "proxies": 7 }), "sub-jp").is_err());
     }
 
     #[tokio::test]

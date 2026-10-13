@@ -176,16 +176,16 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             // ---- task-16 批次 A 第 2 组：实体级写命令（entity.rs，本组命令只由本文件的作者登记）
             entity::provider_delete,
             entity::credential_upsert,
-            entity::credential_delete,
             entity::credential_set_secret,
             entity::credential_set_enabled,
-            entity::credential_clear_quota,
             entity::model_upsert,
             entity::model_delete,
             entity::model_bulk_update,
             entity::channel_delete,
             entity::channel_set_tags,
-            entity::channel_bulk_assign_lane,
+            // [docs/55] `channel_bulk_assign_lane` 已删除：线路分配只剩**服务商级**一处，
+            //「把一批通道的 lane 改成同一个值」这个动作不再有意义（通道上已经没有 lane 字段）。
+            entity::channel_bulk_set_enabled,
             entity::channel_matrix,
             entity::group_upsert,
             entity::group_delete,
@@ -205,14 +205,19 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             upstream::provider_test,
             upstream::model_import_from_provider,
             upstream::model_apply_import,
+            // ---- docs/25：模型目录（扫描只记录、勾一下才接入；没有手动添加）
+            upstream::provider_model_catalog,
+            upstream::provider_model_attach,
+            // [docs/28 §1.4] 「添加服务商就把所有线路建出来」（默认关闭，之后只用滑块启停）
+            upstream::provider_lines_create_all,
             usage::usage_dashboard,
             usage::usage_query,
             usage::usage_token_kinds,
             usage::usage_request_stream_snapshot,
             usage::pricing_unpriced_models,
             usage::usage_export_csv,
-            usage::quota_limit_gaps,
             log::log_query,
+            log::log_stats,
             log::log_get_trace,
             log::log_set_mode,
             log::log_set_retention,
@@ -241,6 +246,8 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             net::subscription_refresh,
             net::subscription_preview,
             net::subscription_nodes,
+            // 用户第 202 轮：节点级启用/关闭（批量，供界面的全选/单选）
+            net::subscription_nodes_enabled,
             net::subscription_groups,
             net::subscription_rules_raw,
             net::subscription_rollback,
@@ -250,9 +257,14 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             net::lane_delete,
             net::lane_set_node,
             net::lane_test,
-            net::lane_assignments,
-            net::lane_pick_options,
-            net::lane_reverse_lookup,
+            // [docs/55] `lane_assignments` / `lane_pick_options` / `lane_reverse_lookup`
+            // 已删除：它们只服务于"线路级别的分配"（五级继承链），随 `/network/assignments`
+            // 整页删除后没有任何调用方。
+            // [docs/28 §1.2] 线路（网络代理）下拉的可选来源：已配置线路 + 订阅节点，
+            // 以及"选中一个节点就确保有一条对应线路"（已有则复用）
+            net::lane_options,
+            net::lane_ensure_for_node,
+            net::lane_ensure_direct,
             net::kernel_start,
             net::kernel_stop,
             net::kernel_restart,

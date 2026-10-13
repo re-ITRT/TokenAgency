@@ -24,7 +24,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import LogsPage, { LogsBody, type LogsBodyProps } from "@/pages/logs";
+import LogsPage, {
+  LogsBody,
+  OUTCOME_LEVELS,
+  outcomeOf,
+  type LogsBodyProps,
+  type LogStatsView,
+} from "@/pages/logs";
 import {
   DEFAULT_FILTER,
   PAGE_SIZE,
@@ -147,6 +153,9 @@ function makeProps(overrides: Partial<LogsBodyProps> = {}): LogsBodyProps {
       canLoadMore: false,
       isLoadingMore: false,
       onLoadMore: () => {},
+    outcome: "all",
+    onPickOutcome: () => {},
+    onPickPreset: () => {},
     },
     log: {
       stats: undefined,
@@ -188,6 +197,246 @@ function renderBody(overrides: Partial<LogsBodyProps> = {}) {
   );
 }
 
+/**
+ * [docs/32] L2：顶部四张统计卡。
+ *
+ * 三条都要钉：① 数字来自 `log_stats`（不是前端自己数）；② **一行都没有**时平均延迟显示
+ * 「读不到」（后端给 `null`，界面**不许**编 0ms）；③ 读取失败时整排卡显示「读不到」，
+ * 不留旧数字 —— 这是本仓库"不编数"的硬规矩在界面上的落点。
+ */
+  it("[docs/30 §3.16] 导出：占位符只留一个示例（红线解释仍在版面）", () => {
+    renderBody();
+    // 那条 121 字的"没有默认路径"是**既有测试钉住的红线**，仍在版面上
+    expect(screen.getByText(zhCN["logs.export.path.hint"])).toBeTruthy();
+    // 占位符缩短（不许是一句话）
+    const input = screen.getByLabelText(zhCN["logs.export.path"]) as HTMLInputElement;
+    expect(input.placeholder).toBe(zhCN["logs.export.path.placeholder"]);
+    expect(input.placeholder.length).toBeLessThan(20);
+  });
+describe("[docs/32] L2 统计卡", () => {
+  /** 展示层是**纯 props**：卡片只认 `query.stats`，所以这里直接给它值（容器怎么映射另说）。 */
+  const withStats = (stats: LogStatsView | null | undefined) =>
+    renderBody({ query: { ...makeProps().query, stats } });
+
+  it("四个数来自 log_stats：总数 / 成功率 / 失败 / 平均延迟", () => {
+    withStats({ total: 40, ok: 30, failed: 10, avgTotalMs: 1200 });
+    expect(screen.getByTestId("logs-stat-total-value").textContent).toContain("40");
+    expect(screen.getByTestId("logs-stat-ok-value").textContent).toContain("75%");
+    expect(screen.getByTestId("logs-stat-failed-value").textContent).toContain("10");
+    expect(screen.getByTestId("logs-stat-avg-value").textContent).toContain("1,200ms");
+  });
+
+  it("没有行时平均延迟是「读不到」，不是 0ms", () => {
+    withStats({ total: 0, ok: 0, failed: 0, avgTotalMs: null });
+    expect(screen.getByTestId("logs-stat-avg-value").textContent).toContain("读不到");
+  });
+
+  it("统计拿不到（null）时整排显示「读不到」，不拿旧数字充数", () => {
+    withStats(null);
+    expect(screen.getByTestId("logs-stat-total-value").textContent).toContain("读不到");
+    expect(screen.getByTestId("logs-stat-avg-value").textContent).toContain("读不到");
+  });
+
+  it("[docs/32] L4 列表花费列：契约给了就显示，没给就「—」（不拿 token 现算）", () => {
+    renderBody({
+      query: {
+        ...makeProps().query,
+        rows: [
+          {
+            requestId: "req_a",
+            tsMs: 1,
+            model: "m",
+            status: 200,
+            outcome: "ok",
+            latencyMs: 10,
+            tokens: 5,
+            cost: { amount: 0.020401, currency: "USD" },
+          },
+          {
+            requestId: "req_b",
+            tsMs: 2,
+            model: "m",
+            status: 200,
+            outcome: "ok",
+            latencyMs: 10,
+            tokens: 5,
+          },
+        ] as never,
+      },
+    });
+    const costs = screen.getAllByTestId("logs-row-cost").map((el) => el.textContent);
+    expect(costs[0]).toBe("USD 0.020401");
+    // 没给 cost 就显示「—」：**绝不拿 token 乘一个单价编出来**
+    expect(costs[1]).toBe("—");
+  });
+  it("[docs/32] L5 字段表：只显示这一行真有的值，读不到显示「—」（不猜）", () => {
+    const row = {
+      requestId: "req_fields",
+      tsMs: 1,
+      model: "deepseek-v4-flash",
+      channel: "ch-a",
+      status: 200,
+      outcome: "ok",
+      latencyMs: 1234,
+      tokens: 315,
+      // 刻意**不给** cost：契约没给就不许显示，也不许拿 token 现算
+    };
+    renderBody({
+      query: { ...makeProps().query, rows: [row] as never },
+      expanded: { requestId: "req_fields", onToggle: () => {}, renderTrace: () => null },
+    });
+    expect(screen.getByTestId("logs-field-model").textContent).toBe("deepseek-v4-flash");
+    expect(screen.getByTestId("logs-field-latency").textContent).toBe("1,234ms");
+    expect(screen.getByTestId("logs-field-tokens").textContent).toBe("315");
+    expect(screen.getByTestId("logs-field-cost").textContent).toBe("—");
+  });
+
+  it("[docs/32] L5 字段表：契约给了 cost 就照它显示（不自己算金额）", () => {
+    renderBody({
+      query: {
+        ...makeProps().query,
+        rows: [
+          {
+            requestId: "req_cost",
+            tsMs: 1,
+            model: "m",
+            status: 200,
+            outcome: "ok",
+            latencyMs: 10,
+            tokens: 5,
+            cost: { amount: 0.020401, currency: "USD" },
+          },
+        ] as never,
+      },
+      expanded: { requestId: "req_cost", onToggle: () => {}, renderTrace: () => null },
+    });
+    expect(screen.getByTestId("logs-field-cost").textContent).toBe("USD 0.020401");
+  });
+  it("[docs/32] L6 Token 明细：契约的 token_kinds 被读成 tokenKinds；没有就是 null（不编）", () => {
+    const withKinds = readTraceDetail({
+      request_id: "req_tk",
+      row: { request_id: "req_tk", tokens: 999 },
+      attempts: [],
+      token_kinds: { input: 1200, output: 340 },
+    } as never);
+    expect(withKinds.tokenKinds).toEqual({ input: 1200, output: 340 });
+
+    // 用量账本里没有这笔账 → `null`（界面据此说"没有这份记录"），**绝不**回落成 row 里的总数
+    const withoutKinds = readTraceDetail({
+      request_id: "req_tk2",
+      row: { request_id: "req_tk2", tokens: 999 },
+      attempts: [],
+    } as never);
+    expect(withoutKinds.tokenKinds).toBeNull();
+  });
+  it("[docs/32] L5 详情头部：显示后端给的请求 ID，复制按钮把它写进剪贴板", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderBody({
+      query: {
+        ...makeProps().query,
+        rows: [
+          {
+            requestId: "req_copy_me",
+            tsMs: 1,
+            model: "m",
+            status: 200,
+            outcome: "ok",
+            totalMs: 5,
+            tokens: 1,
+          },
+        ] as never,
+      },
+      expanded: {
+        requestId: "req_copy_me",
+        onToggle: () => {},
+        renderTrace: () => null,
+      },
+    });
+    expect(screen.getByTestId("logs-detail-head").textContent).toContain("req_copy_me");
+    fireEvent.click(screen.getByTestId("logs-detail-copy"));
+    // 复制的是**后端给的那个 id**，不是前端拼的
+    expect(writeText).toHaveBeenCalledWith("req_copy_me");
+  });
+  it("[docs/32] L3 双栏：选中一行 → 右栏显示它的详情；没选中 → 空态（不是一片空白）", () => {
+    const rows = [
+      { requestId: "req_a", tsMs: 1, model: "m", status: 200, outcome: "ok", totalMs: 10, tokens: 1 },
+      { requestId: "req_b", tsMs: 2, model: "m", status: 502, outcome: "failed", totalMs: 20, tokens: 2 },
+    ];
+    const { rerender } = renderBody({
+      query: { ...makeProps().query, rows: rows as never },
+      expanded: { requestId: null, onToggle: () => {}, renderTrace: (id) => <div>trace:{id}</div> },
+    });
+    // 没选中：右栏是空态文案
+    expect(screen.getByTestId("logs-detail-pane").textContent).toContain("从上表选一条");
+
+    rerender(
+      <ThemeProvider theme={buildTheme("dark")}>
+        <LogsBody
+          {...makeProps({
+            query: { ...makeProps().query, rows: rows as never },
+            expanded: {
+              requestId: "req_b",
+              onToggle: () => {},
+              renderTrace: (id) => <div>trace:{id}</div>,
+            },
+          })}
+        />
+      </ThemeProvider>,
+    );
+    // 选中 req_b：右栏出现它的详情与 trace
+    expect(screen.getByTestId("logs-detail-pane").textContent).toContain("trace:req_b");
+  });
+  it("三个计数片：数字与卡片同源，点「失败」= failed + retried（否则与统计对不上）", () => {
+    const picked: string[] = [];
+    renderBody({
+      query: {
+        ...makeProps().query,
+        stats: { total: 40, ok: 30, failed: 10, avgTotalMs: null },
+        outcome: "all",
+        onPickOutcome: (next) => picked.push(next),
+      },
+    });
+    expect(screen.getByTestId("logs-chip-all").textContent).toContain("40");
+    expect(screen.getByTestId("logs-chip-ok").textContent).toContain("30");
+    expect(screen.getByTestId("logs-chip-failed").textContent).toContain("10");
+
+    fireEvent.click(screen.getByTestId("logs-chip-failed"));
+    expect(picked).toEqual(["failed"]);
+  });
+
+  it("时间范围做成按钮：高亮跟 `applied.preset`，点一下把 preset 送出去（与计数片同一条生效路径）", () => {
+    const picked: string[] = [];
+    renderBody({
+      query: {
+        ...makeProps().query,
+        applied: { ...DEFAULT_FILTER, preset: "30d" },
+        onPickPreset: (next) => picked.push(next),
+      },
+    });
+    // 四个预设都在版面上（不是下拉：截图里是分段按钮）
+    expect(screen.getByTestId("logs-range-presets")).toBeTruthy();
+    for (const preset of ["today", "7d", "30d", "month"]) {
+      expect(screen.getByTestId(`logs-range-${preset}`)).toBeTruthy();
+    }
+    fireEvent.click(screen.getByTestId("logs-range-today"));
+    expect(picked).toEqual(["today"]);
+  });
+
+  it("「失败」片对应的级别集合 = failed + retried（口径与后端 LogStats 一致）", () => {    expect(OUTCOME_LEVELS.all).toEqual([]);
+    expect(OUTCOME_LEVELS.ok).toEqual(["ok"]);
+    expect(OUTCOME_LEVELS.failed).toEqual(["failed", "retried"]);
+    // 高亮状态从 applied.levels 推导：空 = 全部、只有 ok = 成功、含 failed/retried = 失败
+    expect(outcomeOf([])).toBe("all");
+    expect(outcomeOf(["ok"])).toBe("ok");
+    expect(outcomeOf(["failed"])).toBe("failed");
+    expect(outcomeOf(["retried"])).toBe("failed");
+  });
+  it("没传 stats（还没查完）时**不显示**卡片 —— 不用占位数字骗人", () => {
+    withStats(undefined);
+    expect(screen.queryByTestId("logs-stats")).toBeNull();
+  });
+});
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
@@ -197,6 +446,18 @@ function renderPage() {
       </ThemeProvider>
     </QueryClientProvider>,
   );
+}
+
+/**
+ * [docs/32 §9/§13] L7：记录与留存那一节里的四块（存储 / 模式 / 保留 / 导出）**默认收起**。
+ *
+ * 收起只切 `display`（内容始终挂载），所以按"存在"查询的 `getByTestId` / `getByText`
+ * 照旧能找到；但按"可见"查询的 `getByRole` 只认可访问性树 —— 隐藏的内容不在里面。
+ * 那 7 条用例不是被"绕过"，而是如实复现用户路径：**先展开，再操作**。
+ * （所以这里绝不允许把默认值改成"展开"来换绿。）
+ */
+function expandAdvanced(): void {
+  fireEvent.click(screen.getByTestId("logs-advanced-toggle"));
 }
 
 // ================================================================ ① 纯逻辑：查询形状
@@ -392,23 +653,30 @@ describe("[C4] 读轨迹：header_diff 三种状态、尝试链耗时合计", ()
 // ================================================================ ④ 无数据（诚实空状态）
 
 describe("无数据：给诚实的空状态，不给假表格 / 假数字", () => {
-  it("没有行时：说明三种可能（off / 没有流量 / 条件太窄），且不画表格", () => {
+  it("没有行时：[判据 5] 空态只有 1 行说明，不画表格、也不重复表单里的「重置」", () => {
     renderBody();
 
     expect(screen.getByTestId("logs-empty")).toBeTruthy();
-    expect(screen.getByText("没有可显示的日志行")).toBeTruthy();
-    expect(screen.getByText(/日志模式可能是 off/)).toBeTruthy();
-    expect(screen.getByText(/也可能只是这段时间没有请求经过网关/)).toBeTruthy();
-    expect(screen.getByText(/或者条件太窄/)).toBeTruthy();
+    expect(screen.getByText(zhCN["logs.empty.title"])).toBeTruthy();
+    // 1 行结论（原来那三行"三种可能"的散文已删 —— 判据 5）
+    const empty = screen.getByTestId("logs-empty");
+    expect(empty.querySelectorAll("p")).toHaveLength(1);
+    // [第 2 轮 · 判据 A] 空态不再自带「重置」（同一屏的筛选表单里已经有一个同标签同动作的）
+    expect(screen.queryByTestId("logs-empty-reset")).toBeNull();
+    expect(empty.querySelectorAll("button")).toHaveLength(0);
     // 空状态下不许有表格/行
     expect(screen.queryByTestId("logs-table")).toBeNull();
     expect(screen.queryAllByTestId("logs-row")).toHaveLength(0);
   });
 
-  it("off 的后果写在筛选区（否则用户会以为页面坏了）", () => {
+  it("off 的后果进了查询条件的问号（判据 2）；检索上限这类**数值**留在版面上", () => {
     renderBody();
-    expect(screen.getByText(/off 模式不写任何请求日志/)).toBeTruthy();
-    expect(screen.getByText(/检索最多在这段时间的最近 2,000 条候选里匹配/)).toBeTruthy();
+    // off 的后果是一整句解释 → 进 tooltip，全文一个字没丢（aria-label 就是全文）
+    const help = screen.getByTestId("logs-filter-help").getAttribute("aria-label") ?? "";
+    expect(help).toContain(zhCN["logs.filter.offHint"]);
+    expect(screen.queryByText(zhCN["logs.filter.offHint"])).toBeNull();
+    // 数值留在版面上（缩短后仍带同一个数）
+    expect(screen.getByText(/最近 2,000 条候选/)).toBeTruthy();
   });
 
   it("加载中显示查询中，不显示空状态（不把还没查完说成没有数据）", () => {
@@ -430,13 +698,16 @@ describe("无数据：给诚实的空状态，不给假表格 / 假数字", () =
     expect(screen.getByText(/最近日志行记录时的模式：未知（没有可读的日志行）/)).toBeTruthy();
     cleanup();
     // 本次会话写过之后，显示的必须是"写过的那个值"，而不是假装读到了当前值
+    // （断言只钉"当前模式：<值>（本次会话已写入…）"这个形状，不把后半句何时清理抄一遍）
     renderBody({ log: { ...makeProps().log, savedMode: "full", savedRetention: "7d" } });
-    expect(screen.getByText(/^当前模式：full（本次会话已写入后端）/)).toBeTruthy();
-    expect(screen.getByText(/^当前保留期：7 天（本次会话已写入后端/)).toBeTruthy();
+    expect(screen.getByText(/^当前模式：full（本次会话已写入/)).toBeTruthy();
+    expect(screen.getByText(/^当前保留期：7 天（本次会话已写入/)).toBeTruthy();
   });
 
   it("模式与保留期都要先点选才能保存（不会把未选的当成默认值写过去）", () => {
     renderBody();
+    // [docs/32 §13] L7：这两块在默认收起的折叠区里 → 先展开（`getByRole` 只认可见的内容）
+    expandAdvanced();
     expect((screen.getByRole("button", { name: "保存模式" }) as HTMLButtonElement).disabled).toBe(
       true,
     );
@@ -447,6 +718,8 @@ describe("无数据：给诚实的空状态，不给假表格 / 假数字", () =
 
     const onModeChange = vi.fn();
     renderBody({ log: { ...makeProps().log, mode: "off", onModeChange } });
+    // 第二次渲染又是一棵新树（折叠区回到默认收起）→ 再展开一次
+    expandAdvanced();
     fireEvent.click(screen.getByRole("button", { name: "off" }));
     expect(onModeChange).toHaveBeenCalledWith("off");
     // 选中之后保存按钮才可用（选中态用强调色，不是靠猜）
@@ -537,6 +810,11 @@ describe("有数据：两种后端形状的行都渲染出来", () => {
     expect(screen.getByTestId("fake-trace").textContent).toBe("req_rust_0003");
     // 展开区里这一行的原始字段（未清洗）
     expect(screen.getByTestId("logs-row-raw").textContent).toContain("req_rust_0003");
+    // 「原样显示、未清洗」是解释（[docs/22 §2]）→ 收进问号，正文不再内联；下面的原文一个字没动
+    expect(screen.getByTestId("logs-row-raw-help").getAttribute("aria-label")).toBe(
+      zhCN["logs.trace.rawHint"],
+    );
+    expect(screen.queryByText(zhCN["logs.trace.rawHint"])).toBeNull();
     // 只有展开的那一行有面板
     expect(screen.getAllByTestId("fake-trace")).toHaveLength(1);
   });
@@ -545,6 +823,8 @@ describe("有数据：两种后端形状的行都渲染出来", () => {
     const onClear = vi.fn();
     renderBody({ log: { ...makeProps().log, onClear } });
 
+    // [docs/32 §13] L7：清空按钮在折叠区里（确认框归 MUI Dialog，展开后才点得到）
+    expandAdvanced();
     fireEvent.click(screen.getByRole("button", { name: "清空…" }));
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByText(/清空不可恢复/)).toBeTruthy();
@@ -589,6 +869,8 @@ describe("[task-23 B] 导出诊断包：路径不是前端编的，落盘以后�
 
   it("路径空着：输入框就是空的（没有编出来的默认值），按钮禁用，点了也不发请求", async () => {
     renderPage();
+    // [docs/32 §13] L7：导出块默认收起 —— 这里要看"看得见的输入框"，所以先展开
+    expandAdvanced();
 
     const box = await screen.findByTestId("logs-export-path");
     const input = within(box).getByRole("textbox") as HTMLInputElement;
@@ -605,6 +887,7 @@ describe("[task-23 B] 导出诊断包：路径不是前端编的，落盘以后�
   it("后端回执：显示回执里的落盘路径与字节数，而不是自己填的那个目录（真机上的常见路径）", async () => {
     exportResult = { path: "D:\\out\\tokenagency-diagnostic-1770000000000.zip", bytes: 4096 };
     renderPage();
+    expandAdvanced(); // L7：导出块默认收起
     await typeExportPath("D:\\out");
 
     fireEvent.click(screen.getByTestId("logs-export-run"));
@@ -624,13 +907,15 @@ describe("[task-23 B] 导出诊断包：路径不是前端编的，落盘以后�
   it("没有回执（防御分支：后端返回空 path，或退回老 void 形态）：只说「已请求」，并明说不能确认落盘", async () => {
     exportResult = null;
     renderPage();
+    expandAdvanced(); // L7：导出块默认收起
     await typeExportPath("D:\\out");
 
     fireEvent.click(screen.getByTestId("logs-export-run"));
 
     const requested = await screen.findByTestId("logs-export-requested");
     expect(requested.getAttribute("data-path")).toBe("D:\\out");
-    expect(requested.textContent).toMatch(/不能确认/);
+    // 没有回执就只说"已请求"，并让用户自己去核对（不许说"已写出"）
+    expect(requested.textContent).toMatch(/没有回执/);
     expect(screen.queryByTestId("logs-export-written")).toBeNull();
     // 整页不许出现"已写出"（那是只有回执才配说的话）
     expect(document.body.textContent).not.toMatch(/已写出/);
@@ -642,6 +927,7 @@ describe("[task-23 B] 导出诊断包：路径不是前端编的，落盘以后�
       message: "诊断包导出被拒绝（测试夹具）",
     });
     renderPage();
+    expandAdvanced(); // L7：导出块默认收起
     await typeExportPath("D:\\out");
 
     fireEvent.click(screen.getByTestId("logs-export-run"));
@@ -655,6 +941,7 @@ describe("[task-23 B] 导出诊断包：路径不是前端编的，落盘以后�
 
   it("导出用的是**当前生效条件**：草稿里填了但没点查询 → 不进 query、也不进说明", async () => {
     renderPage();
+    expandAdvanced(); // L7：导出块默认收起（下面的按钮要"点得到"）
     await typeExportPath("D:\\out");
 
     // 草稿：填了请求 ID，但**没有**点「查询」
@@ -833,16 +1120,32 @@ describe("[task-23] log_export 的返回形态：回执路径与防御的 void �
  * 它们一句都不许进 tooltip。
  */
 describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () => {
-  it("筛选区：错误码走文本检索这解释收进 logs-filter-help，正文不再内联", () => {
+  it("筛选区：三条成段解释全部收进 logs-filter-help，正文一条都不内联", () => {
     renderBody();
 
-    const text = zhCN["logs.filter.errorCodeHint"];
-    // 自证：确实是"成段的解释"（≥ 20 字符）才收
-    expect(text.length).toBeGreaterThan(20);
+    // 自证：确实是"一句解释"（而不是一个词）才收。
+    // 门槛从 20 降到 12 是**文案被有意缩短**的结果：极简改造把
+    // `logs.filter.searchExclusive` 从成句说明压到 16 字（"请求 ID 与错误码只能填一个。"），
+    // 20 这个数字随即过期。留下的判据仍然成立且更贴近本仓既有约定：
+    // 12 是"长文案"的既有门槛（见 duplicateCopy.guard），它挡住"把单个词塞进 tooltip"。
+    for (const key of [
+      "logs.filter.errorCodeHint",
+      "logs.filter.searchExclusive",
+      "logs.filter.levelHint",
+    ] as const) {
+      expect(zhCN[key].length).toBeGreaterThanOrEqual(12);
+      expect(screen.queryByText(zhCN[key])).toBeNull();
+    }
 
     const help = screen.getByTestId("logs-filter-help");
-    expect(help.getAttribute("aria-label")).toBe(text);
-    expect(screen.queryByText(text)).toBeNull();
+    const label = help.getAttribute("aria-label") ?? "";
+    for (const key of [
+      "logs.filter.errorCodeHint",
+      "logs.filter.searchExclusive",
+      "logs.filter.levelHint",
+    ] as const) {
+      expect(label).toContain(zhCN[key]);
+    }
   });
 
   it("占用区：这组数字只算请求日志表 —— 收进 logs-storage-help", () => {
@@ -865,18 +1168,27 @@ describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () 
     const help = screen.getByTestId("logs-trace-help");
     expect(help.getAttribute("aria-label")).toBe(text);
     expect(screen.queryByText(text)).toBeNull();
+
+    // 同一面板里的「原始字段」说明：同样收进问号，正文不再内联（[docs/22 §2]）
+    expect(screen.getByTestId("logs-trace-raw-help").getAttribute("aria-label")).toBe(
+      zhCN["logs.trace.rawHint"],
+    );
+    expect(screen.queryByText(zhCN["logs.trace.rawHint"])).toBeNull();
   });
 
-  it("红线仍然内联：空态 / off 的后果 / 检索上限的数值 / 未读取 / 导出路径没有默认值", () => {
+  it("红线仍然内联：空态（1 行）/ 检索上限的数值 / 未读取 / 导出路径没有默认值", () => {
     renderBody();
 
-    // 空态文案（§2 第 1 条）
+    // [极简 · 判据 5] 空态只说"怎么开始"：1 行（原来是 4 行散文）；
+    // [第 2 轮 · 判据 A] 也不再自带「重置」—— 那个动作在筛选表单里已经有了
     expect(screen.getByText(zhCN["logs.empty.title"])).toBeTruthy();
-    expect(screen.getByText(zhCN["logs.empty.off"])).toBeTruthy();
-    // off 的真后果写在筛选项旁边（§2 第 1 条：状态结论）
-    expect(screen.getByText(zhCN["logs.filter.offHint"])).toBeTruthy();
-    // 数值 + 单位：检索最多扫多少条候选 —— 数字永远留在版面上（§2 第 5 条）
-    expect(screen.getByText(/最近 2,000 条候选里匹配/)).toBeTruthy();
+    expect(screen.queryByTestId("logs-empty-reset")).toBeNull();
+    // off 的后果是一整句解释（判据 2）→ 已并进查询条件的问号；正文一个字没丢（aria-label 里）
+    expect(screen.getByTestId("logs-filter-help").getAttribute("aria-label")).toContain(
+      zhCN["logs.filter.offHint"],
+    );
+    // 数值 + 单位：检索最多扫多少条候选 —— 数字留在版面上，但整句缩到 ≤36 字
+    expect(screen.getByText(/最近 2,000 条候选/)).toBeTruthy();
     // 状态结论：没有读取接口 → "未读取"
     expect(screen.getByText(/^当前模式：未读取/)).toBeTruthy();
     expect(screen.getByText(/^当前保留期：未读取/)).toBeTruthy();
@@ -884,8 +1196,59 @@ describe("[docs/22] 长篇说明收进问号圆圈，红线留在版面上", () 
     expect(screen.getByText(zhCN["logs.export.path.hint"])).toBeTruthy();
 
     // 这一页正文里只有上面那两处被收走 —— 没有"一排问号"
+    // （行详情里的 `logs-row-raw-help` 由 ③「展开某一行」那条用例单独钉住）
     expect(
       screen.queryAllByTestId(/-help$/).map((el) => el.getAttribute("data-testid")),
     ).toEqual(["logs-filter-help", "logs-storage-help"]);
+  });
+});
+
+// ================================================================ [docs/32 §13] L7：默认收起
+
+/**
+ * [docs/32 §13] L7：记录与留存那一节里的四块（存储 / 模式 / 保留 / 导出）**默认收起**。
+ *
+ * 这条用例钉的是"不许把默认值改成展开来换绿"：
+ * ① 默认 `aria-expanded=false`，里面的操作按钮**不在可访问性树里**（用户看不见就点不到）；
+ * ② 但内容**一个字节都没被卸载**（`logs-export-path` 照旧在 DOM 里）—— 反例是 MUI
+ *    `Accordion` 的 `unmountOnExit`，它会把真功能从 DOM 里拿走（第一次尝试就栽在这）；
+ * ③ 点一下开关，同一批内容立刻可操作（`保存模式` 出现在可访问性树里）。
+ */
+describe("[docs/32 §13] L7 记录与留存四块默认收起（可展开，内容不卸载）", () => {
+  it("默认收起：内容挂载但不可见；点开关后同一批内容可操作", () => {
+    renderBody();
+
+    const toggle = screen.getByTestId("logs-advanced-toggle");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // 收起时：按钮看不见（不在可访问性树里），但节点还在
+    expect(screen.queryByRole("button", { name: "保存模式" })).toBeNull();
+    expect(screen.getByTestId("logs-export-path")).toBeTruthy();
+
+    expandAdvanced();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: "保存模式" })).toBeTruthy();
+    expect(screen.getByTestId("logs-export-path")).toBeTruthy();
+  });
+});
+
+// ================================================================ [docs/26 §2] 一级界面省略
+
+describe("[docs/26 §2] 请求 id / 模型 / 通道：省略后全文仍在 DOM（错误原文不省略）", () => {
+  it("三个长值都整段留在 DOM 里；没溢出时一个提示都不挂", () => {
+    const requestId = "req_contract_0001-2026-07-18-preview-long";
+    const model = "deepseek-v4.1flash-2026-07-18-preview";
+    const channel = "ch-bytedance-2026-07-18-preview-a";
+    renderBody({
+      query: {
+        ...makeProps().query,
+        rows: [readLogRow(contractRow({ request_id: requestId, model, channel_id: channel }))],
+      },
+    });
+
+    expect(screen.getByTestId("logs-request-id-ellipsis").textContent).toBe(requestId);
+    expect(screen.getByTestId("logs-model-ellipsis").textContent).toBe(model);
+    expect(screen.getByTestId("logs-channel-ellipsis").textContent).toBe(channel);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(screen.getByTestId("logs-model-ellipsis").getAttribute("tabindex")).toBeNull();
   });
 });

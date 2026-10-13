@@ -9,8 +9,14 @@
  * 2. **模块级草稿 store**：`/network?from=provider-wizard` 来回一趟会卸载页面，
  *    所以草稿放在页面 state 之外（[docs/19 §1.4] 明确允许并**要求**有一测试证明它保留）。
  *    store 里只有这一步的输入，没有任何密钥以外的敏感数据；明文密钥**从不清日志、从不上屏**。
- * 3. **第 2 步的派生**：哪些模型属于这个服务商（`channel_matrix` 的 cell + 凭据归属）、
- *    每一行当前的 lane，以及 `ProbeResult` 该说哪句人话。
+ * 3. **第 2 步的派生**：这个服务商**已经有哪些线路**（`channel_matrix` 的 cell + 凭据归属）、
+ *    每条线路当前生效的网络代理，以及 `ProbeResult` 该说哪句人话。
+ *
+ * **[docs/28 §1] 之后第 2 步建的是「线路」，不是「模型」**：模型由用户在模型页**分配**线路才出现，
+ * 扫描/导入**不会**顺手建模型。所以这里的派生量全是线路视角 —— 线路的身份 = **上游模型名**
+ * （线路没有逻辑名、没有别名），派生值里**不出现**"逻辑模型"。
+ * 历史包袱：`addedModelsOf`（按逻辑模型聚合）仍被服务商详情页 import 着，所以留着没删；
+ * 向导自己已经不再用它（它会把两件事说成一件：加了几个模型 ≠ 接了几条线路）。
  *
  * 为什么"名字 → id"是派生的而不是让用户填：本轮的步骤 1 只有 4 个字段（[docs/19 §1.1]），
  * 用户给的是"显示名称"；`provider.id` 是引用完整性要用的稳定标识，所以由名称**确定性**派生
@@ -21,7 +27,6 @@ import type {
   Credential,
   ImportPreview,
   LaneId,
-  LanePickOption,
   MatrixView,
   ProbeResult,
   Protocol,
@@ -39,6 +44,14 @@ export type Step1Draft = {
   baseUrl: string;
   /** 明文 API Key。只允许出现在 `credential_set_secret` 的入参里。 */
   key: string;
+  /**
+   * [docs/29 §2.2] 这家服务商的代理（用户第 112 轮："为服务商选线路要存在于添加向导，
+   * 且能看到所有网络代理以及自动、直连"）。
+   *
+   * 值可能是**标记**：`direct:`（直连）/ `auto:<订阅 id>`（自动）/ 空串（不指定、走继承）/
+   * 线路 id。标记由后端 `provider_upsert` 解析成真实线路 —— 向导不建线路、也不编 id。
+   */
+  lane: string;
 };
 
 export const EMPTY_STEP1_DRAFT: Step1Draft = {
@@ -46,6 +59,8 @@ export const EMPTY_STEP1_DRAFT: Step1Draft = {
   protocol: "openai",
   baseUrl: "",
   key: "",
+  // 默认「直连」：不填也得有一条明确的出口，且它排在下拉第一位（与 `providerLaneChoices` 一致）
+  lane: "direct:",
 };
 
 /** [docs/17 §3.1] 的 id 规则（`provider.id` 必须满足它，否则后端会拒）。 */
@@ -180,6 +195,7 @@ export function step1ProviderPayload(draft: Step1Draft, providerId: string): Pro
     name: draft.name.trim(),
     protocol: draft.protocol,
     baseUrl: draft.baseUrl.trim(),
+    lane: draft.lane.trim(),
     // 步骤 1 不暴露鉴权细节（[docs/19 §1.1] 只有 4 个字段）→ 一个都不带，
     // 交给 Rust 的 `#[serde(default)]`（见 `serdeDefault.guard.test.ts`）。
     authScheme: "bearer",
@@ -219,30 +235,24 @@ export function defaultCredentialPayload(
 // ================================================================ 模块级草稿 store
 
 /**
- * 向导的两种模式（[docs/20 §4]）：
- * - `create`：从 `providers-add-open` 进来，第 1 步是空表单，落库时 id 由名称**派生**；
- * - `edit`：从详情页 `providers-detail-edit` 进来，第 1 步**预填**现有服务商，
- *   落库时用**现有 id 覆盖写**，密钥框留空 = 不改已存的那把。
- *
- * 两种模式共用同一套控件与第 2 步（写范围与验收都要求"功能一模一样"）。
- */
-export type WizardMode = "create" | "edit";
-
-/**
  * 向导会话。**活在模块里**，所以 `/network` 来回一趟（页面卸载再挂载）也丢不了草稿
  * —— 这是 [docs/19 §1.4] 的硬要求，不是顺手缓存。
+ *
+ * 只有**新增**一种模式：编辑已有服务商不再是"下一步 / 下一步"的向导，而是详情页本身
+ * （[docs/23]：用户第 75 轮要求"点开服务商之后直接给可视化编辑界面，编辑和查看一体"）。
+ * 所以第 72 轮那套 `mode: "edit"` / `startEditSession` 已经被删掉 —— 留着会是一条
+ * 没人走、也没人测的路径，而它当年正是"只发 4 个字段、覆盖写抹掉连接配置"那个缺陷的载体。
  */
 export type WizardSession = {
   open: boolean;
   step: 1 | 2;
-  mode: WizardMode;
   draft: Step1Draft;
   /** 已经真的落库的那一份（`pw-next` / 落库式 `pw-test` 成功后写入）。 */
   saved: SavedInSession | undefined;
 };
 
 function freshSession(): WizardSession {
-  return { open: false, step: 1, mode: "create", draft: { ...EMPTY_STEP1_DRAFT }, saved: undefined };
+  return { open: false, step: 1, draft: { ...EMPTY_STEP1_DRAFT }, saved: undefined };
 }
 
 let session: WizardSession = freshSession();
@@ -262,47 +272,9 @@ export function resetWizardSession(): void {
   session = freshSession();
 }
 
-/** 编辑模式要预填的现有服务商（详情页从 `provider_list` 的那一行取）。 */
-export type EditSeed = {
-  providerId: string;
-  name: string;
-  /**
-   * 后端原话的协议值。能对上 `PROTOCOLS` 就是那一个；**对不上也原样带进草稿**
-   * （契约外的取值不改写 —— 与列表页/详情页"原样显示"同一条纪律），
-   * 下拉里会因此多出一行原值，用户看得见它、也改得掉。
-   */
-  protocol: Protocol;
-  baseUrl: string;
-};
-
-/**
- * 打开**编辑模式**（[docs/20 §4]）：预填现有服务商，并把"本会话自己那一份"预先登记好。
- *
- * 为什么 `saved` 一开始就要写：`SavedInSession` 是第 71 轮为"本会话已落库的那一份"造的机制
- * （`validateStep1` 用它把**自己**从重名校验里摘掉）。编辑模式里"自己"就是**当前这个服务商**，
- * 不先登记，用户点「下一步」会被自己现有的名字挡住；同时 `secretStored: true` 正是
- * "密钥框留空 = 不改"在预检里的表达（空 key 不算"没填"）。
- */
-export function startEditSession(seed: EditSeed): WizardSession {
-  session = {
-    open: true,
-    step: 1,
-    mode: "edit",
-    draft: {
-      name: seed.name,
-      protocol: seed.protocol,
-      baseUrl: seed.baseUrl,
-      // 明文密钥**永不预填**（它只存在于密钥仓库里）：空 = 不改
-      key: "",
-    },
-    saved: { providerId: seed.providerId, name: seed.name, secretStored: true },
-  };
-  return session;
-}
-
 // ================================================================ 第 2 步：派生
 
-/** 第 2 步"已添加的模型"里的一行。 */
+/** 第 2 步"已添加的模型"里的一行（**历史形状**：`detail.tsx` 还在 import，见文件头注释）。 */
 export type AddedModelRow = {
   modelId: string;
   upstreamModel: string;
@@ -349,6 +321,70 @@ export function addedModelsOf(
 }
 
 /**
+ * 第 2 步「本服务商已有的线路」里的一行 = `channel_matrix` 的**一条 cell**。
+ *
+ * 后端已经是"一个通道一行"（`build_channel_matrix` 遍历 `doc.channels` 逐条 push），
+ * 所以这里**不聚合**：一条线路就是一行 —— 聚合回逻辑模型正是本轮要拆掉的那件事。
+ *
+ * [docs/28 §1]：线路里只有"一个上游模型（名字 + 扫描记录的模型信息）、网络代理、启用与否"，
+ * 逻辑名归模型页。所以这一行里**没有** `modelId`：
+ * 界面上只要出现"逻辑模型"，就等于在说"模型也一起建了"。
+ */
+export type ExistingLineRow = {
+  /** 线路（通道）id。后端没给（`channel_id: null`）时是空串 —— 界面如实画「—」，不编一个 id。 */
+  channelId: string;
+  /** 线路的**身份**：上游模型名。 */
+  upstreamModel: string;
+  /**
+   * 后端解析好的**生效**网络代理（`channel.effective_lane` 已经沿
+   * `channel → credential → provider → net.default_lane` 走过一遍）；`null` = 直连。
+   *
+   * 界面**不重算**这条继承链：重算一遍就是第二个真相源（[docs/28 §1 第 2 条]：代理是线路的属性，
+   * 它在哪生效由后端说了算）。
+   */
+  laneId: LaneId | null;
+};
+
+/**
+ * "这个服务商下有哪些线路"：`channel_matrix` 的 cell 挂在**凭据**上，凭据再挂在服务商上，
+ * 所以按"属于该服务商的凭据 id 集合"过滤（与旧口径一致，只是视角从模型换成线路）。
+ *
+ * **不猜**：矩阵里没有的线路就不会出现在这张表里；顺序保持后端给的顺序。
+ */
+export function existingLinesOf(
+  matrix: MatrixView | undefined,
+  credentialIds: ReadonlySet<string>,
+): ExistingLineRow[] {
+  if (matrix === undefined) return [];
+  const out: ExistingLineRow[] = [];
+  for (const cell of matrix.cells ?? []) {
+    if (!credentialIds.has(cell.credential_id)) continue;
+    out.push({
+      channelId: cell.channel_id ?? "",
+      upstreamModel: cell.upstream_model ?? "",
+      laneId: cell.lane_id ?? null,
+    });
+  }
+  return out;
+}
+
+/**
+ * 这家服务商**已经有线路**的那些上游模型名 —— 扫描结果的勾选判据（[docs/28 §1]）。
+ *
+ * 为什么判据是"上游模型名"而不是"逻辑模型 id"：线路的身份就是上游模型名，而扫描**不再建模型**，
+ * 所以 `ImportPreview.exists`（全局有没有这个逻辑模型）在第 2 步已经没有意义 ——
+ * 一条线路同一个上游模型接两遍就是重复线路。
+ * 空串不上榜：上游名缺失是数据缺失，不是"接过这条线路"。
+ */
+export function wiredUpstreamModelsOf(lines: readonly ExistingLineRow[]): Set<string> {
+  const out = new Set<string>();
+  for (const line of lines) {
+    if (line.upstreamModel !== "") out.add(line.upstreamModel);
+  }
+  return out;
+}
+
+/**
  * `config_get().net.default_lane` —— 也就是 [docs/19 §1.4] 里用户在 `/network` 上
  * 挑的"新建服务商的默认代理"。第 1 步没选（字段缺失 / null）就是 `null` = 直连。
  *
@@ -362,81 +398,15 @@ export function defaultLaneOf(configDoc: unknown): LaneId | null {
   return typeof lane === "string" && lane !== "" ? lane : null;
 }
 
-/** 一个下拉项：`value` 是直连那条 lane 的 id（或退化成 `""`）或一个真实 lane id。 */
-export type LaneChoice = { value: string; label: string };
-
-/**
- * 从 `lane_pick_options` 里取**直连那一组**的 lane id（[docs/20 §1.2 第 3 步]）。
+/*
+ * [docs/55]（第 322 轮）这里曾有 `LaneChoice` / `directLaneIdOf` / `laneChoices` /
+ * `laneValue` / `lanePatch` 五个导出 —— 它们都建立在 `LanePickOption`（`lane_pick_options`
+ * 的返回类型）之上，而那条命令随"放弃线路级别的分配"删除了。
  *
- * 为什么要它：五级继承链的末端就是直连（[docs/04 §8.1]），所以"没显式配过"的语义是
- * **直连**，而不是"空"。界面上那条空选项会被渲染成空白/「未配置」—— 正是用户第 2 条反馈。
- * 直连是配置里一条真 lane（`kind: "direct"`），把自己的 id 填进下拉，值就永远不为空。
- *
- * 取不到（后端没给直连那条 lane）时返回 `""`：此时链路末端仍然是直连，
- * 只是没有 id 可填，于是回落到 `null`（继承）—— 与 [docs/20 §1.2] 的回落一致。
+ * 而且它们**早就没有调用方**了：向导与服务商详情页现在都用 `providers/editor.ts` 的
+ * `providerLaneChoices`（读 `lane_options`），那条路径写的是 `provider.lane`。
+ * 留着一套只认已删除类型的死函数，只会让人以为"还有第二条选代理的路"。
  */
-export function directLaneIdOf(options: readonly LanePickOption[]): string {
-  for (const group of options) {
-    for (const option of group.options) {
-      if (option.kind === "direct") return option.lane_id;
-    }
-  }
-  return "";
-}
-
-/**
- * 网络代理下拉的选项：**第一条永远是"直连"**。
- *
- * 直连那条真实存在时用它的 lane id 作值（[`directLaneIdOf`]），这样"没配过"显示的是
- * 一个真实可回写的值，而不是空；只有取不到时才退化成 `""`。
- * 其余来自 `lane_pick_options`（后端给的分组清单），分组标题不丢信息也不重复：
- * 这里把 `组名 · 线路名` 拼起来（同名线路在不同组里也能分清）。
- */
-export function laneChoices(
-  options: readonly LanePickOption[],
-  directLabel: string,
-): LaneChoice[] {
-  const directId = directLaneIdOf(options);
-  const out: LaneChoice[] = [{ value: directId, label: directLabel }];
-  for (const group of options) {
-    for (const option of group.options) {
-      // 直连那条已经在第一行了：不再重复一遍（否则选它会出现两个一模一样的选项）
-      if (option.kind === "direct") continue;
-      out.push({
-        value: option.lane_id,
-        label: group.group === "" ? option.name : `${group.group} · ${option.name}`,
-      });
-    }
-  }
-  return out;
-}
-
-/**
- * lane → 下拉的 value。**永远不为空**：没配过就是直连那条 lane 的 id（[docs/20 §1.2]）。
- *
- * `directLaneId` 取不到时才回落到 `""`（= 继承，链路末端仍是直连）。
- */
-export function laneValue(lane: LaneId | null, directLaneId: LaneId | null = null): string {
-  return lane ?? directLaneId ?? "";
-}
-
-/**
- * 下拉的 value → `ModelPatch.lane`（[docs/20 §1.3] 的三态）。
- *
- * 选「直连」写的是**直连那条 lane 的具体 id**，不是 `null`（[docs/20 §1.3.1] 的裁决）：
- * 用户点的是"直连"这个具体选择，落库就要写他选的东西 —— 通道页显示的是直连线路的名字，
- * 而且以后用户在 `/network` 改全局默认线路时**不会**把这批模型悄悄带走
- * （`null` = 继承，会跟着走；模型级显式选择优先于全局默认）。
- *
- * 只有连直连那条 lane 都取不到（`value === ""`）时才回落到 `null`（继承，链路末端仍是直连）。
- */
-export function lanePatch(value: string, directLaneId: LaneId | null = null): LaneId | null {
-  if (value === "") return null;
-  if (directLaneId !== null && directLaneId !== "" && value === directLaneId) {
-    return directLaneId;
-  }
-  return value;
-}
 
 // ================================================================ 探测结果 → 人话
 
@@ -465,8 +435,39 @@ export function probeFailureText(result: ProbeResult): string {
 
 // ================================================================ 扫描结果的勾选默认值
 
-/** 「全选」的语义：所有 `exists === false` 的行（[docs/19 §1.2]）。 */
-export function selectAllIds(preview: ImportPreview | undefined): string[] {
+/**
+ * 「全选」的语义：**这家服务商还没有这条线路**的所有行（[docs/25] + [docs/28 §1]）。
+ *
+ * 为什么不再是 `exists === false`：`ImportPreview.exists` 判的是**全局**有没有这个逻辑模型
+ * （`doc.find_model`），于是"这个模型别家接过了、这家还没接"在向导里**永远勾不上**
+ * （复选框被 disable）—— 那是个真实的洞。判据是"**这家**接了没有"。
+ *
+ * 为什么判据收在**上游模型名**上：第 2 步建的是线路，线路的身份就是上游模型名
+ * （[docs/28 §1]：线路没有逻辑名），而扫描不会再建模型 —— 逻辑模型 id 在这里没有承载物了。
+ */
+export function selectAllIds(
+  preview: ImportPreview | undefined,
+  wiredUpstreamModels: ReadonlySet<string> = new Set(),
+): string[] {
   if (preview === undefined) return [];
-  return preview.models.filter((m) => !m.exists).map((m) => m.suggested_id);
+  return preview.models
+    .filter((m) => !wiredUpstreamModels.has(m.upstream_model))
+    .map((m) => m.suggested_id);
+}
+
+/**
+ * `providers.lines.createdAll` 的插值参数（详情页与向导**共用**一处，别各写一套）。
+ *
+ * 为什么同时给两套占位符名：这条文案要 ≤36 字（第 2 轮补丁的规则 2），而三段长占位符
+ * （`{{recorded}}` 12 + `{{created}}` 12 + `{{total}}` 10）本身就要 34 个字符 ——
+ * 中文一个字都放不下。映射文件里把它压成 `{{n}}/{{k}}/{{m}}`（`= 同一个数字`）。
+ * 主管应用映射前后，界面都必须插值正确，所以这里两套名字都给
+ * （i18next 会忽略用不到的变量）。映射落地后可以只留短名。
+ */
+export function linesCreatedNoticeVars(
+  recorded: number,
+  created: number,
+  total: number,
+): Record<string, number> {
+  return { recorded, created, total, n: recorded, k: created, m: total };
 }

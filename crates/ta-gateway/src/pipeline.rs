@@ -26,8 +26,7 @@ use ta_core::clock::Clock;
 use ta_core::domain::behavior::resolve_lane;
 use ta_core::domain::{ChannelConfig, ConfigDoc, NoCandidateAction};
 use ta_core::error::{Result, TaError};
-use ta_core::quota::{QuotaLedger, QuotaObservation};
-use ta_core::routing::{ChannelRuntimeState, EliminateReason, RouteContext, RouteHints};
+use ta_core::routing::{ChannelRuntimeState, RouteContext, RouteHints};
 use ta_core::types::{ChannelId, CredentialId, LaneId, Protocol, ProviderId};
 
 use crate::dispatch::{self, ByteStream, OutboundDialer, UpstreamRequest, UpstreamResponse};
@@ -180,7 +179,6 @@ pub struct PipelineDeps {
     /// 于是"候选集来自第 N 代、选择在第 N+1 代求值" —— 换配置时偶发
     /// 「无可用通道」。计划器把 decide/select 关进一次调用，并回传那一版配置。
     pub planner: Arc<dyn RoutingPlanner>,
-    pub quota: Arc<dyn QuotaLedger>,
     pub secrets: Arc<dyn SecretResolver>,
     pub dialer: Arc<dyn OutboundDialer>,
     pub passthrough: Arc<dyn PassthroughPolicy>,
@@ -372,19 +370,11 @@ impl Pipeline {
         }
     }
 
-    /// 路由上下文（只读快照：账本 / 冷却 / lane 健康）。
+    /// 路由上下文（只读快照：冷却 / lane 健康）。
     fn route_context(&self, cfg: &ConfigDoc, now_ms: i64) -> RouteContext {
         let guard = self.lock_runtime();
         let mut channel_state = BTreeMap::new();
-        let mut quota_remaining: BTreeMap<CredentialId, Option<f64>> = BTreeMap::new();
         for channel in &cfg.channels {
-            if !quota_remaining.contains_key(&channel.credential) {
-                quota_remaining.insert(
-                    channel.credential.clone(),
-                    self.deps.quota.remaining_ratio(&channel.credential),
-                );
-            }
-            let quota = self.deps.quota.state(&channel.credential);
             let lane = channel.effective_lane(
                 cfg.credential(channel.credential.as_str()),
                 cfg.provider(channel.provider.as_str()),
@@ -398,7 +388,6 @@ impl Pipeline {
                 ChannelRuntimeState {
                     enabled: channel.enabled && !lane_down,
                     cooling_until_ms: guard.cooling_until_ms.get(&channel.id).copied(),
-                    exhausted: quota.is_exhausted(),
                     invalid_credential: false,
                 },
             );
@@ -406,7 +395,6 @@ impl Pipeline {
         RouteContext {
             now_ms,
             channel_state,
-            quota_remaining,
             latency_ms: BTreeMap::new(),
             concurrency: BTreeMap::new(),
             lane_health: guard
@@ -414,26 +402,24 @@ impl Pipeline {
                 .iter()
                 .map(|(lane, until)| (lane.clone(), *until <= now_ms))
                 .collect(),
+            // 用量快照由**路由门面**填（`LiveRouter::plan`，[docs/48 §4]）：
+            // 那是唯一同时看得见"用量来源"与"选路"的地方，而这里只该负责运行态。
+            // 留空 = 不知道用量 → 选路退化为按 priority。
+            balance: BTreeMap::new(),
         }
     }
 
-    /// 五级线路解析（策略覆盖 → channel → credential → provider → net → direct）。
-    fn lane_for(
-        &self,
-        cfg: &ConfigDoc,
-        channel: &ChannelConfig,
-        lane_override: Option<&LaneId>,
-    ) -> LaneId {
-        resolve_lane(
-            lane_override,
-            channel,
-            cfg.credential(channel.credential.as_str()),
-            cfg.provider(channel.provider.as_str()),
-            &cfg.net,
-        )
-        .lane_id()
-        .cloned()
-        .unwrap_or_else(|| LaneId::new("direct"))
+    /// 线路解析 —— [docs/55]（第 322 轮）后**只剩两级**：
+    /// `provider.lane → net.default_lane → direct`。
+    ///
+    /// 这里曾有"策略覆盖 → channel → credential → provider → net → direct"那条五级链。
+    /// 用户裁决"线路级别的分配逻辑我们已经放弃了，取而代之的，每个服务商统一一个节点"，
+    /// 所以那三级覆盖整条删除，`lane_override` 形参也随之消失（再没有东西能产生它）。
+    fn lane_for(&self, cfg: &ConfigDoc, channel: &ChannelConfig) -> LaneId {
+        resolve_lane(cfg.provider(channel.provider.as_str()), &cfg.net)
+            .lane_id()
+            .cloned()
+            .unwrap_or_else(|| LaneId::new("direct"))
     }
 
     fn resolved_channel(&self, cfg: &ConfigDoc, id: &ChannelId) -> Result<ChannelConfig> {
@@ -448,7 +434,6 @@ impl Pipeline {
         cfg: &ConfigDoc,
         snapshot: &RequestSnapshot,
         channel: &ChannelConfig,
-        lane_override: Option<&LaneId>,
     ) -> Result<PreparedRequest> {
         let credential = cfg
             .credential(channel.credential.as_str())
@@ -457,7 +442,7 @@ impl Pipeline {
             .provider(channel.provider.as_str())
             .ok_or_else(|| TaError::Internal(format!("服务商 {} 不存在", channel.provider)))?;
         let secret = self.deps.secrets.resolve(&credential.secret).await?;
-        let lane = self.lane_for(cfg, channel, lane_override);
+        let lane = self.lane_for(cfg, channel);
         build_prepared_request(PrepareInput {
             cfg,
             policy: self.deps.passthrough.as_ref(),
@@ -469,7 +454,10 @@ impl Pipeline {
         })
     }
 
-    /// 429/402/5xx 的处置：402 直接判额度耗尽，其余进冷却。
+    /// 429/402/5xx 的处置：一律进冷却（按 `cooldown_s`）。
+    ///
+    /// 402 以前还会顺手把凭据标成"额度耗尽"，那套本地额度账本已经下线 ——
+    /// 现在 402 与 429/5xx 走同一条路：冷却这条线路，由失败转移去试下一条。
     fn classify_cooling(
         &self,
         channel: &ChannelConfig,
@@ -477,17 +465,7 @@ impl Pipeline {
         cooldown_s: u32,
         now_ms: i64,
     ) {
-        if status == http::StatusCode::PAYMENT_REQUIRED {
-            self.deps.quota.observe(
-                &channel.credential,
-                QuotaObservation::StatusCode {
-                    status: status.as_u16(),
-                    error_code: None,
-                    message: Some("上游返回 402".into()),
-                },
-            );
-            self.deps.quota.mark_exhausted(&channel.credential, None);
-        }
+        let _ = status;
         self.cool_channel(&channel.id, cooldown_s, now_ms);
     }
 
@@ -623,25 +601,33 @@ impl RequestPipeline for Pipeline {
         // 后面解析通道、算 lane、造请求全部用它，不再自己 load（否则就回到"一次请求混代"）。
         let plan = self.deps.planner.plan(&hints, &ctx);
         let cfg = plan.cfg;
+
+        // 步骤 3.5：**模型级总开关**（[docs/48 §5]）。
+        //
+        // `enabled = false` 的模型必须**真的调不通** —— 否则"停用"只是"从 `/v1/models`
+        // 藏起来"，客户端只要还记得名字就照旧能打进来，那个开关就是骗人的。
+        //
+        // 为什么放在这里而不是选择器里：这是"**这个请求该不该被受理**"，
+        // 不是"该走哪条线路"。选择器只管后者，让它去报 404 会把两种语义搅在一起。
+        //
+        // 只有"存在但被停用"才报 404。**名字压根不存在**仍旧走下面的
+        // `NoViableChannel`（TA-2003）—— 那是本仓既有语义，不在这一轮改动范围里。
+        if let Some(name) = hints.model.as_deref() {
+            if let Some(model) = cfg.find_model(name) {
+                if !model.enabled {
+                    return Err(TaError::ModelNotFound(name.to_string()));
+                }
+            }
+        }
+
         let mut decision = plan.decision;
         if decision.candidates.is_empty() && decision.on_no_candidate == NoCandidateAction::UseAny {
             // 策略说"没人可用也照发" → 退回该模型的全部启用通道（这是策略语义，不是静默降级）
             decision.candidates = self.all_channels_for(&cfg, &hints);
         }
         if decision.candidates.is_empty() {
-            // [docs/11 §5] 的两分法在这里也适用：**本地账本**判定"候选全都耗尽了"时，
-            // 我们**根本没有问过上游** → 没有"上游说的话"可以透传 → 由我们自己开口，
-            // 而且要说清是**额度**问题（402 / TA-2004），不是含糊的"无可用通道"（415 / TA-2003）。
-            // 判据是**全部淘汰原因都是 `QuotaExhausted`**：只要还夹着别的理由（标签排除、
-            // 冷却、lane 降级…），那就不是"额度问题"，说成 402 会误导用户去充值。
-            let all_quota_exhausted = !decision.eliminated.is_empty()
-                && decision
-                    .eliminated
-                    .iter()
-                    .all(|(_, reason)| *reason == EliminateReason::QuotaExhausted);
-            if all_quota_exhausted {
-                return Err(TaError::AllChannelsExhausted);
-            }
+            // [docs/11 §5]：候选全空 → 由我们自己开口，说清是"没有可用通道"（415 / TA-2003）。
+            // 本地额度账本已下线，所以不再有"候选全都额度耗尽"这个分支（原先它会给 402 / TA-2004）。
             return Err(TaError::NoViableChannel {
                 message: format!(
                     "模型 {} 没有可用通道（淘汰 {} 个）",
@@ -658,11 +644,9 @@ impl RequestPipeline for Pipeline {
 
         // 步骤 8：定点改写（**只走 G1 的实现**）
         let channel = self.resolved_channel(&cfg, &selection.channel)?;
-        let mut prepared =
-            self.build_attempt(&cfg, snapshot, &channel, decision.lane_override.as_ref()).await?;
+        let mut prepared = self.build_attempt(&cfg, snapshot, &channel).await?;
         prepared.failover_chain =
             selection.chain.iter().filter(|id| **id != selection.channel).cloned().collect();
-        prepared.lane_override = decision.lane_override.clone();
         Ok(prepared)
     }
 
@@ -725,13 +709,11 @@ impl RequestPipeline for Pipeline {
                 // 配置在 prepare 之后变了：跳过已经不存在的候选
                 continue;
             };
-            let lane = self.lane_for(&cfg, &channel, prepared.lane_override.as_ref());
+            let lane = self.lane_for(&cfg, &channel);
             if !self.is_available(&channel_id, Some(&lane), now_ms) {
                 continue;
             }
-            let attempt_request = match self
-                .build_attempt(&cfg, &prepared.snapshot, &channel, prepared.lane_override.as_ref())
-                .await
+            let attempt_request = match self.build_attempt(&cfg, &prepared.snapshot, &channel).await
             {
                 Ok(request) => request,
                 Err(err) => {
@@ -812,6 +794,26 @@ impl RequestPipeline for Pipeline {
                             Some(meter) => meter.observe_stream(ctx, body),
                             None => body,
                         };
+                        // [docs/59] **跨协议：把上游 SSE 逐帧翻成客户端协议。**
+                        //
+                        // 位置是刻意的，两边都有理由：
+                        // * 放在 `meter` **之后** —— 用量/计费要按**上游协议**的形状解析
+                        //   （`ctx.protocol` 就是上游协议），翻译完再喂给它就解析不出来了；
+                        // * 放在 `watch_stream` **之前** —— trace 记的是**客户端真正收到的字节**，
+                        //   排查"客户端为什么解析失败"时这才是要看的。
+                        let stream = if prepared.client_protocol != prepared.protocol
+                            && crate::adapt::can_translate(
+                                prepared.client_protocol,
+                                prepared.protocol,
+                            ) {
+                            crate::adapt::session::translate_sse_stream(
+                                prepared.protocol,
+                                prepared.client_protocol,
+                                stream,
+                            )
+                        } else {
+                            stream
+                        };
                         // ④ 下游断连 → 取消上游（[docs/12 §4 G2]）：
                         // body 被 axum 丢掉且**没读完**时置位；正常读完不置位
                         // （否则每一次成功的流式响应都会记一条假的"客户端断连"）。
@@ -885,7 +887,9 @@ impl RequestPipeline for Pipeline {
                                 dispatch::client_response_from_bytes(
                                     status,
                                     upstream.headers,
-                                    bytes,
+                                    // [docs/59] 响应方向也要转回来。只转请求方向是不够的：
+                                    // Anthropic 客户端会收到 **OpenAI 形状**的 JSON 而解析失败。
+                                    client_protocol_body(&prepared, status, bytes),
                                 ),
                                 &cfg,
                                 &channel_id,
@@ -1050,6 +1054,54 @@ fn with_debug_headers(
     response
 }
 
+/// [docs/59] **非流式响应：跨协议时把上游的响应体翻回客户端协议。**
+///
+/// 只转请求方向是不够的 —— Anthropic 客户端会收到 **OpenAI 形状**的 JSON 而解析失败，
+/// 而且失败得很隐蔽（HTTP 200、body 是合法 JSON、只是字段对不上）。
+///
+/// **响应方向永不拒绝**（`adapt` 模块头的"有意不对称"）：上游已经答复了，
+/// 把它的答案整份丢掉比"带损失地交出去"更糟。所以转换失败时**原样透传** + 记日志 ——
+/// 用户拿到上游原话，而不是我们的一个空壳。
+fn client_protocol_body(
+    prepared: &PreparedRequest,
+    status: http::StatusCode,
+    bytes: Bytes,
+) -> Bytes {
+    // ★ **非 2xx 一律原样透传**（[docs/11 §5] 的两分法：上游说了话就照抄）。
+    //
+    // 这条是必须的，不是优化：上游的 400/429 正文里是**它自己的**错误说明
+    // （`{"error":{"message":"bad request"}}`），跨协议硬翻会把它改写成目标协议的
+    // 成功形状（实测会得到 `{"type":"message","role":"assistant","content":[]}`）——
+    // 用户于是看到"成功但空回复"，而上游其实明确说了哪里错。
+    if !status.is_success() {
+        return bytes;
+    }
+    if prepared.client_protocol == prepared.protocol
+        || !crate::adapt::can_translate(prepared.client_protocol, prepared.protocol)
+    {
+        return bytes;
+    }
+    match crate::adapt::translate_response(prepared.protocol, prepared.client_protocol, &bytes) {
+        Ok(translated) => {
+            for loss in &translated.losses {
+                tracing::warn!(
+                    request_id = %prepared.request_id,
+                    "跨协议响应有损失（不拒绝，如实交给客户端）：{}",
+                    crate::adapt::describe(std::slice::from_ref(loss))
+                );
+            }
+            translated.body
+        }
+        Err(err) => {
+            tracing::warn!(
+                request_id = %prepared.request_id,
+                "跨协议响应转换失败，原样透传上游答案：{err}"
+            );
+            bytes
+        }
+    }
+}
+
 fn meter_context(
     prepared: &PreparedRequest,
     channel: &ChannelConfig,
@@ -1094,7 +1146,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use ta_core::clock::ManualClock;
     use ta_core::domain::{Credential, Lane, LaneKind, Model, Provider, Selector};
-    use ta_core::quota::{QuotaState, QuotaStateKind};
+    use ta_core::routing::EliminateReason;
     use ta_core::routing::{ChannelSelector, PolicyEngine, RouteDecision, Selection};
 
     const MODEL: &str = "claude-sonnet-4-5";
@@ -1111,7 +1163,7 @@ mod tests {
         fn decide(&self, _hints: &RouteHints, _ctx: &RouteContext) -> RouteDecision {
             RouteDecision {
                 candidates: self.candidates.iter().map(|id| ChannelId::new(*id)).collect(),
-                selector: Selector::Priority,
+                selector: Selector::BalancedSticky,
                 on_no_candidate: self.on_no_candidate,
                 ..Default::default()
             }
@@ -1154,7 +1206,7 @@ mod tests {
                 candidates: vec![],
                 eliminated: self.eliminated.clone(),
                 on_no_candidate: NoCandidateAction::Error,
-                selector: Selector::Priority,
+                selector: Selector::BalancedSticky,
                 ..Default::default()
             }
         }
@@ -1238,46 +1290,34 @@ mod tests {
         }
     }
 
-    struct NoQuota;
-
-    impl QuotaLedger for NoQuota {
-        fn state(&self, cred: &CredentialId) -> QuotaState {
-            QuotaState {
-                credential_id: cred.clone(),
-                kind: QuotaStateKind::Unknown,
-                ..Default::default()
-            }
-        }
-        fn observe(&self, _cred: &CredentialId, _obs: QuotaObservation) {}
-        fn mark_exhausted(&self, _cred: &CredentialId, _hint: Option<i64>) {}
-        fn mark_invalid(&self, _cred: &CredentialId) {}
-        fn roll_window(&self, _now_ms: i64) -> Vec<CredentialId> {
-            vec![]
-        }
-        fn remaining_ratio(&self, _cred: &CredentialId) -> Option<f64> {
-            None
-        }
-    }
-
     // ---------------------------------------------------------- 夹具
 
-    /// 两个通道：ch-a 走 lane-jp，ch-b 走 lane-tokyo（base_url 便于区分）。
+    /// 两个通道：ch-a（服务商 p-a）走 lane-jp，ch-b（服务商 p-b）走 lane-tokyo
+    /// （base_url 便于区分）。
+    ///
+    /// [docs/55]：线路写在**服务商**上 —— 这正好也是本轮收敛的语义
+    ///（以前这里写的是 `channel.lane`，那个字段已经删了）。
     fn test_cfg(provider_a: &str, provider_b: &str) -> ConfigDoc {
         let mut doc = ConfigDoc::default();
-        doc.providers.push(Provider::new("p-a", "A", Protocol::Openai, provider_a));
-        doc.providers.push(Provider::new("p-b", "B", Protocol::Openai, provider_b));
+        doc.providers
+            .push(Provider::new("p-a", "A", Protocol::Openai, provider_a).with_lane("lane-jp"));
+        doc.providers
+            .push(Provider::new("p-b", "B", Protocol::Openai, provider_b).with_lane("lane-tokyo"));
         doc.credentials.push(Credential::new("c-a", "p-a", "A", "${secret:a}"));
         doc.credentials.push(Credential::new("c-b", "p-b", "B", "${secret:b}"));
         doc.models.push(Model::new(MODEL));
-        doc.channels.push(
-            ChannelConfig::new("ch-a", MODEL, "p-a", "c-a", "upstream-a").with_lane("lane-jp"),
-        );
-        doc.channels.push(
-            ChannelConfig::new("ch-b", MODEL, "p-b", "c-b", "upstream-b").with_lane("lane-tokyo"),
-        );
+        doc.channels.push(ChannelConfig::new("ch-a", MODEL, "p-a", "c-a", "upstream-a"));
+        doc.channels.push(ChannelConfig::new("ch-b", MODEL, "p-b", "c-b", "upstream-b"));
         doc
     }
 
+    /// **默认夹具是"同协议"**（客户端 OpenAI ↔ 上游 `Protocol::Openai`）。
+    ///
+    /// [docs/59] 这一点在第 326 轮变成**必须**的：以前客户端是 `/v1/messages`（Anthropic）
+    /// 而上游是 `Openai` —— 那是**跨协议**，而当时跨协议是原样透传（也就是 bug）。
+    /// 现在跨协议会被真的翻译，于是"逐字节透传""流式原样"这些用例必须用同协议夹具，
+    /// 否则它们测的是翻译结果、名字却写着 passthrough。跨协议的用例请用
+    /// [`snapshot_anthropic`]（显式声明客户端说的是 Anthropic）。
     fn snapshot(body: &'static [u8]) -> RequestSnapshot {
         let mut headers = http::HeaderMap::new();
         headers.insert("content-type", "application/json".parse().unwrap());
@@ -1286,13 +1326,23 @@ mod tests {
         RequestSnapshot {
             request_id: "req_test".into(),
             method: http::Method::POST,
-            path: "/v1/messages".into(),
+            path: "/v1/chat/completions".into(),
             query: None,
-            endpoint: crate::ingress::Endpoint::Messages,
+            endpoint: crate::ingress::Endpoint::ChatCompletions,
             headers,
             body: Bytes::from_static(body),
             received_at_ms: 1_700_000_000_000,
         }
+    }
+
+    /// **跨协议**夹具：客户端说的是 Anthropic（`POST /v1/messages`）。
+    ///
+    /// 与 `test_cfg` 里 `Protocol::Openai` 的上游一起用 → 逼出 IR 中转。
+    fn snapshot_anthropic(body: &'static [u8]) -> RequestSnapshot {
+        let mut s = snapshot(body);
+        s.path = "/v1/messages".into();
+        s.endpoint = crate::ingress::Endpoint::Messages;
+        s
     }
 
     fn pipeline(
@@ -1310,7 +1360,6 @@ mod tests {
                 policy,
                 Arc::new(ChainSelector),
             )),
-            quota: Arc::new(NoQuota),
             secrets: Arc::new(StaticSecrets::new([
                 ("${secret:a}", SECRET),
                 ("${secret:b}", SECRET),
@@ -1341,7 +1390,6 @@ mod tests {
                 }),
                 Arc::new(ChainSelector),
             )),
-            quota: Arc::new(NoQuota),
             secrets: Arc::new(StaticSecrets::new([("${secret:a}", SECRET)])),
             dialer,
             passthrough: FullPassthrough::shared(),
@@ -1369,7 +1417,6 @@ mod tests {
                 policy,
                 Arc::new(ChainSelector),
             )),
-            quota: Arc::new(NoQuota),
             secrets: Arc::new(StaticSecrets::new([("${secret:a}", SECRET)])),
             dialer,
             passthrough: FullPassthrough::shared(),
@@ -1399,6 +1446,90 @@ mod tests {
 
     // ---------------------------------------------------------- 步骤 3–8
 
+    /// [docs/59] **跨协议（非流式）真的把 body 转了**，不只是把路径改对。
+    ///
+    /// 这是"协议翻译层从来没被调用过"这条用户报障的**反回归闸门**。
+    /// 只钉路径是不够的：路径对了、body 还是 Anthropic 形状，上游照样 400 ——
+    /// 而那正是用户在真机上看到的"选 Anthropic 访问不了"。
+    ///
+    /// 判据选**顶层 `system`**：Anthropic 把它放在请求体顶层，OpenAI 没有这个字段
+    /// （system 是一条 `messages` 里的消息）。所以"它还躺在顶层"就说明**没转**，
+    /// 这是个一眼可判、且不会因为两边字段名相似而误判的信号。
+    #[tokio::test]
+    async fn cross_protocol_request_body_is_translated_not_passed_through() {
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            Arc::new(ScriptedDialer::default()),
+            Arc::new(RecordingSink::default()),
+        );
+        let body = br#"{"model":"m-a","max_tokens":16,"system":"be brief","messages":[{"role":"user","content":"hi"}]}"#;
+        // 跨协议夹具：客户端 Anthropic ↔ 上游 Openai
+        let prepared = pipeline.prepare(&snapshot_anthropic(body)).await.expect("应当能准备");
+
+        assert_eq!(prepared.upstream_url, "https://a.example/v1/chat/completions");
+        let sent: serde_json::Value = serde_json::from_slice(&prepared.body).expect("是 JSON");
+        assert!(
+            sent.get("system").is_none(),
+            "顶层 system 原样发出去 = 没跨协议转换（上游会 400）：{sent}"
+        );
+        assert_eq!(sent["messages"][0]["role"], "system", "system 必须被搬进 messages[0]：{sent}");
+        assert_eq!(sent["model"], "upstream-a", "模型名仍要按通道映射：{sent}");
+    }
+
+    /// [docs/59] **端到端：客户端说 Anthropic 且要流式，上游是 OpenAI 兼容。**
+    ///
+    /// 客户端必须收到**合法的 Anthropic SSE**，而不是 OpenAI 的 chunk 原样透传。
+    /// 这是用户第 325 轮"选 Anthropic 访问不了"的**直接反回归**：
+    /// Claude Code 默认流式，而跨协议流式以前在**拨号前**就被拒（现在走 `adapt::session`
+    /// 逐帧切帧 → IR → 目标协议）。
+    #[tokio::test]
+    async fn cross_protocol_streaming_reaches_the_client_as_anthropic_sse() {
+        /// OpenAI 上游的典型流：两个增量 + 一个带 finish_reason 的收尾 + `[DONE]`。
+        const UPSTREAM: &str = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+
+        let pipeline = pipeline(
+            test_cfg("https://a.example/v1", "https://b.example/v1"),
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            Arc::new(ScriptedDialer::with(vec![Scripted::Ok {
+                status: 200,
+                headers: vec![("content-type", "text/event-stream")],
+                body: UPSTREAM,
+            }])),
+            Arc::new(RecordingSink::default()),
+        );
+
+        let body = br#"{"model":"m-a","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}"#;
+        let prepared = pipeline.prepare(&snapshot_anthropic(body)).await.expect("prepare");
+        // 请求方向已经转成 Anthropic 形状发出去、上游是 OpenAI → 响应方向必须翻回来
+        let response = pipeline.execute(prepared).await.expect("execute");
+        let bytes =
+            axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("读客户端响应体");
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+
+        // ① 客户端拿到的是 **Anthropic** 的帧序列
+        assert!(text.contains("message_start"), "缺 message_start：{text}");
+        assert!(text.contains("content_block_delta"), "缺增量帧：{text}");
+        assert!(text.contains("text_delta"), "增量的形状必须是 Anthropic 的：{text}");
+        assert!(text.contains("message_stop"), "缺终止帧：{text}");
+        // ② 内容没丢
+        assert!(text.contains("你") && text.contains("好"), "正文丢了：{text}");
+        // ③ **不许**把上游的形状漏给客户端
+        assert!(!text.contains("\"choices\""), "OpenAI 的 chunk 不该透给 Anthropic 客户端：{text}");
+        assert!(!text.contains("[DONE]"), "[DONE] 不是 Anthropic 的收尾：{text}");
+    }
+
     #[tokio::test]
     async fn prepare_uses_policy_selector_and_g1_rewrite() {
         let sink = Arc::new(RecordingSink::default());
@@ -1416,7 +1547,11 @@ mod tests {
 
         assert_eq!(prepared.channel_id.as_str(), "ch-a");
         assert_eq!(prepared.upstream_model, "upstream-a");
-        assert_eq!(prepared.upstream_url, "https://a.example/v1/messages");
+        // [docs/59] 默认夹具是**同协议**（客户端 OpenAI ↔ 上游 Openai）→ 路径 = 客户端路径，
+        // 不做任何改写。跨协议那条改写路径由
+        // `cross_protocol_request_body_is_translated_not_passed_through` 单独钉。
+        assert_eq!(prepared.upstream_url, "https://a.example/v1/chat/completions");
+
         assert_eq!(prepared.lane_id.as_ref().map(|l| l.as_str()), Some("lane-jp"));
         assert_eq!(prepared.failover_chain, vec![ChannelId::new("ch-b")]);
         // 模型名被映射，其余字段原样
@@ -1452,20 +1587,51 @@ mod tests {
         assert_eq!(err.http_status(), 415);
     }
 
+    /// [docs/48 §5]：**模型级开关关掉 → 请求被拒**，而且是 404「模型不存在」。
+    ///
+    /// 为什么这条必须单独存在：`/v1/models` 的用例只能证明"清单里不列出"，
+    /// 而那只证明"藏起来了" —— 客户端只要还记得模型名就照旧能打进来，
+    /// 那个开关就变成了"隐藏"而不是"停用"，正是用户想避免的那种假开关。
+    ///
+    /// 夹具里**候选集与线路一个都没动**，唯一的变量就是 `enabled`：
+    /// 这样"被拒"只能归因到开关，而不是"恰好没有线路可用"（那会报 TA-2003）。
+    #[tokio::test]
+    async fn disabled_model_is_rejected_before_routing() {
+        let mut cfg = test_cfg("https://a.example/v1", "https://b.example/v1");
+        let model = cfg.models.iter_mut().find(|m| m.matches(MODEL)).expect("夹具里有这个模型");
+        model.enabled = false;
+
+        let pipeline = pipeline(
+            cfg,
+            Arc::new(FixedPolicy {
+                candidates: vec!["ch-a"],
+                on_no_candidate: NoCandidateAction::Error,
+            }),
+            Arc::new(ScriptedDialer::default()),
+            Arc::new(RecordingSink::default()),
+        );
+        let err = pipeline
+            .prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#))
+            .await
+            .expect_err("停用的模型必须被拒");
+        assert_eq!(err.code(), "TA-2001", "必须是「模型不存在」，不是「无可用通道」");
+        assert_eq!(err.http_status(), 404);
+    }
+
     /// [docs/11 §5]：**本地账本**判定"候选全都耗尽"时 —— 我们**没问过上游**，
     /// 没有"上游说的话"可以透传 → 由我们自己开口，且必须说清是**额度**（402 / TA-2004），
     /// 不是含糊的"无可用通道"（415 / TA-2003）。
     ///
     /// 顺带钉住"没问过上游"这件事：`dialer.calls() == 0`。
     #[tokio::test]
-    async fn locally_exhausted_candidates_report_2004_without_calling_upstream() {
+    async fn locally_eliminated_candidates_report_2003_without_calling_upstream() {
         let dialer = Arc::new(ScriptedDialer::default());
         let pipeline = pipeline(
             test_cfg("https://a.example/v1", "https://b.example/v1"),
             Arc::new(EliminatingPolicy {
                 eliminated: vec![
-                    (ChannelId::new("ch-a"), EliminateReason::QuotaExhausted),
-                    (ChannelId::new("ch-b"), EliminateReason::QuotaExhausted),
+                    (ChannelId::new("ch-a"), EliminateReason::TaggedOut),
+                    (ChannelId::new("ch-b"), EliminateReason::TaggedOut),
                 ],
             }),
             dialer.clone(),
@@ -1474,20 +1640,23 @@ mod tests {
         let err = pipeline
             .prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#))
             .await
-            .expect_err("本地都说耗尽了");
-        assert_eq!(err.code(), "TA-2004", "本地额度耗尽 = 我们开口的 402");
-        assert_eq!(err.http_status(), 402);
-        assert_eq!(dialer.calls(), 0, "本地判定耗尽时不该有任何上游调用");
+            .expect_err("本地都说不可用");
+        assert_eq!(
+            err.code(),
+            "TA-2003",
+            "本地淘汰 → 无可用通道（额度账本已下线，不再有 402 那条）"
+        );
+        assert_eq!(dialer.calls(), 0, "本地判定不可用时不该有任何上游调用");
     }
 
-    /// 反向控制：只要淘汰理由**不全是**额度（标签排除 / 冷却 / lane 降级…），
-    /// 就不能说成 402 —— 否则会把用户骗去充值。
+    /// 反向控制：淘汰理由不是额度问题时也必须说 2003，不许说成 402
+    /// （本地额度账本已下线，"额度耗尽"这个理由本身也没了）。
     #[tokio::test]
-    async fn non_quota_eliminations_stay_2003_even_if_one_of_them_is_quota() {
+    async fn non_quota_eliminations_stay_2003() {
         for eliminated in [
             vec![(ChannelId::new("ch-a"), EliminateReason::TaggedOut)],
             vec![
-                (ChannelId::new("ch-a"), EliminateReason::QuotaExhausted),
+                (ChannelId::new("ch-a"), EliminateReason::Disabled),
                 (ChannelId::new("ch-b"), EliminateReason::TaggedOut),
             ],
         ] {
@@ -1501,7 +1670,7 @@ mod tests {
                 .prepare(&snapshot(br#"{"model":"claude-sonnet-4-5"}"#))
                 .await
                 .expect_err("没有候选必须报错");
-            assert_eq!(err.code(), "TA-2003", "不全是额度问题就不该报 402");
+            assert_eq!(err.code(), "TA-2003", "本地淘汰一律 2003（额度账本已下线）");
             assert_eq!(err.http_status(), 415);
         }
     }
@@ -1619,8 +1788,9 @@ mod tests {
         // 同一个 golden 夹具，只是把上游换成我们的回环假上游、lane 换成 direct
         let mut provider = fixture.provider.clone();
         provider.base_url = format!("http://{}", upstream.addr);
-        let mut channel = fixture.channel.clone();
-        channel.lane = Some(LaneId::new("direct"));
+        // [docs/55] 线路在**服务商**上（`channel.lane` 已删除）
+        provider.lane = Some(LaneId::new("direct"));
+        let channel = fixture.channel.clone();
 
         let mut doc = ConfigDoc::default();
         doc.models.push(Model::new(MODEL));
@@ -1647,9 +1817,11 @@ mod tests {
         let snapshot = RequestSnapshot {
             request_id: "req_a2_golden".into(),
             method: http::Method::POST,
-            path: "/v1/messages".into(),
+            // [docs/59] **同协议**（客户端 OpenAI ↔ 夹具上游 `Protocol::Openai`）：
+            // 这一条测的是"逐字节透传"，跨协议会被翻译，那就不是它要测的东西了。
+            path: "/v1/chat/completions".into(),
             query: None,
-            endpoint: crate::ingress::Endpoint::Messages,
+            endpoint: crate::ingress::Endpoint::ChatCompletions,
             // fixture 的 content-length 是**故意写错的 999999**，正好用来证明
             // 上游看到的是按实际 body 重算后的值
             headers: fixture.headers.clone(),
@@ -1792,7 +1964,8 @@ mod tests {
 
         let mut cfg =
             test_cfg(&format!("http://{}/v1/messages", upstream.addr), "https://b.example/v1");
-        cfg.channels[0].lane = Some(LaneId::new("direct"));
+        // [docs/55] ch-a 的服务商就是 cfg.providers[0]（见 test_cfg 的构造顺序）
+        cfg.providers[0].lane = Some(LaneId::new("direct"));
         let pipeline = pipeline(
             cfg,
             Arc::new(FixedPolicy {
@@ -2141,7 +2314,6 @@ mod tests {
                 }),
                 Arc::new(ChainSelector),
             )),
-            quota: Arc::new(NoQuota),
             secrets: Arc::new(StaticSecrets::new([
                 ("${secret:a}", SECRET),
                 ("${secret:b}", SECRET),
@@ -2326,9 +2498,9 @@ mod tests {
         })
         .await;
 
-        // 通道指向假上游；lane = direct（不走代理）
+        // 通道指向假上游；lane = direct（不走代理）—— [docs/55] 线路在服务商上
         let mut cfg = test_cfg(&upstream.url("/v1/messages").await, "https://b.example/v1");
-        cfg.channels[0].lane = Some(LaneId::new("direct"));
+        cfg.providers[0].lane = Some(LaneId::new("direct"));
         let sink = Arc::new(RecordingSink::default());
         let dialer = Arc::new(KernelDialer::new(
             Arc::new(StaticLanePorts::default()),
@@ -2369,7 +2541,7 @@ mod tests {
     /// 价格快照来自请求时刻的费率，账本拿到的是同一份数字。
     #[tokio::test]
     async fn production_meter_records_one_full_usage_row_for_a_non_stream_request() {
-        let (meter, store, ledger) = crate::meter::test_support::recording_meter();
+        let (meter, store) = crate::meter::test_support::recording_meter();
         let dialer = Arc::new(ScriptedDialer::with(vec![Scripted::Ok {
             status: 200,
             headers: vec![],
@@ -2412,16 +2584,12 @@ mod tests {
         assert!((row.cost.amount - 0.0105).abs() < 1e-12, "cost={}", row.cost.amount);
         assert_eq!(row.price_snapshot["rates"]["input"], serde_json::json!(3.0));
         assert!(row.ttfb_ms.is_some(), "上游首字节耗时必须记下来");
-
-        let observed = ledger.observed();
-        assert_eq!(observed.len(), 1, "额度账本必须同时收到观测（配额判定靠它）");
-        assert_eq!(observed[0].0.as_str(), "c-a");
     }
 
     /// 流式：**逐字节透传** + 流结束时恰好一条记录（用量来自 SSE 里的 usage）。
     #[tokio::test]
     async fn production_meter_records_stream_usage_and_keeps_the_stream_verbatim() {
-        let (meter, store, _ledger) = crate::meter::test_support::recording_meter();
+        let (meter, store) = crate::meter::test_support::recording_meter();
         let sse = concat!(
             "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],",
             "\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9}}\n\n",
@@ -2640,7 +2808,7 @@ mod tests {
                     cfg: self.doc.clone(),
                     decision: RouteDecision {
                         candidates: vec![ChannelId::new("ch-a")],
-                        selector: Selector::Priority,
+                        selector: Selector::BalancedSticky,
                         on_no_candidate: NoCandidateAction::Error,
                         ..Default::default()
                     },
@@ -2665,7 +2833,6 @@ mod tests {
             cfg: Arc::new(arc_swap::ArcSwap::from_pointee(v2)),
             clock: Arc::new(ManualClock::new(1_700_000_000_000)),
             planner: Arc::new(BoundPlanner { doc: v1 }),
-            quota: Arc::new(NoQuota),
             secrets: Arc::new(StaticSecrets::new([("${secret:a}", SECRET)])),
             dialer: Arc::new(ScriptedDialer::default()),
             passthrough: FullPassthrough::shared(),

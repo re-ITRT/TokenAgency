@@ -35,12 +35,11 @@ proxy-providers:
     health-check: {enable: true, url: "https://api.openai.com/v1/models", interval: 60}
 
 proxy-groups:
-  - {name: "LANE-lane-jp-auto", type: url-test, use: ["sub-jp"], url: "https://api.openai.com/v1/models", interval: 60, tolerance: 100, empty-fallback: REJECT}
+  - {name: "LANE-lane-jp-auto", type: select, use: ["sub-jp"], url: "https://api.openai.com/v1/models", interval: 60, tolerance: 100, empty-fallback: REJECT}
 
 listeners:
   - {name: "lane-lane-direct", type: mixed, listen: 127.0.0.1, port: 39100, proxy: "DIRECT", udp: false}
   - {name: "lane-lane-jp-auto", type: mixed, listen: 127.0.0.1, port: 39101, proxy: "LANE-lane-jp-auto", udp: false}
-  - {name: "lane-lane-jp-original", type: mixed, listen: 127.0.0.1, port: 39102, proxy: "🇯🇵 日本", udp: false}
   - {name: "lane-lane-us-fixed", type: mixed, listen: 127.0.0.1, port: 39103, proxy: "美国-洛杉矶-01", udp: false}
 
 rules:
