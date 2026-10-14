@@ -1,3 +1,4 @@
+[English](README.en.md) | 中文
 # TokenAgency
 
 > 一个人的 LLM 中转站：本地网关 + 语义路由 + 内嵌内核出网 + Clash Verge 式托盘。
@@ -76,11 +77,11 @@
 
 ## 4. 非目标（明确不做）
 
-- ❌ 多用户 / 注册登录 / 计费 / 充值 / 卡密
-- ❌ 对外提供服务（不监听 `0.0.0.0`，不做公网中转，不做域名与反代教程）
-- ❌ 团队共享的"渠道池"运营后台
-- ❌ 模型微调 / 训练 / RAG 平台
-- ❌ 默认接管整机网络（TUN / 系统代理是**可选高级模式**，默认关闭）
+- 多用户 / 注册登录 / 计费 / 充值 / 卡密
+- 对外提供服务（不监听 `0.0.0.0`，不做公网中转，不做域名与反代教程）
+- 团队共享的"渠道池"运营后台
+- 模型微调 / 训练 / RAG 平台
+- 默认接管整机网络（TUN / 系统代理是**可选高级模式**，默认关闭）
 
 ## 5. 目标用户画像（就一个人）
 
@@ -112,9 +113,9 @@ ANTHROPIC_API_KEY=ta-local-xxxxxxxx
 | MSVC Build Tools | 2022 | Windows 链接器 |
 | Node.js | 20+（本机验证于 v24） | **使用 npm**，见下方说明 |
 | WebView2 Runtime | 任意 | Windows 10/11 通常已内置 |
-| mihomo | 自行获取 | `net.kernel.provider: external`，不随包分发（GPL 合规） |
+| mihomo | 随包自带 v1.19.31 | 也可设 `net.kernel.provider: external` 指自己的内核；见第 8 节与 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) |
 
-> ⚠️ **本仓库用 npm，不用 pnpm。** pnpm 会向上层目录寻找 workspace 根，而父目录存在一个 0 字节的 `package.json` 会导致 JSON 解析失败。
+> 注意：**本仓库用 npm，不用 pnpm。** pnpm 会向上层目录寻找 workspace 根，而父目录存在一个 0 字节的 `package.json` 会导致 JSON 解析失败。
 
 ### 首次准备
 
@@ -160,7 +161,7 @@ crates/ta-secrets        系统钥匙串封装与 ${secret:...} 引用解析
 crates/ta-gateway        本地网关：入站、全透传、路由管线、分发、协议适配、trace
 src-tauri                Tauri 壳：命令层、托盘、插件、生命周期（薄）
 src                      前端：React 19 + MUI v7（10 个页面）
-docs                     设计文档 01–12（09 是架构基线，10/11 是接口契约）
+docs                     设计文档 16 篇（09 是架构基线，10/11 是接口契约；索引见 docs/README.md）
 ```
 
 ---

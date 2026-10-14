@@ -117,6 +117,9 @@
 `TokenKind`、`TokenUsage`、`Money`、`UsageSource`、`UsageRecord`、
 `LogMode`（`Off` / `Meta` / `Shape` / `Full`）、`Retention`、`RequestSummary`。
 
+**文案与多语言**：两种语言（`zh-CN` / `en`）、key 一致性守卫、以及"加一种语言要动什么"，
+见 [`src/shared/i18n/README.md`](src/shared/i18n/README.md)。
+
 ---
 
 ## 4. 接口契约（改一处要同步改的）
@@ -132,7 +135,7 @@
 **跨切面守卫**（改到上面任何一处就该跑它们）：
 `commandSurface.guard` · `argsShape.guard` · `serdeDefault.guard` · `registryClaim.guard` ·
 `rowReaders.guard` · `protocolList.guard` · `design.guard` · `duplicateCopy.guard` ·
-`uiMinimalism.guard` · `noPlaceholder.guard` · `log_field_guard`（Rust）。
+`uiMinimalism.guard` · `noPlaceholder.guard` · `i18nParity.guard` · `log_field_guard`（Rust）。
 
 ---
 
