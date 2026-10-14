@@ -119,10 +119,16 @@ Download `TokenAgency_x.y.z_x64-setup.exe` from
 3. Launch it from the Start menu or the tray icon
 
 **Why run it elevated**: the installer is per-user by design and does not request elevation.
-On some machines antivirus sandboxing drops it to **low integrity**, and it then cannot write to
-`%LOCALAPPDATA%\TokenAgency` at all (`Error opening file for writing: ...\tokenagency.exe`).
-Running elevated avoids that entire class of failure. (The installer also re-launches itself
-elevated when it detects the problem.)
+Two failure modes were observed in practice, and **running elevated fixes both**:
+
+* the previous install was elevated (so the files are owned by Administrators) and the app it
+  launched is an **elevated** process — a normal-privilege installer cannot kill it (`taskkill`
+  fails too), so `tokenagency.exe` stays locked;
+* antivirus sandboxing drops the non-elevated installer to **low integrity**, so it cannot even
+  write to `%LOCALAPPDATA%\TokenAgency` (`Error opening file for writing: ...\tokenagency.exe`).
+
+When it cannot move the old files, the installer now **re-launches itself elevated** (one UAC
+prompt), so a plain double-click still works; running it elevated yourself only saves a round trip.
 
 **Blocked by SmartScreen** (the exe is not code-signed): choose "More info" → "Run anyway".
 

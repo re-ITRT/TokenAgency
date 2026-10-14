@@ -113,9 +113,15 @@ ANTHROPIC_API_KEY=ta-local-xxxxxxxx
 3. 从开始菜单或托盘图标启动
 
 **为什么建议以管理员身份运行**：安装器按**当前用户**安装，按设计不提权。
-但在真机上遇到过一类失败：安装器被杀软沙箱降权到**低完整性**，于是连
-`%LOCALAPPDATA%\TokenAgency` 都写不进去，报 `Error opening file for writing: ...\tokenagency.exe`。
-以管理员身份运行可以避开这一整类问题（安装器检测到权限不足时也会自己用 UAC 重新拉起自己）。
+但实测遇到过两类失败，**管理员跑一次就过**：
+
+* 上一次是用管理员装的（文件所有者变成 Administrators），而它启动的应用是**提权**进程 ——
+  普通权限的安装器**杀不掉**它（`taskkill` 同样会失败），于是 `tokenagency.exe` 一直被占用；
+* 杀软把非提权的安装器降到**低完整性**，于是连 `%LOCALAPPDATA%\TokenAgency` 都写不进去，
+  报 `Error opening file for writing: ...\tokenagency.exe`。
+
+安装器在"动不了旧文件"时会**自动申请管理员权限重新启动自己**（弹一次 UAC），
+所以普通双击也能装上；你先手动右键提权只是少一个来回。
 
 **被 SmartScreen 拦下**（exe 未做代码签名）：点「更多信息」→「仍要运行」。
 

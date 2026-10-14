@@ -71,6 +71,8 @@
     ClearErrors
     Rename "$INSTDIR\tokenagency.exe" "$INSTDIR\tokenagency.exe.old"
     IfErrors 0 ta_pre_moved
+    ; 立刻把真实错误码存进 $R4（TA_LOG_ERR 也会读一次，但那个值只在宏内部用）
+    System::Call 'kernel32::GetLastError() i.R4'
     !insertmacro TA_LOG_ERR "  step2 改名失败（第 $R5 次）"
     Sleep 2000
     IntOp $R5 $R5 + 1
@@ -82,9 +84,28 @@
     Goto ta_pre_probe
   ta_pre_rename_busy:
     StrCpy $R6 "locked"
-    !insertmacro TA_LOG "  step2 放弃：旧 exe 一直动不了（被占用或被拦）"
-    DetailPrint "TokenAgency: 旧文件动不了（被占用 —— 可能还在运行，或被杀软扫描/拦截）"
-    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "安装程序动不了 tokenagency.exe —— 它正被占用。$\r$\n$\r$\n常见原因：TokenAgency 还在运行（托盘图标可能看不见），$\r$\n或者杀毒软件正在扫描/拦截它。$\r$\n$\r$\n先运行这个会更省事：$\r$\n    taskkill /F /IM tokenagency.exe /T$\r$\n然后点「重试」。$\r$\n$\r$\n详细诊断：%TEMP%\ta-install-hook.log" /SD IDCANCEL IDRETRY ta_pre_rename
+    !insertmacro TA_LOG "  step2 放弃：旧 exe 一直动不了（lasterr=$R4；已试 8 次）"
+    DetailPrint "TokenAgency: 旧文件动不了（Windows 错误码 $R4）"
+    ; ---- 真机实测（2026-10-14，用户截图）：**非管理员跑卡在这里，管理员跑一次就过**。
+    ;      所以"不是管理员"就**自己申请提权**（UAC 重启动自己），不要只丢一句
+    ;      "先 taskkill 再重试" —— 那条建议在下面两种原因下**都是假的**：
+    ;        ① 旧实例是**提权**启动的（上一次用管理员装的；若勾了"运行"就继承了高完整性）
+    ;           ⇒ 普通权限的 taskkill 根本杀不掉它 ⇒ exe 一直被占用（ERROR_SHARING_VIOLATION=32）；
+    ;        ② 杀软把非提权安装器降到低完整性 ⇒ 连改名都被拒（ERROR_ACCESS_DENIED=5，
+    ;           与 step3 探针那条记录同源）。
+    ;      提权对这两种都有效，所以这里直接走提权，别再让用户猜。
+    System::Call 'shell32::IsUserAnAdmin() i.R3'
+    StrCmp $R3 "1" ta_pre_rename_admin
+    !insertmacro TA_LOG "  step2 用 runas 重新以管理员身份启动安装器（lasterr=$R4）"
+    DetailPrint "TokenAgency: 权限不足，正在申请管理员权限重新启动…"
+    MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "安装程序动不了 tokenagency.exe（Windows 错误码 $R4）。$\r$\n$\r$\n常见原因有两个：$\r$\n  · TokenAgency 还在运行 —— 如果它是**提权**启动的，普通权限杀不掉它；$\r$\n  · 杀毒软件在拦截安装程序（火绒的「安装拦截 / 文件实时监控」最常见）。$\r$\n$\r$\n点「确定」会**申请管理员权限重新启动**安装程序（UAC 选「是」）——$\r$\n实测这是最省事、也最稳的那条路。" /SD IDOK IDOK ta_pre_rename_elevate
+    Goto ta_pre_abort
+  ta_pre_rename_elevate:
+    ExecShell "runas" "$EXEPATH" "$CMDLINE" SW_SHOWNORMAL
+    Quit
+  ta_pre_rename_admin:
+    !insertmacro TA_LOG "  step2 已是管理员仍动不了（lasterr=$R4）⇒ 几乎可以确定是杀软"
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "安装程序动不了 tokenagency.exe（Windows 错误码 $R4）。$\r$\n$\r$\n你**已经是管理员**了，所以基本可以确定是【杀毒软件】在拦：$\r$\n  火绒的「安装拦截 / 文件实时监控」最常见（加信任区有时还不够，要临时关掉实时监控）；$\r$\n  360 / Defender 同理。$\r$\n$\r$\n也可以先运行下面这行、再点「重试」：$\r$\n    taskkill /F /IM tokenagency.exe /T$\r$\n$\r$\n详细诊断（含错误码）：%TEMP%\ta-install-hook.log" /SD IDCANCEL IDRETRY ta_pre_rename
     Goto ta_pre_abort
 
   ; ---------- [3/4] 可写探针：目录能不能真的写进去（写不进 ⇒ 点名杀软/权限，而不是让用户猜）
@@ -151,7 +172,10 @@
 !macro NSIS_HOOK_POSTINSTALL
   Delete "$INSTDIR\tokenagency.exe.old"
   Delete /REBOOTOK "$INSTDIR\tokenagency.exe.old"
-  !insertmacro TA_LOG "postinstall: 复制已完成，.old 已清理 ✓"
+  ; 记下这次成功安装**是不是提权跑的** —— 它决定了文件所有者，也解释了
+  ; "为什么下一次非管理员装不上"（提权那次留下的实例/文件，普通权限动不了）。
+  System::Call 'shell32::IsUserAnAdmin() i.R3'
+  !insertmacro TA_LOG "postinstall: 复制已完成，.old 已清理 ✓（admin=$R3）"
   DetailPrint "TokenAgency: 完成（旧文件已清理）"
 !macroend
 
