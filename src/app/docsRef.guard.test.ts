@@ -107,6 +107,25 @@ export function countRefLines(text: string): number {
   return text.split("\n").filter(countsAsRef).length;
 }
 
+/**
+ * **冻结区：已应用的数据库迁移**。
+ *
+ * 这些文件是**不可变字节**。sqlx 把每个迁移文件的 SHA-384 记进 `_sqlx_migrations`，
+ * 改动一个字节就会让**所有老用户**的库在启动时失败：
+ *
+ * ```text
+ * 存储错误：run migrations: migration 1 was previously applied but has been modified
+ * ```
+ *
+ * 表现是"双击后闪退"，而**编译、clippy、其它测试全绿** —— 2026-10-14 真实发生过：
+ * 一次"清理注释"的批量改动顺手改了 `0001`–`0007`，装完启动即崩。
+ *
+ * 所以迁移目录**不参与本棘轮**：这条棘轮要的是"**还能改的代码**里没有编号引用"，
+ * 而迁移文件是**改不动的历史**（`0005` 里那个指向从未入库文档的引用，正是因此一直留着）。
+ * 它们的不可变性由 `crates/ta-store/tests/migration_immutability.rs` 负责，改一字节即红。
+ */
+const FROZEN_MIGRATIONS = "crates/ta-store/migrations/";
+
 function walk(dir: string, out: string[] = []): string[] {
   let entries;
   try {
@@ -125,22 +144,26 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** 扫全仓，返回 { files, lines, worst }。 */
+/** 扫全仓，返回 { files, lines, scanned, frozen, worst }。 */
 function scanRepo(): {
   files: number;
   lines: number;
   scanned: number;
+  frozen: number;
   worst: Array<[number, string]>;
 } {
   let files = 0;
   let lines = 0;
   let scanned = 0;
+  let frozen = 0;
   const worst: Array<[number, string]> = [];
   for (const dir of SCAN_DIRS) {
     for (const p of walk(join(ROOT, dir))) {
-      // `docs/` 自身的**文件名**带编号，但文档互相引用才是要清的；这里连 docs/ 一起扫，
-      // 因为 docs/README.md 的索引最终也要重写（验收标准第 3 条）。
       const rel = relative(ROOT, p).replace(/\\/g, "/");
+      if (rel.startsWith(FROZEN_MIGRATIONS)) {
+        frozen += 1;
+        continue;
+      }
       let text: string;
       try {
         text = readFileSync(p, "utf8");
@@ -157,7 +180,7 @@ function scanRepo(): {
     }
   }
   worst.sort((a, b) => b[0] - a[0]);
-  return { files, lines, scanned, worst };
+  return { files, lines, scanned, frozen, worst };
 }
 
 describe("[docsRef] docs/NN 引用制度的棘轮", () => {
@@ -235,12 +258,16 @@ describe("[docsRef] docs/NN 引用制度的棘轮", () => {
   });
 
   it("扫描确实覆盖了仓库（防空转）", () => {
-    const { scanned, lines } = scanRepo();
+    const { scanned, lines, frozen } = scanRepo();
     // 防空转**不能**用"引用数 > 某个阈值"：本目标就是把引用降到 0，
     // 那种断言会在接近 0 时自己红（实测：降到 500 以下就误报过一次）。
     // 该防的是"扫描路径或排除规则写错，导致一个文件都没扫到"。
     expect(scanned, "一个文件都没扫到 —— 扫描路径或排除规则写错了").toBeGreaterThan(200);
     expect(lines, "引用数不可能是负数").toBeGreaterThanOrEqual(0);
+    // 冻结区的豁免必须**确实命中**且**规模有限**：命中 0 说明路径写错（那棘轮会红，
+    // 但先说清楚）；命中过多说明这条豁免吞掉了不该吞的东西。
+    expect(frozen, "冻结的迁移文件一个都没匹配到 —— 豁免路径写错了").toBeGreaterThan(0);
+    expect(frozen, "豁免范围过大：冻结区应当只有迁移文件").toBeLessThan(50);
   });
 
   it("docs/ 的文件数不得超过棘轮基线（目标 ≤16）", () => {

@@ -134,6 +134,15 @@ prompt), so a plain double-click still works; running it elevated yourself only 
 
 **"File in use"**: run `taskkill /F /IM tokenagency.exe /T`, then click Retry.
 
+**If antivirus blocks it** (observed on a machine running Huorong): unsigned programs get blocked
+by reputation, which shows up as a stream of `access denied (os error 5)` — the kernel will not
+start, **no log file is written**, and the tray status stops refreshing. Add **both the installer and
+the install directory** to your AV's trust zone.
+
+> Since this version, being unable to open the log file **no longer crashes the app**: it degrades to
+> stdout-only logging and says so ("cannot create the log file in <dir>: access denied"). Previously
+> that condition made the app exit immediately on launch.
+
 Diagnostics: `%TEMP%\ta-install-hook.log` (`lasterr=5` access denied; `lasterr=32` in use).
 
 > Building from source is the next section; that script produces the same installer as this Release.

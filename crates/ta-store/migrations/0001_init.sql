@@ -1,9 +1,9 @@
 -- TokenAgency 初始 schema（P4 / ta-store）
 --
 -- 契约来源：
---     表清单 + 硬约束
---    SQLite 表结构（草案）
---      用量与成本表设计
+--   docs/11-internal-contracts.md §4.2  表清单 + 硬约束
+--   docs/02-config-and-data-model.md §3 SQLite 表结构（草案）
+--   docs/07-ui-pages-and-cost.md §6.5   用量与成本表设计
 --
 -- 硬约束（违反即 bug）：
 --   1. usage_daily.token_kind 是**行维度**（不是列）→ 新增 token 类型无需改表。

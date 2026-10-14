@@ -1,4 +1,4 @@
--- 0006：服务商**模型目录** —— `provider_model_catalog`。
+-- 0006：服务商**模型目录** —— `provider_model_catalog`（docs/25）。
 --
 -- 背景（用户第 77 轮原话）："一旦扫描，全部记录下来(当然不是添加)，然后比如用户那一天想起，
 -- 我还想用 xxx 模型，直接在服务商里面点进去，把那个没勾的勾上就行了"。
@@ -32,7 +32,7 @@
 --       一家的模型量级是"几十行"，且这一条本来就要求回传被删的清单（先选后删），
 --       加索引只是让每次 upsert 多维护一棵 B 树，没有查询受益。
 --
--- 迁移只增不改：0001–0005 已发布，改它们是灾难。
+-- 迁移只增不改（docs/11-internal-contracts.md §4.1）：0001–0005 已发布，改它们是灾难。
 CREATE TABLE provider_model_catalog (
   provider_id    TEXT    NOT NULL,
   upstream_model TEXT    NOT NULL,

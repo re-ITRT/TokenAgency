@@ -20,7 +20,9 @@
 //! > 代价是日志行可能被改写（`?token=***`），收益是它**可以放心地被分享**。
 
 use std::io::{self, Write};
+use std::path::Path;
 
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::MakeWriter;
 
 /// 日志文件名前缀。实际文件形如 `tokenagency.log.2026-09-22`（按日轮转）。
@@ -80,12 +82,38 @@ impl<'a, W: Write + Clone> MakeWriter<'a> for Sanitizing<W> {
 
 /// 生产用的文件 writer：按日轮转 + 非阻塞 + 写入时脱敏。
 ///
-/// 返回 `None` 表示"落不了盘"（拿不到数据目录、建不了目录）—— 调用方**降级到
-/// 只有 stdout**，但**绝不 panic**（日志系统本身不该拖垮应用启动）。
+/// 返回 `None` 表示"落不了盘"（拿不到数据目录、建不了目录、**建不了文件**）——
+/// 调用方**降级到只有 stdout**，但**绝不 panic**（日志系统本身不该拖垮应用启动）。
+///
+/// 这里**必须用 builder**：`tracing_appender::rolling::daily(...)` 是便捷构造，
+/// 内部就是 `.build(...).expect(...)` —— **失败即 panic**。
+/// 曾经正是它把"日志文件建不了"升级成"应用起不来"：真机上双击后**闪退**，
+/// 而且 GUI 子系统没有控制台，用户**什么提示都看不到**（2026-10-14 真机复现）。
 pub fn file_writer() -> Option<Sanitizing<tracing_appender::non_blocking::NonBlocking>> {
-    let dir = log_dir()?;
-    std::fs::create_dir_all(&dir).ok()?;
-    let appender = tracing_appender::rolling::daily(dir, FILE_PREFIX);
+    file_writer_in(&log_dir()?)
+}
+
+/// [`file_writer`] 的内核：目录由参数传入，测试可以喂一个**必然失败**的路径。
+fn file_writer_in(dir: &Path) -> Option<Sanitizing<tracing_appender::non_blocking::NonBlocking>> {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        // 落不了盘要**说出来**：否则用户只看到"没有日志"，不知道是权限/杀软问题。
+        eprintln!("TokenAgency: 建不了日志目录 {}：{e}（降级为只写 stdout）", dir.display());
+        return None;
+    }
+    let appender = match RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix(FILE_PREFIX)
+        .build(dir)
+    {
+        Ok(appender) => appender,
+        Err(e) => {
+            eprintln!(
+                "TokenAgency: 日志文件建不了（目录 {}）：{e}（降级为只写 stdout）",
+                dir.display()
+            );
+            return None;
+        }
+    };
     let (writer, guard) = tracing_appender::non_blocking(appender);
     // guard 决定后台写线程的生命周期：**进程活着期间必须不 drop**，
     // 否则日志写线程会被关掉、之后的日志静默丢失（比"没有日志"更难查）。
@@ -96,6 +124,22 @@ pub fn file_writer() -> Option<Sanitizing<tracing_appender::non_blocking::NonBlo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 落不了盘 ⇒ 返回 `None`，**绝不 panic**。
+    ///
+    /// 这条测试对着一个真实缺陷：这里原来用 `tracing_appender::rolling::daily(...)`
+    /// （内部就是 `.build(...).expect(...)`），于是"日志文件建不了"会把**整个应用**
+    /// panic 掉 —— 真机表现是**双击后闪退、屏幕上什么提示都没有**（GUI 子系统没有控制台）。
+    #[test]
+    fn unwritable_dir_degrades_instead_of_panicking() {
+        // 拿一个**普通文件**当目录用：`create_dir_all` 必然失败（它已经是个文件了）。
+        let mut not_a_dir = std::env::temp_dir();
+        not_a_dir.push(format!("ta-log-not-a-dir-{}", std::process::id()));
+        std::fs::write(&not_a_dir, b"x").expect("写临时文件");
+        let got = file_writer_in(&not_a_dir);
+        let _ = std::fs::remove_file(&not_a_dir);
+        assert!(got.is_none(), "落不了盘时必须返回 None（降级到 stdout），不能 panic");
+    }
 
     /// 一个只存在内存里的 writer，用来验证"写入时脱敏"这件事本身。
     #[derive(Clone, Default)]
