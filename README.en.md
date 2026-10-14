@@ -109,7 +109,30 @@ them to the real upstream via `models`/`channels`. Want to switch plans? One cli
 
 ---
 
-## 7. Development and build
+## 7. Install (Windows)
+
+Download `TokenAgency_x.y.z_x64-setup.exe` from
+[Releases](https://github.com/re-ITRT/TokenAgency/releases) — the installer bundles the kernel (~22 MB).
+
+1. **Right-click → Run as administrator** (why, below)
+2. Follow the wizard; it installs per-user to `%LOCALAPPDATA%\TokenAgency` (nothing is written to system directories)
+3. Launch it from the Start menu or the tray icon
+
+**Why run it elevated**: the installer is per-user by design and does not request elevation.
+On some machines antivirus sandboxing drops it to **low integrity**, and it then cannot write to
+`%LOCALAPPDATA%\TokenAgency` at all (`Error opening file for writing: ...\tokenagency.exe`).
+Running elevated avoids that entire class of failure. (The installer also re-launches itself
+elevated when it detects the problem.)
+
+**Blocked by SmartScreen** (the exe is not code-signed): choose "More info" → "Run anyway".
+
+**"File in use"**: run `taskkill /F /IM tokenagency.exe /T`, then click Retry.
+
+Diagnostics: `%TEMP%\ta-install-hook.log` (`lasterr=5` access denied; `lasterr=32` in use).
+
+> Building from source is the next section; that script produces the same installer as this Release.
+
+## 8. Development and build
 
 ### Requirements
 
@@ -173,7 +196,7 @@ docs                     design documents, 16 files (09 is the architecture base
 
 ---
 
-## 8. Licence
+## 9. Licence
 
 This project is released under the **GNU General Public License v3.0** — see [LICENSE](LICENSE).
 

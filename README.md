@@ -103,7 +103,29 @@ ANTHROPIC_API_KEY=ta-local-xxxxxxxx
 
 ---
 
-## 7. 开发与构建
+## 7. 安装（Windows）
+
+从 [Releases](https://github.com/re-ITRT/TokenAgency/releases) 下载
+`TokenAgency_x.y.z_x64-setup.exe`（安装包内含随包内核，约 22 MB）。
+
+1. **右键 → 以管理员身份运行**（理由见下）
+2. 跟随向导；默认装到 `%LOCALAPPDATA%\TokenAgency`（当前用户，不写系统目录）
+3. 从开始菜单或托盘图标启动
+
+**为什么建议以管理员身份运行**：安装器按**当前用户**安装，按设计不提权。
+但在真机上遇到过一类失败：安装器被杀软沙箱降权到**低完整性**，于是连
+`%LOCALAPPDATA%\TokenAgency` 都写不进去，报 `Error opening file for writing: ...\tokenagency.exe`。
+以管理员身份运行可以避开这一整类问题（安装器检测到权限不足时也会自己用 UAC 重新拉起自己）。
+
+**被 SmartScreen 拦下**（exe 未做代码签名）：点「更多信息」→「仍要运行」。
+
+**提示"文件被占用"**：先跑 `taskkill /F /IM tokenagency.exe /T`，再点「重试」。
+
+诊断日志：`%TEMP%\ta-install-hook.log`（`lasterr=5` 拒绝访问；`lasterr=32` 被占用）。
+
+> 从源码构建见下一节；那份脚本产出的安装包与本 Release 的一致。
+
+## 8. 开发与构建
 
 ### 环境要求
 
@@ -113,7 +135,7 @@ ANTHROPIC_API_KEY=ta-local-xxxxxxxx
 | MSVC Build Tools | 2022 | Windows 链接器 |
 | Node.js | 20+（本机验证于 v24） | **使用 npm**，见下方说明 |
 | WebView2 Runtime | 任意 | Windows 10/11 通常已内置 |
-| mihomo | 随包自带 v1.19.31 | 也可设 `net.kernel.provider: external` 指自己的内核；见第 8 节与 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) |
+| mihomo | 随包自带 v1.19.31 | 也可设 `net.kernel.provider: external` 指自己的内核；见第 9 节与 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) |
 
 > 注意：**本仓库用 npm，不用 pnpm。** pnpm 会向上层目录寻找 workspace 根，而父目录存在一个 0 字节的 `package.json` 会导致 JSON 解析失败。
 
@@ -166,7 +188,7 @@ docs                     设计文档 16 篇（09 是架构基线，10/11 是接
 
 ---
 
-## 8. 许可证
+## 9. 许可证
 
 本项目采用 **GNU General Public License v3.0** —— 全文见 [LICENSE](LICENSE)。
 
