@@ -19,6 +19,7 @@ pub mod net;
 // ---- task-16 批次 B：系统集成 / 诊断导出 / 向导 / 托盘控制（settings_ext.rs，独立文件）
 pub mod settings_ext;
 // ---- §1.3：上游探测与模型导入（upstream.rs，独立文件，见该文件模块文档）
+pub mod plan;
 pub mod upstream;
 pub mod usage;
 
@@ -204,6 +205,9 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             // ---- §1.3：上游探测与模型导入（upstream.rs，本组命令只由本文件的作者登记）
             upstream::provider_test,
             upstream::provider_echo,
+            plan::provider_plan_get,
+            plan::provider_plan_set,
+            plan::provider_plan_quota,
             upstream::model_import_from_provider,
             upstream::model_apply_import,
             // ---- 模型目录（扫描只记录、勾一下才接入；没有手动添加）

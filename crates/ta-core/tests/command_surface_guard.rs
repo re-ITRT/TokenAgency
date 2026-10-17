@@ -92,7 +92,7 @@ const ARCHIVE: &str = "docs/contracts/bindings-handwritten-reference.ts.txt";
 /// 展示它们的页面 `/network/assignments` 整页删除 ⇒ 这 4 条命令**没有任何调用方**。
 /// 与 115 那次一样，这是**减法**，所以除数字外归档件里那几行也必须同时删掉
 /// —— 守卫比对的是**键集**，不只是条数）。
-const ARCHIVE_TOTAL: usize = 116;
+const ARCHIVE_TOTAL: usize = 119;
 
 // ---------------------------------------------------------------- 解析（纯字符串 → 集合）
 

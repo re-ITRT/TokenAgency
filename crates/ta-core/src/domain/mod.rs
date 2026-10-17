@@ -10,6 +10,7 @@
 /// 领域类型的**行为**：便捷构造函数、只读辅助、线路解析优先级、模型名 glob。
 /// 契约在 `domain/mod.rs`（冻结）；行为在 `domain::behavior`（可扩展）。
 pub mod behavior;
+pub mod plan;
 
 ///「能力一致才可路由」的纯判定层（比较 + 按 model 分组求差异）。
 pub mod capabilities;
@@ -54,6 +55,12 @@ pub struct ConfigDoc {
     pub lanes: Vec<Lane>,
     #[serde(default)]
     pub providers: Vec<Provider>,
+    /// 套餐：**key 是服务商 id**，一个服务商最多一条 —— 一一对应由 map 结构保证，
+    /// 不需要唯一性扫描，也没有第二处索引可漂移。
+    ///
+    /// 删服务商时会在同一次保存里把它一起删掉（见 `delete_provider`），不留孤儿。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub plans: std::collections::BTreeMap<crate::types::ProviderId, plan::Plan>,
     #[serde(default)]
     pub credentials: Vec<Credential>,
     #[serde(default)]
@@ -172,6 +179,7 @@ impl Default for ConfigDoc {
             proxy_subscriptions: vec![],
             lanes: vec![],
             providers: vec![],
+            plans: Default::default(),
             credentials: vec![],
             models: vec![],
             channels: vec![],

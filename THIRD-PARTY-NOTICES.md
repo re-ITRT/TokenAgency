@@ -176,3 +176,39 @@ SOFTWARE.
   本文件第 1 节的版本、sha256、以及 Release 附件的源码 tarball **三者必须同步**；
 * **判断标准**：`gen-third-party.ps1` 只做机械汇总，它**不能**替我们判断
   "这个许可要不要额外做什么"。凡是非 MIT/Apache/BSD/ISC 一类的，都必须人工过一遍。
+
+---
+
+## 8. `zander-zyx/coding-plan-limit`
+
+| 项 | 值 |
+| --- | --- |
+| 地址 | https://github.com/zander-zyx/coding-plan-limit |
+| 许可证 | MIT |
+| 著作权人 | Copyright (c) 2026 Zander Zhang |
+| 我们用了什么 | 套餐额度的**数据形状**（`Quota` 三态 / `WindowQuota` / `Snapshot` / 模板元数据）与"选模板 → 填参数"的两步流程；没有整文件拷贝 |
+| 用到的地方 | `crates/ta-core/src/domain/plan.rs`、`src-tauri/src/commands/plan.rs`、`src/pages/providers/PlanSection.tsx` |
+
+```text
+MIT License
+
+Copyright (c) 2026 Zander Zhang
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

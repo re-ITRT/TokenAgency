@@ -823,6 +823,50 @@ export type ProbeResult = {
   note?: string | null;
 };
 
+/** 套餐模板元数据（前端"选模板"网格用它渲染；与 `ta-core` 的 `PLAN_TEMPLATES` 一致）。 */
+export type PlanTemplateView = {
+  id: string;
+  name: string;
+  description: string;
+  needs_base_url: boolean;
+};
+
+/** 一个统计窗口（5 小时 / 本周 / 本月）。 */
+export type WindowQuota = {
+  label: string;
+  used_percent: number;
+  reset_at?: number;
+};
+
+/** 统一额度：窗口型 / 余额型 / 固定额度型。**缺哪种就少显示哪块，不编 0**。 */
+export type Quota =
+  | { kind: "windows"; windows: WindowQuota[] }
+  | { kind: "balance"; amount: number; currency: string; note?: string }
+  | {
+      kind: "fixed";
+      used_percent: number;
+      used: number;
+      total: number;
+      unit: string;
+      reset_at?: number;
+    };
+
+/** 一次额度查询的结果快照；失败时 `error` 说明原因。 */
+export type PlanSnapshot = {
+  ok: boolean;
+  error?: string;
+  quota?: Quota;
+  updated_at: number;
+};
+
+/** 一个服务商的套餐（**一个服务商最多一个**）。密钥不在这里，走 `credentials[]`。 */
+export type Plan = {
+  template: string;
+  enabled: boolean;
+  threshold: number;
+  base_url?: string;
+};
+
 export type EchoResult = {
   sent_headers: Record<string, string>;
   upstream_headers: Record<string, string>;
@@ -1362,8 +1406,8 @@ export type EventPayload = {
  * **这个注释里不写具体数字**：数字会过期，而它以前就过期过三次。
  *
  * 已知的"有意推迟"命令（理由与解锁条件见 `src-tauri/src/commands/entity.rs` 的模块文档）：
- * **只剩 `provider_echo` 一条**（它要读上游响应体做"谁吞了字段"的逐字段回显，本轮没做）。
- * 曾与它并列推迟的三条已在 的 GW-71 / DESK-71 里落地并注册：
+ * **当前没有推迟中的命令**（`provider_echo` 已实现，回显走真实请求）。
+ * 曾与它并列推迟的三条已在 GW-71 / DESK-71 里落地并注册：
  * `provider_test`（测试连接）、`model_import_from_provider`（一键扫描）、`model_apply_import`（添加选中）。
  * 另：本轮新增的 `api_key_*` 五条也已注册。
  * 新增的 `api_key_*` 五条同理：先落契约，等 `src-tauri` 注册后页面才可引用。
@@ -1410,6 +1454,9 @@ export type CommandMap = {
     args: { id: ProviderId; model: string; with_image: boolean };
     result: EchoResult;
   };
+  provider_plan_get: { args: { id: ProviderId }; result: { plan: Plan | null } };
+  provider_plan_set: { args: { id: ProviderId; plan: Plan | null }; result: void };
+  provider_plan_quota: { args: { id: ProviderId }; result: PlanSnapshot };
 
   // ---- credential / secrets
   credential_list: { args: undefined; result: CredentialView[] };

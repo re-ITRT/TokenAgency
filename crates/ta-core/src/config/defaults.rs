@@ -29,6 +29,7 @@ pub(crate) fn build_default_doc() -> ConfigDoc {
         proxy_subscriptions: subscriptions(),
         lanes: lanes(),
         providers: providers(),
+        plans: Default::default(),
         credentials: credentials(),
         models: models(),
         channels: channels(),

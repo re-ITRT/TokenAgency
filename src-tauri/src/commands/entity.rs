@@ -337,6 +337,8 @@ pub async fn delete_provider(state: &AppState, id: &str, force: bool) -> IpcResu
         doc.gateway.fallback_provider = None;
     }
 
+    // 套餐与用户一一对应：服务商删了，它的套餐一起走（否则留下看不见的孤儿）。
+    doc.plans.remove(&ta_core::types::ProviderId::new(id));
     save_validated(state, doc, "provider_delete").await?;
     if !orphaned.is_empty() {
         tracing::info!(

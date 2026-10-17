@@ -22,6 +22,8 @@ import type {
   CommandName,
   ConfigDoc,
   ConnectivityRow,
+  Plan,
+  PlanSnapshot,
   Credential,
   CredentialId,
   CredentialView,
@@ -131,6 +133,13 @@ export const provider = {
   /** "谁吞了字段"的答案页。 */
   echo: (id: ProviderId, model: string, withImage: boolean) =>
     invokeCommand("provider_echo", { id, model, with_image: withImage }) as Promise<EchoResult>,
+  /** 套餐（一个服务商最多一个）：读 / 写（`null` = 清除）/ 查一次额度。 */
+  plan: {
+    get: (id: ProviderId) => invokeCommand("provider_plan_get", { id }) as Promise<{ plan: Plan | null }>,
+    set: (id: ProviderId, plan: Plan) => invokeCommand("provider_plan_set", { id, plan }),
+    clear: (id: ProviderId) => invokeCommand("provider_plan_set", { id, plan: null }),
+    quota: (id: ProviderId) => invokeCommand("provider_plan_quota", { id }) as Promise<PlanSnapshot>,
+  },
 };
 
 // ================================================================ credential / secrets

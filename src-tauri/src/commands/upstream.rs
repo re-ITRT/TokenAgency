@@ -206,7 +206,7 @@ fn provider_of<'a>(doc: &'a ConfigDoc, id: &ProviderId) -> IpcResult<&'a Provide
 /// * 其它 scheme → 取该服务商**第一条启用中的凭据**，按 `credential.secret` 的引用去解析明文。
 ///   `ta_secrets` 的解析失败原样上报（[`TaError::Secret`]）：拿空 key 去打上游会得到 401，
 ///   那会让用户去查自己的 key，而真因是"钥匙串里没有这个条目"。
-async fn probe_secret(
+pub(crate) async fn probe_secret(
     doc: &ConfigDoc,
     provider: &Provider,
     secrets: &dyn SecretResolver,
