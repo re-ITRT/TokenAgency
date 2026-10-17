@@ -124,7 +124,7 @@ pub async fn group_list(state: State<'_, AppState>) -> IpcResult<Vec<ChannelGrou
     Ok(doc(&state).channel_groups.clone())
 }
 
-/// 按 priority 升序（UI 的拖拽顺序就是求值顺序，见）。
+/// 按 priority 升序（UI 的拖拽顺序就是求值顺序）。
 #[tauri::command(rename_all = "snake_case")]
 #[specta::specta]
 pub async fn policy_list(state: State<'_, AppState>) -> IpcResult<Vec<Policy>> {

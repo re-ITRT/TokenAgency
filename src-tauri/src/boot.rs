@@ -133,7 +133,7 @@ pub fn bundled_country_mmdb() -> Option<std::path::PathBuf> {
 ///   这时要如实降级并说明原因。
 ///
 /// 返回 `TaError` 而不是 `String` 是刻意的：`TaError` 带 `code()`（
-/// `TA-xxxx`），调用方才能按 的契约打出**可被码检索**的错误日志。
+/// `TA-xxxx`），调用方才能按该契约打出**可被码检索**的错误日志。
 /// 早期版本在这里 `format!("{e}")` 把码丢了 —— 那正是 `error_log_guard` 要抓的那类问题。
 pub fn build_kernel(doc: &ConfigDoc, data_dir: &Path) -> Result<Option<KernelBuild>, TaError> {
     let kernel_cfg = &doc.net.kernel;
@@ -390,7 +390,7 @@ impl<R: Runtime> PhaseSink for TauriPhaseSink<R> {
             tracing::debug!(code = e.code(), error = %e, "启动阶段刷新托盘失败");
         }
 
-        // `detail` 是自由文本，按 的裁决**不开字段**（开了就变垃圾桶，
+        // `detail` 是自由文本，按"自由文本不进字段"的裁决**不开字段**（开了就变垃圾桶，
         // 而且与 message 职责重复）—— 写进 message 里。
         if phase.is_terminal() {
             tracing::info!(phase = phase.as_str(), "启动编排已收敛：{detail}");

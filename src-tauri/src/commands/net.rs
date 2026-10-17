@@ -1,60 +1,43 @@
 //! `subscription_*` / `lane_*` / `kernel_*`：网络面（订阅 / 线路 / 内核）的读写命令。
 //!
-//! 契约： 2.2 的 `subscription / lane / kernel` 三张表。
-//! 这一批命令**此前只在契约里有名字**，没有任何实现 —— 于是"加 Clash 订阅""切/钉线路"
-//! "控内核"三件事在界面上做不完，用户只能手写配置文件。本文件把它们接到真实 service 层：
+//! 这一批命令此前**只在契约里有名字**、没有实现，于是"加 Clash 订阅""切/钉线路""控内核"
+//! 三件事在界面上做不完。本文件把它们接到已有的 service 层（**复用，不另写一套**）：
 //!
-//! | 面 | 真实依赖（复用，不另写一套） |
-//! |---|---|
-//! | 订阅下载 / 格式嗅探 / 坏更新拦截 / 版本与回滚 | `ta-subscription`：`HttpSubscriptionFetcher` + `DefaultSubscriptionValidator` + `VersionKeeper` |
-//! | 线路 -> 内核目标名、provider key、lane 端口 | `ta-kernel`：`config_gen` / `ports` |
-//! | 内核生命周期与 REST | `ta-kernel::KernelController`（`AppState::kernel_slot()`） |
-//! | 配置真源 | `SqliteConfigStore`（校验 -> 写库 -> 留快照 -> 换内存快照） |
+//! * 订阅下载 / 嗅探 / 坏更新拦截 / 版本回滚 → `ta-subscription`
+//!   （`HttpSubscriptionFetcher` + `DefaultSubscriptionValidator` + `VersionKeeper`）；
+//! * 线路 → 内核目标名、provider key、lane 端口 → `ta-kernel::config_gen` / `ports`；
+//! * 内核生命周期与 REST → `ta-kernel::KernelController`（`AppState::kernel_slot()`）；
+//! * 配置真源 → `SqliteConfigStore`（校验 → 写库 → 留快照 → 换内存快照）。
 //!
 //! # 写路径
+//! 会改配置的命令都走 [`commit_config`]，与 `catalog.rs::save_validated` **同一顺序**：
+//! 校验 →（需要时）分配 lane 端口 → 事务写库 → 留快照 → 换内存快照 → 同步内核配置源。
+//! 校验不过**一个字节都不写**。
 //!
-//! 所有会改配置的命令都走 [`commit_config`]，它与 `catalog.rs` 的 `save_validated`
-//! **同一条顺序**：校验 -> （需要时）分配 lane 端口 -> 事务写库 -> 留快照 -> 换内存快照
-//! -> 同步内核配置源（doc + 端口表）。校验不过**一个字节都不写**。
-//!
-//! # 内核何时被重新加载
-//!
-//! 改配置的命令保存成功后，只有当**内核当前是 `Ready`** 时才顺手 `apply()` 一次
-//! （让改动立刻生效）；内核没跑就不动它，改动会在下一次 `kernel_start` /
-//! `kernel_reload_config` 时生效。**不自动拉起内核** —— 一次线路编辑不该顺手启动进程。
-//! 若 `apply()` 失败，命令返回错误并说清"配置已保存、内核没加载"（不静默成功）。
+//! # 内核何时重新加载
+//! 保存成功且内核**当前是 `Ready`** 时才顺手 `apply()` 一次；内核没跑就不动它（改动在
+//! 下一次 `kernel_start` / `kernel_reload_config` 生效）。**不自动拉起内核** —— 一次线路
+//! 编辑不该顺手启动进程。`apply()` 失败时返回错误并说清"配置已保存、内核没加载"。
 //!
 //! # 命令入参用 snake_case
-//!
-//! `#[tauri::command(rename_all = "snake_case")]`：Tauri 2 的**默认**是 camelCase，
-//! 而契约（`docs/contracts/bindings-handwritten-reference.ts.txt`）、specta 生成的 TS
-//! 与前端 `src/shared/api/commands.ts` 用的都是 snake_case（`version_index` /
-//! `user_agent` / `lane_id`）。不写这一句，前端传的 key 一个都对不上。
-//! （已实现命令里 `config_export_yaml(with_secrets)` 有同一个问题，但那不在本文件范围内。）
+//! `#[tauri::command(rename_all = "snake_case")]`：Tauri 2 默认 camelCase，而契约、
+//! specta 生成的 TS、前端 `commands.ts` 都用 snake_case（`version_index` / `lane_id`）。
+//! 不写这句，前端传的 key 一个都对不上。
 //!
 //! # 脱敏（订阅地址里带 token）
-//!
-//! 凡是**可能包含订阅 URL 的文本**出去之前一律走 [`scrub`]：先把 http(s) URL 收敛成
-//! `scheme://host/<redacted>`，再过一遍 `ta_core::diag::sanitize`。
-//! 为什么必须做：`ta-subscription` 的下载错误里带着 reqwest 的
-//! `error sending request for url (...)` —— 整条 URL（含 token）就在里面。
-//! 我们自己的日志**只写 subscription id，不写 url**。
+//! 可能含订阅 URL 的文本出去前一律走 [`scrub`]：先收敛成 `scheme://host/<redacted>`，
+//! 再过 `ta_core::diag::sanitize`。原因：reqwest 的下载错误里带着**整条 URL（含 token）**。
+//! 我们自己的日志只写 subscription id，不写 url。
 //!
 //! # 已知缺口（不硬造，如实报）
-//!
-//! * `subscription_nodes` 的 `group` 过滤：`ta-subscription` 的 `GroupMeta` 只有
-//!   `node_count`、**不保留组成员关系**，所以按组过滤做不到 —— 传 `group` 时**明确报错**，
-//!   不静默返回全部节点（那会让 UI 显示错的数据还以为是对的）。
-//! * `subscription_groups` 的 `type`：契约写的是 `GroupType`，但订阅里的组类型是**开放集合**
-//!   （内核还认 `relay` 等）。按 `ta-kernel` 对 `NodeRef::kind` 的同一条政策
-//!   （"刻意不做枚举归一"）**原样返回字符串**，不猜。
-//! * `subscription_rollback`：内核是以 `type: http` 的 proxy-provider **自己**拉订阅的
-//!   （`config_gen.rs` 写死），我们无法把回滚后的原文注入内核 —— 回滚只改变**我们这一侧**
-//!   的生效版本（UI / 预览 / 坏更新基准），线上流量仍以内核拉到的那份为准。
-//! * `subscription_delete` 不清订阅版本历史（`ta-subscription` 的 `VersionStore`
-//!   没有 remove/purge API）。
-//! * `KernelProvider::Bundled` 没有"随包内核"的解析实现（`boot.rs` 只用
-//!   `net.kernel.path`），所以两个 provider 都要求一个可执行文件路径。
+//! * `subscription_nodes` 的 `group` 过滤做不到（`GroupMeta` 只有 `node_count`、不保留成员）
+//!   ⇒ 传 `group` 时**明确报错**，不静默返回全部（那会让 UI 显示错的还以为对）。
+//! * `subscription_groups` 的 `type` 是**开放集合**（内核还认 `relay` 等）⇒ 原样返回字符串。
+//! * `subscription_rollback` 只改**我们这一侧**的生效版本：内核是用 `type: http` 的
+//!   proxy-provider 自己拉订阅，回滚后的原文注入不进去，线上流量仍以内核那份为准。
+//! * `subscription_delete` 不清版本历史（`VersionStore` 没有 remove/purge）。
+//! * `KernelProvider::Bundled` 没有"随包内核"的解析实现（`boot.rs` 只用 `net.kernel.path`）
+//!   ⇒ 两个 provider 都要一个可执行文件路径。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

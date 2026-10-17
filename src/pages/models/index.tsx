@@ -229,7 +229,7 @@ function InfoLine({
 }
 
 /**
- * 上下文窗口 / 最大输出：**没声明就写「未声明」**（`null` 与 0 是两件事，见）。
+ * 上下文窗口 / 最大输出：**没声明就写「未声明」**（`null` 与 0 是两件事）。
  */
 function tokenCount(value: number | null, t: (key: I18nKey) => string): string {
   return value === null ? t("models.info.public.undeclared") : formatInt(value);

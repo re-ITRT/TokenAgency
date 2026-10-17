@@ -1,4 +1,4 @@
-//! 内核 REST 客户端。端点清单见 。
+//! 内核 REST 客户端（`/configs`、`/proxies`、`/connections` 等）。
 //!
 //! 硬性约束：
 //! - 鉴权 `Authorization: Bearer <secret>`；

@@ -1,7 +1,6 @@
 //! `${secret:name}` / `${env:VAR}` 引用解析、明文识别。
 //!
-//! 契约：（`resolve_ref` 签名冻结）、
-//! 语法：。
+//! 契约：`resolve_ref` 签名冻结；未知前缀与空名字都报错，不返回空串。
 //!
 //! ```text
 //! "${secret:openai-personal}"  ->  SecretRef::Keyring { name }

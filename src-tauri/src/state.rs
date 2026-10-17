@@ -76,7 +76,7 @@ pub struct AppState {
     /// 靠的就是它 —— 而不是让他再扫一遍。
     ///
     /// 不进配置真源：目录会随上游漂移，写进配置就是第二份真相源
-    /// （与 `api_key` / 健康样本同类，见）。
+    /// （与 `api_key` / 健康样本同类：都是事实表，不存策略）。
     pub model_catalog: Arc<SqliteModelCatalogStore>,
 
     /// `model_import_from_provider` 扫描结果的**进程内存**预览缓存。

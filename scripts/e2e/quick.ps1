@@ -5,7 +5,7 @@
 #   pwsh -File scripts/e2e/quick.ps1 -Profile net        # E 期四步，**复用既有 scratch**（不重跑建状态）
 #   pwsh -File scripts/e2e/quick.ps1 -Profile full       # 全量（交付前才跑）
 #
-# ⚠️ 两个环境坑（都踩过，见）：
+# 两个环境坑（都踩过）：
 #   1. `TEMP`/`TMP` 必须指到**工作区内**的可写目录 —— 这台机器上子进程在
 #      `C:\Users\…\AppData\Local\Temp` 下建目录会拿到 `拒绝访问 (os error 5)`：
 #      `msedgedriver` 报 `cannot create temp dir for user data dir`、`cargo test` 31 条一起红。

@@ -1,6 +1,6 @@
 //! 配置校验：[`TaConfigValidator`]。
 //!
-//! 分两层（见）：
+//! 分两层：
 //!
 //! - **形状层**：类型/枚举由反序列化强制（`from_yaml` / `from_json` + `serde_path_to_error`），
 //!   结构由 `schemars::schema_for!(ConfigDoc)` 导出给前端（[`super::config_json_schema`]）。

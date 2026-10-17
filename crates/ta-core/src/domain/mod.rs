@@ -826,7 +826,7 @@ pub enum LaneKind {
     Direct,
     /// **「自动选择」**：这条订阅里**所有启用节点**各自 ping 该服务商的 URL，取延迟最低的那条；
     /// 选中后**按地址粘性**（[`crate::domain::Lane::automatic`] 会把它钉成显式 `select` 组，
-    /// 见）。只在"上次那条连不上"或用户手动刷新时才重挑。
+    /// 只在"上次那条连不上"或用户手动刷新时才重挑，不每次请求都重挑。
     SubscriptionAuto,
     /// 固定某个节点
     SubscriptionNode,
@@ -1654,7 +1654,7 @@ pub enum PriceSource {
 
 // ================================================================ 系统集成
 
-/// 开机自启动后的行为（见）。
+/// 开机自启动后的行为。
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -1685,7 +1685,7 @@ pub struct SystemIntegration {
     #[serde(default)]
     pub enable_system_proxy: bool,
     /// 开机自启动：**本项目唯一会写操作系统状态的功能**
-    /// （Windows `Run` 键 / macOS `LaunchAgent` / Linux XDG autostart，见）。
+    /// 注册位置：Windows `Run` 键 / macOS `LaunchAgent` / Linux XDG autostart。
     ///
     /// **默认 false** —— 凡是会写 OS 状态的开关一律默认关：装完就静默加一个开机启动项，
     /// 正是用户最反感的那种"副作用"。与 `enable_tun` / `enable_system_proxy` 同属

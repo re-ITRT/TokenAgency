@@ -1,79 +1,48 @@
-//! Google Gemini 适配器（`Protocol::Gemini`，`POST /v1beta/models/{model}:generateContent`）。
-//!
-//! 与 `openai.rs` / `anthropic.rs` **同构**：只认文档化的形状，其余一律登记 [`Loss`]，
-//! 绝不静默丢。下面只写 Gemini 与那两个协议不同、因而必须表态的地方 ——
-//! 也就是回答"为什么这么定"，而不是"这行做了什么"。
+//! Gemini 适配器（`Protocol::Gemini`）。与 `openai.rs` / `anthropic.rs` **同构**：
+//! 只认文档化的形状，其余逐条登记 [`Loss`]，绝不静默丢。下面只写 Gemini 独有的取舍。
 //!
 //! # ① 角色只有 `user` / `model`
-//!
-//! `contents[].role` 没有 `system` / `assistant`：系统提示在顶层 `systemInstruction`，
-//! 模型侧叫 `model`。解码时把 `systemInstruction` 折进 [`IrRequest::system`]、`model` 折成
-//! [`IrRole::Assistant`]，编码时反过来。`contents` 里真出现 `system` 角色时**不猜**：
-//! 登记 [`Loss::UnsupportedRole`] —— 猜错等于把"用户说的话"升级成系统指令，
-//! 那是安全问题，不只是内容问题。
+//! 系统提示在顶层 `systemInstruction`，模型侧叫 `model`；解码折成 [`IrRequest::system`] /
+//! [`IrRole::Assistant`]，编码反向。`contents` 里真出现 `system` 角色时登记
+//! [`Loss::UnsupportedRole`] —— 猜错等于把"用户说的话"升级成系统指令，那是安全问题。
 //!
 //! # ② `model` 与 `stream` 不在 body 里
+//! 模型名在 URL 路径、流式在方法名（`:streamGenerateContent`）。所以
+//! `encode_request` 的 `_upstream_model` **故意不用**（body 里塞 `model` 会被上游拒），
+//! "这次是流式"由看得见路径的那层写进 IR（`ingress::upstream_path_for`）。
 //!
-//! Gemini 把模型名放进 URL 路径（`…/models/{model}:generateContent`），把流式放进**方法名**
-//! （`:streamGenerateContent?alt=sse`）。于是这一层的输入输出都不在 body：编码时
-//! `upstream_model` **无处可放**（body 里塞 `model` 会被上游按未知字段拒掉），解码时看不到
-//! URL 也认不出"这次是流式"。所以 `ProtocolAdapter::encode_request` 的 `_upstream_model`
-//! 是**故意不用**的，"这次是流式"必须由看得见路径的那一层写进 IR（`ingress::upstream_path_for`）。
-//!
-//! # ③ 工具调用：id 与 name 各归各的
-//!
-//! 配对方式不同 —— OpenAI / Anthropic 用 **id**，Gemini 用 **name**（外加一个可选的 id）。
-//! v1beta 的 `FunctionCall` / `FunctionResponse` 都有 **Optional 的 `id`**
-//! （官方 schema：FunctionCall.id "Optional. The unique id of the function call. If populated,
-//! the client to execute the function_call and return the response with the matching id."），
-//! 所以 IR 里带 id 时就带上：**不带上，往返核对必然对不上**（`verify_no_loss` 逐字段比 IR），
-//! 默认策略（`on_loss: reject`）下每一次跨协议的工具调用都会 415。
-//! 反过来 [`IrPart::ToolResult`] 只有 id，而 `functionResponse` **必须给 name**
-//! ⇒ 编码前用 id 反查 name（[`FunctionNames`]）：id 非空按 id 精确匹配，
-//! **id 为空时按出现顺序的第 n 个配第 n 个**（Gemini 自己发的调用常常没有 id，
-//! 全收敛到第一个名字会把"查时间的结果"说成"查天气的结果"）。查不到就
-//! [`Loss::MissingRequired`]，**不编**一个名字出来。
-//! `response` 必须是 JSON 对象而 IR 的工具结果是一串内容块，
-//! 用 `{"result": …}` 这层壳做**互逆**映射（`encode_function_response_content`）。
+//! # ③ 工具调用：别的协议用 id 配对，Gemini 用 name
+//! `FunctionCall` / `FunctionResponse` 的 `id` 是**可选**的。IR 带 id 就必须带上 ——
+//! 否则 `verify_no_loss` 逐字段对不上，默认 `on_loss: reject` 下每次跨协议工具调用都 415。
+//! `IrPart::ToolResult` 只有 id，而 `functionResponse` **必须给 name** ⇒ 编码前用 id 反查
+//! （[`FunctionNames`]）：id 非空精确匹配；**id 为空时按出现顺序第 n 个配第 n 个**
+//! （Gemini 自己发的调用常无 id，全收敛到第一个名字会把"查时间"说成"查天气"）。
+//! 查不到即 [`Loss::MissingRequired`]，**不编**名字。`response` 必须是 JSON 对象，
+//! 用 `{"result": …}` 做**互逆**包装（`encode_function_response_content`）。
 //!
 //! # ④ 流式：一帧里可能同时有"内容"和"收尾"
-//!
-//! Gemini 的流**没有** `data: [DONE]`，它以最后一个带 `finishReason` 的 chunk 收尾；
-//! `usageMetadata` 是**累积**的（后一帧覆盖前一帧，最后一帧最完整 —— 见
-//! `ir_usage_from_gemini`）。真实抓包里"最后一块文字 + `finishReason` + usage"
-//! 常常**挤在同一帧**里，所以 [`StreamAdapter::decode_stream_event`] 返回的是**一串**事件
-//! （第 328 轮）：这一帧会解出 `[TextDelta, Stop]` **两个**事件，顺序是
-//! 先内容、后收尾。旧签名（`Option<IrStreamEvent>`）在这里只能二选一 ——
-//! 那不是取舍，那是丢数据：丢一块文字是用户看得见的内容损失，
-//! 丢一帧 stop/usage 则让客户端永远等不到终止判定。
+//! 没有 `data: [DONE]`，靠最后一个带 `finishReason` 的 chunk 收尾；`usageMetadata` 是**累积**的。
+//! 真实抓包里"最后一块文字 + finishReason + usage"常挤在同一帧 ⇒ `decode_stream_event`
+//! 返回**一串**事件（`[TextDelta, Stop]`，先内容后收尾）。旧的 `Option<IrStreamEvent>`
+//! 只能二选一 —— 丢一块文字是用户看得见的损失，丢 stop/usage 则客户端永远等不到终止判定。
 //!
 //! # ⑤ 响应侧没有 usage，也没有候选级元信息的家
-//!
-//! [`IrResponse`] 里没有 usage 字段（`openai.rs` / `anthropic.rs` 同样不搬响应 usage），
-//! 所以 `usageMetadata` 在整包路径上**不进 IR**，也**不登记损失**（那只会给每个响应加一条
-//! 噪声，账本读的是原始 body）；只有流式的 [`IrUsage`] 能带上它。`safetyRatings` /
-//! `citationMetadata` / `groundingMetadata` / `logprobsResult` / `thought` 这类候选级信息
-//! IR 表达不了 ⇒ **逐条**登记 [`Loss`]，绝不静默吞。`promptFeedback.blockReason`
-//! （prompt 级拦截）同样登记损失，而不是当成一个"合法的空回复"交出去 ——
+//! [`IrResponse`] 不含 usage（另两个适配器同样不搬）⇒ 整包路径上 `usageMetadata`
+//! 不进 IR 也**不记损失**（账本读原始 body）；只有流式 [`IrUsage`] 带它。
+//! `safetyRatings` / `citationMetadata` / `groundingMetadata` / `logprobsResult` / `thought`
+//! **逐条**登记 [`Loss`]。`promptFeedback.blockReason` 同样记损失，**不当成合法空回复** ——
 //! 那种失败用户永远发现不了。
 //!
 //! # 已知缺口（有意留着，不是遗漏）
-//!
-//! * **往 Gemini 发工具入参分片**：Gemini 的 `functionCall.args` 是**完整 JSON 对象**，
-//!   协议里没有"入参分片"这种形态 ⇒ [`IrStreamEvent::ToolInputDelta`] 在 Gemini 方向
-//!   无处安放：这里发 0 帧（发半个 JSON 就是编一个上游不会发的形状）但**留痕**。
-//!   **这不丢数据**：Gemini 作上游时入参是**一次给全**的，走
-//!   [`IrStreamEvent::ToolUseStart`] 的 `input` 字段（第 330 轮之前那一格不存在，
-//!   整个 `args` 会静默消失）。反向（别的协议 → Gemini）才走分片，而那条路
-//!   **不可达**：Gemini 永远不会是客户端协议（见 `session.rs` 模块头）。
-//! * **流式 `functionCall` 的槽位**：Gemini 的 part 没有序号，适配器又是无状态的，
-//!   所以槽位只能是"这一帧里的第几个 `functionCall`"。跨帧的两个调用会撞到同一个编号
-//!   （上游通常把同一轮的调用放在一帧里，实际很少见）。
-//! * **`usageMetadata` 里 IR 放不下的计数**：`totalTokenCount`（= prompt + candidates +
-//!   **thoughts**）是**可推导量**，`toolUsePromptTokenCount` 是 `promptTokenCount` 的
-//!   **子集细分**且没有别的协议有这一格 ⇒ 两个都不搬、也不拿它们去凑别的字段
-//!   （凑出来的和会漏掉思考 token，是**编一个对不上的数**）。
-//!   `thoughtsTokenCount` **有**槽位（[`IrUsage::reasoning_tokens`]）。
+//! * **往 Gemini 发工具入参分片**：协议里没有这种形态 ⇒ 发 0 帧但**留痕**。不丢数据 ——
+//!   Gemini 作上游时入参**一次给全**，走 [`IrStreamEvent::ToolUseStart`] 的 `input`；
+//!   反向那条路**不可达**（Gemini 永不是客户端协议）。
+//! * **流式 `functionCall` 的槽位**只能是"这一帧里的第几个"：适配器无状态，跨帧两个调用
+//!   会撞号（上游通常把同一轮调用放一帧，少见）。
+//! * **`usageMetadata` 里放不下的计数**：`totalTokenCount` 是**可推导量**、
+//!   `toolUsePromptTokenCount` 是 `promptTokenCount` 的子集细分 ⇒ 都不搬、也不凑
+//!   （凑出来的和会漏掉思考 token，是**编一个对不上的数**）。`thoughtsTokenCount` 有槽位
+//!   （[`IrUsage::reasoning_tokens`]）。
 
 use std::collections::HashMap;
 

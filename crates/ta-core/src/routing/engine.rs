@@ -1,6 +1,6 @@
 //! 策略求值：**有序规则表，首个命中即生效，不做叠加。**
 //!
-//! 求值流程（见）：
+//! 求值流程：
 //!
 //! ```text
 //! for policy in enabled policies, priority asc:

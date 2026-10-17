@@ -197,7 +197,7 @@ for ($i = 0; $i -lt $lines.Count; $i++) {
     }
 }
 if ($otherEmoji.Count -gt 0) {
-    Write-Host "! 生成物里有 $($otherEmoji.Count) 处 emoji（多为 doc 里演示的用户数据，按 可保留）：" -ForegroundColor Yellow
+    Write-Host "! 生成物里有 $($otherEmoji.Count) 处 emoji（多为 doc 里演示的用户数据，可保留）：" -ForegroundColor Yellow
     $otherEmoji | Select-Object -First 6 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
 }
 if ($badMarkers.Count -gt 0) {

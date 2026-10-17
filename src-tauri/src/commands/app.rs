@@ -11,7 +11,7 @@ use crate::commands::{IpcError, IpcResult};
 use crate::state::AppState;
 use ta_store::HealthStore;
 
-/// 内核状态（形状对齐 `ta_kernel::KernelStatus`，见）。
+/// 内核状态（形状对齐 `ta_kernel::KernelStatus`）。
 ///
 /// 为什么这里不复用 `ta_kernel::KernelStatus`：它还没实现 `specta::Type`（那是 P5 的 crate）。
 /// T1b 会切到真类型；**字段名与语义现在就是最终形状**，避免前端做二次迁移。
@@ -149,7 +149,7 @@ fn gate_of(state: &AppState) -> IpcResult<Arc<ta_gateway::ingress::GatewayGate>>
 #[specta::specta]
 pub async fn app_pause_gateway(state: State<'_, AppState>) -> IpcResult<AppStatus> {
     gate_of(&state)?.pause();
-    // `gateway` 不在 的字段白名单里：按"自由文本不进字段"的裁决写进 message，
+    // `gateway` 不在日志字段白名单里：按"自由文本不进字段"的裁决写进 message，
     // 而不是为了好看去开一个新字段（字段一旦散出去就收不回来）。
     tracing::info!("用户暂停了网关：不再接受新请求（在途不取消，/healthz 不受影响）");
     build_status(&state).await

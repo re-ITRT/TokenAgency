@@ -1,6 +1,6 @@
 //! 配置：加载、序列化、校验、版本迁移、默认值。
 //!
-//! 分工（依据、、）：
+//! 分工：
 //!
 //! - **形状层**：[`config_json_schema`] 用 `schemars::schema_for!(ConfigDoc)` 导出结构（给前端
 //!   zod 生成 / 编辑器补全）；[`from_yaml`] / [`from_json`] 在反序列化时强制类型与枚举，

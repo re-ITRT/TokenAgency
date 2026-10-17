@@ -1,4 +1,4 @@
-//! lane 端口分配。契约：。
+//! lane 端口分配。契约：区间来自 `net.kernel.lane_port_range`；同一 lane 的端口在进程内稳定。
 //!
 //! 从 `net.kernel.lane_port_range`（默认 39100–39299）分配：
 //!
@@ -10,7 +10,7 @@
 //! 3. 只在 **127.0.0.1** 上分配，绝不碰 0.0.0.0。
 //!
 //! 存储用 [`PortStore`] 抽象：真实应用接 SQLite（ta-store），测试用内存/文件实现。
-//! ta-kernel 不依赖 ta-store（见）。
+//! ta-kernel 不依赖 ta-store。
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, TcpListener};

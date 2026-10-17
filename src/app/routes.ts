@@ -12,7 +12,7 @@
  *    —— 写错 key 会被 `tsc --noEmit` 直接拦下，en 翻译缺失同样会被拦下。
  * 4. `owner` 只用于标注归属，便于四个人对表；不参与运行时逻辑。
  * 5. **导航标签用用户语言，不用内部概念**：不出现 channel / credential / lane
- *    这类词。套餐（tokenplan）是用户的心智模型（）。
+ *    这类词。套餐（tokenplan）是用户的心智模型。
  */
 
 import type { SvgIconComponent } from "@mui/icons-material";

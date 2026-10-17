@@ -65,7 +65,7 @@ import type { Subscription, SubscriptionFormat } from "@/shared/bindings";
 // ================================================================ 网络代理是不是**在用**
 
 /**
- * `net.kernel.path` 的读取（）。
+ * `net.kernel.path` 的读取。
  *
  * **注**：上一版这里还有一个 `networkScope()`，用"内核路径 / 订阅 / 线路三项是否都空"来决定
  * `/network` 要不要整页隐藏（"选装入口"）。那个口径**已被 取代**：

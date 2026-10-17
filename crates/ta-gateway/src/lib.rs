@@ -1,8 +1,8 @@
 //! `ta-gateway` — 本地网关本体：入站、全透传、路由管线、分发、协议适配、trace。
 //!
-//! 契约：、。
+//! 契约：用户流量只走 `GatewayDeps.dialer`；出现第二个出站 client 就是 bug。
 //!
-//! 所有权划分（见）：
+//! 所有权划分：
 //! - **G1** `ingress` / `passthrough` / `admin`
 //! - **G2** `pipeline` / `dispatch`
 //! - **G3** `adapt`

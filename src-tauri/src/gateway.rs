@@ -401,7 +401,7 @@ impl GatewayBoot {
         self.runtime.deps.clone()
     }
 
-    /// 按 的"唯一装配入口"装配（不自己拼管线）。
+    /// 按唯一装配入口装配（不自己拼管线）。
     pub fn assemble(app: AppHandle<tauri::Wry>, state: &AppState, ports: PortMap) -> Self {
         let doc = state.doc();
 

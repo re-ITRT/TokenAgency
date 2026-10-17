@@ -12,7 +12,7 @@
  * 约定：
  * 1. **query key 从 `qk` 取**，并且把该 query 的参数放进 key（否则筛选切了不刷新）。
  * 2. 错误一律是 `TokenAgencyError`：用 `errorMessage` / `errorCode` 显示，
- *    按 `code`（TA-xxxx，见）分支，不解析文案。
+ *    按 `code`（TA-xxxx）分支，不解析文案。
  * 3. 事件到达时**只 invalidate**（见 `keys.ts` 的 `EVENT_INVALIDATIONS`），
  *    不要在这里 setQueryData 拼数据。
  */
