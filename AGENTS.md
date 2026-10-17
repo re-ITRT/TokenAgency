@@ -145,7 +145,7 @@
 | --- | --- | --- |
 | **前端路由** | `src/app/routes.ts` 的 `ROUTES`（含 `key` / `path` / `titleKey` / `pages`） | 11 条 |
 | **页面组件** | `src/pages/**`（约定：页面文件叫 x.tsx 或 x/index.tsx，自动接线见 `src/app/pageRegistry.tsx`） | 每条路由一个入口 |
-| **Tauri 命令** | `src-tauri/src/commands/{apikey,app,catalog,config,entity,log,net,settings_ext,upstream,usage}.rs` | 116 个（10 个文件） |
+| **Tauri 命令** | `src-tauri/src/commands/{apikey,app,catalog,config,entity,log,net,settings_ext,upstream,usage}.rs` | 117 个（10 个文件） |
 | **事件** | `crates/ta-gateway/src/events.rs` → 前端 `emit` | 10 个事件名 |
 | **HTTP 入站** | `crates/ta-gateway/src/ingress.rs`（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/models`） | — |
 | **协议适配** | `crates/ta-gateway/src/adapt/{openai,anthropic,responses,gemini}.rs` + `crates/ta-gateway/src/adapt/shared.rs`（表驱动） | 4 协议 |

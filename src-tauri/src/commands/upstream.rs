@@ -1,5 +1,5 @@
-//! 上游探测类命令：`provider_test` / `model_import_from_provider` /
-//! `model_apply_import`。
+//! 上游探测类命令：`provider_test` / `provider_echo` /
+//! `model_import_from_provider` / `model_apply_import`。
 //!
 //! # 为什么单独一个模块（而不是塞进 `entity.rs`）
 //!
@@ -46,7 +46,7 @@ use ta_core::domain::{AuthScheme, ChannelConfig, ConfigDoc, Provider};
 use ta_core::error::TaError;
 // 补齐上游声明的能力前先校验（`validate` 由这个 trait 提供）
 use ta_core::config::ConfigValidator;
-use ta_core::types::{CredentialId, LaneId, ProviderId};
+use ta_core::types::{CredentialId, LaneId, Protocol, ProviderId};
 use ta_gateway::passthrough;
 use ta_gateway::pipeline::SecretResolver;
 use ta_gateway::probe::{probe_lane, ProbeProviderRequest, UpstreamProbe};
@@ -278,6 +278,270 @@ pub async fn provider_test(
 ) -> IpcResult<ProbeResult> {
     let secrets = SecretsAdapter::with_defaults();
     test_provider(&state, &secrets, &id, model.as_deref()).await
+}
+
+// ================================================================ provider_echo
+
+/// 回显用的那张 1×1 PNG（base64）。**只为产生"有图"的形状**，不是用户数据。
+const ECHO_IMAGE_PNG_B64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+/// 密钥类请求头：一律打码。
+///
+/// 界面上的头是给人看**结构**的（有没有带、带了哪个），不是拿来复制密钥的；
+/// 回显把 `Authorization` 原文照搬出去，等于给"导出诊断"开了一条泄密缝。
+fn is_secret_header(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("authorization")
+        || n.contains("api-key")
+        || n.contains("apikey")
+        || n.contains("cookie")
+        || n.contains("token")
+        || n.contains("secret")
+        || n == "key"
+}
+
+fn redacted_headers(headers: &http::HeaderMap) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for (name, value) in headers {
+        let key = name.as_str().to_ascii_lowercase();
+        let shown = if is_secret_header(&key) {
+            "***".to_string()
+        } else {
+            value.to_str().map(str::to_string).unwrap_or_else(|_| "***".to_string())
+        };
+        out.insert(key, shown);
+    }
+    out
+}
+
+/// 只描述**结构**（键 → 类型名），不搬内容：界面上"形状"就该是形状。
+fn value_shape(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{json, Value};
+    match v {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, x) in map {
+                out.insert(k.clone(), value_shape(x));
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => match items.first() {
+            Some(first) => json!({ "items": value_shape(first), "len": items.len() }),
+            None => json!({ "items": "empty", "len": 0 }),
+        },
+        Value::String(_) => json!("string"),
+        Value::Number(_) => json!("number"),
+        Value::Bool(_) => json!("bool"),
+        Value::Null => json!("null"),
+    }
+}
+
+/// 回显用的**最小**请求：按服务商协议拼路径与体，返回 `(path, body)`。
+///
+/// 为什么是最小请求而不是重放上一次真实请求：回显要回答的是**形状对不上**
+/// （字段在上游被吞/被改写），而重放用户请求会把一次诊断变成一次真实付费调用，
+/// 还会把用户内容带进一个"给人看"的视图里。
+fn echo_request(protocol: Protocol, model: &str, with_image: bool) -> (String, serde_json::Value) {
+    use serde_json::json;
+    let image_url = format!("data:image/png;base64,{ECHO_IMAGE_PNG_B64}");
+    match protocol {
+        Protocol::Anthropic => (
+            "/messages".to_string(),
+            json!({
+                "model": model,
+                "max_tokens": 1,
+                "messages": [{
+                    "role": "user",
+                    "content": if with_image {
+                        json!([
+                            { "type": "text", "text": "ping" },
+                            { "type": "image", "source": {
+                                "type": "base64", "media_type": "image/png",
+                                "data": ECHO_IMAGE_PNG_B64
+                            }}
+                        ])
+                    } else {
+                        json!([{ "type": "text", "text": "ping" }])
+                    },
+                }],
+            }),
+        ),
+        Protocol::OpenaiResponses => (
+            "/responses".to_string(),
+            json!({
+                "model": model,
+                "max_output_tokens": 16,
+                "input": [{
+                    "role": "user",
+                    "content": if with_image {
+                        json!([
+                            { "type": "input_text", "text": "ping" },
+                            { "type": "input_image", "image_url": image_url }
+                        ])
+                    } else {
+                        json!([{ "type": "input_text", "text": "ping" }])
+                    },
+                }],
+            }),
+        ),
+        Protocol::Gemini => (
+            format!("/models/{model}:generateContent"),
+            json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": if with_image {
+                        json!([
+                            { "text": "ping" },
+                            { "inline_data": { "mime_type": "image/png", "data": ECHO_IMAGE_PNG_B64 } }
+                        ])
+                    } else {
+                        json!([{ "text": "ping" }])
+                    },
+                }],
+            }),
+        ),
+        // Openai / Custom：同一套 OpenAI 兼容形状
+        Protocol::Openai | Protocol::Custom => (
+            "/chat/completions".to_string(),
+            json!({
+                "model": model,
+                "max_tokens": 1,
+                "stream": false,
+                "messages": [{
+                    "role": "user",
+                    "content": if with_image {
+                        json!([
+                            { "type": "text", "text": "ping" },
+                            { "type": "image_url", "image_url": { "url": image_url } }
+                        ])
+                    } else {
+                        json!("ping")
+                    },
+                }],
+            }),
+        ),
+    }
+}
+
+/// `provider_echo({ id, model, with_image }) -> EchoResult` 的返回。
+///
+/// 字段与 `bindings.ts` 的 `EchoResult` 逐字段对齐（`sent_*` = 我们发出去的，
+/// `upstream_*` = 上游回来的），中间只有 [`echo_provider`] 一处转换。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+pub struct EchoResult {
+    /// 我们发出去的请求头（**密钥类一律 `***`**）
+    pub sent_headers: std::collections::BTreeMap<String, String>,
+    /// 上游回来的响应头（同一条打码规则）
+    pub upstream_headers: std::collections::BTreeMap<String, String>,
+    /// 我们发出去的请求体**形状**（键 → 类型名，不含内容）
+    #[specta(type = specta_typescript::Any)]
+    pub sent_body_shape: serde_json::Value,
+    /// 上游响应体：能解析成 JSON 就给对象，否则给**有界**的 `_raw` 片段
+    /// `Value` 是递归类型：必须走 `Any`，否则绑定导出整体失败（见 `commands/mod.rs` 的说明）。
+    #[specta(type = specta_typescript::Any)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_body: Option<serde_json::Value>,
+    /// 到拿到响应头为止的真实耗时（单调时钟）
+    pub latency_ms: u32,
+}
+
+/// 实现体（测试直接调它，避开 `State<'_, AppState>` 的构造）。
+///
+/// 出站**只有一条路**：`UpstreamProbe` 持有网关那一个 `OutboundDialer`，
+/// 也就是与转发管线同一个拨号器 —— 线路策略在那后面。这里不另开 client。
+pub async fn echo_provider(
+    state: &AppState,
+    secrets: &dyn SecretResolver,
+    id: &str,
+    model: &str,
+    with_image: bool,
+) -> IpcResult<EchoResult> {
+    let doc = state.doc();
+    let provider_id = ProviderId::new(id);
+    let provider = provider_of(&doc, &provider_id)?;
+    let dialer = outbound_dialer(state)?;
+    let lane = probe_lane(&doc, &provider_id);
+    let secret = probe_secret(&doc, provider, secrets).await?;
+
+    // 先记下"发出去的头"，再补 Content-Type（补的这个不是秘密，一起记）
+    let mut headers = passthrough::auth_headers(Some(provider), &secret);
+    headers.insert(http::header::CONTENT_TYPE, http::HeaderValue::from_static("application/json"));
+    let sent_headers = redacted_headers(&headers);
+
+    let (path, payload) = echo_request(provider.protocol, model, with_image);
+    let sent_body_shape = value_shape(&payload);
+    // `auth.scheme: query` 时密钥只能进 URL（对别的 scheme 原样返回）
+    let url = passthrough::apply_query_auth(
+        &passthrough::join_upstream_url(&provider.base_url, &path, None),
+        &provider.auth,
+        secret.as_str(),
+    );
+    let body = serde_json::to_vec(&payload).map_err(|e| {
+        IpcError::new("TA-3003", "tokenagency_internal", format!("拼回显请求体失败：{e}"))
+    })?;
+
+    let outcome = UpstreamProbe::new(dialer)
+        .fetch(&lane, "POST", &url, headers, bytes::Bytes::from(body))
+        .await
+        .map_err(|e| {
+            IpcError::new(
+                "TA-3002",
+                "tokenagency_upstream_unavailable",
+                format!("回显请求没拿到任何响应（线路不可用或连不通）：{e}"),
+            )
+        })?;
+
+    let upstream_body = if outcome.body.is_empty() {
+        None
+    } else {
+        Some(match serde_json::from_slice::<serde_json::Value>(&outcome.body) {
+            Ok(v) => v,
+            Err(_) => serde_json::json!({
+                "_raw": String::from_utf8_lossy(&outcome.body).chars().take(2000).collect::<String>(),
+                "_truncated": outcome.truncated,
+            }),
+        })
+    };
+
+    tracing::debug!(
+        provider_id = %provider_id,
+        lane_id = %lane,
+        status = outcome.status,
+        elapsed_ms = outcome.latency_ms,
+        "字段回显完成（响应体只在界面显示，不进日志）"
+    );
+
+    Ok(EchoResult {
+        sent_headers,
+        upstream_headers: redacted_headers(&outcome.headers),
+        sent_body_shape,
+        upstream_body,
+        latency_ms: outcome.latency_ms,
+    })
+}
+
+/// `provider_echo({ id, model, with_image }) -> EchoResult`。
+///
+/// 回答"谁吞了字段"：把**我们发的**与**上游回的**摆在一起逐字段看。
+#[tauri::command(rename_all = "snake_case")]
+#[specta::specta]
+pub async fn provider_echo(
+    state: State<'_, AppState>,
+    id: String,
+    model: String,
+    with_image: bool,
+) -> IpcResult<EchoResult> {
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Err(IpcError::new(
+            "TA-3004",
+            "tokenagency_invalid_args",
+            "回显必须给一个模型名（空名发出去只会得到上游的 400）",
+        ));
+    }
+    let secrets = SecretsAdapter::with_defaults();
+    echo_provider(&state, &secrets, &id, &model, with_image).await
 }
 
 // ================================================================ model_import_from_provider
@@ -2263,5 +2527,76 @@ mod tests {
 
         assert!(model_catalog_entries(&state, "p1").await.is_ok(), "夹具自证：p1 是存在的");
         assert!(model_catalog_entries(&state, "nope").await.is_err(), "不存在的服务商要报错");
+    }
+
+    // ---------------------------------------------------------------- provider_echo
+
+    /// 核心裁决：回显报出**我们真发了什么**，而回显里的密钥**必须是 `***`**。
+    #[tokio::test]
+    async fn echo_reports_the_shape_we_sent_and_redacts_the_key() {
+        let upstream = spawn_upstream(vec![Reply::json(
+            200,
+            r#"{"choices":[{"message":{"role":"assistant","content":"pong"}}]}"#,
+        )])
+        .await;
+        let state =
+            fixture("echo-ok", config_with(&upstream.base_url(), serde_json::json!({}))).await;
+
+        let out = echo_provider(&state, &secrets(), "p1", "m-1", true)
+            .await
+            .expect("上游 200，回显不该报错");
+
+        // ① 真发出去的是 POST /chat/completions，且带上了凭据解出来的密钥
+        let head = upstream.seen()[0].clone();
+        assert!(head.starts_with("POST /chat/completions"), "{head}");
+        assert!(head.contains("authorization: Bearer sk-命令层测试"), "{head}");
+
+        // ② 回显里的头**必须打码**：这是"给人看的结构"，不是导出密钥
+        assert_eq!(out.sent_headers.get("authorization").map(String::as_str), Some("***"));
+        let dump = format!("{:?}", out.sent_headers);
+        assert!(!dump.contains("sk-命令层测试"), "回显把密钥漏出来了：{dump}");
+
+        // ③ 形状：带图时 content 是**两项**（text + image_url），不是一句字符串
+        assert_eq!(out.sent_body_shape["max_tokens"], serde_json::json!("number"));
+        assert_eq!(
+            out.sent_body_shape["messages"]["items"]["content"]["len"],
+            serde_json::json!(2)
+        );
+
+        // ④ 上游响应体原样带回来（诊断要看的就是它）
+        assert_eq!(
+            out.upstream_body.as_ref().expect("有响应体")["choices"][0]["message"]["content"],
+            "pong"
+        );
+        // ⑤ 延迟是真测的（这里上游不延迟，只断言字段存在且是数）
+        assert!(out.latency_ms < 60_000);
+    }
+
+    /// 没有启用中的凭据 ⇒ 如实报错，**不硬发一个空 Bearer**（那会制造假 401）。
+    #[tokio::test]
+    async fn echo_without_a_credential_refuses_instead_of_faking_a_401() {
+        let upstream = spawn_upstream(vec![Reply::json(200, "{}")]).await;
+        let mut cfg = config_with(&upstream.base_url(), serde_json::json!({}));
+        cfg["credentials"] = serde_json::json!([]);
+        let state = fixture("echo-nocred", cfg).await;
+
+        let err = echo_provider(&state, &secrets(), "p1", "m-1", false)
+            .await
+            .expect_err("没有凭据必须报错");
+        assert!(!err.message.is_empty(), "{err:?}");
+        assert!(upstream.seen().is_empty(), "报错前不该发出任何请求：{:?}", upstream.seen());
+    }
+
+    /// 不认识的服务商 ⇒ 人话错误。
+    #[tokio::test]
+    async fn echo_for_an_unknown_provider_is_an_honest_error() {
+        let upstream = spawn_upstream(vec![Reply::json(200, "{}")]).await;
+        let state =
+            fixture("echo-unknown", config_with(&upstream.base_url(), serde_json::json!({}))).await;
+
+        let err = echo_provider(&state, &secrets(), "nope", "m-1", false)
+            .await
+            .expect_err("服务商不存在必须报错");
+        assert!(!err.message.is_empty(), "{err:?}");
     }
 }

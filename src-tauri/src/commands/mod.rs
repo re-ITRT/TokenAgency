@@ -203,6 +203,7 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             entity::pricing_import_builtin,
             // ---- §1.3：上游探测与模型导入（upstream.rs，本组命令只由本文件的作者登记）
             upstream::provider_test,
+            upstream::provider_echo,
             upstream::model_import_from_provider,
             upstream::model_apply_import,
             // ---- 模型目录（扫描只记录、勾一下才接入；没有手动添加）
