@@ -92,6 +92,17 @@ export function invokeCommand<K extends CommandName>(
   return call<CommandMap[K]["result"]>(cmd, args as Record<string, unknown> | undefined);
 }
 
+/**
+ * 与 [`invokeCommand`] 同一实现，但**不参与泛型推断**。
+ *
+ * 只给 `CommandMap` 里带联合类型的命令用（见 `plan` 那段的说明）：
+ * 这些条目直接进泛型推断会触发 TS 编译器内部崩溃。
+ */
+const invokePlan = invokeCommand as unknown as (
+  cmd: string,
+  args: Record<string, unknown> | undefined,
+) => Promise<unknown>;
+
 // ================================================================ app
 export const app = {
   status: () => invokeCommand("app_status", undefined),
@@ -133,12 +144,22 @@ export const provider = {
   /** "谁吞了字段"的答案页。 */
   echo: (id: ProviderId, model: string, withImage: boolean) =>
     invokeCommand("provider_echo", { id, model, with_image: withImage }) as Promise<EchoResult>,
-  /** 套餐（一个服务商最多一个）：读 / 写（`null` = 清除）/ 查一次额度。 */
+  /**
+   * 套餐（一个服务商最多一个）：读 / 写 / 清除 / 查一次额度。
+   *
+   * 这四条走 [`invokePlan`] 而不是 `invokeCommand`：`CommandMap` 里 `Plan` 相关条目带联合类型，
+   * 直接进泛型推断会让 **TypeScript 编译器内部崩溃**
+   * （`Debug Failure. No error for last overload signature`，TS 5.x 的已知坑）。
+   * 绕开的代价只是这一处丢掉"命令名拼错 tsc 报错"，由 `commandSurface.guard` 兜住。
+   */
   plan: {
-    get: (id: ProviderId) => invokeCommand("provider_plan_get", { id }) as Promise<{ plan: Plan | null }>,
-    set: (id: ProviderId, plan: Plan) => invokeCommand("provider_plan_set", { id, plan }),
-    clear: (id: ProviderId) => invokeCommand("provider_plan_set", { id, plan: null }),
-    quota: (id: ProviderId) => invokeCommand("provider_plan_quota", { id }) as Promise<PlanSnapshot>,
+    get: (id: ProviderId) =>
+      invokePlan("provider_plan_get", { id }) as Promise<{ plan: Plan | null }>,
+    set: (id: ProviderId, plan: Plan) =>
+      invokePlan("provider_plan_set", { id, plan }) as Promise<void>,
+    clear: (id: ProviderId) => invokePlan("provider_plan_set", { id, plan: null }) as Promise<void>,
+    quota: (id: ProviderId) =>
+      invokePlan("provider_plan_quota", { id }) as Promise<PlanSnapshot>,
   },
 };
 

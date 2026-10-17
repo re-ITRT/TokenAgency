@@ -48,6 +48,8 @@
  */
 
 import { Box, Button, Checkbox, Link, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
+
+import { PlanSection } from "./PlanSection";
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -480,6 +482,8 @@ export function ProvidersBody({
               </Box>
             </>
           )}
+
+          <PlanSection providers={rows} />
 
           {/* 原来这里铺着四行"诚实说明"灰字（哪些列是后端真给的、哪些只是这一版没有）。
               它们全是**解释**，已按 合成一条收进标题右边的 `providers-table-help`

@@ -1134,6 +1134,22 @@ export const zhCN = {
   "providers.wizard.gotoModels": "去模型页分配线路",
   "providers.wizard.step2.why":
     "这里建线路；模型到模型页分配。",
+  "providers.plan.title": "套餐",
+  "providers.plan.hint": "额度来自上游接口；没查过就点刷新。",
+  "providers.plan.pickProvider": "服务商",
+  "providers.plan.configure": "配置套餐",
+  "providers.plan.edit": "编辑套餐",
+  "providers.plan.remove": "移除",
+  "providers.plan.refresh": "刷新额度",
+  "providers.plan.none": "这个服务商还没配套餐",
+  "providers.plan.step1": "选择模板",
+  "providers.plan.step2": "填参数",
+  "providers.plan.threshold": "提醒阈值（%）",
+  "providers.plan.baseUrl": "站点地址",
+  "providers.plan.save": "保存",
+  "providers.plan.cancel": "取消",
+  "providers.plan.next": "下一步",
+  "providers.plan.failed": "查不到额度：{{message}}",
 } as const;
 
 / 全部 i18n key。新增 key 必须同时补 `en.ts`。 */
