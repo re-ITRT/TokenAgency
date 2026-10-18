@@ -12,6 +12,8 @@
 import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import { useTranslation } from "@/shared/i18n";
 import { useMemo, useState, type ReactNode } from "react";
+
+import { PlanOverview } from "./PlanOverview";
 import {
   errorCode,
   errorMessage,
@@ -291,6 +293,7 @@ export default function DashboardPage() {
         error={dashboard.error ?? undefined}
         onRetry={() => void dashboard.refetch()}
       />
+      <PlanOverview />
     </>
   );
 }

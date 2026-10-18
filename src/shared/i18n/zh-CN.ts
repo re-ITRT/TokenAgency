@@ -1134,6 +1134,7 @@ export const zhCN = {
   "providers.wizard.gotoModels": "去模型页分配线路",
   "providers.wizard.step2.why":
     "这里建线路；模型到模型页分配。",
+  "dashboard.plan.title": "套餐额度",
   "providers.plan.title": "套餐",
   "providers.plan.hint": "额度来自上游接口；没查过就点刷新。",
   "providers.plan.pickProvider": "服务商",

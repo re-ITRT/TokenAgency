@@ -1068,6 +1068,7 @@ export const en: Record<I18nKey, string> = {
   "providers.wizard.step2.title": "Step 2: Create lines",
   "providers.wizard.step2.why":
     "Lines are created here; assign models on the models page.",
+  "dashboard.plan.title": "Plan quota",
   "providers.plan.title": "Plan",
   "providers.plan.hint": "Quota comes from the upstream API; click refresh.",
   "providers.plan.pickProvider": "Provider",
