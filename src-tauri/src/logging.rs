@@ -95,30 +95,52 @@ pub fn file_writer() -> Option<Sanitizing<tracing_appender::non_blocking::NonBlo
 
 /// [`file_writer`] 的内核：目录由参数传入，测试可以喂一个**必然失败**的路径。
 fn file_writer_in(dir: &Path) -> Option<Sanitizing<tracing_appender::non_blocking::NonBlocking>> {
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        // 落不了盘要**说出来**：否则用户只看到"没有日志"，不知道是权限/杀软问题。
-        eprintln!("TokenAgency: 建不了日志目录 {}：{e}（降级为只写 stdout）", dir.display());
-        return None;
+    match appender_in(dir) {
+        Ok(writer) => Some(writer),
+        Err(e) => {
+            // 主目录落不了盘：**先大声说**，再试备用目录。
+            //
+            // 真机上出现过"数据目录里其它文件都能写（库能写），偏偏日志建不了"的情况
+            // （同一个文件我用 PowerShell 能建、应用建不了）。根因还没锁定，
+            // 但"完全没有日志"会把下一步排查也毁掉 —— 所以宁可写到一个次选位置，
+            // 也要留下痕迹，并把偏差说清楚。
+            let fallback = dir.with_file_name("logs-fallback");
+            eprintln!(
+                "TokenAgency: 日志目录 {} 不可用（{e}）；改写到 {}",
+                dir.display(),
+                fallback.display()
+            );
+            match appender_in(&fallback) {
+                Ok(writer) => Some(writer),
+                Err(e2) => {
+                    eprintln!(
+                        "TokenAgency: 备用日志目录 {} 也不可用（{e2}）；降级为只写 stdout",
+                        fallback.display()
+                    );
+                    None
+                }
+            }
+        }
     }
-    let appender = match RollingFileAppender::builder()
+}
+
+/// 在指定目录建按日轮转的 appender。用 **builder**（返回 `Result`）而不是
+/// `rolling::daily(...)`（内部 `.expect(...)`）—— 后者失败即 panic，
+/// 会把"日志落不了盘"升级成"应用起不来"。
+fn appender_in(
+    dir: &Path,
+) -> Result<Sanitizing<tracing_appender::non_blocking::NonBlocking>, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("建不了目录：{e}"))?;
+    let appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
         .filename_prefix(FILE_PREFIX)
         .build(dir)
-    {
-        Ok(appender) => appender,
-        Err(e) => {
-            eprintln!(
-                "TokenAgency: 日志文件建不了（目录 {}）：{e}（降级为只写 stdout）",
-                dir.display()
-            );
-            return None;
-        }
-    };
+        .map_err(|e| format!("建不了文件：{e}"))?;
     let (writer, guard) = tracing_appender::non_blocking(appender);
     // guard 决定后台写线程的生命周期：**进程活着期间必须不 drop**，
     // 否则日志写线程会被关掉、之后的日志静默丢失（比"没有日志"更难查）。
     std::mem::forget(guard);
-    Some(Sanitizing::new(writer))
+    Ok(Sanitizing::new(writer))
 }
 
 #[cfg(test)]
@@ -130,15 +152,38 @@ mod tests {
     /// 这条测试对着一个真实缺陷：这里原来用 `tracing_appender::rolling::daily(...)`
     /// （内部就是 `.build(...).expect(...)`），于是"日志文件建不了"会把**整个应用**
     /// panic 掉 —— 真机表现是**双击后闪退、屏幕上什么提示都没有**（GUI 子系统没有控制台）。
+    /// 主目录不可写 ⇒ 退到 `<同级>/logs-fallback`，**不是**直接放弃。
+    #[test]
+    fn unwritable_primary_dir_falls_back_instead_of_giving_up() {
+        let base = std::env::temp_dir().join(format!("ta-log-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("建临时根");
+        // 主目录的位置先占成一个**文件**：`create_dir_all` 必然失败
+        let primary = base.join("logs");
+        std::fs::write(&primary, b"x").expect("占位文件");
+        let got = file_writer_in(&primary);
+        let fallback = base.join("logs-fallback");
+        let exists = fallback.is_dir();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(got.is_some(), "主目录不可写时必须退到备用目录，而不是没有日志");
+        assert!(exists, "备用目录应当被真的建出来");
+    }
+
+    /// **主目录与备用目录都不可写** ⇒ 才返回 `None`（并只写 stdout）。
+    ///
+    /// 这里把"根"本身做成一个文件：`<根>/logs` 与 `<根>/logs-fallback` 都落在文件下面，
+    /// `create_dir_all` 必然失败 —— 这才是"真的落不了盘"。
     #[test]
     fn unwritable_dir_degrades_instead_of_panicking() {
-        // 拿一个**普通文件**当目录用：`create_dir_all` 必然失败（它已经是个文件了）。
-        let mut not_a_dir = std::env::temp_dir();
-        not_a_dir.push(format!("ta-log-not-a-dir-{}", std::process::id()));
-        std::fs::write(&not_a_dir, b"x").expect("写临时文件");
-        let got = file_writer_in(&not_a_dir);
-        let _ = std::fs::remove_file(&not_a_dir);
-        assert!(got.is_none(), "落不了盘时必须返回 None（降级到 stdout），不能 panic");
+        let base = std::env::temp_dir().join(format!("ta-log-nodir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::write(&base, b"x").expect("把根占成文件");
+        let got = file_writer_in(&base.join("logs"));
+        let _ = std::fs::remove_file(&base);
+        assert!(
+            got.is_none(),
+            "主目录与备用目录都不可写时，必须返回 None（降级到 stdout），不能 panic"
+        );
     }
 
     /// 一个只存在内存里的 writer，用来验证"写入时脱敏"这件事本身。
